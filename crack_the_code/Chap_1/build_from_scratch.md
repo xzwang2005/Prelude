@@ -31,4 +31,4 @@ ninja -C out/debug
 ```
 It's expected to see some clang-specific warnings from one WTL sample project. Details will be provided in later sections.
 
-[Back](/)
+[Back]({{ site.baseurl }}/)
