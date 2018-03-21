@@ -14,7 +14,7 @@ As the author is by no means an expert on Chromium, examples provided here may h
 
 <div class="content">
 {% for item in site.data.navigate.toc %}
-  <h3>{{ item.title }}</h3>
+  <h2>{{ item.title }}</h2>
     <ul>
       {% for entry in item.subfolderitems %}
         <li><a href="{{ site.baseurl }}{{ entry.url }}">{{ entry.page }}</a></li>

@@ -1,7 +1,6 @@
 ---
 layout: default
 title: Get the tools
-permalink: /crack_the_code/Chap_1/get_the_tools
 ---
 ## [](#header-2) Get the tools
 

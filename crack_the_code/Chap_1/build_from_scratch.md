@@ -1,7 +1,6 @@
 ---
 layout: default
 title: Build prelude from scratch
-permalink: /crack_the_code/Chap_1/build_from_scratch
 ---
 ## [](#header-2) Build from scratch
 
