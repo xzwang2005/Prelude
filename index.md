@@ -13,8 +13,9 @@ Therefore, Prelude is aimed to be a *cookbook* for Chromium. It sets up a playgr
 As the author is by no means an expert on Chromium, examples provided here may have errors, the comments may be utterly wrong. So any feedback is welcome. Better yet, please feel free to write your own examples and add it to Prelude. You will get full credit for your work.
 
 <div class="content">
+<h2>Table of Content</h2>
 {% for item in site.data.navigate.toc %}
-  <h2>{{ item.title }}</h2>
+  <h3>{{ item.title }}</h3>
     <ul>
       {% for entry in item.subfolderitems %}
         <li><a href="{{ site.baseurl }}{{ entry.url }}">{{ entry.page }}</a></li>

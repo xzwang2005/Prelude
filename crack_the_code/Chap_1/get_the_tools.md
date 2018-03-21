@@ -10,12 +10,13 @@ Currently Prelude only compiles on Windows. It uses a subset of Chromium source,
 *  **Visual Studio 2017**
 *  **Windows 10 SDK**
 
-This section outlines the steps to setup these tools. It is assumed that the system is running Windows 7 or above, preferably with latest update.
+This post outlines the steps to setup these tools. It is assumed that the system is running Windows 7 or above, preferably with latest update.
 
 ### [](#header-3) 1. Download [**depot_tools**](https://storage.googleapis.com/chrome-infra/depot_tools.zip) and unzip it.
-For simplicity, assume it's unzipped to c:\depot_tools.
+For simplicity, assume it's unzipped to *c:\depot_tools*
 ### [](#header-3) 2.  Add the *depot_tools* directory to the *PATH* environment variable.
 *  Open *Control Panel -> System and Security -> System*
+
 ![Open control panel]({{ site.baseurl }}/crack_the_code/images/adv_sys_settings.png){:class="img-responsive"}
 
 *  In *System Properties* dialog, click *Environment Variables...*
