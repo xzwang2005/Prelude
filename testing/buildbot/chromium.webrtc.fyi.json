@@ -1,0 +1,65 @@
+{
+  "Android Builder": {
+    "additional_compile_targets": [
+      "all"
+    ]
+  },
+  "Android Builder (dbg)": {
+    "additional_compile_targets": [
+      "content_browsertests"
+    ]
+  },
+  "Android Builder ARM64 (dbg)": {
+    "additional_compile_targets": [
+      "content_browsertests"
+    ]
+  },
+  "Linux Builder": {
+    "additional_compile_targets": [
+      "all"
+    ]
+  },
+  "Linux Builder (dbg)": {
+    "additional_compile_targets": [
+      "all",
+      "browser_tests",
+      "capture_unittests",
+      "content_browsertests",
+      "content_unittests",
+      "jingle_unittests",
+      "remoting_unittests"
+    ]
+  },
+  "Mac Builder": {
+    "additional_compile_targets": [
+      "all"
+    ]
+  },
+  "Mac Builder (dbg)": {
+    "additional_compile_targets": [
+      "all",
+      "browser_tests",
+      "capture_unittests",
+      "content_browsertests",
+      "content_unittests",
+      "jingle_unittests",
+      "remoting_unittests"
+    ]
+  },
+  "Win Builder": {
+    "additional_compile_targets": [
+      "all"
+    ]
+  },
+  "Win Builder (dbg)": {
+    "additional_compile_targets": [
+      "all",
+      "browser_tests",
+      "capture_unittests",
+      "content_browsertests",
+      "content_unittests",
+      "jingle_unittests",
+      "remoting_unittests"
+    ]
+  }
+}

@@ -1,0 +1,124 @@
+Autorename:
+  autorename_* files are renamed copies of various files that would cause
+    base name collisions from mac libtool. These files are generated
+    by generate_gn.py. https://chromium-review.googlesource.com/#/c/274543/
+
+Current patches:
+  .gitignore
+    Has a "Chromium stuff" section.
+
+  compat/msvcrt/{snprintf.c,snprintf.h}
+  compat/{strtod.c,strtod.h}
+    Commit b5269bfb48c71fe17c02eee00c71b1e9762497db changes these files and
+    relevant build rules to fix inconsistent linkage when building with MSVC.
+    The rules/files expose overriden symbols as externs and force inject these
+    headers when building with the component build.
+    strtod.h was added, so it may not appear in diffs that ignore additions.
+    f3299330654ac1b40c50b3cbcae619f42eb7d838 added an include to snprintf.c.
+    4fe9bb85b83fffe4c3640493ef6655b0992a822c re-adds an "undef strod" and
+    new strtod decl to fix Windows compilation issues to strtod.c .
+
+  configure
+    Commented out a section that creates symlink for source_path. Using symlink
+    causes windows builds to fail (cl.exe cant find the files).
+
+    Commented out pkg-config checks for libopus since we use Chromium's
+    copy.
+
+  !!!SECURITY SENSITIVE ISSUE PLEASE VERIFY AFTER EACH FFMPEG ROLL!!!
+  Remove UNCHECKED_BITSTREAM_READER defines in libavcodec/
+    Remove "#define UNCHECKED_BITSTREAM_READER 1" from all codecs.
+    In Chromium, all codecs should use the safe bitstream reader.
+
+  libavformat/log.{c,h}
+  libavformat/internal.{h}
+    Changes to #define logging functions to nothing to save ~158kb of strings.
+
+  libavformat/mov.c
+    Always use av_realloc() for |extradata|. https://crbug.com/721872
+
+    Prevent NULL dereference in get_current_frag_stream_info. Applied from
+    e-mail to ffmpeg-devel@ list; should be upstream by M65 roll.
+    http://crbug.com/786269
+
+    Prevent leak of |frame_duration_buffer|. http://crbug.com/782074. Should be
+    upstream by M65 roll.
+
+    Prevent leak of |extradata|. http://crbug.com/786808. Should be upstream by
+    M65 roll.
+
+  libavformat/matroskadec.c
+    Add CONFIG_LZO and CONFIG_SIPR_DECODER (and other CONFIG_*) checks to remove
+    code that may be a security risk. Discuss with cevans@ before removing.
+
+    Remove extra const from static EbmlSyntax arrays. This fixes windows
+    compile error C4114, since EbmlSyntax struct is already defined with const.
+    TODO: push upstream.
+
+  libavformat/mp3dec.c
+    Don't change the start_time in mp3_parse_info_tag as Chromium should handle
+    it. https://crbug.com/504623
+
+    Change to mp3_read_header: check for the custom "skip_id3v1_tag" metadata
+    flag we set in Chromium code, to avoid the costly reads of id3v1 tags.
+    Also av_dict_free the dictionary before overwriting it to prevent leaks.
+    See crbug.com/703965 (upstream patch discussion:
+    http://ffmpeg.org/pipermail/ffmpeg-devel/2017-April/209953.html).
+
+  libavformat/wavdec.c
+    Exclude code blocks using #if to remove references to symbols not in our
+    builds which some toolchains don't elide, for each of
+    CONFIG_SPDIF_DEMUXER and CONFIG_W64_DEMUXER.
+
+  libavutil/mem.c
+    Enable av_max_alloc(0) to remove alloc size bound.
+
+  libavutil/x86/x86inc.asm
+    https://chromium-review.googlesource.com/#/c/272274/
+    Fixes the conditionals on Linux so that these symbols are hidden and
+    adds the Chromium-specific private_extern extension for hiding these
+    symbols on OSX.
+
+  libavcodec/mips/aacdec_mips.c
+    update_ltp_mips() function fails to compile:
+        "error: couldn't allocate output register for constraint 'r'"
+
+  libavformat/utils.c
+    av_read_frame() : Prevent undefined shift with wrap_bits > 63. Pushed to
+    upstream, so should be upstream by M65 roll. http://crbug.com/783459
+
+  libavcodec/mpegaudiodsp.c
+    ff_mpadsp_init() : Use ff_thread_once() to prevent multiple initialization
+    of static tables. Pushed to upstream, so should be upstream by M65 roll.
+    http://crbug.com/784159
+
+  libavformat/oggdec.c
+    Removes CELT, DIRAC, DAALA, and SPEEX support form the ogg parser. We don't
+    support these codecs and the parsers have bugs. http://crbug.com/654612
+
+    Call ogg_read_close() upon failure when AV_EF_EXPLODE is set; otherwise
+    memory allocated for streams is leaked. Pushed to upstream, so should be
+    upstream by M65 roll. http://crbug.com/786813 http://crbug.com/786719
+
+    Respect AVERROR codes returned by codec->header() and codec->parse(). Pushed
+    to upstream so should be upstream by M65 roll. http://crbug.com/788550
+
+  libavformat/oggparseopus.c
+    Free extradata before allocating extradata again. Pushed to upstream so
+    should be upstream by M65 roll. http://crbug.com/787803
+
+  libavformat/oggparseogm.c
+    Free extradata before allocating extradata again. Pushed to upstream so
+    should be upstream by M65 roll. http://crbug.com/786803
+
+  libavformat/oggparsevp8.c
+    Don't perform calculations on duration when it's AV_NOPTS_VALUE. Pushed to
+    upstream so should be upstream by M65 roll. http://crbug.com/787351
+
+  libavcodec/mpeg4videodec.c:
+    decode_user_data() : Fix undefined shift in version string. Pushed upstream,
+    so should be upstream by M65 roll. http://crbug.com/779924
+
+  libavcodec/vorbis.c
+    ff_vorbis_len2vlc() : Fix undefined shift. Pushed upstream, so should be
+    upstream by M65 roll. http://crbug.com/787347

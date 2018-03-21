@@ -1,0 +1,19 @@
+# TODO(fuchsia): Fix these tests and remove the filter. https://crbug.com/731302 .
+
+# Timeout on the bots exceeding 45s on the bots (apperently due to slow IO).
+-DiskCacheTest.BlockFiles_Grow
+-DiskCacheBackendTest.SimpleCacheDeleteQuickly
+
+# Exceeds FD limit, ZX-1127.
+-ProxyScriptFetcherImplTest.Priority
+
+# base::MakeFileUnreadable() doesn't work. https://crbug.com/759853
+-HttpNetworkTransactionTest.UploadUnreadableFile
+-SpdyNetworkTransactionTest.UnreadableFilePost
+
+# These stress tests take a very long time on emulated ARM cores.
+-SupportedVersion/QuicConnectionTest.TooManySentPackets/*
+-RangeOfTreeSizes/CTLogVerifierTestUsingGenerator.VerifiesValidConsistencyProof/*
+
+# Flaky, https://crbug.com/784448.
+-DiskCacheBackendTest.InvalidEntry5

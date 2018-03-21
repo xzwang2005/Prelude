@@ -1,0 +1,9 @@
+* text=auto
+
+*.c text
+*.h text
+*.cc text
+
+*.sln text eol=crlf
+
+*.pins text eol=lf

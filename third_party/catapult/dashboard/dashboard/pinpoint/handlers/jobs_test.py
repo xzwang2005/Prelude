@@ -1,0 +1,48 @@
+# Copyright 2017 The Chromium Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+import json
+import unittest
+
+import webapp2
+import webtest
+
+from google.appengine.ext import ndb
+from google.appengine.ext import testbed
+
+from dashboard.pinpoint.handlers import jobs
+from dashboard.pinpoint.models import job as job_module
+
+
+class JobsTest(unittest.TestCase):
+
+  def setUp(self):
+    app = webapp2.WSGIApplication([
+        webapp2.Route(r'/jobs', jobs.Jobs),
+    ])
+    self.testapp = webtest.TestApp(app)
+    self.testapp.extra_environ.update({'REMOTE_ADDR': 'remote_ip'})
+
+    self.testbed = testbed.Testbed()
+    self.testbed.activate()
+    self.testbed.init_datastore_v3_stub()
+    self.testbed.init_memcache_stub()
+    ndb.get_context().clear_cache()
+
+  def tearDown(self):
+    self.testbed.deactivate()
+
+  def testPost_ValidRequest(self):
+    # Create job.
+    job = job_module.Job.New(
+        arguments={},
+        quests=(),
+        auto_explore=True)
+    job.put()
+
+    data = json.loads(self.testapp.get('/jobs').body)
+
+    self.assertEqual(1, data['count'])
+    self.assertEqual(1, len(data['jobs']))
+    self.assertEqual(job.AsDict(include_state=False), data['jobs'][0])

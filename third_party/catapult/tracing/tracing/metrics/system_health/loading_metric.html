@@ -1,0 +1,538 @@
+<!DOCTYPE html>
+<!--
+Copyright 2016 The Chromium Authors. All rights reserved.
+Use of this source code is governed by a BSD-style license that can be
+found in the LICENSE file.
+-->
+
+<link rel="import" href="/tracing/base/category_util.html">
+<link rel="import" href="/tracing/base/math/statistics.html">
+<link rel="import" href="/tracing/metrics/metric_registry.html">
+<link rel="import" href="/tracing/metrics/system_health/breakdown_tree_helpers.html">
+<link rel="import" href="/tracing/metrics/system_health/event_finder_utils.html">
+<link rel="import" href="/tracing/metrics/system_health/utils.html">
+<link rel="import" href="/tracing/model/helpers/chrome_model_helper.html">
+<link rel="import" href="/tracing/model/helpers/chrome_thread_helper.html">
+<link rel="import" href="/tracing/model/timed_event.html">
+<link rel="import" href="/tracing/value/histogram.html">
+
+<script>
+'use strict';
+
+tr.exportTo('tr.metrics.sh', function() {
+  const RESPONSIVENESS_THRESHOLD_MS = 50;
+  const INTERACTIVE_WINDOW_SIZE_MS = 5 * 1000;
+  const timeDurationInMs_smallerIsBetter =
+      tr.b.Unit.byName.timeDurationInMs_smallerIsBetter;
+  const RelatedEventSet = tr.v.d.RelatedEventSet;
+  const hasCategoryAndName = tr.metrics.sh.hasCategoryAndName;
+  const EventFinderUtils = tr.metrics.sh.EventFinderUtils;
+
+  /**
+   * @param  {!tr.model.Process} process
+   * @param  {!tr.b.math.Range} range
+   * @return {Array.<tr.model.Event>} An array of network events of a process
+   * and that are intersecting a range.
+   */
+  function getNetworkEventsInRange(process, range) {
+    const networkEvents = [];
+    for (const thread of Object.values(process.threads)) {
+      const threadHelper = new tr.model.helpers.ChromeThreadHelper(thread);
+      const events = threadHelper.getNetworkEvents();
+      for (const event of events) {
+        if (range.intersectsExplicitRangeInclusive(event.start, event.end)) {
+          networkEvents.push(event);
+        }
+      }
+    }
+    return networkEvents;
+  }
+
+  /**
+   * @param {!Object.<string, Object>} breakdownTree
+   * @return {tr.v.d.Breakdown} A breakdown with categories and the total time
+   * (ms) spent under each category.
+   */
+  function createBreakdownDiagnostic(breakdownTree) {
+    const breakdownDiagnostic = new tr.v.d.Breakdown();
+    breakdownDiagnostic.colorScheme =
+        tr.v.d.COLOR_SCHEME_CHROME_USER_FRIENDLY_CATEGORY_DRIVER;
+
+    for (const label in breakdownTree) {
+      breakdownDiagnostic.set(label, breakdownTree[label].total);
+    }
+    return breakdownDiagnostic;
+  }
+
+  const LOADING_METRIC_BOUNDARIES = tr.v.HistogramBinBoundaries
+    .createLinear(0, 1e3, 20)  // 50ms step to 1s
+    .addLinearBins(3e3, 20) // 100ms step to 3s
+    .addExponentialBins(20e3, 20);
+
+  const SUMMARY_OPTIONS = {
+    avg: true,
+    count: false,
+    max: true,
+    min: true,
+    std: true,
+    sum: false,
+  };
+
+  function findFrameLoaderSnapshotAt(rendererHelper, frameIdRef, ts) {
+    const objects = rendererHelper.process.objects;
+    const frameLoaderInstances = objects.instancesByTypeName_.FrameLoader;
+    if (frameLoaderInstances === undefined) return undefined;
+
+    let snapshot;
+    for (const instance of frameLoaderInstances) {
+      if (!instance.isAliveAt(ts)) continue;
+      const maybeSnapshot = instance.getSnapshotAt(ts);
+      if (frameIdRef !== maybeSnapshot.args.frame.id_ref) continue;
+      snapshot = maybeSnapshot;
+    }
+
+    return snapshot;
+  }
+
+  function findAllEvents(rendererHelper, category, title) {
+    const targetEvents = [];
+
+    for (const ev of rendererHelper.process.getDescendantEvents()) {
+      if (!hasCategoryAndName(ev, category, title)) continue;
+      targetEvents.push(ev);
+    }
+
+    return targetEvents;
+  }
+
+  function findFirstMeaningfulPaintCandidates(rendererHelper) {
+    const candidatesForFrameId = {};
+    for (const ev of rendererHelper.process.getDescendantEvents()) {
+      if (!hasCategoryAndName(ev, 'loading', 'firstMeaningfulPaintCandidate')) {
+        continue;
+      }
+      if (rendererHelper.isTelemetryInternalEvent(ev)) continue;
+      const frameIdRef = ev.args.frame;
+      if (frameIdRef === undefined) continue;
+      let list = candidatesForFrameId[frameIdRef];
+      if (list === undefined) {
+        candidatesForFrameId[frameIdRef] = list = [];
+      }
+      list.push(ev);
+    }
+    return candidatesForFrameId;
+  }
+
+  const URL_BLACKLIST = [
+    'about:blank',
+    // Chrome on Android creates main frames with the below URL for plugins.
+    'data:text/html,pluginplaceholderdata',
+    // Special URL used to start a navigation to an unreachable error page.
+    'chrome-error://chromewebdata/'
+  ];
+  function shouldIgnoreURL(url) {
+    return URL_BLACKLIST.includes(url);
+  }
+
+  function collectTimeToEvent(
+      category, eventName, rendererHelper, frameToNavStartEvents) {
+    const targetEvents = findAllEvents(rendererHelper, category, eventName);
+    const samples = [];
+    for (const ev of targetEvents) {
+      if (rendererHelper.isTelemetryInternalEvent(ev)) continue;
+      const frameIdRef = ev.args.frame;
+      const snapshot =
+        findFrameLoaderSnapshotAt(rendererHelper, frameIdRef, ev.start);
+      if (snapshot === undefined || !snapshot.args.isLoadingMainFrame) continue;
+      const url = snapshot.args.documentLoaderURL;
+      if (shouldIgnoreURL(url)) continue;
+      const navigationStartEvent =
+          EventFinderUtils.findLastEventStartingOnOrBeforeTimestamp(
+              frameToNavStartEvents.get(frameIdRef) || [], ev.start);
+      // Ignore layout w/o preceding navigationStart, as they are not
+      // attributed to any time-to-X metric.
+      if (navigationStartEvent === undefined) continue;
+
+      const navStartToEventRange = tr.b.math.Range.fromExplicitRange(
+          navigationStartEvent.start, ev.start);
+      const networkEvents = getNetworkEventsInRange(
+          rendererHelper.process, navStartToEventRange);
+      const breakdownTree = tr.metrics.sh.generateWallClockTimeBreakdownTree(
+          rendererHelper.mainThread, networkEvents, navStartToEventRange);
+      samples.push({
+        value: navStartToEventRange.duration,
+        breakdownTree,
+        diagnostics: {
+          breakdown: createBreakdownDiagnostic(breakdownTree),
+          url: new tr.v.d.GenericSet([url]),
+          Start: new RelatedEventSet(navigationStartEvent),
+          End: new RelatedEventSet(ev)
+        }
+      });
+    }
+    return samples;
+  }
+
+  function addFirstMeaningfulPaintSample(samples, rendererHelper,
+      frameIdRef, navigationStart, fmpMarkerEvent) {
+    const snapshot = findFrameLoaderSnapshotAt(
+        rendererHelper, frameIdRef, fmpMarkerEvent.start);
+    if (!snapshot || !snapshot.args.isLoadingMainFrame) return;
+    const url = snapshot.args.documentLoaderURL;
+    if (shouldIgnoreURL(url)) return;
+
+    const navStartToFMPRange = tr.b.math.Range.fromExplicitRange(
+        navigationStart.start, fmpMarkerEvent.start);
+    const networkEvents = getNetworkEventsInRange(
+        rendererHelper.process, navStartToFMPRange);
+    const timeToFirstMeaningfulPaint = navStartToFMPRange.duration;
+    const breakdownTree = tr.metrics.sh.generateWallClockTimeBreakdownTree(
+        rendererHelper.mainThread, networkEvents, navStartToFMPRange);
+    samples.push({
+      value: timeToFirstMeaningfulPaint,
+      breakdownTree,
+      diagnostics: {
+        breakdown: createBreakdownDiagnostic(breakdownTree),
+        start: new RelatedEventSet(navigationStart),
+        end: new RelatedEventSet(fmpMarkerEvent),
+        infos: new tr.v.d.GenericSet([{
+          url,
+          pid: rendererHelper.pid,
+          start: navigationStart.start,
+          fmp: fmpMarkerEvent.start,
+        }]),
+      }
+    });
+    return {firstMeaningfulPaint: fmpMarkerEvent.start, url};
+  }
+
+  function addFirstMeaningfulPaintCpuTimeSample(samples, rendererHelper,
+      frameIdRef, navigationStart, fmpMarkerEvent) {
+    const navStartToFMPCpuRange = tr.b.math.Range.fromExplicitRange(
+        navigationStart.cpuStart, fmpMarkerEvent.cpuStart);
+    const snapshot = findFrameLoaderSnapshotAt(
+        rendererHelper, frameIdRef, fmpMarkerEvent.start);
+    if (!snapshot || !snapshot.args.isLoadingMainFrame) return;
+    const url = snapshot.args.documentLoaderURL;
+    if (shouldIgnoreURL(url)) return;
+
+    const mainThreadCpuTime = getMainThreadCpuTime(
+        rendererHelper, navStartToFMPCpuRange);
+
+    const breakdownTree = tr.metrics.sh.generateCpuTimeBreakdownTree(
+        rendererHelper.mainThread, navStartToFMPCpuRange);
+    samples.push({
+      value: mainThreadCpuTime,
+      breakdownTree,
+      diagnostics: {
+        breakdown: createBreakdownDiagnostic(breakdownTree),
+        start: new RelatedEventSet(navigationStart),
+        end: new RelatedEventSet(fmpMarkerEvent),
+        infos: new tr.v.d.GenericSet([{
+          url,
+          pid: rendererHelper.pid,
+          start: navigationStart.start,
+          fmp: fmpMarkerEvent.start,
+        }]),
+      }
+    });
+  }
+
+  function getMainThreadCpuTime(rendererHelper, rangeOfInterest) {
+    let mainThreadCpuTime = 0;
+    for (const slice of rendererHelper.mainThread.sliceGroup.topLevelSlices) {
+      if (!slice.cpuDuration) continue;
+      const sliceRange = tr.b.math.Range.fromExplicitRange(slice.cpuStart,
+          slice.cpuStart + slice.cpuDuration);
+      const intersection = rangeOfInterest.findIntersection(sliceRange);
+      mainThreadCpuTime += intersection.duration;
+    }
+
+    return mainThreadCpuTime;
+  }
+
+  function addFirstInteractiveSample(samples, rendererHelper,
+      navigationStart, firstMeaningfulPaint, url) {
+    if (shouldIgnoreURL(url)) return;
+    const navigationStartTime = navigationStart.start;
+    let firstInteractive = Infinity;
+    let firstInteractiveCandidate = firstMeaningfulPaint;
+    let lastLongTaskEvent = undefined;
+    // Find the first interactive point X after firstMeaningfulPaint so that
+    // range [X, X + INTERACTIVE_WINDOW_SIZE_MS] contains no
+    // 'TaskQueueManager::ProcessTaskFromWorkQueues' slice which takes more than
+    // RESPONSIVENESS_THRESHOLD_MS.
+    // For more details on why TaskQueueManager::ProcessTaskFromWorkQueue is
+    // chosen as a proxy for all un-interruptable task on renderer thread, see
+    // https://github.com/GoogleChrome/lighthouse/issues/489
+    // TODO(nedn): replace this with just "const ev of rendererHelper..." once
+    // canary binary is updated.
+    // (https://github.com/catapult-project/catapult/issues/2586)
+    for (const ev of [...rendererHelper.mainThread.sliceGroup.childEvents()]) {
+      if (ev.start < firstInteractiveCandidate) continue;
+      const interactiveDurationSoFar = ev.start - firstInteractiveCandidate;
+      if (interactiveDurationSoFar >= INTERACTIVE_WINDOW_SIZE_MS) {
+        firstInteractive = firstInteractiveCandidate;
+        break;
+      }
+      if (ev.title === 'TaskQueueManager::ProcessTaskFromWorkQueue' &&
+          ev.duration > RESPONSIVENESS_THRESHOLD_MS) {
+        firstInteractiveCandidate = ev.end - 50;
+        lastLongTaskEvent = ev;
+      }
+    }
+    const navStartToFirstInteractiveRange = tr.b.math.Range.fromExplicitRange(
+        navigationStartTime, firstInteractive);
+
+    const networkEvents = getNetworkEventsInRange(
+        rendererHelper.process, navStartToFirstInteractiveRange);
+    const breakdownTree = tr.metrics.sh.generateWallClockTimeBreakdownTree(
+        rendererHelper.mainThread, networkEvents,
+        navStartToFirstInteractiveRange);
+    const timeToFirstInteractive = navStartToFirstInteractiveRange.duration;
+    samples.push({
+      value: timeToFirstInteractive,
+      breakdownTree,
+      diagnostics: {
+        breakdown: createBreakdownDiagnostic(breakdownTree),
+        start: new RelatedEventSet(navigationStart),
+        lastLongTask: new RelatedEventSet(lastLongTaskEvent),
+        infos: new tr.v.d.GenericSet([{
+          url,
+          pid: rendererHelper.pid,
+          start: navigationStartTime,
+          interactive: firstInteractive,
+        }]),
+      }
+    });
+  }
+
+  /**
+   * Computes Time to first meaningful paint (TTFMP) & time to interactive (TTI)
+   * for a renderer represented by |rendererHelper| and returns them as
+   * histogram samples.
+   *
+   * First meaningful paint is the paint following the layout with the highest
+   * "Layout Significance". The Layout Significance is computed inside Blink,
+   * by FirstMeaningfulPaintDetector class. It logs
+   * "firstMeaningfulPaintCandidate" event every time the Layout Significance
+   * marks a record. TTFMP is the time between NavigationStart and the last
+   * firstMeaningfulPaintCandidate event.
+   *
+   * Design doc: https://goo.gl/vpaxv6
+   *
+   * TTI is computed as the starting time of the timed window with size
+   * INTERACTIVE_WINDOW_SIZE_MS that happens after FMP in which there is no
+   * uninterruptable task on the main thread with size more than
+   * RESPONSIVENESS_THRESHOLD_MS.
+   *
+   * Design doc: https://goo.gl/ISWndc
+   */
+  function collectFirstMeaningfulPaintAndTimeToInteractiveForRenderer(
+      rendererHelper, frameToNavStartEvents) {
+    const firstMeaningfulPaintSamples = [];
+    const firstMeaningfulPaintCpuTimeSamples = [];
+    const firstInteractiveSamples = [];
+
+    function addSamples(frameIdRef, navigationStart, fmpMarkerEvent) {
+      const data = addFirstMeaningfulPaintSample(
+          firstMeaningfulPaintSamples, rendererHelper,
+          frameIdRef, navigationStart, fmpMarkerEvent);
+      addFirstMeaningfulPaintCpuTimeSample(
+          firstMeaningfulPaintCpuTimeSamples, rendererHelper,
+          frameIdRef, navigationStart, fmpMarkerEvent);
+      if (data !== undefined) {
+        addFirstInteractiveSample(
+            firstInteractiveSamples, rendererHelper,
+            navigationStart, data.firstMeaningfulPaint, data.url);
+      }
+    }
+
+    const candidatesForFrameId =
+        findFirstMeaningfulPaintCandidates(rendererHelper);
+
+    for (const frameIdRef in candidatesForFrameId) {
+      let navigationStart = undefined;
+      let lastCandidate = undefined;
+
+      // Iterate over the FMP candidates, remembering the last one.
+      for (const ev of candidatesForFrameId[frameIdRef]) {
+        const navigationStartForThisCandidate =
+          EventFinderUtils.findLastEventStartingOnOrBeforeTimestamp(
+              frameToNavStartEvents.get(frameIdRef) || [], ev.start);
+        // Ignore candidate w/o preceding navigationStart, as they are not
+        // attributed to any TTFMP.
+        if (navigationStartForThisCandidate === undefined) continue;
+
+        if (navigationStart !== navigationStartForThisCandidate) {
+          // New navigation is found. Compute TTFMP for current navigation,
+          // and reset the state variables.
+          if (navigationStart !== undefined && lastCandidate !== undefined) {
+            addSamples(frameIdRef, navigationStart, lastCandidate);
+          }
+          navigationStart = navigationStartForThisCandidate;
+        }
+        lastCandidate = ev;
+      }
+
+      // Compute TTFMP for the last navigation.
+      if (lastCandidate !== undefined) {
+        addSamples(frameIdRef, navigationStart, lastCandidate);
+      }
+    }
+    return {
+      firstMeaningfulPaintSamples,
+      firstMeaningfulPaintCpuTimeSamples,
+      firstInteractiveSamples
+    };
+  }
+
+  function collectLoadingMetricsForRenderer(rendererHelper) {
+    const frameToNavStartEvents =
+        EventFinderUtils.getSortedMainThreadEventsByFrame(
+            rendererHelper, 'navigationStart', 'blink.user_timing');
+    const firstPaintSamples = collectTimeToEvent(
+        'loading', 'firstPaint',
+        rendererHelper, frameToNavStartEvents);
+    const firstContentfulPaintSamples = collectTimeToEvent(
+        'loading', 'firstContentfulPaint',
+        rendererHelper, frameToNavStartEvents);
+    const onLoadSamples = collectTimeToEvent(
+        'blink.user_timing', 'loadEventStart',
+        rendererHelper, frameToNavStartEvents);
+    const {firstMeaningfulPaintSamples, firstMeaningfulPaintCpuTimeSamples,
+        firstInteractiveSamples} =
+        collectFirstMeaningfulPaintAndTimeToInteractiveForRenderer(
+            rendererHelper, frameToNavStartEvents);
+    return {
+      firstPaintSamples,
+      firstContentfulPaintSamples,
+      onLoadSamples,
+      firstMeaningfulPaintSamples,
+      firstMeaningfulPaintCpuTimeSamples,
+      firstInteractiveSamples
+    };
+  }
+
+  function addSamplesToHistogram(samples, histogram, histograms) {
+    for (const sample of samples) {
+      histogram.addSample(sample.value, sample.diagnostics);
+
+      // Only add breakdown histograms for FCP.
+      // http://crbug.com/771610
+      if (histogram.name !== 'timeToFirstContentfulPaint') continue;
+
+      if (!sample.breakdownTree) continue;
+      for (const [category, breakdown] of Object.entries(
+          sample.breakdownTree)) {
+        const relatedName = `${histogram.name}:${category}`;
+        let relatedHist = histograms.getHistogramsNamed(relatedName)[0];
+        if (!relatedHist) {
+          relatedHist = histograms.createHistogram(
+              relatedName, histogram.unit, [], {
+                binBoundaries: LOADING_METRIC_BOUNDARIES,
+                summaryOptions: {
+                  count: false,
+                  max: false,
+                  min: false,
+                  sum: false,
+                },
+              });
+
+          let relatedNames = histogram.diagnostics.get('breakdown');
+          if (!relatedNames) {
+            relatedNames = new tr.v.d.RelatedHistogramBreakdown();
+            histogram.diagnostics.set('breakdown', relatedNames);
+          }
+          relatedNames.set(category, relatedHist);
+        }
+        relatedHist.addSample(breakdown.total, {
+          breakdown: tr.v.d.Breakdown.fromEntries(
+              Object.entries(breakdown.events)),
+        });
+      }
+    }
+  }
+
+  function loadingMetric(histograms, model) {
+    const firstPaintHistogram = histograms.createHistogram(
+        'timeToFirstPaint', timeDurationInMs_smallerIsBetter, [], {
+          binBoundaries: LOADING_METRIC_BOUNDARIES,
+          description: 'time to first paint',
+          summaryOptions: SUMMARY_OPTIONS,
+        });
+    const firstContentfulPaintHistogram = histograms.createHistogram(
+        'timeToFirstContentfulPaint', timeDurationInMs_smallerIsBetter, [], {
+          binBoundaries: LOADING_METRIC_BOUNDARIES,
+          description: 'time to first contentful paint',
+          summaryOptions: SUMMARY_OPTIONS,
+        });
+    const onLoadHistogram = histograms.createHistogram(
+        'timeToOnload', timeDurationInMs_smallerIsBetter, [], {
+          binBoundaries: LOADING_METRIC_BOUNDARIES,
+          description: 'time to onload. ' +
+            'This is temporary metric used for PCv1/v2 sanity checking',
+          summaryOptions: SUMMARY_OPTIONS,
+        });
+    const firstMeaningfulPaintHistogram = histograms.createHistogram(
+        'timeToFirstMeaningfulPaint', timeDurationInMs_smallerIsBetter, [], {
+          binBoundaries: LOADING_METRIC_BOUNDARIES,
+          description: 'time to first meaningful paint',
+          summaryOptions: SUMMARY_OPTIONS,
+        });
+    const firstMeaningfulPaintCpuTimeHistogram = histograms.createHistogram(
+        'cpuTimeToFirstMeaningfulPaint', timeDurationInMs_smallerIsBetter, [], {
+          binBoundaries: LOADING_METRIC_BOUNDARIES,
+          description: 'CPU time to first meaningful paint',
+          summaryOptions: SUMMARY_OPTIONS,
+        });
+    const firstInteractiveHistogram = histograms.createHistogram(
+        'timeToFirstInteractive', timeDurationInMs_smallerIsBetter, [], {
+          binBoundaries: LOADING_METRIC_BOUNDARIES,
+          description: 'time to first interactive',
+          summaryOptions: SUMMARY_OPTIONS,
+        });
+
+    const chromeHelper = model.getOrCreateHelper(
+        tr.model.helpers.ChromeModelHelper);
+    for (const pid in chromeHelper.rendererHelpers) {
+      const rendererHelper = chromeHelper.rendererHelpers[pid];
+      if (rendererHelper.isChromeTracingUI) continue;
+
+      const samplesSet =
+          collectLoadingMetricsForRenderer(rendererHelper);
+
+      addSamplesToHistogram(
+          samplesSet.firstPaintSamples, firstPaintHistogram, histograms);
+      addSamplesToHistogram(
+          samplesSet.firstContentfulPaintSamples,
+          firstContentfulPaintHistogram,
+          histograms);
+      addSamplesToHistogram(
+          samplesSet.onLoadSamples, onLoadHistogram, histograms);
+      addSamplesToHistogram(
+          samplesSet.firstMeaningfulPaintSamples,
+          firstMeaningfulPaintHistogram,
+          histograms);
+      addSamplesToHistogram(
+          samplesSet.firstMeaningfulPaintCpuTimeSamples,
+          firstMeaningfulPaintCpuTimeHistogram,
+          histograms);
+      addSamplesToHistogram(
+          samplesSet.firstInteractiveSamples,
+          firstInteractiveHistogram,
+          histograms);
+    }
+  }
+
+  tr.metrics.MetricRegistry.register(loadingMetric);
+
+  return {
+    loadingMetric,
+    getNetworkEventsInRange,
+    collectLoadingMetricsForRenderer,
+    RESPONSIVENESS_THRESHOLD_MS,
+    INTERACTIVE_WINDOW_SIZE_MS,
+  };
+});
+</script>

@@ -1,0 +1,19 @@
+# Copyright (c) 2018 Xuezhong Wang. All rights reserved.
+# Use of this source code is governed by a MIT license that can be
+# found in the LICENSE file.
+
+import("//testing/test.gni")
+
+test("unit_test") {
+  testonly = true   # must set to true because 'test_support' is testonly
+  output_name = "excerpt02_dummy_unit_test"
+  
+  sources = [
+    "run_all_unittests.cpp",
+    "dummy_test.cpp",
+  ]
+
+  deps = [
+    "//base/test:test_support",
+  ]
+}

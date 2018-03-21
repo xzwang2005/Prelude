@@ -1,0 +1,18 @@
+# Copyright (c) 2018 Xuezhong Wang. All rights reserved.
+# Use of this source code is governed by a MIT license that can be
+# found in the LICENSE file.
+
+import("//build/config/win/console_app.gni")
+import("//build/config/win/manifest.gni")
+
+template("win_etude") {
+  executable(target_name) {
+    forward_variables_from(invoker,
+                           ["sources", "defines", "libs"])
+    deps = [
+      "//base:base",
+    ]
+    configs -= [ "//build/config/win:console" ]
+    configs += [ "//build/config/win:windowed" ]
+  }
+}

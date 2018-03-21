@@ -1,0 +1,33 @@
+executable("hello_wtl") {
+  include_dirs = [
+    "//prelude/wtl10/Include",
+  ]
+
+  sources = [
+    "GuidGen.cpp",
+    "GuidGen.rc",
+    "stdatl.cpp"
+  ]
+
+  if(is_clang) {
+    configs -= [ "//build/config/clang:extra_warnings" ]
+  }
+
+  configs -= [ "//build/config/compiler:chromium_code" ]
+  configs -= [ "//build/config:feature_flags" ]
+  configs += [ "//build/config/win:windowed" ]
+
+  defines = [
+    "_RAW_WTL_RESOURCES",
+  ]
+
+  if (is_clang) {
+    cflags = [
+      "-Wno-reorder",
+      "-Wno-parentheses",
+      "-Wno-missing-braces",
+      "-Wno-unused-value",
+    ]
+  }
+
+}
