@@ -10,7 +10,7 @@ Prelude is based on Chromium release [65.0.3289.2](https://chromium.googlesource
 
 ### [](#header-3) 1.  Checkout the code
 ```
-git clone https://github.com/xzwang2005/prelude.git
+git clone https://github.com/xzwang2005/Prelude.git
 ```
 
 ### [](#header-3) 2.  Generate build targets with *gn*
