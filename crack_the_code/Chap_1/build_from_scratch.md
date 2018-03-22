@@ -12,6 +12,12 @@ Prelude is based on Chromium release [65.0.3289.2](https://chromium.googlesource
 git clone https://github.com/xzwang2005/Prelude.git
 ```
 
+>git may seem like hanging after printing the line:
+```
+Resolving deltas: 100% (21062/21062), done.
+```
+but it's actually working. Give it a minute to finish.
+
 ### [](#header-3) 2.  Generate build targets with *gn*
 
 ```
@@ -29,6 +35,6 @@ This command creates a folder *out/debug* under the root directory, with files c
 ```
 ninja -C out/debug
 ```
-It's expected to see some clang-specific warnings from one WTL sample project. Details will be provided in later sections.
+It's expected to see some clang-specific warnings from a WTL sample project. Details will be provided in later sections.
 
 [Back]({{ site.baseurl }}/)
