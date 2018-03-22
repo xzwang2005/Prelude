@@ -5,10 +5,14 @@ toc:
         url: /crack_the_code/Chap_1/get_the_tools.html
       - page: Build from scratch
         url: /crack_the_code/Chap_1/build_from_scratch.html
-  # - title: gn system
-    # subfolderitems:
-      # - page: Piece 1
-        # url: /piece1.html
+      - page: How exactly does the build work?
+        url: /crack_the_code/Chap_1/how_and_what_exactly_did_we_build.html
+  - title: GN build system
+    subfolderitems:
+      - page: GN basic
+        url: /crack_the_code/Chap_2/gn_basic.html
+      #- page: Frequent asked questions, what to do if I want to..., include some VS tricks
+      #- page: 
   # - title: base framework
     # subfolderitems:
       # - page: Piece 1

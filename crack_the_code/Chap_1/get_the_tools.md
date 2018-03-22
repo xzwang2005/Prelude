@@ -43,7 +43,9 @@ Open a console, go to *depot_tools* directory and run *gclient*:
 
 ![Check after gclient]({{ site.baseurl }}/crack_the_code/images/check_after_gclient.png){:class="img-responsive"}
 
-When *python* or *git* is invoked, the corresponding batch file (shown above) forward the call to the actual executables under *depot_tools\win_toos-2_7_6_bin*. Chromium requires that these batch files take precedence over local executables that are previously installed. As seen in figure below, *Python v2.7.14* has been installed and *where* command returns the batch file before v2.7.14 executable. This can be done by moving *c:\depot_tools* before *c:\Python27* in *PATH* environment variable. Prelude does not have this restriction, i.e., using *python v2.7.14* instead of the bundled one in depot_tools should still work.
+Ideally, when *python* or *git* is invoked, the corresponding batch file (shown above) forward the call to the actual executables under *depot_tools\win_toos-2_7_6_bin*. However, it's common that other versions of python or git had already been installed before depot_tools is setup. Chromium requires that the batch files in depot_tools take precedence over local executables.
+
+As seen in figure below, *Python v2.7.14* has been installed and *where* command returns the batch file before v2.7.14 executable. This can be done by moving *c:\depot_tools* before *c:\Python27* in *PATH* environment variable. Prelude does not have this restriction, i.e., using previously installed python and git instead of the bundled one in depot_tools should still work.
 
 ![depot_tool_batch_files]({{ site.baseurl }}/crack_the_code/images/python_local.png){:class="img-responsive"}
 
@@ -66,5 +68,3 @@ Open *Control Panel* and go to *Programs and Festures*, selet *Windows Software 
 ![add_debug_tools_2]({{ site.baseurl }}/crack_the_code/images/sdk_install_debug_tools.png){:class="img-responsive"}
 
 Now we have setup all the tools, next we will build Prelude from scratch.
-
-[Back]({{ site.baseurl }}/)

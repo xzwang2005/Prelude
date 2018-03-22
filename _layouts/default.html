@@ -35,7 +35,13 @@
     <div id="main_content_wrap" class="outer">
       <section id="main_content" class="inner">
         {{ content }}
+
+        <!-- home link -->
+        {% if page.title != "Prelude" %}
+          <a id="back_home" href="{{ site.baseurl }}/">Home</a>
+        {% endif %}
       </section>
+
     </div>
 
     <!-- FOOTER  -->

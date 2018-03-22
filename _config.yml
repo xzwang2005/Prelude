@@ -3,3 +3,4 @@ description: A path through the jungle of Chromium source
 show_downloads: false
 google_analytics: false
 theme: jekyll-theme-slate
+baseurl: /Prelude
