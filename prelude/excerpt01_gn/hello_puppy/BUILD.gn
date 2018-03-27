@@ -15,11 +15,18 @@ static_library("bark_food") {
   ]
 }
 
+source_set("sleep_run") {
+  sources = [
+    "sleep_run.cpp",
+  ]
+}
+
 executable("hello_puppy") {
   output_name = "hello_bogart"
   sources = ["hello_bogart.cpp", ]
   deps = [
     ":bark_food",
     ":bark_ambulance",
+    ":sleep_run",
   ]
 }

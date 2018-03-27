@@ -8,11 +8,13 @@
 #include <stdio.h>
 #include "bark_food.h"
 #include "bark_ambulance.h"
+#include "sleep_run.h"
 
 int main() {
     printf("Hello, Bogart.\n");
     printf("%s\n", LetsEat());
     printf("%s\n", LetsHowl());
+    printf("%s\n", LetsRun());
     return 0;
 }
 #endif // HELLO_BOGART_H_
