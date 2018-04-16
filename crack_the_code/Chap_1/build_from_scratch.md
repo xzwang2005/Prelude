@@ -26,7 +26,7 @@ Chromium is built with [Ninja](https://ninja-build.org/), a cross-platform build
 To get started with *gn*, open a console window and go to Prelude directory you just cloned in last step, type:
 
 ```
-gn gen out/debug --args="enable_precompiled_headers=false use_jumbo_build=true"
+gn gen out/debug --args="is_clang=false use_jumbo_build=true"
 ```
 
 This command creates a folder *out/debug* under the root directory, with files containing all the build information:
@@ -35,7 +35,11 @@ This command creates a folder *out/debug* under the root directory, with files c
 *   environment setup files - environment.x64 etc.
 *   dll files (Windows only)
 
->*enable_precompiled_headers* must be set to *false* as shown above. Currently, clang does not work with Visual Studio v15.5.x headers when precompile is enabled. This is a [known issue](https://bugs.chromium.org/p/chromium/issues/detail?id=780124) with no fix planned. Official Chrome build probably still use Visual Studio v15.4.x with SDK v10.0.15063.0, which does not have this problem. *use_jumbo_build=true* helps speed up the compile process.
+>`is_clang=true` means to use Visual C++ compiler instead of Clang. Chromium uses Clang by default, which is downloaded to the folder *third_party/llvm-build* by a hook. However, this version of Clang has some issues under Windows. First, it does not play well with Visual Studio v15.5.x headers. Build fails unless `enable_precompiled_headers=false` is specified. This is a [known issue](https://bugs.chromium.org/p/chromium/issues/detail?id=780124) with no fix planned.
+
+>Second, there is no guarantee that this particular version of Clang remains compatible with Windows update. It appears that the latest Windows update causes system crash when compiling with Clang. So it is recommended to build with Visual C++ compiler on Windows for Prelude.
+
+>Another argument `use_jumbo_build=true` helps speed up the compile process. 
 
 ### [](#header-3) 3.  Build the targets using *ninja*
 
