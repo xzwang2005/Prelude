@@ -58,7 +58,6 @@ int main(int argc, char **argv) {
     }
 
     printf("starts now.");
-
-    return 0;
   }
+  return 0;
 }
