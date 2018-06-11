@@ -451,13 +451,17 @@ bool InProcessCommandBuffer::DestroyOnGpuThread() {
   gpu_thread_weak_ptr_factory_.InvalidateWeakPtrs();
   // Clean up GL resources if possible.
   bool have_context = context_.get() && context_->MakeCurrent(surface_.get());
+  // decrease ref count for surface_ to avoid error:
+  // gles2_cmd_decoder.cc(5088)] crbug.com/787086: Decoder is not the sole owner of |surface_| at destruction time
+  surface_ = nullptr;
+
   if (decoder_) {
     decoder_->Destroy(have_context);
     decoder_.reset();
   }
   command_buffer_.reset();
   context_ = nullptr;
-  surface_ = nullptr;
+
   if (sync_point_order_data_) {
     sync_point_order_data_->Destroy();
     sync_point_order_data_ = nullptr;

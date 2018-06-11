@@ -7,5 +7,6 @@ group("prelude") {
   deps = [
     "excerpt01_gn",
     "excerpt02_base",
+    "excerpt03_graphics",
   ]
 }

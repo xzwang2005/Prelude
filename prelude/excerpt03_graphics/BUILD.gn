@@ -1,0 +1,36 @@
+# Copyright (c) 2018 The Prelude Authors.
+# Use of this source code is governed by MIT license that can be
+# found in MIT-LICENSE file.
+
+group("excerpt03_graphics") {
+  testonly = true
+  deps = [
+    ":graphics_basic",
+  ]
+}
+
+executable("graphics_basic") {
+  testonly = true
+  sources = [
+    "graphics_basic.cpp",
+    "display_graffiti.cpp",
+    "direct_output_surface.cpp",
+  ]
+  
+  deps = [
+    "//base",
+    "//base/test:test_support",
+    "//cc",
+    "//cc:test_support",
+    "//gpu/ipc:command_buffer",
+    "//gpu/ipc:command_buffer",
+    "//services/viz/privileged/interfaces/compositing",
+    "//services/viz/public/interfaces",
+    "//ui/gfx",
+    "//ui/gfx/geometry",
+    "//skia",
+    "//ui/compositor:test_support",
+    "//ui/platform_window",
+    "//ui/platform_window/win",
+  ]
+}

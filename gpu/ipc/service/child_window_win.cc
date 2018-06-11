@@ -36,30 +36,28 @@ namespace {
 ATOM g_window_class;
 
 // This runs on the window owner thread.
-LRESULT CALLBACK IntermediateWindowProc(HWND window,
-                                        UINT message,
-                                        WPARAM w_param,
-                                        LPARAM l_param) {
+LRESULT CALLBACK IntermediateWindowProc(HWND window, UINT message,
+                                        WPARAM w_param, LPARAM l_param) {
   switch (message) {
-    case WM_ERASEBKGND:
-      // Prevent windows from erasing the background.
-      return 1;
-    case WM_PAINT:
-      PAINTSTRUCT paint;
-      if (BeginPaint(window, &paint)) {
-        SharedData* shared_data =
-            reinterpret_cast<SharedData*>(gfx::GetWindowUserData(window));
-        DCHECK(shared_data);
-        {
-          base::AutoLock lock(shared_data->rect_lock);
-          shared_data->rect_to_clear.Union(gfx::Rect(paint.rcPaint));
-        }
-
-        EndPaint(window, &paint);
+  case WM_ERASEBKGND:
+    // Prevent windows from erasing the background.
+    return 1;
+  case WM_PAINT:
+    PAINTSTRUCT paint;
+    if (BeginPaint(window, &paint)) {
+      SharedData *shared_data =
+          reinterpret_cast<SharedData *>(gfx::GetWindowUserData(window));
+      DCHECK(shared_data);
+      {
+        base::AutoLock lock(shared_data->rect_lock);
+        shared_data->rect_to_clear.Union(gfx::Rect(paint.rcPaint));
       }
-      return 0;
-    default:
-      return DefWindowProc(window, message, w_param, l_param);
+
+      EndPaint(window, &paint);
+    }
+    return 0;
+  default:
+    return DefWindowProc(window, message, w_param, l_param);
   }
 }
 
@@ -84,9 +82,9 @@ void InitializeWindowClass() {
 // Hidden popup window  used as a parent for the child surface window.
 // Must be created and destroyed on the thread.
 class HiddenPopupWindow : public gfx::WindowImpl {
- public:
+public:
   static HWND Create() {
-    gfx::WindowImpl* window = new HiddenPopupWindow;
+    gfx::WindowImpl *window = new HiddenPopupWindow;
 
     window->set_window_style(WS_POPUP);
     window->set_window_ex_style(WS_EX_TOOLWINDOW);
@@ -100,29 +98,27 @@ class HiddenPopupWindow : public gfx::WindowImpl {
   static void Destroy(HWND window) {
     // This uses the fact that the window user data contains a pointer
     // to gfx::WindowImpl instance.
-    gfx::WindowImpl* window_data =
-        reinterpret_cast<gfx::WindowImpl*>(gfx::GetWindowUserData(window));
+    gfx::WindowImpl *window_data =
+        reinterpret_cast<gfx::WindowImpl *>(gfx::GetWindowUserData(window));
     DCHECK_EQ(window, window_data->hwnd());
     DestroyWindow(window);
     delete window_data;
   }
 
- private:
+private:
   // Explicitly do nothing in Close. We do this as some external apps may get a
   // handle to this window and attempt to close it.
   void OnClose() {}
 
   CR_BEGIN_MSG_MAP_EX(HiddenPopupWindow)
-    CR_MSG_WM_CLOSE(OnClose)
+  CR_MSG_WM_CLOSE(OnClose)
   CR_END_MSG_MAP()
 };
 
 // This runs on the window owner thread.
-void CreateWindowsOnThread(const gfx::Size& size,
-                           base::WaitableEvent* event,
-                           SharedData* shared_data,
-                           HWND* child_window,
-                           HWND* parent_window) {
+void CreateWindowsOnThread(const gfx::Size &size, base::WaitableEvent *event,
+                           SharedData *shared_data, HWND *child_window,
+                           HWND *parent_window) {
   InitializeWindowClass();
   DCHECK(g_window_class);
 
@@ -130,7 +126,7 @@ void CreateWindowsOnThread(const gfx::Size& size,
   *parent_window = HiddenPopupWindow::Create();
   // Create child window.
   HWND window = CreateWindowEx(
-      WS_EX_NOPARENTNOTIFY, reinterpret_cast<wchar_t*>(g_window_class), L"",
+      WS_EX_NOPARENTNOTIFY, reinterpret_cast<wchar_t *>(g_window_class), L"",
       WS_CHILDWINDOW | WS_DISABLED | WS_VISIBLE, 0, 0, size.width(),
       size.height(), *parent_window, NULL, NULL, NULL);
   CHECK(window);
@@ -146,16 +142,17 @@ void DestroySharedData(std::unique_ptr<SharedData> shared_data) {
 }
 
 // This runs on the window owner thread.
-void DestroyWindowsOnThread(HWND child_window, HWND hidden_popup_window) {
+void DestroyWindowsOnThread(HWND child_window, HWND hidden_popup_window,
+                            base::WaitableEvent *event) {
   DestroyWindow(child_window);
   HiddenPopupWindow::Destroy(hidden_popup_window);
+  event->Signal();
 }
 
-}  // namespace
+} // namespace
 
 ChildWindowWin::ChildWindowWin(
-    base::WeakPtr<ImageTransportSurfaceDelegate> delegate,
-    HWND parent_window)
+    base::WeakPtr<ImageTransportSurfaceDelegate> delegate, HWND parent_window)
     : parent_window_(parent_window), window_(nullptr), delegate_(delegate) {}
 
 bool ChildWindowWin::Initialize() {
@@ -199,12 +196,13 @@ void ChildWindowWin::ClearInvalidContents() {
 
 ChildWindowWin::~ChildWindowWin() {
   if (shared_data_) {
-    scoped_refptr<base::TaskRunner> task_runner =
-        shared_data_->thread.task_runner();
-    task_runner->PostTaskAndReply(
-        FROM_HERE,
-        base::Bind(&DestroyWindowsOnThread, window_, initial_parent_window_),
-        base::Bind(&DestroySharedData, base::Passed(std::move(shared_data_))));
+    base::WaitableEvent event(base::WaitableEvent::ResetPolicy::AUTOMATIC,
+                              base::WaitableEvent::InitialState::NOT_SIGNALED);
+    shared_data_->thread.task_runner()->PostTask(
+        FROM_HERE, base::Bind(&DestroyWindowsOnThread, window_,
+                              initial_parent_window_, &event));
+    event.Wait();
+    DestroySharedData(std::move(shared_data_));
   }
 }
 
@@ -213,4 +211,4 @@ scoped_refptr<base::TaskRunner> ChildWindowWin::GetTaskRunnerForTesting() {
   return shared_data_->thread.task_runner();
 }
 
-}  // namespace gpu
+} // namespace gpu
