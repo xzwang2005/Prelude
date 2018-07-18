@@ -1,0 +1,56 @@
+# Copyright (c) 2018 The Prelude Authors.
+# Use of this source code is governed by MIT license that can be
+# found in MIT-LICENSE file.
+
+import("//services/service_manager/public/cpp/service.gni")
+import("//services/service_manager/public/service_manifest.gni")
+import("//services/catalog/public/tools/catalog.gni")
+
+# this is an executable client using service through catalog. The executable itself is a service.
+# it's different from the unit test target in following:
+# 1) the executable is generated with executable(), vs. service_test()
+# 2) include an additional catalog_cpp_source() target
+
+group("executable_client") {
+  deps = [
+    ":executable_client_app"
+  ]
+}
+
+# testonly = true is required by //services/service_manager/public/cpp:service_test_support.
+# also no longer depends on multi_class_service_impl:lib
+# dependency is specified in executable_client_catalog, which does not require recompile
+executable("executable_client_app") {
+  sources = [ "executable_client.cpp" ]
+  deps = [
+    "//prelude/excerpt04_service/interfaces",
+    "//base",
+    "//mojo/edk/system",
+    "//mojo/public/cpp/bindings",
+    "//mojo/public/cpp/system",
+    "//services/service_manager/background:lib",
+    "//services/service_manager/public/interfaces",
+    # ":executable_client_catalog", # compiles ok without it
+    ":executable_client__catalog_source",
+  ]
+  data_deps = [
+    "//prelude/excerpt04_service/multi_class_service_impl:multi_class_service"
+  ]
+}
+
+# the executable itself also is a service, but it does not provide implementation
+# to any interfaces, but only requires other interfaces, see the json file for detail
+service_manifest("executable_manifest") {
+  name = "executable_client"    # must match the name inside json
+  source = "executable_client_manifest.json"
+}
+
+catalog("executable_client_catalog") {
+  embedded_services = [":executable_manifest"]
+  standalone_services = [ "//prelude/excerpt04_service/multi_class_service_impl:manifest" ]
+}
+
+catalog_cpp_source("executable_client__catalog_source") {
+  catalog = ":executable_client_catalog"
+  generated_function_name = "prelude::CreateCatalog"  # this function name is passed to SetDefaultCatalogManifest()
+}

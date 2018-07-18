@@ -1,0 +1,11 @@
+{
+  "name": "executable_client_with_res",
+  "display_name": "An executable client for log service using resource",
+  "interface_provider_specs": {
+    "service_manager:connector": {
+      "requires": {
+        "multi_class_service": [ "multi_class:logging" ]
+      }
+    }
+  }
+}

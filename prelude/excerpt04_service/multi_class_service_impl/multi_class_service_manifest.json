@@ -1,0 +1,13 @@
+{
+  "name": "multi_class_service",
+  "display_name": "Multi-class service",
+  "interface_provider_specs": {
+    "service_manager:connector": {
+      "provides": {
+        "multi_class:logging": [
+          "prelude::mojom::Logger"
+        ]
+      }
+    }
+  }
+}

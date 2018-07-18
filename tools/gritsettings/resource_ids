@@ -391,7 +391,7 @@
 
   # Resource ids starting at 31000 are reserved for projects built on Chromium.
 
-  "prelude/service_tutorial/my_service_executable_resources.grd" : {
+  "prelude/excerpt04_service/client_with_resource/logger_service_resource.grd" : {
     "includes": [29000],
   },
 }

@@ -8,5 +8,6 @@ group("prelude") {
     "excerpt01_gn",
     "excerpt02_base",
     "excerpt03_graphics",
+    "excerpt04_service",
   ]
 }
