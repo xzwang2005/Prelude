@@ -6,5 +6,8 @@ module prelude.mojom;
 
 interface Logger {
   Log(string message);
+  // part after => is the return value, can return multiple things.
+  // service use this callback to send result back
   GetTail() => (string message);
+  GetLogCount() => (int8 count);
 };

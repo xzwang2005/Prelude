@@ -15,10 +15,17 @@ LoggerImpl::~LoggerImpl() = default;
 void LoggerImpl::Log(const std::string &message) {
   LOG(ERROR) << "[Logger] " << message;
   lines_.push_back(message);
+  log_count++;
 }
 
 void LoggerImpl::GetTail(GetTailCallback callback) {
   std::move(callback).Run(lines_.back());
+}
+
+
+void LoggerImpl::GetLogCount(GetLogCountCallback callback)
+{
+  std::move(callback).Run(log_count);
 }
 
 void LoggerImpl::OnConnectionError() {

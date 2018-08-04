@@ -7,6 +7,12 @@
         "multi_class:logging": [
           "prelude::mojom::Logger"
         ]
+      },
+      "requires": {
+        "service_manager": [
+          "service_manager:instance_name",
+          "service_manager:user_id"
+        ]
       }
     }
   }
