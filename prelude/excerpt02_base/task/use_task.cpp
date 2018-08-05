@@ -11,6 +11,7 @@
 #include "base/task_scheduler/post_task.h"
 #include "base/task_scheduler/task_scheduler.h"
 #include "base/threading/platform_thread.h"
+#include "base/threading/thread_task_runner_handle.h"
 #include "build/build_config.h"
 
 #include <string>
@@ -51,6 +52,9 @@ int main(int argc, char **argv) {
   // post a task to the main thread
   main_loop.task_runner()->PostTask(FROM_HERE,
                                     base::BindOnce(&SayHello, "maya"));
+
+  // another way to post to the main thread
+  base::ThreadTaskRunnerHandle::Get()->PostTask(FROM_HERE, base::BindOnce(&SayHello, "YY"));
 
   base::TaskScheduler::CreateAndStartWithDefaultParams("task_demo");
   // now can use the APIs in post_task.h
