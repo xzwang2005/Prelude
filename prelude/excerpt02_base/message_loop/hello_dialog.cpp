@@ -2,6 +2,11 @@
 // Use of this source code is governed by MIT license that can be
 // found in MIT-LICENSE file.
 
+/*
+ *  This sample is a classic windows program showing how to explicitly pumping
+ *  messages to keep the system running.
+ */
+
 #define STRICT
 #include <windows.h>
 #include <commctrl.h>

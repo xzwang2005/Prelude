@@ -12,9 +12,6 @@
 #include "base/message_loop/message_loop.h"
 #include "base/path_service.h"
 #include "base/run_loop.h"
-#include "base/task_scheduler/task_scheduler.h"
-#include "base/test/scoped_task_environment.h"
-#include "base/threading/thread.h"
 #include "base/win/resource_util.h"
 #include "mojo/edk/embedder/embedder.h"
 #include "mojo/edk/embedder/scoped_ipc_support.h"
@@ -124,8 +121,6 @@ int main(int argc, char **argv) {
   CHECK(base::CommandLine::Init(argc, argv));
 
   base::MessageLoopForIO main_loop;
-  base::TaskScheduler::CreateAndStartWithDefaultParams(
-      "executable_client_with_resource");
 
   // initialize ResourceBundle
   base::FilePath path;

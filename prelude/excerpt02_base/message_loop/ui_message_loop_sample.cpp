@@ -1,16 +1,20 @@
 // Copyright (c) 2018 The Prelude Authors.
 // Use of this source code is governed by MIT license that can be
 // found in MIT-LICENSE file.
+#define STRICT
+#include <windows.h>
+#include <commctrl.h>
+#include <ole2.h>
 
 #include "base/at_exit.h"
 #include "base/bind.h"
 #include "base/location.h"
 #include "base/message_loop/message_loop.h"
 #include "base/run_loop.h"
-#include "base/task_scheduler/post_task.h"
-#include "base/task_scheduler/task_scheduler.h"
-#include "base/threading/sequenced_task_runner_handle.h"
 #include <stdio.h>
+
+// this sample shows how to do the same as in hello_dialog, but with chromium
+// message loop
 
 namespace {
 LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam,
@@ -50,10 +54,11 @@ void CreateAndShowWindow() {
   wc.hInstance = hInstance;
   wc.lpszClassName = CLASS_NAME;
 
-  RegisterClass(&wc);
+  if (!RegisterClass(&wc))
+    return;
 
+  InitCommonControls();
   // Create the window.
-
   HWND hwnd = CreateWindowEx(0,          // Optional window styles.
                              CLASS_NAME, // Window class
                              L"Learn to Program Windows", // Window text
@@ -71,7 +76,6 @@ void CreateAndShowWindow() {
   if (hwnd == NULL) {
     return;
   }
-
   ShowWindow(hwnd, SW_SHOW);
 }
 
@@ -81,18 +85,20 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR pCmdLine,
                       int nCmdShow) {
   // The exit manager is in charge of calling the dtors of singleton objects.
   base::AtExitManager exit_manager;
+  if (FAILED(CoInitialize(NULL)))
+    return 1;
 
   // a default message loop is not enough,
-  // use a ui message loop
+  // use a ui message loop. all the work is encapsulated into tasks and posted
+  // instead of directly done here. These tasks will be performed later in the
+  // main thread.
   base::MessageLoopForUI main_loop;
   base::RunLoop run_loop;
-
-  base::TaskScheduler::CreateAndStartWithDefaultParams("windows sample");
-
-  base::SequencedTaskRunnerHandle::Get()->PostTask(
-      FROM_HERE, base::BindOnce(&CreateAndShowWindow));
+  main_loop.task_runner()->PostTask(FROM_HERE,
+                                    base::BindOnce(&CreateAndShowWindow));
 
   run_loop.Run();
 
+  CoUninitialize();
   return 0;
 }

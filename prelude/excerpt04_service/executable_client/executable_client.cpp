@@ -8,9 +8,6 @@
 #include "base/macros.h"
 #include "base/message_loop/message_loop.h"
 #include "base/run_loop.h"
-#include "base/task_scheduler/task_scheduler.h"
-#include "base/test/scoped_task_environment.h"
-#include "base/threading/thread.h"
 #include "mojo/edk/embedder/embedder.h"
 #include "mojo/edk/embedder/scoped_ipc_support.h"
 #include "mojo/public/cpp/bindings/binding_set.h"
@@ -103,7 +100,6 @@ int main(int argc, char **argv) {
   CHECK(base::CommandLine::Init(argc, argv));
 
   base::MessageLoop main_loop;
-  base::TaskScheduler::CreateAndStartWithDefaultParams("executable_client");
 
   // copied from service_manager::InitializeAndLaunchUnitTests()
   catalog::Catalog::SetDefaultCatalogManifest(prelude::CreateCatalog());

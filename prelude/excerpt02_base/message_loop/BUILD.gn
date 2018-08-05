@@ -15,7 +15,6 @@ win_etude("hello_dialog") {
   sources = [
     "hello_dialog.cpp",
   ]
-
   libs = [ "comctl32.lib" ]
 }
 
@@ -23,4 +22,5 @@ win_etude("ui_message_loop_sample") {
   sources = [
     "ui_message_loop_sample.cpp",
   ]
+  libs = [ "comctl32.lib" ]
 }
