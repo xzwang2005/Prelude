@@ -17,5 +17,6 @@ group("excerpt04_service") {
     "multi_class_service_impl",
     "executable_client",
     "client_with_resource",
+    "from_scratch",
   ]
 }

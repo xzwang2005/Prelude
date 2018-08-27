@@ -30,10 +30,17 @@ void SingleClassServiceImpl::OnBindInterface(
 void SingleClassServiceImpl::Log(const std::string &message) {
   LOG(ERROR) << "[Logger] " << message;
   lines_.push_back(message);
+  log_count++;
 }
 
 void SingleClassServiceImpl::GetTail(GetTailCallback callback) {
   std::move(callback).Run(lines_.back());
+}
+
+
+void SingleClassServiceImpl::GetLogCount(GetLogCountCallback callback)
+{
+  std::move(callback).Run(log_count);
 }
 
 void SingleClassServiceImpl::OnConnectionError() {

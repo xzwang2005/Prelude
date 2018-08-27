@@ -32,6 +32,7 @@ private:
   // Logger
   void Log(const std::string &message) override;
   void GetTail(GetTailCallback callback) override;
+  void GetLogCount(GetLogCountCallback callback) override;
 
   void OnConnectionError();
 
@@ -46,6 +47,7 @@ private:
       registry_;
   mojo::BindingSet<prelude::mojom::Logger> bindings_;
   std::vector<std::string> lines_;
+  int log_count{ 0 };
 
   DISALLOW_COPY_AND_ASSIGN(SingleClassServiceImpl);
 };

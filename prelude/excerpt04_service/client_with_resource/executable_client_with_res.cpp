@@ -64,8 +64,8 @@ public:
                                                                     nullptr);
     // Create the service manager connection. We don't proceed until we get our
     // Service's OnStart() method is called.
-    base::MessageLoop::ScopedNestableTaskAllower allow(
-        base::MessageLoop::current());
+    //base::MessageLoop::ScopedNestableTaskAllower allow(
+    //    base::MessageLoop::current());
 
     service_manager::mojom::ServicePtr service;
     context_ = base::MakeUnique<service_manager::ServiceContext>(
@@ -97,8 +97,9 @@ private:
 } // namespace excerpt04
 } // namespace prelude
 
+namespace {
 void OnGetTailNoClosure(const std::string &message) {
-  std::cout << "received message without close run loop:" << message << std::endl;
+  std::cout << "received message without closure:" << message << std::endl;
 }
 
 void OnGetTailGetResult(std::string *out_string, const std::string &message) {
@@ -114,6 +115,14 @@ void OnGetTail(const base::Closure &callback, const std::string &message) {
 void OnGetLogCount(int8_t* out_result, const int8_t in_result) {
   std::cout << "OnGetLogCount: " << static_cast<int>(in_result) << std::endl;
   *out_result = in_result;
+}
+
+void CheckQueryResult(service_manager::mojom::ConnectResult* out_result, std::string* out_string, const base::Closure &callback, service_manager::mojom::ConnectResult in_result, const std::string& in_string) {
+  std::cout << "in CheckQueryResult, sandbox type: " << in_string << std::endl;
+  *out_result = in_result;
+  *out_string = in_string;
+  callback.Run();
+}
 }
 
 int main(int argc, char **argv) {
@@ -155,7 +164,7 @@ int main(int argc, char **argv) {
       ipc_thread_.task_runner(),
       mojo::edk::ScopedIPCSupport::ShutdownPolicy::CLEAN);
 
-  // create two service
+  // create two service, each service represents a process
   std::unique_ptr<prelude::excerpt04::SampleServiceConsumer> service_a_ =
       std::make_unique<prelude::excerpt04::SampleServiceConsumer>();
 
@@ -164,20 +173,21 @@ int main(int argc, char **argv) {
 
   service_a_->SetUp();
   service_b_->SetUp();
-  // not necessary to call
+  // not necessary to call following to start service:
   // service_->connector()->StartService("multi_class_service")
   prelude::mojom::LoggerPtr logger;
   // bind with an identity, the identity constructor takes 1 ~ 3 strings
   // this requires service_manager:user_Id and instance_name
   // in the multi_class_service manifest
 
-  // prepare two identities
+  // prepare two identities, differ in instance name
   const std::string comm_user_id{ "981f235c-0bbc-4da6-a689-dc3193e02c39" };
   service_manager::Identity bogart(prelude::mojom::kMultiClassServiceName,
     comm_user_id, "bogart");
   service_manager::Identity maya(prelude::mojom::kMultiClassServiceName,
     comm_user_id, "maya");
   {
+    //
     service_a_->connector()->BindInterface(bogart, &logger);
     // a typical use case, a round trip
     base::RunLoop loop;
@@ -218,18 +228,40 @@ int main(int argc, char **argv) {
     std::cout << "another_logger final log count: " << static_cast<int>(count) << std::endl;
   }
 
-  // binding a different identity, get a different log instance
   prelude::mojom::LoggerPtr third_logger;
   {
-    service_a_->connector()->BindInterface(maya, &third_logger);
     base::RunLoop loop;
+    service_a_->connector()->BindInterface(maya, &third_logger);
+    // binding a different identity, get a different log instance
     int8_t count;
     third_logger->GetLogCount(base::BindOnce(&OnGetLogCount, &count));
     third_logger->Log("message with the third logger");
     third_logger->GetTail(base::BindOnce(&OnGetTail, loop.QuitClosure()));
     third_logger->GetLogCount(base::BindOnce(&OnGetLogCount, &count));
+
     loop.Run();
-    std::cout << "another_logger final log count: " << static_cast<int>(count) << std::endl;
+    std::cout << "third_logger final log count: " << static_cast<int>(count) << std::endl;
+  }
+
+  {
+    base::RunLoop loop;
+    // connector() has a QueryService() for the sandbox_type defined in json
+    // file see service_manager.cc:
+    //'bool success = service_manager_->QueryCatalog(target, &sandbox);
+    service_manager::mojom::ConnectResult result;
+    std::string sandbox_type;
+    // the sandbox_type is defined in multi_class_service json file
+    service_a_->connector()->QueryService(
+        maya, base::BindOnce(&CheckQueryResult, &result, &sandbox_type,
+                             loop.QuitClosure()));
+    // must call Run(), and pass QuitClosure() to stop, call RunUntilIdle()
+    // returns before callback is invoked.
+    loop.Run();
+    if (result == service_manager::mojom::ConnectResult::SUCCEEDED) {
+      std::cout << "sandbox type: " << sandbox_type << std::endl;
+    } else {
+      std::cout << "sandbox type: unknown." << std::endl;
+    }
   }
   // delete service_;
   return 0;

@@ -1,0 +1,16 @@
+{
+  "name": "logger_client",
+  "display_name": "A client executable for log service",
+  "interface_provider_specs": {
+    "service_manager:connector": {
+      "requires": {
+        "logger_executable": ["single_class:logging" ],
+        "service_manager": [
+          "service_manager:instance_name",
+          "service_manager:user_id",
+          "service_manager:client_process"
+        ]
+      }
+    }
+  }
+}

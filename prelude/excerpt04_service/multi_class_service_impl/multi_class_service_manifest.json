@@ -1,6 +1,7 @@
 {
   "name": "multi_class_service",
   "display_name": "Multi-class service",
+  "sandbox_type": "OM",
   "interface_provider_specs": {
     "service_manager:connector": {
       "provides": {

@@ -16,7 +16,7 @@ public:
   ~ServiceImpl() override;
 
 private:
-  // service_manager::Service:
+  // service_manager::Service, note that OnStart() implementation is omitted
   void OnBindInterface(const service_manager::BindSourceInfo &remote_info,
                        const std::string &interface_name,
                        mojo::ScopedMessagePipeHandle handle) override;
