@@ -1,0 +1,13 @@
+{
+  "name": "in_process_logger_service",
+  "display_name": "Single class implementation",
+  "interface_provider_specs": {
+    "service_manager:connector": {
+      "provides": {
+        "in_process:logging": [
+          "prelude::mojom::Logger"
+        ]
+      }
+    }
+  }
+}

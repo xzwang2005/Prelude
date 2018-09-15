@@ -1,0 +1,63 @@
+# Copyright (c) 2018 The Prelude Authors.
+# Use of this source code is governed by MIT license that can be
+# found in MIT-LICENSE file.
+
+import("//services/service_manager/public/service_manifest.gni")
+import("//services/catalog/public/tools/catalog.gni")
+
+# objective:
+# build one executable that use logger interface within the process
+group("in_process_service") {
+  deps = [
+    ":in_process_app",
+    ":copy_catalog_json"
+  ]
+}
+
+# manifest for logger service
+service_manifest("in_process_logger_service") {
+  name = "in_process_logger_service"
+  source = "logger_manifest.json"
+}
+
+# ServiceFactory which package the logger service
+executable("in_process_app") {
+  sources = [
+    "in_process_service.cpp",
+    "//prelude/excerpt04_service/single_class_service_impl/single_class_service_impl.cpp"
+  ]
+
+  deps = [
+    "//prelude/excerpt04_service/interfaces",
+    "//base",
+    "//mojo/common:common_base",
+    "//mojo/edk/system",
+    "//services/service_manager/public/cpp",
+    "//services/service_manager/public/interfaces",
+    "//services/service_manager/background:lib",
+    "//services/service_manager/runner/common"
+  ]
+}
+
+service_manifest("in_process_app_manifest") {
+  name = "in_process_app"
+  source = "in_process_app_manifest.json"
+  packaged_services = [
+    ":in_process_logger_service"
+  ]
+}
+
+catalog("in_process_app_catalog") {
+  embedded_services = [
+    # ":in_process_logger_service",
+    ":in_process_app_manifest"
+  ]
+}
+
+copy("copy_catalog_json") {
+  sources = get_target_outputs(":in_process_app_catalog")
+  outputs = [ "$root_out_dir/in_process_app_catalog.json" ]
+  deps = [":in_process_app_catalog"]
+}
+
+

@@ -18,5 +18,6 @@ group("excerpt04_service") {
     "executable_client",
     "client_with_resource",
     "from_scratch",
+    "in_process_service",
   ]
 }
