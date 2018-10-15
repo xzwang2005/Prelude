@@ -1,5 +1,9 @@
 # Being ported, https://crbug.com/754861.
 
+# https://crbug.com/780317 - Flakily timeout under QEMU s/w emulation of ARM64.
+-BluetoothBlocklistTest.InvalidUUID
+-WebBluetoothDeviceIdTest.DefaultConstructor
+
 # These rely on chmod() for MakeFileUnread/writable(), https://crbug.com/759853.
 -BaseFileTest.ReadonlyBaseFile
 -BaseFileTest.RenameWithError
@@ -13,9 +17,6 @@
 # https://crbug.com/761214
 -RendererAudioOutputStreamFactoryIntegrationTest.StreamIntegrationTest
 -WebContentsAudioInputStreamTest.MirroringNothingWithTargetChange/0
-
-# https://crbug.com/762125
--VideoCaptureBufferPoolTest.BufferPool/*
 
 # Flaky: https://crbug.com/760687.
 -CacheStorageManagerTest.GetAllOriginsUsageWithOldIndex
@@ -33,19 +34,17 @@
 -MediaStreamManagerTest.MakeMediaAccessRequest
 -MediaStreamManagerTest.MakeMultipleRequests
 
-# These expect to be able to compile shader programs but Fuchsia currently uses
-# a stub GPU implementation, so that fails. https://crbug.com/766360.
--RenderWidgetHostViewAuraCopyRequestTest.DedupeFrameSubscriberRequests
--RenderWidgetHostViewAuraCopyRequestTest.DestroyedAfterCopyRequest
--RenderWidgetHostViewAuraCopyRequestTest.PresentTime
-
 # Failing: https://crbug.com/771701.
 -IndexedDBFactoryTest.DataFormatVersion
 
 # Flaky: https://crbug.com/776424.
--RenderWidgetHostViewAuraOverscrollTest.*
--RenderWidgetHostViewAuraWheelScrollLatchingEnabledTest.*
 -RenderWidgetHostViewGuestSurfaceTest.TestGuestSurface
+
+# Flaky: https://crbug.com/800877.
+-RenderWidgetHostViewAuraTest.SetCanScrollForWebMouseWheelEvent
+
+# Flaky: https://crbug.com/800415.
+-RenderWidgetHostViewAuraTest.CursorVisibilityChange
 
 # Flaky: https://crbug.com/777916.
 -NotificationDatabaseTest.NotificationIdCorruption
@@ -58,3 +57,13 @@
 
 # Flaky, https://crbug.com/784449.
 -WebContentsAudioInputStreamTest.MirroringOneStreamAfterTargetChange*
+
+# Flaky, https://crbug.com/802375 and https://crbug.com/776424.
+-RenderWidgetHostViewAuraOverscrollTest.GestureScrollDebounceOverscrolls
+-RenderWidgetHostViewAuraOverscrollTest.GestureScrollDebounceTimerOverscroll
+-RenderWidgetHostViewAuraOverscrollTest.TouchGestureEndDispatchedAfterOverscrollComplete
+-RenderWidgetHostViewAuraTest.SyntheticFlingCancelAtTouchpadScrollBegin
+-RenderWidgetHostViewAuraTest.TimerBasedWheelEventPhaseInfo
+
+# Flaky, https://crbug.com/884250.
+-ReferrerSanitizerTest.SanitizesPolicyForNonEmptyReferrers

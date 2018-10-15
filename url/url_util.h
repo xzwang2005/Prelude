@@ -39,19 +39,6 @@ URL_EXPORT void Shutdown();
 
 // Schemes ---------------------------------------------------------------------
 
-// Types of a scheme representing the requirements on the data represented by
-// the authority component of a URL with the scheme.
-enum SchemeType {
-  // The authority component of a URL with the scheme, if any, has the port
-  // (the default values may be omitted in a serialization).
-  SCHEME_WITH_PORT,
-  // The authority component of a URL with the scheme, if any, doesn't have a
-  // port.
-  SCHEME_WITHOUT_PORT,
-  // A URL with the scheme doesn't have the authority component.
-  SCHEME_WITHOUT_AUTHORITY,
-};
-
 // A pair for representing a standard scheme name and the SchemeType for it.
 struct URL_EXPORT SchemeWithType {
   const char* scheme;
@@ -170,6 +157,9 @@ URL_EXPORT bool IsReferrerScheme(const char* spec, const Component& scheme);
 URL_EXPORT bool GetStandardSchemeType(const char* spec,
                                       const Component& scheme,
                                       SchemeType* type);
+URL_EXPORT bool GetStandardSchemeType(const base::char16* spec,
+                                      const Component& scheme,
+                                      SchemeType* type);
 
 // Hosts  ----------------------------------------------------------------------
 
@@ -262,10 +252,22 @@ URL_EXPORT bool ReplaceComponents(
 
 // String helper functions -----------------------------------------------------
 
+enum class DecodeURLResult {
+  // Did not contain code points greater than 0x7F.
+  kAsciiOnly,
+  // Did UTF-8 decode only.
+  kUTF8,
+  // Did byte to Unicode mapping only.
+  // https://infra.spec.whatwg.org/#isomorphic-decode
+  kIsomorphic,
+};
+
 // Unescapes the given string using URL escaping rules.
-URL_EXPORT void DecodeURLEscapeSequences(const char* input,
-                                         int length,
-                                         CanonOutputW* output);
+// This function tries to decode non-ASCII characters in UTF-8 first,
+// then in isomorphic encoding if UTF-8 decoding failed.
+URL_EXPORT DecodeURLResult DecodeURLEscapeSequences(const char* input,
+                                                    int length,
+                                                    CanonOutputW* output);
 
 // Escapes the given string as defined by the JS method encodeURIComponent. See
 // https://developer.mozilla.org/en/JavaScript/Reference/Global_Objects/encodeURIComponent

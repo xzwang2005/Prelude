@@ -10,8 +10,8 @@
 
 #include "build/build_config.h"
 #include "ipc/ipc_message_macros.h"
-#include "ui/gfx/buffer_types.h"
 #include "ui/gfx/ca_layer_params.h"
+#include "ui/gfx/gpu_fence_handle.h"
 #include "ui/gfx/gpu_memory_buffer.h"
 #include "ui/gfx/ipc/gfx_ipc_export.h"
 #include "ui/gfx/presentation_feedback.h"
@@ -25,16 +25,15 @@
 #undef IPC_MESSAGE_EXPORT
 #define IPC_MESSAGE_EXPORT GFX_IPC_EXPORT
 
-IPC_ENUM_TRAITS_MAX_VALUE(gfx::BufferFormat, gfx::BufferFormat::LAST)
-
-IPC_ENUM_TRAITS_MAX_VALUE(gfx::BufferUsage, gfx::BufferUsage::LAST)
-
 IPC_ENUM_TRAITS_MAX_VALUE(gfx::GpuMemoryBufferType,
                           gfx::GPU_MEMORY_BUFFER_TYPE_LAST)
 
 IPC_ENUM_TRAITS_MAX_VALUE(gfx::SwapResult, gfx::SwapResult::SWAP_RESULT_LAST)
 
-IPC_ENUM_TRAITS_MAX_VALUE(gfx::SelectionBound::Type, gfx::SelectionBound::LAST);
+IPC_ENUM_TRAITS_MAX_VALUE(gfx::SelectionBound::Type, gfx::SelectionBound::LAST)
+
+IPC_ENUM_TRAITS_MAX_VALUE(gfx::GpuFenceHandleType,
+                          gfx::GpuFenceHandleType::kLast)
 
 IPC_STRUCT_TRAITS_BEGIN(gfx::CALayerParams)
   IPC_STRUCT_TRAITS_MEMBER(is_empty)
@@ -56,6 +55,10 @@ IPC_STRUCT_TRAITS_BEGIN(gfx::GpuMemoryBufferHandle)
   IPC_STRUCT_TRAITS_MEMBER(native_pixmap_handle)
 #elif defined(OS_MACOSX)
   IPC_STRUCT_TRAITS_MEMBER(mach_port)
+#elif defined(OS_WIN)
+  IPC_STRUCT_TRAITS_MEMBER(dxgi_handle)
+#elif defined(OS_ANDROID)
+  IPC_STRUCT_TRAITS_MEMBER(android_hardware_buffer)
 #endif
 IPC_STRUCT_TRAITS_END()
 
@@ -88,6 +91,13 @@ IPC_STRUCT_TRAITS_BEGIN(gfx::PresentationFeedback)
   IPC_STRUCT_TRAITS_MEMBER(timestamp)
   IPC_STRUCT_TRAITS_MEMBER(interval)
   IPC_STRUCT_TRAITS_MEMBER(flags)
+IPC_STRUCT_TRAITS_END()
+
+IPC_STRUCT_TRAITS_BEGIN(gfx::GpuFenceHandle)
+  IPC_STRUCT_TRAITS_MEMBER(type)
+#if defined(OS_POSIX)
+  IPC_STRUCT_TRAITS_MEMBER(native_fd)
+#endif
 IPC_STRUCT_TRAITS_END()
 
 #undef IPC_MESSAGE_EXPORT

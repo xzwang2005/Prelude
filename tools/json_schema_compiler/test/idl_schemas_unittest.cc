@@ -9,6 +9,7 @@
 #include "testing/gtest/include/gtest/gtest.h"
 #include "tools/json_schema_compiler/test/idl_basics.h"
 #include "tools/json_schema_compiler/test/idl_object_types.h"
+#include "tools/json_schema_compiler/test/idl_properties.h"
 
 using test::api::idl_basics::MyType1;
 using test::api::idl_object_types::BarType;
@@ -68,7 +69,7 @@ TEST(IdlCompiler, Basics) {
   std::unique_ptr<base::ListValue> f5_results(Function5::Results::Create(13));
   base::Value* f5_result_int = NULL;
   ASSERT_TRUE(f5_results->Get(0, &f5_result_int));
-  EXPECT_TRUE(f5_result_int->IsType(base::Value::Type::INTEGER));
+  EXPECT_TRUE(f5_result_int->is_int());
 
   std::unique_ptr<base::ListValue> f6_results(Function6::Results::Create(a));
   base::Value* f6_result_dict = NULL;
@@ -206,4 +207,10 @@ TEST(IdlCompiler, ObjectTypes) {
   std::string tmp;
   EXPECT_TRUE(params->icon.additional_properties.GetString("hello", &tmp));
   EXPECT_EQ("world", tmp);
+}
+
+TEST(IdlCompiler, PropertyValues) {
+  EXPECT_EQ(42, test::api::idl_properties::first);
+  EXPECT_EQ(42.1, test::api::idl_properties::second);
+  EXPECT_STREQ("hello world", test::api::idl_properties::third);
 }

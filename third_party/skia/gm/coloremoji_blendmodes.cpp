@@ -4,12 +4,27 @@
  * Use of this source code is governed by a BSD-style license that can be
  * found in the LICENSE file.
  */
+
+#include "SkBitmap.h"
+#include "SkBlendMode.h"
+#include "SkCanvas.h"
+#include "SkColor.h"
+#include "SkFontStyle.h"
+#include "SkGradientShader.h"
+#include "SkImageInfo.h"
+#include "SkMatrix.h"
+#include "SkPaint.h"
+#include "SkRect.h"
+#include "SkRefCnt.h"
+#include "SkScalar.h"
+#include "SkShader.h"
+#include "SkSize.h"
+#include "SkString.h"
+#include "SkTypeface.h"
+#include "SkTypes.h"
+#include "SkUTF.h"
 #include "gm.h"
 #include "sk_tool_utils.h"
-#include "SkBitmap.h"
-#include "SkGradientShader.h"
-#include "SkShader.h"
-#include "SkUtils.h"
 
 namespace skiagm {
 
@@ -133,7 +148,8 @@ protected:
                 textP.setBlendMode(gModes[i]);
                 textP.setTextEncoding(SkPaint::kUTF32_TextEncoding);
                 const char* text = sk_tool_utils::emoji_sample_text();
-                SkUnichar unichar = SkUTF8_ToUnichar(text);
+                SkUnichar unichar = SkUTF::NextUTF8(&text, text + strlen(text));
+                SkASSERT(unichar >= 0);
                 canvas->drawText(&unichar, 4, x+ w/10.f, y + 7.f*h/8.f, textP);
             }
 #if 1

@@ -4,6 +4,9 @@
 
 #include "media/mojo/common/mojo_shared_buffer_video_frame.h"
 
+#include <utility>
+#include <vector>
+
 #include "base/bind.h"
 #include "base/callback.h"
 #include "base/compiler_specific.h"
@@ -36,8 +39,10 @@ MojoSharedBufferVideoFrame::CreateDefaultI420(const gfx::Size& dimensions,
   const size_t allocation_size = VideoFrame::AllocationSize(format, coded_size);
   mojo::ScopedSharedBufferHandle handle =
       mojo::SharedBufferHandle::Create(allocation_size);
-  if (!handle.is_valid())
+  if (!handle.is_valid()) {
+    DLOG(ERROR) << __func__ << " Unable to allocate memory.";
     return nullptr;
+  }
 
   // Create and initialize the frame. As this is I420 format, the U and V
   // planes have samples for each 2x2 block. The memory is laid out as follows:
@@ -91,27 +96,37 @@ scoped_refptr<MojoSharedBufferVideoFrame> MojoSharedBufferVideoFrame::Create(
     return nullptr;
   }
 
+  // Compute the number of bytes needed on each row.
+  const size_t y_row_bytes = RowBytes(kYPlane, format, coded_size.width());
+  const size_t u_row_bytes = RowBytes(kUPlane, format, coded_size.width());
+  const size_t v_row_bytes = RowBytes(kVPlane, format, coded_size.width());
+
   // Safe given sizeof(size_t) >= sizeof(int32_t).
   size_t y_stride_size_t = y_stride;
   size_t u_stride_size_t = u_stride;
   size_t v_stride_size_t = v_stride;
-  if (y_stride_size_t < RowBytes(kYPlane, format, coded_size.width()) ||
-      u_stride_size_t < RowBytes(kUPlane, format, coded_size.width()) ||
-      v_stride_size_t < RowBytes(kVPlane, format, coded_size.width())) {
+  if (y_stride_size_t < y_row_bytes || u_stride_size_t < u_row_bytes ||
+      v_stride_size_t < v_row_bytes) {
     DLOG(ERROR) << __func__ << " Invalid stride";
     return nullptr;
   }
 
-  base::CheckedNumeric<size_t> y_rows =
-      Rows(kYPlane, format, coded_size.height());
-  base::CheckedNumeric<size_t> u_rows =
-      Rows(kUPlane, format, coded_size.height());
-  base::CheckedNumeric<size_t> v_rows =
-      Rows(kVPlane, format, coded_size.height());
+  const size_t y_rows = Rows(kYPlane, format, coded_size.height());
+  const size_t u_rows = Rows(kUPlane, format, coded_size.height());
+  const size_t v_rows = Rows(kVPlane, format, coded_size.height());
 
-  base::CheckedNumeric<size_t> y_bound = y_rows * y_stride + y_offset;
-  base::CheckedNumeric<size_t> u_bound = u_rows * u_stride + u_offset;
-  base::CheckedNumeric<size_t> v_bound = v_rows * v_stride + v_offset;
+  // The last row only needs RowBytes() and not a full stride. This is to avoid
+  // problems if the U and V data is interleaved (where |stride| is double the
+  // number of bytes actually needed).
+  base::CheckedNumeric<size_t> y_bound = base::CheckAdd(
+      y_offset, base::CheckMul(base::CheckSub(y_rows, 1), y_stride_size_t),
+      y_row_bytes);
+  base::CheckedNumeric<size_t> u_bound = base::CheckAdd(
+      u_offset, base::CheckMul(base::CheckSub(u_rows, 1), u_stride_size_t),
+      u_row_bytes);
+  base::CheckedNumeric<size_t> v_bound = base::CheckAdd(
+      v_offset, base::CheckMul(base::CheckSub(v_rows, 1), v_stride_size_t),
+      v_row_bytes);
 
   if (!y_bound.IsValid() || !u_bound.IsValid() || !v_bound.IsValid() ||
       y_bound.ValueOrDie() > data_size || u_bound.ValueOrDie() > data_size ||
@@ -122,26 +137,26 @@ scoped_refptr<MojoSharedBufferVideoFrame> MojoSharedBufferVideoFrame::Create(
 
   // Now allocate the frame and initialize it.
   scoped_refptr<MojoSharedBufferVideoFrame> frame(
-      new MojoSharedBufferVideoFrame(format, coded_size, visible_rect,
-                                     natural_size, std::move(handle), data_size,
-                                     timestamp));
-  if (!frame->Init(y_stride, u_stride, v_stride, y_offset, u_offset, v_offset))
+      new MojoSharedBufferVideoFrame(
+          VideoFrameLayout(format, coded_size, {y_stride, u_stride, v_stride}),
+          visible_rect, natural_size, std::move(handle), data_size, timestamp));
+  if (!frame->Init(y_offset, u_offset, v_offset)) {
+    DLOG(ERROR) << __func__ << " MojoSharedBufferVideoFrame::Init failed.";
     return nullptr;
+  }
 
   return frame;
 }
 
 MojoSharedBufferVideoFrame::MojoSharedBufferVideoFrame(
-    VideoPixelFormat format,
-    const gfx::Size& coded_size,
+    const VideoFrameLayout& layout,
     const gfx::Rect& visible_rect,
     const gfx::Size& natural_size,
     mojo::ScopedSharedBufferHandle handle,
     size_t mapped_size,
     base::TimeDelta timestamp)
-    : VideoFrame(format,
+    : VideoFrame(layout,
                  STORAGE_MOJO_SHARED_BUFFER,
-                 coded_size,
                  visible_rect,
                  natural_size,
                  timestamp),
@@ -150,10 +165,7 @@ MojoSharedBufferVideoFrame::MojoSharedBufferVideoFrame(
   DCHECK(shared_buffer_handle_.is_valid());
 }
 
-bool MojoSharedBufferVideoFrame::Init(int32_t y_stride,
-                                      int32_t u_stride,
-                                      int32_t v_stride,
-                                      size_t y_offset,
+bool MojoSharedBufferVideoFrame::Init(size_t y_offset,
                                       size_t u_offset,
                                       size_t v_offset) {
   DCHECK(!shared_buffer_mapping_);
@@ -161,9 +173,6 @@ bool MojoSharedBufferVideoFrame::Init(int32_t y_stride,
   if (!shared_buffer_mapping_)
     return false;
 
-  set_stride(kYPlane, y_stride);
-  set_stride(kUPlane, u_stride);
-  set_stride(kVPlane, v_stride);
   offsets_[kYPlane] = y_offset;
   offsets_[kUPlane] = u_offset;
   offsets_[kVPlane] = v_offset;
@@ -176,7 +185,7 @@ bool MojoSharedBufferVideoFrame::Init(int32_t y_stride,
 MojoSharedBufferVideoFrame::~MojoSharedBufferVideoFrame() {
   // Call |mojo_shared_buffer_done_cb_| to take ownership of
   // |shared_buffer_handle_|.
-  if (!mojo_shared_buffer_done_cb_.is_null())
+  if (mojo_shared_buffer_done_cb_)
     mojo_shared_buffer_done_cb_.Run(std::move(shared_buffer_handle_),
                                     shared_buffer_size_);
 }

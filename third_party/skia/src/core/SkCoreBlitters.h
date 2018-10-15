@@ -11,6 +11,7 @@
 #include "SkBitmapProcShader.h"
 #include "SkBlitter.h"
 #include "SkBlitRow.h"
+#include "SkPaint.h"
 #include "SkShaderBase.h"
 #include "SkXfermodePriv.h"
 
@@ -60,6 +61,9 @@ public:
     void blitRect(int x, int y, int width, int height) override;
     void blitMask(const SkMask&, const SkIRect&) override;
     const SkPixmap* justAnOpaqueColor(uint32_t*) override;
+
+private:
+    typedef SkRasterBlitter INHERITED;
 };
 
 ////////////////////////////////////////////////////////////////

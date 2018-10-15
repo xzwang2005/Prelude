@@ -44,11 +44,23 @@ class Attempt(object):
     Attempt's completed status.
     """
     if not self._executions:
-      return False
+      return not self._quests
 
     return self._last_execution.failed or (
         self._last_execution.completed and
         len(self._quests) == len(self._executions))
+
+  @property
+  def failed(self):
+    """Returns True iff the Attempt is completed and has failed."""
+    return bool(self.exception)
+
+  @property
+  def exception(self):
+    """Returns the stack trace if the Attempt failed, or None otherwise."""
+    if not self._executions:
+      return None
+    return self._last_execution.exception
 
   @property
   def _last_execution(self):

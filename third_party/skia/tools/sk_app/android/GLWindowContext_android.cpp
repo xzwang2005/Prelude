@@ -70,6 +70,8 @@ sk_sp<const GrGLInterface> GLWindowContext_android::onInitializeContext() {
     SkAssertResult(eglBindAPI(EGL_OPENGL_ES_API));
 
     EGLint numConfigs = 0;
+    EGLint eglSampleCnt = fDisplayParams.fMSAASampleCount > 1 ? fDisplayParams.fMSAASampleCount > 1
+                                                              : 0;
     const EGLint configAttribs[] = {
         EGL_SURFACE_TYPE, EGL_PBUFFER_BIT,
         EGL_RENDERABLE_TYPE, EGL_OPENGL_ES2_BIT,
@@ -78,8 +80,8 @@ sk_sp<const GrGLInterface> GLWindowContext_android::onInitializeContext() {
         EGL_BLUE_SIZE, 8,
         EGL_ALPHA_SIZE, 8,
         EGL_STENCIL_SIZE, 8,
-        EGL_SAMPLE_BUFFERS, fDisplayParams.fMSAASampleCount ? 1 : 0,
-        EGL_SAMPLES, fDisplayParams.fMSAASampleCount,
+        EGL_SAMPLE_BUFFERS, eglSampleCnt ? 1 : 0,
+        EGL_SAMPLES, eglSampleCnt,
         EGL_NONE
     };
 
@@ -99,29 +101,11 @@ sk_sp<const GrGLInterface> GLWindowContext_android::onInitializeContext() {
 //    SkDebugf("Vendor: %s", eglQueryString(fDisplay, EGL_VENDOR));
 //    SkDebugf("Extensions: %s", eglQueryString(fDisplay, EGL_EXTENSIONS));
 
-    // These values are the same as the corresponding VG colorspace attributes,
-    // which were accepted starting in EGL 1.2. For some reason in 1.4, sRGB
-    // became hidden behind an extension, but it looks like devices aren't
-    // advertising that extension (including Nexus 5X). So just check version?
-    const EGLint srgbWindowAttribs[] = {
-        /*EGL_GL_COLORSPACE_KHR*/ 0x309D, /*EGL_GL_COLORSPACE_SRGB_KHR*/ 0x3089,
-        EGL_NONE,
-    };
-    const EGLint* windowAttribs = nullptr;
-    auto srgbColorSpace = SkColorSpace::MakeSRGB();
-    if (srgbColorSpace == fDisplayParams.fColorSpace && majorVersion == 1 && minorVersion >= 2) {
-        windowAttribs = srgbWindowAttribs;
-    }
-
-    fSurfaceAndroid = eglCreateWindowSurface(fDisplay, surfaceConfig, fNativeWindow, windowAttribs);
-    if (EGL_NO_SURFACE == fSurfaceAndroid && windowAttribs) {
-        // Try again without sRGB
-        fSurfaceAndroid = eglCreateWindowSurface(fDisplay, surfaceConfig, fNativeWindow, nullptr);
-    }
+    fSurfaceAndroid = eglCreateWindowSurface(fDisplay, surfaceConfig, fNativeWindow, nullptr);
     SkASSERT(EGL_NO_SURFACE != fSurfaceAndroid);
 
     SkAssertResult(eglMakeCurrent(fDisplay, fSurfaceAndroid, fSurfaceAndroid, fEGLContext));
-    // GLWindowContext::initializeContext will call GrGLCreateNativeInterface so we
+    // GLWindowContext::initializeContext will call GrGLMakeNativeInterface so we
     // won't call it here.
 
     glClearStencil(0);
@@ -131,8 +115,9 @@ sk_sp<const GrGLInterface> GLWindowContext_android::onInitializeContext() {
 
     eglGetConfigAttrib(fDisplay, surfaceConfig, EGL_STENCIL_SIZE, &fStencilBits);
     eglGetConfigAttrib(fDisplay, surfaceConfig, EGL_SAMPLES, &fSampleCount);
+    fSampleCount = SkTMax(fSampleCount, 1);
 
-    return sk_sp<const GrGLInterface>(GrGLCreateNativeInterface());
+    return GrGLMakeNativeInterface();
 }
 
 void GLWindowContext_android::onDestroyContext() {

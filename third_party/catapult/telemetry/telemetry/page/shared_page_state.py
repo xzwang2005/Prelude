@@ -7,18 +7,15 @@ import os
 import sys
 
 from telemetry.core import platform as platform_module
-from telemetry.core import util
 from telemetry import decorators
 from telemetry.internal.browser import browser_finder
 from telemetry.internal.browser import browser_finder_exceptions
 from telemetry.internal.browser import browser_info as browser_info_module
-from telemetry.internal.platform.profiler import profiler_finder
-from telemetry.internal.util import file_handle
+from telemetry.internal.browser import browser_interval_profiling_controller
 from telemetry.page import cache_temperature
 from telemetry.page import traffic_setting
 from telemetry import story as story_module
 from telemetry.util import screenshot
-from telemetry.util import wpr_modes
 from telemetry.web_perf import timeline_based_measurement
 
 
@@ -28,10 +25,6 @@ def _PrepareFinderOptions(finder_options, test, device_type):
   browser_options.browser_user_agent_type = device_type
 
   test.CustomizeBrowserOptions(finder_options.browser_options)
-  if finder_options.profiler:
-    profiler_class = profiler_finder.FindProfiler(finder_options.profiler)
-    profiler_class.CustomizeBrowserOptions(browser_options.browser_type,
-                                           finder_options)
 
 
 class SharedPageState(story_module.SharedState):
@@ -45,15 +38,9 @@ class SharedPageState(story_module.SharedState):
   def __init__(self, test, finder_options, story_set):
     super(SharedPageState, self).__init__(test, finder_options, story_set)
     if isinstance(test, timeline_based_measurement.TimelineBasedMeasurement):
-      if finder_options.profiler:
-        assert not 'trace' in finder_options.profiler, (
-            'This is a Timeline Based Measurement benchmark. You cannot run it '
-            'with trace profiler enabled. If you need trace data, tracing is '
-            'always enabled in Timeline Based Measurement benchmarks and you '
-            'can get the trace data with the default --output-format=html.')
       # This is to avoid the cyclic-import caused by timeline_based_page_test.
       from telemetry.web_perf import timeline_based_page_test
-      self._test = timeline_based_page_test.TimelineBasedPageTest(test)
+      self._test = timeline_based_page_test.TimelineBasedPageTest()
     else:
       self._test = test
 
@@ -74,19 +61,24 @@ class SharedPageState(story_module.SharedState):
 
     self._test.SetOptions(self._finder_options)
 
-    # TODO(crbug/404771): Move network controller options out of
-    # browser_options and into finder_options.
-    browser_options = self._finder_options.browser_options
-    if self._finder_options.use_live_sites:
-      wpr_mode = wpr_modes.WPR_OFF
-    elif browser_options.wpr_mode == wpr_modes.WPR_RECORD:
-      wpr_mode = wpr_modes.WPR_RECORD
-    else:
-      wpr_mode = wpr_modes.WPR_REPLAY
-    self._extra_wpr_args = browser_options.extra_wpr_args
+    self._extra_wpr_args = self._finder_options.browser_options.extra_wpr_args
 
-    self.platform.network_controller.Open(wpr_mode)
+    profiling_mod = browser_interval_profiling_controller
+    self._interval_profiling_controller = (
+        profiling_mod.BrowserIntervalProfilingController(
+            possible_browser=self._possible_browser,
+            process_name=finder_options.interval_profiling_target,
+            periods=finder_options.interval_profiling_periods,
+            frequency=finder_options.interval_profiling_frequency))
+
+    self.platform.SetFullPerformanceModeEnabled(
+        finder_options.full_performance_mode)
+    self.platform.network_controller.Open(self.wpr_mode)
     self.platform.Initialize()
+
+  @property
+  def interval_profiling_controller(self):
+    return self._interval_profiling_controller
 
   @property
   def possible_browser(self):
@@ -100,8 +92,10 @@ class SharedPageState(story_module.SharedState):
     possible_browser = browser_finder.FindBrowser(finder_options)
     if not possible_browser:
       raise browser_finder_exceptions.BrowserFinderException(
-          'No browser found.\n\nAvailable browsers:\n%s\n' %
-          '\n'.join(browser_finder.GetAllAvailableBrowserTypes(finder_options)))
+          'Cannot find browser of type %s. \n\nAvailable browsers:\n%s\n' % (
+              finder_options.browser_options.browser_type,
+              '\n'.join(browser_finder.GetAllAvailableBrowserTypes(
+                  finder_options))))
     return possible_browser
 
   def _GetPossibleBrowser(self, test, finder_options):
@@ -136,8 +130,6 @@ class SharedPageState(story_module.SharedState):
       logging.warning('Taking screenshots upon failures disabled.')
 
   def DidRunStory(self, results):
-    if self._finder_options.profiler:
-      self._StopProfiling(results)
     self._AllowInteractionForStage('after-run-story')
     try:
       self._previous_page = None
@@ -156,6 +148,8 @@ class SharedPageState(story_module.SharedState):
               '%s raised while closing tab connections; tab will be closed.',
               type(exc).__name__)
           self._current_tab.Close()
+      self._interval_profiling_controller.GetResults(
+          self._current_page.name, self._current_page.file_safe_name, results)
     finally:
       self._current_page = None
       self._current_tab = None
@@ -186,14 +180,14 @@ class SharedPageState(story_module.SharedState):
     self._AllowInteractionForStage('before-start-browser')
 
     self._test.WillStartBrowser(self.platform)
-    # Create a deep copy of finder options so that we can add page-level
+    # Create a deep copy of browser_options so that we can add page-level
     # arguments and url to it without polluting the run for the next page.
-    finder_options_for_page = self._finder_options.Copy()
+    browser_options = self._finder_options.browser_options.Copy()
     if page.startup_url:
-      finder_options_for_page.browser_options.startup_url = page.startup_url
-    finder_options_for_page.browser_options.AppendExtraBrowserArgs(
-        page.extra_browser_args)
-    self._browser = self._possible_browser.Create(finder_options_for_page)
+      browser_options.startup_url = page.startup_url
+    browser_options.AppendExtraBrowserArgs(page.extra_browser_args)
+    self._possible_browser.SetUpEnvironment(browser_options)
+    self._browser = self._possible_browser.Create()
     self._test.DidStartBrowser(self.browser)
 
     if self._first_browser:
@@ -210,11 +204,6 @@ class SharedPageState(story_module.SharedState):
 
     page_set = page.page_set
     self._current_page = page
-    if (self._current_page.credentials and
-        self._finder_options.browser_options.wpr_mode == wpr_modes.WPR_RECORD):
-      raise Exception(
-          'Setting page credentials is deprecated, please conver page %s to '
-          'use login_helper instead (Examples: https://goo.gl/fXi6ii)' % page)
 
     if self._browser and page.startup_url:
       assert not self.platform.tracing_controller.is_tracing_running, (
@@ -267,9 +256,6 @@ class SharedPageState(story_module.SharedState):
           upload_bandwidth_kbps=s.upload_bandwidth_kbps)
 
     self._AllowInteractionForStage('before-run-story')
-    # Start profiling if needed.
-    if self._finder_options.profiler:
-      self._StartProfiling(self._current_page)
 
   def CanRunStory(self, page):
     return self.CanRunOnBrowser(browser_info_module.BrowserInfo(self.browser),
@@ -319,27 +305,14 @@ class SharedPageState(story_module.SharedState):
     self._StopBrowser()
     self.platform.StopAllLocalServers()
     self.platform.network_controller.Close()
+    self.platform.SetFullPerformanceModeEnabled(False)
 
   def _StopBrowser(self):
     if self._browser:
       self._browser.Close()
       self._browser = None
-
-  def _StartProfiling(self, page):
-    output_file = os.path.join(self._finder_options.output_dir,
-                               page.file_safe_name)
-    if self._finder_options.pageset_repeat != 1:
-      output_file = util.GetSequentialFileName(output_file)
-    self.browser.profiling_controller.Start(
-        self._finder_options.profiler, output_file)
-
-  def _StopProfiling(self, results):
-    if self.browser:
-      profiler_files = self.browser.profiling_controller.Stop()
-      for f in profiler_files:
-        if os.path.isfile(f):
-          results.AddProfilingFile(self._current_page,
-                                   file_handle.FromFilePath(f))
+    if self._possible_browser:
+      self._possible_browser.CleanUpEnvironment()
 
 
 class SharedMobilePageState(SharedPageState):

@@ -4,8 +4,7 @@
 
 #include <utility>
 
-#include "src/api.h"
-#include "src/compilation-info.h"
+#include "src/api-inl.h"
 #include "src/compiler/pipeline.h"
 #include "src/debug/debug-interface.h"
 #include "src/execution.h"
@@ -13,6 +12,7 @@
 #include "src/interpreter/bytecode-array-builder.h"
 #include "src/interpreter/interpreter.h"
 #include "src/objects-inl.h"
+#include "src/optimized-compilation-info.h"
 #include "src/parsing/parse-info.h"
 #include "test/cctest/cctest.h"
 
@@ -60,7 +60,7 @@ class BytecodeGraphCallable {
  public:
   BytecodeGraphCallable(Isolate* isolate, Handle<JSFunction> function)
       : isolate_(isolate), function_(function) {}
-  virtual ~BytecodeGraphCallable() {}
+  virtual ~BytecodeGraphCallable() = default;
 
   MaybeHandle<Object> operator()(A... args) {
     return CallFunction(isolate_, function_, args...);
@@ -79,7 +79,7 @@ class BytecodeGraphTester {
     i::FLAG_always_opt = false;
     i::FLAG_allow_natives_syntax = true;
   }
-  virtual ~BytecodeGraphTester() {}
+  virtual ~BytecodeGraphTester() = default;
 
   template <class... A>
   BytecodeGraphCallable<A...> GetCallable(
@@ -117,18 +117,19 @@ class BytecodeGraphTester {
         Handle<JSFunction>::cast(v8::Utils::OpenHandle(*api_function));
     CHECK(function->shared()->HasBytecodeArray());
 
-    Zone zone(function->GetIsolate()->allocator(), ZONE_NAME);
-    Handle<SharedFunctionInfo> shared(function->shared());
-    CompilationInfo compilation_info(&zone, function->GetIsolate(), shared,
-                                     function);
+    Zone zone(isolate_->allocator(), ZONE_NAME);
+    Handle<SharedFunctionInfo> shared(function->shared(), isolate_);
+    OptimizedCompilationInfo compilation_info(&zone, isolate_, shared,
+                                              function);
 
     // Compiler relies on canonicalized handles, let's create
     // a canonicalized scope and migrate existing handles there.
     CanonicalHandleScope canonical(isolate_);
-    compilation_info.ReopenHandlesInNewHandleScope();
+    compilation_info.ReopenHandlesInNewHandleScope(isolate_);
 
-    Handle<Code> code = Pipeline::GenerateCodeForTesting(
-        &compilation_info, function->GetIsolate());
+    Handle<Code> code =
+        Pipeline::GenerateCodeForTesting(&compilation_info, isolate_)
+            .ToHandleChecked();
     function->set_code(*code);
 
     return function;
@@ -618,9 +619,6 @@ TEST(BytecodeGraphBuilderCallRuntime) {
        {factory->true_value(), BytecodeGraphTester::NewObject("[1, 2, 3]")}},
       {"function f(arg0) { return %Add(arg0, 2) }\nf(1)",
        {factory->NewNumberFromInt(5), factory->NewNumberFromInt(3)}},
-      {"function f(arg0) { return %spread_arguments(arg0).length }\nf([])",
-       {factory->NewNumberFromInt(3),
-        BytecodeGraphTester::NewObject("[1, 2, 3]")}},
   };
 
   for (size_t i = 0; i < arraysize(snippets); i++) {
@@ -1339,25 +1337,26 @@ TEST(BytecodeGraphBuilderEvalGlobal) {
   }
 }
 
-bool get_compare_result(Token::Value opcode, Handle<Object> lhs_value,
-                        Handle<Object> rhs_value) {
+bool get_compare_result(Isolate* isolate, Token::Value opcode,
+                        Handle<Object> lhs_value, Handle<Object> rhs_value) {
   switch (opcode) {
     case Token::Value::EQ:
-      return Object::Equals(lhs_value, rhs_value).FromJust();
+      return Object::Equals(isolate, lhs_value, rhs_value).FromJust();
     case Token::Value::NE:
-      return !Object::Equals(lhs_value, rhs_value).FromJust();
+      return !Object::Equals(isolate, lhs_value, rhs_value).FromJust();
     case Token::Value::EQ_STRICT:
       return lhs_value->StrictEquals(*rhs_value);
     case Token::Value::NE_STRICT:
       return !lhs_value->StrictEquals(*rhs_value);
     case Token::Value::LT:
-      return Object::LessThan(lhs_value, rhs_value).FromJust();
+      return Object::LessThan(isolate, lhs_value, rhs_value).FromJust();
     case Token::Value::LTE:
-      return Object::LessThanOrEqual(lhs_value, rhs_value).FromJust();
+      return Object::LessThanOrEqual(isolate, lhs_value, rhs_value).FromJust();
     case Token::Value::GT:
-      return Object::GreaterThan(lhs_value, rhs_value).FromJust();
+      return Object::GreaterThan(isolate, lhs_value, rhs_value).FromJust();
     case Token::Value::GTE:
-      return Object::GreaterThanOrEqual(lhs_value, rhs_value).FromJust();
+      return Object::GreaterThanOrEqual(isolate, lhs_value, rhs_value)
+          .FromJust();
     default:
       UNREACHABLE();
   }
@@ -1413,8 +1412,8 @@ TEST(BytecodeGraphBuilderCompare) {
       for (size_t k = 0; k < arraysize(rhs_values); k++) {
         Handle<Object> return_value =
             callable(lhs_values[j], rhs_values[k]).ToHandleChecked();
-        bool result = get_compare_result(kCompareOperators[i], lhs_values[j],
-                                         rhs_values[k]);
+        bool result = get_compare_result(isolate, kCompareOperators[i],
+                                         lhs_values[j], rhs_values[k]);
         CHECK(return_value->SameValue(*factory->ToBoolean(result)));
       }
     }
@@ -2970,8 +2969,6 @@ TEST(BytecodeGraphBuilderIllegalConstDeclaration) {
 class CountBreakDebugDelegate : public v8::debug::DebugDelegate {
  public:
   void BreakProgramRequested(v8::Local<v8::Context> paused_context,
-                             v8::Local<v8::Object> exec_state,
-                             v8::Local<v8::Value> break_points_hit,
                              const std::vector<int>&) override {
     debug_break_count++;
   }

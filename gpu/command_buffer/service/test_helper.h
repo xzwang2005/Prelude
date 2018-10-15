@@ -10,7 +10,7 @@
 #include <string>
 #include <vector>
 
-#include "gpu/command_buffer/common/gles2_cmd_utils.h"
+#include "gpu/command_buffer/common/context_creation_attribs.h"
 #include "gpu/command_buffer/service/shader_translator.h"
 #include "ui/gl/gl_implementation.h"
 #include "ui/gl/gl_mock.h"
@@ -122,13 +122,13 @@ class TestHelper {
       bool is_es3_enabled,
       bool is_es3_capable,
       bool is_desktop_core_profile,
-      const gl::ExtensionSet& extensions,
+      const gfx::ExtensionSet& extensions,
       bool use_default_textures);
   static void SetupTextureManagerDestructionExpectations(
       ::gl::MockGLInterface* gl,
       bool is_es3_enabled,
       bool is_desktop_core_profile,
-      const gl::ExtensionSet& extensions,
+      const gfx::ExtensionSet& extensions,
       bool use_default_textures);
 
   static void SetupExpectationsForClearingUniforms(::gl::MockGLInterface* gl,

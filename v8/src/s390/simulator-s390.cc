@@ -365,7 +365,7 @@ void S390Debugger::Debug() {
                  (strcmp(cmd, "printobject") == 0)) {
         if (argc == 2) {
           intptr_t value;
-          OFStream os(stdout);
+          StdoutStream os;
           if (GetValue(arg1, &value)) {
             Object* obj = reinterpret_cast<Object*>(value);
             os << arg1 << ": \n";
@@ -605,7 +605,7 @@ void S390Debugger::Debug() {
         PrintF("    Stops are debug instructions inserted by\n");
         PrintF("    the Assembler::stop() function.\n");
         PrintF("    When hitting a stop, the Simulator will\n");
-        PrintF("    stop and and give control to the S390Debugger.\n");
+        PrintF("    stop and give control to the S390Debugger.\n");
         PrintF("    The first %d stop codes are watched:\n",
                Simulator::kNumOfWatchedStops);
         PrintF("    - They can be enabled / disabled: the Simulator\n");
@@ -640,7 +640,7 @@ void S390Debugger::Debug() {
 #undef XSTR
 }
 
-static bool ICacheMatch(void* one, void* two) {
+bool Simulator::ICacheMatch(void* one, void* two) {
   DCHECK_EQ(reinterpret_cast<intptr_t>(one) & CachePage::kPageMask, 0);
   DCHECK_EQ(reinterpret_cast<intptr_t>(two) & CachePage::kPageMask, 0);
   return one == two;
@@ -659,6 +659,15 @@ static bool AllOnOnePage(uintptr_t start, int size) {
 void Simulator::set_last_debugger_input(char* input) {
   DeleteArray(last_debugger_input_);
   last_debugger_input_ = input;
+}
+
+void Simulator::SetRedirectInstruction(Instruction* instruction) {
+// we use TRAP4 here (0xBF22)
+#if V8_TARGET_LITTLE_ENDIAN
+  instruction->SetInstructionBits(0x1000FFB2);
+#else
+  instruction->SetInstructionBits(0xB2FF0000 | kCallRtRedirected);
+#endif
 }
 
 void Simulator::FlushICache(base::CustomMatcherHashMap* i_cache,
@@ -726,15 +735,6 @@ void Simulator::CheckICache(base::CustomMatcherHashMap* i_cache,
     memcpy(cached_line, line, CachePage::kLineLength);
     *cache_valid_byte = CachePage::LINE_VALID;
   }
-}
-
-void Simulator::Initialize(Isolate* isolate) {
-  if (isolate->simulator_initialized()) return;
-  isolate->set_simulator_initialized(true);
-  ::v8::internal::ExternalReference::set_redirector(isolate,
-                                                    &RedirectExternalReference);
-  static base::OnceType once = V8_ONCE_INIT;
-  base::CallOnce(&once, &Simulator::EvalTableInit);
 }
 
 Simulator::EvaluateFuncType Simulator::EvalTable[] = {nullptr};
@@ -998,8 +998,6 @@ void Simulator::EvalTableInit() {
   EvalTable[STFPC] = &Simulator::Evaluate_STFPC;
   EvalTable[LFPC] = &Simulator::Evaluate_LFPC;
   EvalTable[TRE] = &Simulator::Evaluate_TRE;
-  EvalTable[CUUTF] = &Simulator::Evaluate_CUUTF;
-  EvalTable[CUTFU] = &Simulator::Evaluate_CUTFU;
   EvalTable[STFLE] = &Simulator::Evaluate_STFLE;
   EvalTable[SRNMB] = &Simulator::Evaluate_SRNMB;
   EvalTable[SRNMT] = &Simulator::Evaluate_SRNMT;
@@ -1105,7 +1103,6 @@ void Simulator::EvalTableInit() {
   EvalTable[CGDR] = &Simulator::Evaluate_CGDR;
   EvalTable[CGXR] = &Simulator::Evaluate_CGXR;
   EvalTable[LGDR] = &Simulator::Evaluate_LGDR;
-  EvalTable[MDTR] = &Simulator::Evaluate_MDTR;
   EvalTable[MDTRA] = &Simulator::Evaluate_MDTRA;
   EvalTable[DDTRA] = &Simulator::Evaluate_DDTRA;
   EvalTable[ADTRA] = &Simulator::Evaluate_ADTRA;
@@ -1488,12 +1485,8 @@ void Simulator::EvalTableInit() {
 }  // NOLINT
 
 Simulator::Simulator(Isolate* isolate) : isolate_(isolate) {
-  i_cache_ = isolate_->simulator_i_cache();
-  if (i_cache_ == nullptr) {
-    i_cache_ = new base::CustomMatcherHashMap(&ICacheMatch);
-    isolate_->set_simulator_i_cache(i_cache_);
-  }
-  Initialize(isolate);
+  static base::OnceType once = V8_ONCE_INIT;
+  base::CallOnce(&once, &Simulator::EvalTableInit);
 // Set up simulator support first. Some of this information is needed to
 // setup the architecture state.
 #if V8_TARGET_ARCH_S390X
@@ -1537,119 +1530,6 @@ Simulator::Simulator(Isolate* isolate) : isolate_(isolate) {
 }
 
 Simulator::~Simulator() { free(stack_); }
-
-// When the generated code calls an external reference we need to catch that in
-// the simulator.  The external reference will be a function compiled for the
-// host architecture.  We need to call that function instead of trying to
-// execute it with the simulator.  We do that by redirecting the external
-// reference to a svc (Supervisor Call) instruction that is handled by
-// the simulator.  We write the original destination of the jump just at a known
-// offset from the svc instruction so the simulator knows what to call.
-class Redirection {
- public:
-  Redirection(Isolate* isolate, void* external_function,
-              ExternalReference::Type type)
-      : external_function_(external_function),
-// we use TRAP4 here (0xBF22)
-#if V8_TARGET_LITTLE_ENDIAN
-        swi_instruction_(0x1000FFB2),
-#else
-        swi_instruction_(0xB2FF0000 | kCallRtRedirected),
-#endif
-        type_(type),
-        next_(nullptr) {
-    next_ = isolate->simulator_redirection();
-    Simulator::current(isolate)->FlushICache(
-        isolate->simulator_i_cache(),
-        reinterpret_cast<void*>(&swi_instruction_), sizeof(FourByteInstr));
-    isolate->set_simulator_redirection(this);
-    if (ABI_USES_FUNCTION_DESCRIPTORS) {
-      function_descriptor_[0] = reinterpret_cast<intptr_t>(&swi_instruction_);
-      function_descriptor_[1] = 0;
-      function_descriptor_[2] = 0;
-    }
-  }
-
-  void* address() {
-    if (ABI_USES_FUNCTION_DESCRIPTORS) {
-      return reinterpret_cast<void*>(function_descriptor_);
-    } else {
-      return reinterpret_cast<void*>(&swi_instruction_);
-    }
-  }
-
-  void* external_function() { return external_function_; }
-  ExternalReference::Type type() { return type_; }
-
-  static Redirection* Get(Isolate* isolate, void* external_function,
-                          ExternalReference::Type type) {
-    Redirection* current = isolate->simulator_redirection();
-    for (; current != nullptr; current = current->next_) {
-      if (current->external_function_ == external_function &&
-          current->type_ == type) {
-        return current;
-      }
-    }
-    return new Redirection(isolate, external_function, type);
-  }
-
-  static Redirection* FromSwiInstruction(Instruction* swi_instruction) {
-    char* addr_of_swi = reinterpret_cast<char*>(swi_instruction);
-    char* addr_of_redirection =
-        addr_of_swi - offsetof(Redirection, swi_instruction_);
-    return reinterpret_cast<Redirection*>(addr_of_redirection);
-  }
-
-  static Redirection* FromAddress(void* address) {
-    int delta = ABI_USES_FUNCTION_DESCRIPTORS
-                    ? offsetof(Redirection, function_descriptor_)
-                    : offsetof(Redirection, swi_instruction_);
-    char* addr_of_redirection = reinterpret_cast<char*>(address) - delta;
-    return reinterpret_cast<Redirection*>(addr_of_redirection);
-  }
-
-  static void* ReverseRedirection(intptr_t reg) {
-    Redirection* redirection = FromAddress(reinterpret_cast<void*>(reg));
-    return redirection->external_function();
-  }
-
-  static void DeleteChain(Redirection* redirection) {
-    while (redirection != nullptr) {
-      Redirection* next = redirection->next_;
-      delete redirection;
-      redirection = next;
-    }
-  }
-
- private:
-  void* external_function_;
-  uint32_t swi_instruction_;
-  ExternalReference::Type type_;
-  Redirection* next_;
-  intptr_t function_descriptor_[3];
-};
-
-// static
-void Simulator::TearDown(base::CustomMatcherHashMap* i_cache,
-                         Redirection* first) {
-  Redirection::DeleteChain(first);
-  if (i_cache != nullptr) {
-    for (base::HashMap::Entry* entry = i_cache->Start(); entry != nullptr;
-         entry = i_cache->Next(entry)) {
-      delete static_cast<CachePage*>(entry->value);
-    }
-    delete i_cache;
-  }
-}
-
-void* Simulator::RedirectExternalReference(Isolate* isolate,
-                                           void* external_function,
-                                           ExternalReference::Type type) {
-  base::LockGuard<base::Mutex> lock_guard(
-      isolate->simulator_redirection_mutex());
-  Redirection* redirection = Redirection::Get(isolate, external_function, type);
-  return redirection->address();
-}
 
 // Get the active Simulator for the current thread.
 Simulator* Simulator::current(Isolate* isolate) {
@@ -1971,7 +1851,7 @@ void Simulator::SoftwareInterrupt(Instruction* instr) {
       bool stack_aligned =
           (get_register(sp) & (::v8::internal::FLAG_sim_stack_alignment - 1)) ==
           0;
-      Redirection* redirection = Redirection::FromSwiInstruction(instr);
+      Redirection* redirection = Redirection::FromInstruction(instr);
       const int kArgCount = 9;
       const int kRegisterArgCount = 5;
       int arg0_regnum = 2;
@@ -2022,17 +1902,18 @@ void Simulator::SoftwareInterrupt(Instruction* instr) {
             case ExternalReference::BUILTIN_FP_FP_CALL:
             case ExternalReference::BUILTIN_COMPARE_CALL:
               PrintF("Call to host function at %p with args %f, %f",
-                     static_cast<void*>(FUNCTION_ADDR(generic_target)), dval0,
-                     dval1);
+                     reinterpret_cast<void*>(FUNCTION_ADDR(generic_target)),
+                     dval0, dval1);
               break;
             case ExternalReference::BUILTIN_FP_CALL:
               PrintF("Call to host function at %p with arg %f",
-                     static_cast<void*>(FUNCTION_ADDR(generic_target)), dval0);
+                     reinterpret_cast<void*>(FUNCTION_ADDR(generic_target)),
+                     dval0);
               break;
             case ExternalReference::BUILTIN_FP_INT_CALL:
               PrintF("Call to host function at %p with args %f, %" V8PRIdPTR,
-                     static_cast<void*>(FUNCTION_ADDR(generic_target)), dval0,
-                     ival);
+                     reinterpret_cast<void*>(FUNCTION_ADDR(generic_target)),
+                     dval0, ival);
               break;
             default:
               UNREACHABLE();
@@ -2175,8 +2056,8 @@ void Simulator::SoftwareInterrupt(Instruction* instr) {
               "\t\t\t\targs %08" V8PRIxPTR ", %08" V8PRIxPTR ", %08" V8PRIxPTR
               ", %08" V8PRIxPTR ", %08" V8PRIxPTR ", %08" V8PRIxPTR
               ", %08" V8PRIxPTR ", %08" V8PRIxPTR ", %08" V8PRIxPTR,
-              static_cast<void*>(FUNCTION_ADDR(target)), arg[0], arg[1], arg[2],
-              arg[3], arg[4], arg[5], arg[6], arg[7], arg[8]);
+              reinterpret_cast<void*>(FUNCTION_ADDR(target)), arg[0], arg[1],
+              arg[2], arg[3], arg[4], arg[5], arg[6], arg[7], arg[8]);
           if (!stack_aligned) {
             PrintF(" with unaligned stack %08" V8PRIxPTR "\n",
                    static_cast<intptr_t>(get_register(sp)));
@@ -2444,7 +2325,7 @@ void Simulator::ExecuteInstruction(Instruction* instr, bool auto_incr_pc) {
   icount_++;
 
   if (v8::internal::FLAG_check_icache) {
-    CheckICache(isolate_->simulator_i_cache(), instr);
+    CheckICache(i_cache(), instr);
   }
 
   pc_modified_ = false;
@@ -2507,7 +2388,7 @@ void Simulator::Execute() {
   }
 }
 
-void Simulator::CallInternal(byte* entry, int reg_arg_count) {
+void Simulator::CallInternal(Address entry, int reg_arg_count) {
   // Adjust JS-based stack limit to C-based stack limit.
   isolate_->stack_guard()->AdjustStackLimitForSimulator();
 
@@ -2517,7 +2398,7 @@ void Simulator::CallInternal(byte* entry, int reg_arg_count) {
     set_pc(*(reinterpret_cast<intptr_t*>(entry)));
   } else {
     // entry is the instruction address
-    set_pc(reinterpret_cast<intptr_t>(entry));
+    set_pc(static_cast<intptr_t>(entry));
   }
   // Remember the values of non-volatile registers.
   int64_t r6_val = get_register(r6);
@@ -2592,7 +2473,8 @@ void Simulator::CallInternal(byte* entry, int reg_arg_count) {
   set_register(r13, r13_val);
 }
 
-intptr_t Simulator::Call(byte* entry, int argument_count, ...) {
+intptr_t Simulator::CallImpl(Address entry, int argument_count,
+                             const intptr_t* arguments) {
   // Adjust JS-based stack limit to C-based stack limit.
   isolate_->stack_guard()->AdjustStackLimitForSimulator();
 
@@ -2606,16 +2488,13 @@ intptr_t Simulator::Call(byte* entry, int argument_count, ...) {
   int64_t r12_val = get_register(r12);
   int64_t r13_val = get_register(r13);
 
-  va_list parameters;
-  va_start(parameters, argument_count);
   // Set up arguments
 
   // First 5 arguments passed in registers r2-r6.
-  int reg_arg_count = (argument_count > 5) ? 5 : argument_count;
+  int reg_arg_count = std::min(5, argument_count);
   int stack_arg_count = argument_count - reg_arg_count;
   for (int i = 0; i < reg_arg_count; i++) {
-    intptr_t value = va_arg(parameters, intptr_t);
-    set_register(i + 2, value);
+    set_register(i + 2, arguments[i]);
   }
 
   // Remaining arguments passed on stack.
@@ -2631,11 +2510,8 @@ intptr_t Simulator::Call(byte* entry, int argument_count, ...) {
   // Store remaining arguments on stack, from low to high memory.
   intptr_t* stack_argument =
       reinterpret_cast<intptr_t*>(entry_stack + kCalleeRegisterSaveAreaSize);
-  for (int i = 0; i < stack_arg_count; i++) {
-    intptr_t value = va_arg(parameters, intptr_t);
-    stack_argument[i] = value;
-  }
-  va_end(parameters);
+  memcpy(stack_argument, arguments + reg_arg_count,
+         stack_arg_count * sizeof(*arguments));
   set_register(sp, entry_stack);
 
 // Prepare to execute the code at entry
@@ -2644,7 +2520,7 @@ intptr_t Simulator::Call(byte* entry, int argument_count, ...) {
   set_pc(*(reinterpret_cast<intptr_t*>(entry)));
 #else
   // entry is the instruction address
-  set_pc(reinterpret_cast<intptr_t>(entry));
+  set_pc(static_cast<intptr_t>(entry));
 #endif
 
   // Put target address in ip (for JS prologue).
@@ -2716,23 +2592,22 @@ intptr_t Simulator::Call(byte* entry, int argument_count, ...) {
   set_register(sp, original_stack);
 
   // Return value register
-  intptr_t result = get_register(r2);
-  return result;
+  return get_register(r2);
 }
 
-void Simulator::CallFP(byte* entry, double d0, double d1) {
+void Simulator::CallFP(Address entry, double d0, double d1) {
   set_d_register_from_double(0, d0);
   set_d_register_from_double(1, d1);
   CallInternal(entry);
 }
 
-int32_t Simulator::CallFPReturnsInt(byte* entry, double d0, double d1) {
+int32_t Simulator::CallFPReturnsInt(Address entry, double d0, double d1) {
   CallFP(entry, d0, d1);
   int32_t result = get_register(r2);
   return result;
 }
 
-double Simulator::CallFPReturnsDouble(byte* entry, double d0, double d1) {
+double Simulator::CallFPReturnsDouble(Address entry, double d0, double d1) {
   CallFP(entry, d0, d1);
   return get_double_from_d_register(0);
 }
@@ -2802,6 +2677,12 @@ uintptr_t Simulator::PopAddress() {
   int d2 = AS(RSInstruction)->D2Value();          \
   int length = 4;
 
+#define DECODE_RSI_INSTRUCTION(r1, r3, i2)        \
+  int r1 = AS(RSIInstruction)->R1Value();         \
+  int r3 = AS(RSIInstruction)->R3Value();         \
+  int32_t i2 = AS(RSIInstruction)->I2Value();     \
+  int length = 4;
+
 #define DECODE_SI_INSTRUCTION_I_UINT8(b1, d1_val, imm_val) \
   int b1 = AS(SIInstruction)->B1Value();                   \
   intptr_t d1_val = AS(SIInstruction)->D1Value();          \
@@ -2866,6 +2747,12 @@ uintptr_t Simulator::PopAddress() {
   int length = 2;
 
 #define DECODE_RIE_D_INSTRUCTION(r1, r2, i2)  \
+  int r1 = AS(RIEInstruction)->R1Value();     \
+  int r2 = AS(RIEInstruction)->R2Value();     \
+  int32_t i2 = AS(RIEInstruction)->I6Value(); \
+  int length = 6;
+
+#define DECODE_RIE_E_INSTRUCTION(r1, r2, i2)  \
   int r1 = AS(RIEInstruction)->R1Value();     \
   int r2 = AS(RIEInstruction)->R2Value();     \
   int32_t i2 = AS(RIEInstruction)->I6Value(); \
@@ -3988,9 +3875,19 @@ EVALUATE(LE) {
 }
 
 EVALUATE(BRXH) {
-  UNIMPLEMENTED();
-  USE(instr);
-  return 0;
+  DCHECK_OPCODE(BRXH);
+  DECODE_RSI_INSTRUCTION(r1, r3, i2);
+  int32_t r1_val = (r1 == 0) ? 0 : get_low_register<int32_t>(r1);
+  int32_t r3_val = (r3 == 0) ? 0 : get_low_register<int32_t>(r3);
+  intptr_t branch_address = get_pc() + (2 * i2);
+  r1_val += r3_val;
+  int32_t compare_val = r3 % 2 == 0 ?
+          get_low_register<int32_t>(r3 + 1) : r3_val;
+  if (r1_val > compare_val) {
+    set_pc(branch_address);
+  }
+  set_low_register(r1, r1_val);
+  return length;
 }
 
 EVALUATE(BRXLE) {
@@ -5391,18 +5288,6 @@ EVALUATE(TRE) {
   return 0;
 }
 
-EVALUATE(CUUTF) {
-  UNIMPLEMENTED();
-  USE(instr);
-  return 0;
-}
-
-EVALUATE(CUTFU) {
-  UNIMPLEMENTED();
-  USE(instr);
-  return 0;
-}
-
 EVALUATE(STFLE) {
   UNIMPLEMENTED();
   USE(instr);
@@ -6512,12 +6397,6 @@ EVALUATE(LGDR) {
   return length;
 }
 
-EVALUATE(MDTR) {
-  UNIMPLEMENTED();
-  USE(instr);
-  return 0;
-}
-
 EVALUATE(MDTRA) {
   UNIMPLEMENTED();
   USE(instr);
@@ -7261,9 +7140,13 @@ EVALUATE(LLGCR) {
 }
 
 EVALUATE(LLGHR) {
-  UNIMPLEMENTED();
-  USE(instr);
-  return 0;
+  DCHECK_OPCODE(LLGHR);
+  DECODE_RRE_INSTRUCTION(r1, r2);
+  uint64_t r2_val = get_low_register<uint64_t>(r2);
+  r2_val <<= 48;
+  r2_val >>= 48;
+  set_register(r1, r2_val);
+  return length;
 }
 
 EVALUATE(MLGR) {
@@ -9312,28 +9195,38 @@ EVALUATE(STOC) {
   return 0;
 }
 
+#define ATOMIC_LOAD_AND_UPDATE_WORD32(op)                       \
+  DECODE_RSY_A_INSTRUCTION(r1, r3, b2, d2);                     \
+  int64_t b2_val = (b2 == 0) ? 0 : get_register(b2);            \
+  intptr_t addr = static_cast<intptr_t>(b2_val) + d2;           \
+  int32_t r3_val = get_low_register<int32_t>(r3);               \
+  DCHECK_EQ(addr & 0x3, 0);                              \
+  int32_t r1_val = op(reinterpret_cast<int32_t*>(addr),         \
+                      r3_val, __ATOMIC_SEQ_CST);                \
+  set_low_register(r1, r1_val);
+
 EVALUATE(LAN) {
-  UNIMPLEMENTED();
-  USE(instr);
-  return 0;
+  DCHECK_OPCODE(LAN);
+  ATOMIC_LOAD_AND_UPDATE_WORD32(__atomic_fetch_and);
+  return length;
 }
 
 EVALUATE(LAO) {
-  UNIMPLEMENTED();
-  USE(instr);
-  return 0;
+  DCHECK_OPCODE(LAO);
+  ATOMIC_LOAD_AND_UPDATE_WORD32(__atomic_fetch_or);
+  return length;
 }
 
 EVALUATE(LAX) {
-  UNIMPLEMENTED();
-  USE(instr);
-  return 0;
+  DCHECK_OPCODE(LAX);
+  ATOMIC_LOAD_AND_UPDATE_WORD32(__atomic_fetch_xor);
+  return length;
 }
 
 EVALUATE(LAA) {
-  UNIMPLEMENTED();
-  USE(instr);
-  return 0;
+  DCHECK_OPCODE(LAA);
+  ATOMIC_LOAD_AND_UPDATE_WORD32(__atomic_fetch_add);
+  return length;
 }
 
 EVALUATE(LAAL) {
@@ -9342,10 +9235,21 @@ EVALUATE(LAAL) {
   return 0;
 }
 
+#undef ATOMIC_LOAD_AND_UPDATE_WORD32
+
 EVALUATE(BRXHG) {
-  UNIMPLEMENTED();
-  USE(instr);
-  return 0;
+  DCHECK_OPCODE(BRXHG);
+  DECODE_RIE_E_INSTRUCTION(r1, r3, i2);
+  int64_t r1_val = (r1 == 0) ? 0 : get_register(r1);
+  int64_t r3_val = (r3 == 0) ? 0 : get_register(r3);
+  intptr_t branch_address = get_pc() + (2 * i2);
+  r1_val += r3_val;
+  int64_t compare_val = r3 % 2 == 0 ? get_register(r3 + 1) : r3_val;
+  if (r1_val > compare_val) {
+    set_pc(branch_address);
+  }
+  set_register(r1, r1_val);
+  return length;
 }
 
 EVALUATE(BRXLG) {

@@ -55,7 +55,7 @@ sk_sp<SkShader> SkColorFilterShader::onMakeColorSpace(SkColorSpaceXformer* xform
 /////////////////////////////////////////////////////////////////////
 
 std::unique_ptr<GrFragmentProcessor> SkColorFilterShader::asFragmentProcessor(
-        const AsFPArgs& args) const {
+        const GrFPArgs& args) const {
     auto fp1 = as_SB(fShader)->asFragmentProcessor(args);
     if (!fp1) {
         return nullptr;
@@ -68,21 +68,6 @@ std::unique_ptr<GrFragmentProcessor> SkColorFilterShader::asFragmentProcessor(
 
     std::unique_ptr<GrFragmentProcessor> fpSeries[] = { std::move(fp1), std::move(fp2) };
     return GrFragmentProcessor::RunInSeries(fpSeries, 2);
-}
-#endif
-
-#ifndef SK_IGNORE_TO_STRING
-void SkColorFilterShader::toString(SkString* str) const {
-    str->append("SkColorFilterShader: (");
-
-    str->append("Shader: ");
-    as_SB(fShader)->toString(str);
-    str->append(" Filter: ");
-    // TODO: add "fFilter->toString(str);" once SkColorFilter::toString is added
-
-    this->INHERITED::toString(str);
-
-    str->append(")");
 }
 #endif
 

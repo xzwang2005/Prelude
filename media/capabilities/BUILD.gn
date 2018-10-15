@@ -20,10 +20,14 @@ source_set("capabilities") {
   sources = [
     "bucket_utility.cc",
     "bucket_utility.h",
+    "in_memory_video_decode_stats_db_impl.cc",
+    "in_memory_video_decode_stats_db_impl.h",
     "video_decode_stats_db.cc",
     "video_decode_stats_db.h",
     "video_decode_stats_db_impl.cc",
     "video_decode_stats_db_impl.h",
+    "video_decode_stats_db_provider.cc",
+    "video_decode_stats_db_provider.h",
   ]
 
   public_deps = [
@@ -37,21 +41,3 @@ source_set("capabilities") {
   configs += [ "//media:subcomponent_config" ]
 }
 
-# source_set("unit_tests") {
-  # testonly = true
-  # sources = [
-    # "video_decode_stats_db_unittest.cc",
-  # ]
-
-  # deps = [
-    ## Explicitly adding the proto lib here (in addition to "capabilities"
-    ## public_deps), because the generated files seem not to be available through
-    ## the transitive "capabilities" target (via media:test_support -> media).
-    # ":video_decode_stats_proto",
-    # "//base/test:test_support",
-    # "//components/leveldb_proto:test_support",
-    # "//media:test_support",
-    # "//testing/gmock",
-    # "//testing/gtest",
-  # ]
-# }

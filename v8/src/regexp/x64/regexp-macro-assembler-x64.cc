@@ -6,7 +6,7 @@
 
 #include "src/regexp/x64/regexp-macro-assembler-x64.h"
 
-#include "src/factory.h"
+#include "src/heap/factory.h"
 #include "src/log.h"
 #include "src/macro-assembler.h"
 #include "src/objects-inl.h"
@@ -99,7 +99,7 @@ RegExpMacroAssemblerX64::RegExpMacroAssemblerX64(Isolate* isolate, Zone* zone,
     : NativeRegExpMacroAssembler(isolate, zone),
       masm_(isolate, nullptr, kRegExpCodeSize, CodeObjectRequired::kYes),
       no_root_array_scope_(&masm_),
-      code_relative_fixup_positions_(4, zone),
+      code_relative_fixup_positions_(zone),
       mode_(mode),
       num_registers_(registers_to_save),
       num_saved_registers_(registers_to_save),
@@ -623,7 +623,7 @@ bool RegExpMacroAssemblerX64::CheckSpecialCharacterClass(uc16 type,
       __ cmpl(current_character(), Immediate('z'));
       BranchOrBacktrack(above, on_no_match);
     }
-    __ Move(rbx, ExternalReference::re_word_character_map());
+    __ Move(rbx, ExternalReference::re_word_character_map(isolate()));
     DCHECK_EQ(0, word_character_map[0]);  // Character '\0' is not a word char.
     __ testb(Operand(rbx, current_character(), times_1, 0),
              current_character());
@@ -637,7 +637,7 @@ bool RegExpMacroAssemblerX64::CheckSpecialCharacterClass(uc16 type,
       __ cmpl(current_character(), Immediate('z'));
       __ j(above, &done);
     }
-    __ Move(rbx, ExternalReference::re_word_character_map());
+    __ Move(rbx, ExternalReference::re_word_character_map(isolate()));
     DCHECK_EQ(0, word_character_map[0]);  // Character '\0' is not a word char.
     __ testb(Operand(rbx, current_character(), times_1, 0),
              current_character());
@@ -1208,7 +1208,7 @@ void RegExpMacroAssemblerX64::CallCheckStackGuardState() {
 // Helper function for reading a value out of a stack frame.
 template <typename T>
 static T& frame_entry(Address re_frame, int frame_offset) {
-  return reinterpret_cast<T&>(Memory::int32_at(re_frame + frame_offset));
+  return reinterpret_cast<T&>(Memory<int32_t>(re_frame + frame_offset));
 }
 
 
@@ -1304,8 +1304,7 @@ void RegExpMacroAssemblerX64::Push(Immediate value) {
 
 
 void RegExpMacroAssemblerX64::FixupCodeRelativePositions() {
-  for (int i = 0, n = code_relative_fixup_positions_.length(); i < n; i++) {
-    int position = code_relative_fixup_positions_[i];
+  for (int position : code_relative_fixup_positions_) {
     // The position succeeds a relative label offset from position.
     // Patch the relative offset to be relative to the Code object pointer
     // instead.
@@ -1317,7 +1316,7 @@ void RegExpMacroAssemblerX64::FixupCodeRelativePositions() {
                        + Code::kHeaderSize
                        - kHeapObjectTag);
   }
-  code_relative_fixup_positions_.Clear();
+  code_relative_fixup_positions_.Rewind(0);
 }
 
 

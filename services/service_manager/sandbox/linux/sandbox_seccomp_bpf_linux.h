@@ -26,12 +26,9 @@ class SERVICE_MANAGER_SANDBOX_EXPORT SandboxSeccompBPF {
   struct Options {
     bool use_amd_specific_policies = false;  // For ChromiumOS.
 
-    // Options for Web Assembly.
-    bool has_wasm_trap_handler = false;
-
     // Options for GPU's PreSandboxHook.
     bool accelerated_video_decode_enabled = false;
-    bool vaapi_accelerated_video_encode_enabled = false;
+    bool accelerated_video_encode_enabled = false;
   };
 
   // This is the API to enable a seccomp-bpf sandbox for content/

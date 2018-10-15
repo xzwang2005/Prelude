@@ -7,8 +7,8 @@
 
 #include "base/callback.h"
 #include "gpu/command_buffer/common/texture_in_use_response.h"
-#include "gpu/gpu_export.h"
 #include "gpu/ipc/common/surface_handle.h"
+#include "gpu/ipc/service/gpu_ipc_service_export.h"
 
 namespace IPC {
 class MessageFilter;
@@ -26,7 +26,7 @@ namespace gles2 {
 class FeatureInfo;
 }
 
-class GPU_EXPORT ImageTransportSurfaceDelegate {
+class GPU_IPC_SERVICE_EXPORT ImageTransportSurfaceDelegate {
  public:
 #if defined(OS_WIN)
   // Tells the delegate that a child window was created with the provided
@@ -44,15 +44,8 @@ class GPU_EXPORT ImageTransportSurfaceDelegate {
 
   virtual const GpuPreferences& GetGpuPreferences() const = 0;
 
-  virtual void SetSnapshotRequestedCallback(const base::Closure& callback) = 0;
-
-  // Informs the delegate about updated vsync parameters.
-  virtual void UpdateVSyncParameters(base::TimeTicks timebase,
-                                     base::TimeDelta interval) = 0;
-
   // Tells the delegate a buffer has been presented.
-  virtual void BufferPresented(uint64_t swap_id,
-                               const gfx::PresentationFeedback& feedback) = 0;
+  virtual void BufferPresented(const gfx::PresentationFeedback& feedback) = 0;
   // Add IPC message filter.
   virtual void AddFilter(IPC::MessageFilter* message_filter) = 0;
   // Gets route ID for sending / receiving IPC messages.

@@ -55,7 +55,7 @@ public:
     bool setHeader(const SkImageInfo& srcInfo, const SkPngEncoder::Options& options);
     bool setColorSpace(const SkImageInfo& info);
     bool writeInfo(const SkImageInfo& srcInfo);
-    void chooseProc(const SkImageInfo& srcInfo, SkTransferFunctionBehavior unpremulBehavior);
+    void chooseProc(const SkImageInfo& srcInfo);
 
     png_structp pngPtr() { return fPngPtr; }
     png_infop infoPtr() { return fInfoPtr; }
@@ -106,7 +106,8 @@ bool SkPngEncoderMgr::setHeader(const SkImageInfo& srcInfo, const SkPngEncoder::
     int bitDepth = 8;
     switch (srcInfo.colorType()) {
         case kRGBA_F16_SkColorType:
-            SkASSERT(srcInfo.colorSpace() && srcInfo.colorSpace()->gammaIsLinear());
+        case kRGBA_F32_SkColorType:
+            SkASSERT(srcInfo.colorSpace());
             sigBit.red = 16;
             sigBit.green = 16;
             sigBit.blue = 16;
@@ -129,6 +130,14 @@ bool SkPngEncoderMgr::setHeader(const SkImageInfo& srcInfo, const SkPngEncoder::
             sigBit.alpha = 8;
             pngColorType = srcInfo.isOpaque() ? PNG_COLOR_TYPE_RGB : PNG_COLOR_TYPE_RGB_ALPHA;
             fPngBytesPerPixel = srcInfo.isOpaque() ? 3 : 4;
+            break;
+        case kRGB_888x_SkColorType:
+            sigBit.red   = 8;
+            sigBit.green = 8;
+            sigBit.blue  = 8;
+            pngColorType = PNG_COLOR_TYPE_RGB;
+            fPngBytesPerPixel = 3;
+            SkASSERT(srcInfo.isOpaque());
             break;
         case kARGB_4444_SkColorType:
             if (kUnpremul_SkAlphaType == srcInfo.alphaType()) {
@@ -155,6 +164,23 @@ bool SkPngEncoderMgr::setHeader(const SkImageInfo& srcInfo, const SkPngEncoder::
             sigBit.alpha = 8;
             pngColorType = PNG_COLOR_TYPE_GRAY_ALPHA;
             fPngBytesPerPixel = 2;
+            break;
+        case kRGBA_1010102_SkColorType:
+            bitDepth     = 16;
+            sigBit.red   = 10;
+            sigBit.green = 10;
+            sigBit.blue  = 10;
+            sigBit.alpha = 2;
+            pngColorType = srcInfo.isOpaque() ? PNG_COLOR_TYPE_RGB : PNG_COLOR_TYPE_RGB_ALPHA;
+            fPngBytesPerPixel = 8;
+            break;
+        case kRGB_101010x_SkColorType:
+            bitDepth     = 16;
+            sigBit.red   = 10;
+            sigBit.green = 10;
+            sigBit.blue  = 10;
+            pngColorType = PNG_COLOR_TYPE_RGB;
+            fPngBytesPerPixel = 6;
             break;
         default:
             return false;
@@ -204,10 +230,7 @@ bool SkPngEncoderMgr::setHeader(const SkImageInfo& srcInfo, const SkPngEncoder::
     return true;
 }
 
-static transform_scanline_proc choose_proc(const SkImageInfo& info,
-                                           SkTransferFunctionBehavior unpremulBehavior) {
-    const bool isSRGBTransferFn =
-            (SkTransferFunctionBehavior::kRespect == unpremulBehavior) && info.gammaCloseToSRGB();
+static transform_scanline_proc choose_proc(const SkImageInfo& info) {
     switch (info.colorType()) {
         case kRGBA_8888_SkColorType:
             switch (info.alphaType()) {
@@ -216,8 +239,7 @@ static transform_scanline_proc choose_proc(const SkImageInfo& info,
                 case kUnpremul_SkAlphaType:
                     return transform_scanline_memcpy;
                 case kPremul_SkAlphaType:
-                    return isSRGBTransferFn ? transform_scanline_srgbA :
-                                              transform_scanline_rgbA;
+                    return transform_scanline_rgbA;
                 default:
                     SkASSERT(false);
                     return nullptr;
@@ -229,14 +251,15 @@ static transform_scanline_proc choose_proc(const SkImageInfo& info,
                 case kUnpremul_SkAlphaType:
                     return transform_scanline_BGRA;
                 case kPremul_SkAlphaType:
-                    return isSRGBTransferFn ? transform_scanline_sbgrA :
-                                              transform_scanline_bgrA;
+                    return transform_scanline_bgrA;
                 default:
                     SkASSERT(false);
                     return nullptr;
             }
         case kRGB_565_SkColorType:
             return transform_scanline_565;
+        case kRGB_888x_SkColorType:
+            return transform_scanline_888x;
         case kARGB_4444_SkColorType:
             switch (info.alphaType()) {
                 case kOpaque_SkAlphaType:
@@ -261,6 +284,30 @@ static transform_scanline_proc choose_proc(const SkImageInfo& info,
                     SkASSERT(false);
                     return nullptr;
             }
+        case kRGBA_F32_SkColorType:
+            switch (info.alphaType()) {
+                case kOpaque_SkAlphaType:
+                case kUnpremul_SkAlphaType:
+                    return transform_scanline_F32;
+                case kPremul_SkAlphaType:
+                    return transform_scanline_F32_premul;
+                default:
+                    SkASSERT(false);
+                    return nullptr;
+            }
+        case kRGBA_1010102_SkColorType:
+            switch (info.alphaType()) {
+                case kOpaque_SkAlphaType:
+                case kUnpremul_SkAlphaType:
+                    return transform_scanline_1010102;
+                case kPremul_SkAlphaType:
+                    return transform_scanline_1010102_premul;
+                default:
+                    SkASSERT(false);
+                    return nullptr;
+            }
+        case kRGB_101010x_SkColorType:
+            return transform_scanline_101010x;
         case kAlpha_8_SkColorType:
             return transform_scanline_A8_to_GrayAlpha;
         default:
@@ -317,14 +364,13 @@ bool SkPngEncoderMgr::writeInfo(const SkImageInfo& srcInfo) {
     return true;
 }
 
-void SkPngEncoderMgr::chooseProc(const SkImageInfo& srcInfo,
-                                 SkTransferFunctionBehavior unpremulBehavior) {
-    fProc = choose_proc(srcInfo, unpremulBehavior);
+void SkPngEncoderMgr::chooseProc(const SkImageInfo& srcInfo) {
+    fProc = choose_proc(srcInfo);
 }
 
 std::unique_ptr<SkEncoder> SkPngEncoder::Make(SkWStream* dst, const SkPixmap& src,
                                               const Options& options) {
-    if (!SkPixmapIsValid(src, options.fUnpremulBehavior)) {
+    if (!SkPixmapIsValid(src)) {
         return nullptr;
     }
 
@@ -345,7 +391,7 @@ std::unique_ptr<SkEncoder> SkPngEncoder::Make(SkWStream* dst, const SkPixmap& sr
         return nullptr;
     }
 
-    encoderMgr->chooseProc(src.info(), options.fUnpremulBehavior);
+    encoderMgr->chooseProc(src.info());
 
     return std::unique_ptr<SkPngEncoder>(new SkPngEncoder(std::move(encoderMgr), src));
 }

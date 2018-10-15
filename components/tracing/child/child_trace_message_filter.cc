@@ -71,15 +71,16 @@ void ChildTraceMessageFilter::OnHistogramChanged(
     if (!repeat) {
       ipc_task_runner_->PostTask(
           FROM_HERE,
-          base::Bind(
+          base::BindOnce(
               &ChildTraceMessageFilter::SendAbortBackgroundTracingMessage,
               this));
     }
+    return;
   }
 
   ipc_task_runner_->PostTask(
-      FROM_HERE, base::Bind(&ChildTraceMessageFilter::SendTriggerMessage, this,
-                            histogram_name));
+      FROM_HERE, base::BindOnce(&ChildTraceMessageFilter::SendTriggerMessage,
+                                this, histogram_name));
 }
 
 void ChildTraceMessageFilter::SendTriggerMessage(
@@ -88,10 +89,10 @@ void ChildTraceMessageFilter::SendTriggerMessage(
     base::Time computed_next_allowed_time =
         histogram_last_changed_ +
         base::TimeDelta::FromSeconds(kMinTimeBetweenHistogramChangesInSeconds);
-    if (computed_next_allowed_time > base::Time::Now())
+    if (computed_next_allowed_time > TRACE_TIME_NOW())
       return;
   }
-  histogram_last_changed_ = base::Time::Now();
+  histogram_last_changed_ = TRACE_TIME_NOW();
 
   if (sender_)
     sender_->Send(new TracingHostMsg_TriggerBackgroundTrace(histogram_name));
@@ -136,13 +137,14 @@ void ChildTraceMessageFilter::OnSetUMACallback(
 
     if (min >= histogram_lower_value && max <= histogram_upper_value) {
       ipc_task_runner_->PostTask(
-          FROM_HERE, base::Bind(&ChildTraceMessageFilter::SendTriggerMessage,
-                                this, histogram_name));
+          FROM_HERE,
+          base::BindOnce(&ChildTraceMessageFilter::SendTriggerMessage, this,
+                         histogram_name));
       break;
     } else if (!repeat) {
       ipc_task_runner_->PostTask(
           FROM_HERE,
-          base::Bind(
+          base::BindOnce(
               &ChildTraceMessageFilter::SendAbortBackgroundTracingMessage,
               this));
       break;

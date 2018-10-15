@@ -26,14 +26,6 @@ namespace gl
 
 namespace
 {
-enum CacheResult
-{
-    kCacheMiss,
-    kCacheHitMemory,
-    kCacheHitDisk,
-    kCacheResultMax,
-};
-
 constexpr unsigned int kWarningLimit = 3;
 
 void WriteShaderVar(BinaryOutputStream *stream, const sh::ShaderVariable &var)
@@ -44,6 +36,7 @@ void WriteShaderVar(BinaryOutputStream *stream, const sh::ShaderVariable &var)
     stream->writeString(var.mappedName);
     stream->writeIntVector(var.arraySizes);
     stream->writeInt(var.staticUse);
+    stream->writeInt(var.active);
     stream->writeString(var.structName);
     ASSERT(var.fields.empty());
 }
@@ -56,6 +49,7 @@ void LoadShaderVar(BinaryInputStream *stream, sh::ShaderVariable *var)
     var->mappedName = stream->readString();
     stream->readIntVector<unsigned int>(&var->arraySizes);
     var->staticUse  = stream->readBool();
+    var->active     = stream->readBool();
     var->structName = stream->readString();
 }
 
@@ -64,9 +58,10 @@ void WriteShaderVariableBuffer(BinaryOutputStream *stream, const ShaderVariableB
     stream->writeInt(var.binding);
     stream->writeInt(var.dataSize);
 
-    stream->writeInt(var.vertexStaticUse);
-    stream->writeInt(var.fragmentStaticUse);
-    stream->writeInt(var.computeStaticUse);
+    for (ShaderType shaderType : AllShaderTypes())
+    {
+        stream->writeInt(var.isActive(shaderType));
+    }
 
     stream->writeInt(var.memberIndexes.size());
     for (unsigned int memberCounterIndex : var.memberIndexes)
@@ -77,11 +72,13 @@ void WriteShaderVariableBuffer(BinaryOutputStream *stream, const ShaderVariableB
 
 void LoadShaderVariableBuffer(BinaryInputStream *stream, ShaderVariableBuffer *var)
 {
-    var->binding           = stream->readInt<int>();
-    var->dataSize          = stream->readInt<unsigned int>();
-    var->vertexStaticUse   = stream->readBool();
-    var->fragmentStaticUse = stream->readBool();
-    var->computeStaticUse  = stream->readBool();
+    var->binding  = stream->readInt<int>();
+    var->dataSize = stream->readInt<unsigned int>();
+
+    for (ShaderType shaderType : AllShaderTypes())
+    {
+        var->setActive(shaderType, stream->readBool());
+    }
 
     unsigned int numMembers = stream->readInt<unsigned int>();
     for (unsigned int blockMemberIndex = 0; blockMemberIndex < numMembers; blockMemberIndex++)
@@ -101,9 +98,11 @@ void WriteBufferVariable(BinaryOutputStream *stream, const BufferVariable &var)
     stream->writeInt(var.blockInfo.isRowMajorMatrix);
     stream->writeInt(var.blockInfo.topLevelArrayStride);
     stream->writeInt(var.topLevelArraySize);
-    stream->writeInt(var.vertexStaticUse);
-    stream->writeInt(var.fragmentStaticUse);
-    stream->writeInt(var.computeStaticUse);
+
+    for (ShaderType shaderType : AllShaderTypes())
+    {
+        stream->writeInt(var.isActive(shaderType));
+    }
 }
 
 void LoadBufferVariable(BinaryInputStream *stream, BufferVariable *var)
@@ -117,9 +116,11 @@ void LoadBufferVariable(BinaryInputStream *stream, BufferVariable *var)
     var->blockInfo.isRowMajorMatrix    = stream->readBool();
     var->blockInfo.topLevelArrayStride = stream->readInt<int>();
     var->topLevelArraySize             = stream->readInt<int>();
-    var->vertexStaticUse               = stream->readBool();
-    var->fragmentStaticUse             = stream->readBool();
-    var->computeStaticUse              = stream->readBool();
+
+    for (ShaderType shaderType : AllShaderTypes())
+    {
+        var->setActive(shaderType, stream->readBool());
+    }
 }
 
 void WriteInterfaceBlock(BinaryOutputStream *stream, const InterfaceBlock &block)
@@ -189,8 +190,8 @@ HashStream &operator<<(HashStream &stream, const std::vector<std::string> &strin
 
 }  // anonymous namespace
 
-MemoryProgramCache::MemoryProgramCache(size_t maxCacheSizeBytes)
-    : mProgramBinaryCache(maxCacheSizeBytes), mIssuedWarnings(0)
+MemoryProgramCache::MemoryProgramCache(egl::BlobCache &blobCache)
+    : mBlobCache(blobCache), mIssuedWarnings(0)
 {
 }
 
@@ -230,11 +231,21 @@ LinkResult MemoryProgramCache::Deserialize(const Context *context,
     state->mComputeShaderLocalSize[1] = stream.readInt<int>();
     state->mComputeShaderLocalSize[2] = stream.readInt<int>();
 
+    state->mGeometryShaderInputPrimitiveType  = stream.readEnum<PrimitiveMode>();
+    state->mGeometryShaderOutputPrimitiveType = stream.readEnum<PrimitiveMode>();
+    state->mGeometryShaderInvocations         = stream.readInt<int>();
+    state->mGeometryShaderMaxVertices         = stream.readInt<int>();
+
     state->mNumViews = stream.readInt<int>();
+
+    static_assert(MAX_VERTEX_ATTRIBS * 2 <= sizeof(uint32_t) * 8,
+                  "All bits of mAttributesTypeMask types and mask fit into 32 bits each");
+    state->mAttributesTypeMask.from_ulong(stream.readInt<uint32_t>());
+    state->mAttributesMask = stream.readInt<gl::AttributesMask>();
 
     static_assert(MAX_VERTEX_ATTRIBS <= sizeof(unsigned long) * 8,
                   "Too many vertex attribs for mask");
-    state->mActiveAttribLocationsMask = stream.readInt<unsigned long>();
+    state->mActiveAttribLocationsMask = stream.readInt<gl::AttributesMask>();
 
     unsigned int attribCount = stream.readInt<unsigned int>();
     ASSERT(state->mAttributes.empty());
@@ -372,30 +383,28 @@ LinkResult MemoryProgramCache::Deserialize(const Context *context,
         state->mOutputVariableTypes.push_back(stream.readInt<GLenum>());
     }
 
-    static_assert(IMPLEMENTATION_MAX_DRAW_BUFFER_TYPE_MASK == 8 * sizeof(uint16_t),
-                  "All bits of DrawBufferTypeMask can be contained in an uint16_t");
-    state->mDrawBufferTypeMask.from_ulong(stream.readInt<uint16_t>());
-
-    static_assert(IMPLEMENTATION_MAX_DRAW_BUFFERS < 8 * sizeof(uint32_t),
-                  "All bits of DrawBufferMask can be contained in an uint32_t");
-    state->mActiveOutputVariables = stream.readInt<uint32_t>();
+    static_assert(IMPLEMENTATION_MAX_DRAW_BUFFERS * 2 <= 8 * sizeof(uint32_t),
+                  "All bits of mDrawBufferTypeMask and mActiveOutputVariables types and mask fit "
+                  "into 32 bits each");
+    state->mDrawBufferTypeMask.from_ulong(stream.readInt<uint32_t>());
+    state->mActiveOutputVariables = stream.readInt<gl::DrawBufferMask>();
 
     unsigned int samplerRangeLow  = stream.readInt<unsigned int>();
     unsigned int samplerRangeHigh = stream.readInt<unsigned int>();
     state->mSamplerUniformRange   = RangeUI(samplerRangeLow, samplerRangeHigh);
-    unsigned int samplerCount = stream.readInt<unsigned int>();
+    unsigned int samplerCount     = stream.readInt<unsigned int>();
     for (unsigned int samplerIndex = 0; samplerIndex < samplerCount; ++samplerIndex)
     {
-        GLenum textureType  = stream.readInt<GLenum>();
-        size_t bindingCount = stream.readInt<size_t>();
-        bool unreferenced   = stream.readBool();
+        TextureType textureType = stream.readEnum<TextureType>();
+        size_t bindingCount     = stream.readInt<size_t>();
+        bool unreferenced       = stream.readBool();
         state->mSamplerBindings.emplace_back(
             SamplerBinding(textureType, bindingCount, unreferenced));
     }
 
-    unsigned int imageRangeLow  = stream.readInt<unsigned int>();
-    unsigned int imageRangeHigh = stream.readInt<unsigned int>();
-    state->mImageUniformRange   = RangeUI(imageRangeLow, imageRangeHigh);
+    unsigned int imageRangeLow     = stream.readInt<unsigned int>();
+    unsigned int imageRangeHigh    = stream.readInt<unsigned int>();
+    state->mImageUniformRange      = RangeUI(imageRangeLow, imageRangeHigh);
     unsigned int imageBindingCount = stream.readInt<unsigned int>();
     for (unsigned int imageIndex = 0; imageIndex < imageBindingCount; ++imageIndex)
     {
@@ -412,8 +421,13 @@ LinkResult MemoryProgramCache::Deserialize(const Context *context,
     unsigned int atomicCounterRangeHigh = stream.readInt<unsigned int>();
     state->mAtomicCounterUniformRange   = RangeUI(atomicCounterRangeLow, atomicCounterRangeHigh);
 
-    static_assert(SHADER_TYPE_MAX <= sizeof(unsigned long) * 8, "Too many shader types");
-    state->mLinkedShaderStages = stream.readInt<unsigned long>();
+    static_assert(static_cast<unsigned long>(ShaderType::EnumCount) <= sizeof(unsigned long) * 8,
+                  "Too many shader types");
+    state->mLinkedShaderStages = ShaderBitSet(stream.readInt<uint8_t>());
+
+    state->updateTransformFeedbackStrides();
+    state->updateActiveSamplers();
+    state->updateActiveImages();
 
     return program->getImplementation()->load(context, infoLog, &stream);
 }
@@ -448,7 +462,18 @@ void MemoryProgramCache::Serialize(const Context *context,
     stream.writeInt(computeLocalSize[1]);
     stream.writeInt(computeLocalSize[2]);
 
+    ASSERT(state.mGeometryShaderInvocations >= 1 && state.mGeometryShaderMaxVertices >= 0);
+    stream.writeEnum(state.mGeometryShaderInputPrimitiveType);
+    stream.writeEnum(state.mGeometryShaderOutputPrimitiveType);
+    stream.writeInt(state.mGeometryShaderInvocations);
+    stream.writeInt(state.mGeometryShaderMaxVertices);
+
     stream.writeInt(state.mNumViews);
+
+    static_assert(MAX_VERTEX_ATTRIBS * 2 <= sizeof(uint32_t) * 8,
+                  "All bits of mAttributesTypeMask types and mask fit into 32 bits each");
+    stream.writeInt(static_cast<int>(state.mAttributesTypeMask.to_ulong()));
+    stream.writeInt(static_cast<int>(state.mAttributesMask.to_ulong()));
 
     stream.writeInt(state.getActiveAttribLocationsMask().to_ulong());
 
@@ -546,13 +571,11 @@ void MemoryProgramCache::Serialize(const Context *context,
         stream.writeInt(outputVariableType);
     }
 
-    static_assert(IMPLEMENTATION_MAX_DRAW_BUFFER_TYPE_MASK == 8 * sizeof(uint16_t),
-                  "All bits of DrawBufferTypeMask can be contained in an uint16_t");
-    stream.writeInt(static_cast<uint32_t>(state.mDrawBufferTypeMask.to_ulong()));
-
-    static_assert(IMPLEMENTATION_MAX_DRAW_BUFFERS < 8 * sizeof(uint32_t),
-                  "All bits of DrawBufferMask can be contained in an uint32_t");
-    stream.writeInt(static_cast<uint32_t>(state.mActiveOutputVariables.to_ulong()));
+    static_assert(
+        IMPLEMENTATION_MAX_DRAW_BUFFERS * 2 <= 8 * sizeof(uint32_t),
+        "All bits of mDrawBufferTypeMask and mActiveOutputVariables can be contained in 32 bits");
+    stream.writeInt(static_cast<int>(state.mDrawBufferTypeMask.to_ulong()));
+    stream.writeInt(static_cast<int>(state.mActiveOutputVariables.to_ulong()));
 
     stream.writeInt(state.getSamplerUniformRange().low());
     stream.writeInt(state.getSamplerUniformRange().high());
@@ -560,7 +583,7 @@ void MemoryProgramCache::Serialize(const Context *context,
     stream.writeInt(state.getSamplerBindings().size());
     for (const auto &samplerBinding : state.getSamplerBindings())
     {
-        stream.writeInt(samplerBinding.textureType);
+        stream.writeEnum(samplerBinding.textureType);
         stream.writeInt(samplerBinding.boundTextureUnits.size());
         stream.writeInt(samplerBinding.unreferenced);
     }
@@ -593,15 +616,14 @@ void MemoryProgramCache::Serialize(const Context *context,
 // static
 void MemoryProgramCache::ComputeHash(const Context *context,
                                      const Program *program,
-                                     ProgramHash *hashOut)
+                                     egl::BlobCache::Key *hashOut)
 {
-    const Shader *vertexShader   = program->getAttachedVertexShader();
-    const Shader *fragmentShader = program->getAttachedFragmentShader();
-    const Shader *computeShader  = program->getAttachedComputeShader();
-
     // Compute the program hash. Start with the shader hashes and resource strings.
     HashStream hashStream;
-    hashStream << vertexShader << fragmentShader << computeShader;
+    for (ShaderType shaderType : AllShaderTypes())
+    {
+        hashStream << program->getAttachedShader(shaderType);
+    }
 
     // Add some ANGLE metadata and Context properties, such as version and back-end.
     hashStream << ANGLE_COMMIT_HASH << context->getClientMajorVersion()
@@ -622,16 +644,16 @@ void MemoryProgramCache::ComputeHash(const Context *context,
 LinkResult MemoryProgramCache::getProgram(const Context *context,
                                           const Program *program,
                                           ProgramState *state,
-                                          ProgramHash *hashOut)
+                                          egl::BlobCache::Key *hashOut)
 {
     ComputeHash(context, program, hashOut);
-    const angle::MemoryBuffer *binaryProgram = nullptr;
+    egl::BlobCache::Value binaryProgram;
     LinkResult result(false);
-    if (get(*hashOut, &binaryProgram))
+    if (get(context, *hashOut, &binaryProgram))
     {
         InfoLog infoLog;
-        ANGLE_TRY_RESULT(Deserialize(context, program, state, binaryProgram->data(),
-                                     binaryProgram->size(), infoLog),
+        ANGLE_TRY_RESULT(Deserialize(context, program, state, binaryProgram.data(),
+                                     binaryProgram.size(), infoLog),
                          result);
         ANGLE_HISTOGRAM_BOOLEAN("GPU.ANGLE.ProgramCache.LoadBinarySuccess", result.getResult());
         if (!result.getResult())
@@ -653,129 +675,93 @@ LinkResult MemoryProgramCache::getProgram(const Context *context,
     return result;
 }
 
-bool MemoryProgramCache::get(const ProgramHash &programHash, const angle::MemoryBuffer **programOut)
+bool MemoryProgramCache::get(const Context *context,
+                             const egl::BlobCache::Key &programHash,
+                             egl::BlobCache::Value *programOut)
 {
-    const CacheEntry *entry = nullptr;
-    if (!mProgramBinaryCache.get(programHash, &entry))
-    {
-        ANGLE_HISTOGRAM_ENUMERATION("GPU.ANGLE.ProgramCache.CacheResult", kCacheMiss,
-                                    kCacheResultMax);
-        return false;
-    }
-
-    if (entry->second == CacheSource::PutProgram)
-    {
-        ANGLE_HISTOGRAM_ENUMERATION("GPU.ANGLE.ProgramCache.CacheResult", kCacheHitMemory,
-                                    kCacheResultMax);
-    }
-    else
-    {
-        ANGLE_HISTOGRAM_ENUMERATION("GPU.ANGLE.ProgramCache.CacheResult", kCacheHitDisk,
-                                    kCacheResultMax);
-    }
-
-    *programOut = &entry->first;
-    return true;
+    return mBlobCache.get(context, programHash, programOut);
 }
 
 bool MemoryProgramCache::getAt(size_t index,
-                               ProgramHash *hashOut,
-                               const angle::MemoryBuffer **programOut)
+                               const egl::BlobCache::Key **hashOut,
+                               egl::BlobCache::Value *programOut)
 {
-    const CacheEntry *entry = nullptr;
-    if (!mProgramBinaryCache.getAt(index, hashOut, &entry))
-    {
-        return false;
-    }
-
-    *programOut = &entry->first;
-    return true;
+    return mBlobCache.getAt(index, hashOut, programOut);
 }
 
-void MemoryProgramCache::remove(const ProgramHash &programHash)
+void MemoryProgramCache::remove(const egl::BlobCache::Key &programHash)
 {
-    bool result = mProgramBinaryCache.eraseByKey(programHash);
-    ASSERT(result);
+    mBlobCache.remove(programHash);
 }
 
-void MemoryProgramCache::putProgram(const ProgramHash &programHash,
+void MemoryProgramCache::putProgram(const egl::BlobCache::Key &programHash,
                                     const Context *context,
                                     const Program *program)
 {
-    CacheEntry newEntry;
-    Serialize(context, program, &newEntry.first);
-    newEntry.second = CacheSource::PutProgram;
+    angle::MemoryBuffer serializedProgram;
+    Serialize(context, program, &serializedProgram);
 
     ANGLE_HISTOGRAM_COUNTS("GPU.ANGLE.ProgramCache.ProgramBinarySizeBytes",
-                           static_cast<int>(newEntry.first.size()));
+                           static_cast<int>(serializedProgram.size()));
 
-    const CacheEntry *result =
-        mProgramBinaryCache.put(programHash, std::move(newEntry), newEntry.first.size());
-    if (!result)
-    {
-        ERR() << "Failed to store binary program in memory cache, program is too large.";
-    }
-    else
-    {
-        auto *platform = ANGLEPlatformCurrent();
-        platform->cacheProgram(platform, programHash, result->first.size(), result->first.data());
-    }
+    // TODO(syoussefi): to be removed.  Compatibility for Chrome until it supports
+    // EGL_ANDROID_blob_cache. http://anglebug.com/2516
+    auto *platform = ANGLEPlatformCurrent();
+    platform->cacheProgram(platform, programHash, serializedProgram.size(),
+                           serializedProgram.data());
+
+    mBlobCache.put(programHash, std::move(serializedProgram));
 }
 
 void MemoryProgramCache::updateProgram(const Context *context, const Program *program)
 {
-    gl::ProgramHash programHash;
+    egl::BlobCache::Key programHash;
     ComputeHash(context, program, &programHash);
     putProgram(programHash, context, program);
 }
 
-void MemoryProgramCache::putBinary(const ProgramHash &programHash,
+void MemoryProgramCache::putBinary(const egl::BlobCache::Key &programHash,
                                    const uint8_t *binary,
                                    size_t length)
 {
     // Copy the binary.
-    CacheEntry newEntry;
-    newEntry.first.resize(length);
-    memcpy(newEntry.first.data(), binary, length);
-    newEntry.second = CacheSource::PutBinary;
+    angle::MemoryBuffer newEntry;
+    newEntry.resize(length);
+    memcpy(newEntry.data(), binary, length);
 
     // Store the binary.
-    const CacheEntry *result = mProgramBinaryCache.put(programHash, std::move(newEntry), length);
-    if (!result)
-    {
-        ERR() << "Failed to store binary program in memory cache, program is too large.";
-    }
+    mBlobCache.populate(programHash, std::move(newEntry));
 }
 
 void MemoryProgramCache::clear()
 {
-    mProgramBinaryCache.clear();
+    mBlobCache.clear();
     mIssuedWarnings = 0;
 }
 
 void MemoryProgramCache::resize(size_t maxCacheSizeBytes)
 {
-    mProgramBinaryCache.resize(maxCacheSizeBytes);
+    mBlobCache.resize(maxCacheSizeBytes);
 }
 
 size_t MemoryProgramCache::entryCount() const
 {
-    return mProgramBinaryCache.entryCount();
+    return mBlobCache.entryCount();
 }
 
 size_t MemoryProgramCache::trim(size_t limit)
 {
-    return mProgramBinaryCache.shrinkToSize(limit);
+    return mBlobCache.trim(limit);
 }
 
 size_t MemoryProgramCache::size() const
 {
-    return mProgramBinaryCache.size();
+    return mBlobCache.size();
 }
 
 size_t MemoryProgramCache::maxSize() const
 {
-    return mProgramBinaryCache.maxSize();
+    return mBlobCache.maxSize();
 }
 
 }  // namespace gl

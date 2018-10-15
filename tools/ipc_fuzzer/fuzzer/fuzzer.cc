@@ -13,6 +13,7 @@
 #include "base/memory/ptr_util.h"
 #include "base/memory/shared_memory_handle.h"
 #include "base/strings/string_util.h"
+#include "base/unguessable_token.h"
 #include "base/values.h"
 #include "build/build_config.h"
 #include "ipc/ipc_message.h"
@@ -511,28 +512,28 @@ struct FuzzTraits<base::ListValue> {
           bool tmp;
           p->GetBoolean(index, &tmp);
           fuzzer->FuzzBool(&tmp);
-          p->Set(index, base::MakeUnique<base::Value>(tmp));
+          p->Set(index, std::make_unique<base::Value>(tmp));
           break;
         }
         case base::Value::Type::INTEGER: {
           int tmp;
           p->GetInteger(index, &tmp);
           fuzzer->FuzzInt(&tmp);
-          p->Set(index, base::MakeUnique<base::Value>(tmp));
+          p->Set(index, std::make_unique<base::Value>(tmp));
           break;
         }
         case base::Value::Type::DOUBLE: {
           double tmp;
           p->GetDouble(index, &tmp);
           fuzzer->FuzzDouble(&tmp);
-          p->Set(index, base::MakeUnique<base::Value>(tmp));
+          p->Set(index, std::make_unique<base::Value>(tmp));
           break;
         }
         case base::Value::Type::STRING: {
           std::string tmp;
           p->GetString(index, &tmp);
           fuzzer->FuzzString(&tmp);
-          p->Set(index, base::MakeUnique<base::Value>(tmp));
+          p->Set(index, std::make_unique<base::Value>(tmp));
           break;
         }
         case base::Value::Type::BINARY: {
@@ -547,7 +548,7 @@ struct FuzzTraits<base::ListValue> {
           if (p->GetDictionary(index, &dict_weak)) {
             FuzzParam(dict_weak, fuzzer);
           } else {
-            auto dict = base::MakeUnique<base::DictionaryValue>();
+            auto dict = std::make_unique<base::DictionaryValue>();
             FuzzParam(dict.get(), fuzzer);
             p->Set(index, std::move(dict));
           }
@@ -558,7 +559,7 @@ struct FuzzTraits<base::ListValue> {
           if (p->GetList(index, &list_weak)) {
             FuzzParam(list_weak, fuzzer);
           } else {
-            auto list = base::MakeUnique<base::ListValue>();
+            auto list = std::make_unique<base::ListValue>();
             FuzzParam(list.get(), fuzzer);
             p->Set(index, std::move(list));
           }
@@ -620,13 +621,13 @@ struct FuzzTraits<base::DictionaryValue> {
           break;
         }
         case base::Value::Type::DICTIONARY: {
-          auto tmp = base::MakeUnique<base::DictionaryValue>();
+          auto tmp = std::make_unique<base::DictionaryValue>();
           FuzzParam(tmp.get(), fuzzer);
           p->SetWithoutPathExpansion(property, std::move(tmp));
           break;
         }
         case base::Value::Type::LIST: {
-          auto tmp = base::MakeUnique<base::ListValue>();
+          auto tmp = std::make_unique<base::ListValue>();
           FuzzParam(tmp.get(), fuzzer);
           p->SetWithoutPathExpansion(property, std::move(tmp));
           break;
@@ -637,6 +638,20 @@ struct FuzzTraits<base::DictionaryValue> {
       }
     }
     --g_depth;
+    return true;
+  }
+};
+
+template <>
+struct FuzzTraits<base::UnguessableToken> {
+  static bool Fuzz(base::UnguessableToken* p, Fuzzer* fuzzer) {
+    auto low = p->GetLowForSerialization();
+    auto high = p->GetHighForSerialization();
+    if (!FuzzParam(&low, fuzzer))
+      return false;
+    if (!FuzzParam(&high, fuzzer))
+      return false;
+    *p = base::UnguessableToken::Deserialize(high, low);
     return true;
   }
 };
@@ -966,7 +981,6 @@ struct FuzzTraits<gpu::SyncToken> {
     bool verified_flush = false;
     gpu::CommandBufferNamespace namespace_id =
         gpu::CommandBufferNamespace::INVALID;
-    int32_t extra_data_field = 0;
     gpu::CommandBufferId command_buffer_id;
     uint64_t release_count = 0;
 
@@ -974,15 +988,13 @@ struct FuzzTraits<gpu::SyncToken> {
       return false;
     if (!FuzzParam(&namespace_id, fuzzer))
       return false;
-    if (!FuzzParam(&extra_data_field, fuzzer))
-      return false;
     if (!FuzzParam(&command_buffer_id, fuzzer))
       return false;
     if (!FuzzParam(&release_count, fuzzer))
       return false;
 
     p->Clear();
-    p->Set(namespace_id, extra_data_field, command_buffer_id, release_count);
+    p->Set(namespace_id, command_buffer_id, release_count);
     if (verified_flush)
       p->SetVerifyFlush();
     return true;
@@ -1116,7 +1128,6 @@ struct FuzzTraits<media::AudioParameters> {
     int channel_layout = p->channel_layout();
     int format = p->format();
     int sample_rate = p->sample_rate();
-    int bits_per_sample = p->bits_per_sample();
     int frames_per_buffer = p->frames_per_buffer();
     int channels = p->channels();
     int effects = p->effects();
@@ -1129,8 +1140,6 @@ struct FuzzTraits<media::AudioParameters> {
       return false;
     if (!FuzzParam(&sample_rate, fuzzer))
       return false;
-    if (!FuzzParam(&bits_per_sample, fuzzer))
-      return false;
     if (!FuzzParam(&frames_per_buffer, fuzzer))
       return false;
     if (!FuzzParam(&channels, fuzzer))
@@ -1140,7 +1149,7 @@ struct FuzzTraits<media::AudioParameters> {
     media::AudioParameters params(
         static_cast<media::AudioParameters::Format>(format),
         static_cast<media::ChannelLayout>(channel_layout), sample_rate,
-        bits_per_sample, frames_per_buffer);
+        frames_per_buffer);
     params.set_channels_for_discrete(channels);
     params.set_effects(effects);
     *p = params;
@@ -1255,14 +1264,6 @@ struct FuzzTraits<PP_Bool> {
     if (!FuzzParam(&tmp, fuzzer))
       return false;
     *p = PP_FromBool(tmp);
-    return true;
-  }
-};
-
-template <>
-struct FuzzTraits<PP_KeyInformation> {
-  static bool Fuzz(PP_KeyInformation* p, Fuzzer* fuzzer) {
-    // TODO(mbarbella): This should actually do something.
     return true;
   }
 };
@@ -1444,14 +1445,15 @@ struct FuzzTraits<SkBitmap> {
 };
 
 template <>
-struct FuzzTraits<storage::DataElement> {
-  static bool Fuzz(storage::DataElement* p, Fuzzer* fuzzer) {
+struct FuzzTraits<network::DataElement> {
+  static bool Fuzz(network::DataElement* p, Fuzzer* fuzzer) {
     // TODO(mbarbella): Support mutation.
     if (!fuzzer->ShouldGenerate())
       return true;
 
-    switch (RandInRange(4)) {
-      case storage::DataElement::Type::TYPE_BYTES: {
+    switch (RandInRange(3)) {
+      case 0: {
+        // network::DataElement::Type::TYPE_BYTES
         if (RandEvent(2)) {
           p->SetToEmptyBytes();
         } else {
@@ -1462,7 +1464,8 @@ struct FuzzTraits<storage::DataElement> {
         }
         return true;
       }
-      case storage::DataElement::Type::TYPE_FILE: {
+      case 1: {
+        // network::DataElement::Type::TYPE_FILE
         base::FilePath path;
         uint64_t offset;
         uint64_t length;
@@ -1478,7 +1481,8 @@ struct FuzzTraits<storage::DataElement> {
         p->SetToFilePathRange(path, offset, length, modification_time);
         return true;
       }
-      case storage::DataElement::Type::TYPE_BLOB: {
+      case 2: {
+        // network::DataElement::Type::TYPE_BLOB
         std::string uuid;
         uint64_t offset;
         uint64_t length;
@@ -1489,22 +1493,6 @@ struct FuzzTraits<storage::DataElement> {
         if (!FuzzParam(&length, fuzzer))
           return false;
         p->SetToBlobRange(uuid, offset, length);
-        return true;
-      }
-      case storage::DataElement::Type::TYPE_FILE_FILESYSTEM: {
-        GURL url;
-        uint64_t offset;
-        uint64_t length;
-        base::Time modification_time;
-        if (!FuzzParam(&url, fuzzer))
-          return false;
-        if (!FuzzParam(&offset, fuzzer))
-          return false;
-        if (!FuzzParam(&length, fuzzer))
-          return false;
-        if (!FuzzParam(&modification_time, fuzzer))
-          return false;
-        p->SetToFileSystemUrlRange(url, offset, length, modification_time);
         return true;
       }
       default: {
@@ -1536,24 +1524,48 @@ struct FuzzTraits<ui::LatencyInfo> {
 template <>
 struct FuzzTraits<url::Origin> {
   static bool Fuzz(url::Origin* p, Fuzzer* fuzzer) {
-    std::string scheme = p->scheme();
-    std::string host = p->host();
-    uint16_t port = p->port();
-    std::string suborigin = p->suborigin();
+    bool opaque = p->unique();
+    if (!FuzzParam(&opaque, fuzzer))
+      return false;
+    std::string scheme = p->GetTupleOrPrecursorTupleIfOpaque().scheme();
+    std::string host = p->GetTupleOrPrecursorTupleIfOpaque().host();
+    uint16_t port = p->GetTupleOrPrecursorTupleIfOpaque().port();
     if (!FuzzParam(&scheme, fuzzer))
       return false;
     if (!FuzzParam(&host, fuzzer))
       return false;
     if (!FuzzParam(&port, fuzzer))
       return false;
-    if (!FuzzParam(&suborigin, fuzzer))
-      return false;
-    *p = url::Origin::UnsafelyCreateOriginWithoutNormalization(scheme, host,
-                                                               port, suborigin);
 
-    // Force a unique origin 1% of the time:
-    if (RandInRange(100) == 1)
-      *p = url::Origin();
+    base::Optional<url::Origin> origin;
+    if (!opaque) {
+      origin = url::Origin::UnsafelyCreateTupleOriginWithoutNormalization(
+          scheme, host, port);
+    } else {
+      base::Optional<base::UnguessableToken> token =
+          p->GetNonceForSerialization();
+      if (!token)
+        token = base::UnguessableToken::Deserialize(RandU64(), RandU64());
+      if (!FuzzParam(&(*token), fuzzer))
+        return false;
+      origin = url::Origin::UnsafelyCreateOpaqueOriginWithoutNormalization(
+          scheme, host, port, url::Origin::Nonce(*token));
+    }
+
+    if (!origin) {
+      // This means that we produced non-canonical values that were rejected by
+      // UnsafelyCreate. Which is nice, except, those are arguably interesting
+      // values to be sending over the wire sometimes, to make sure they're
+      // rejected at the receiving end.
+      //
+      // We could potentially call CreateFromNormalizedTuple here to force their
+      // creation, except that could lead to invariant violations within the
+      // url::Origin we construct -- and potentially crash the fuzzer. What to
+      // do?
+      return false;
+    }
+
+    *p = std::move(origin).value();
     return true;
   }
 };
@@ -1658,7 +1670,7 @@ class MessageFactory<Message, IPC::MessageKind::CONTROL> {
  public:
   template <typename... Args>
   static std::unique_ptr<Message> New(const Args&... args) {
-    return base::MakeUnique<Message>(args...);
+    return std::make_unique<Message>(args...);
   }
 };
 
@@ -1667,7 +1679,7 @@ class MessageFactory<Message, IPC::MessageKind::ROUTED> {
  public:
   template <typename... Args>
   static std::unique_ptr<Message> New(const Args&... args) {
-    return base::MakeUnique<Message>(RandInRange(MAX_FAKE_ROUTING_ID), args...);
+    return std::make_unique<Message>(RandInRange(MAX_FAKE_ROUTING_ID), args...);
   }
 };
 

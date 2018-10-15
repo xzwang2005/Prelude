@@ -11,6 +11,7 @@
 #include <memory>
 #include <string>
 
+#include "base/debug/alias.h"
 #include "base/strings/string16.h"
 #include "base/strings/string_piece.h"
 #include "url/third_party/mozilla/url_parse.h"
@@ -21,9 +22,8 @@
 
 // Represents a URL.
 //
-// A parsed canonicalized URL will be guaranteed UTF-8. Only the ref (if
-// specified) can be non-ASCII, the host, path, etc. will be guaranteed ASCII
-// and any non-ASCII characters will be encoded and % escaped.
+// A parsed canonicalized URL is guaranteed to be UTF-8. Any non-ASCII input
+// characters are UTF-8 encoded and % escaped to ASCII.
 //
 // The string representation of a URL is called the spec(). Getting the
 // spec will assert if the URL is invalid to help protect against malicious
@@ -78,7 +78,7 @@ class URL_EXPORT GURL {
   ~GURL();
 
   GURL& operator=(const GURL& other);
-  GURL& operator=(GURL&& other);
+  GURL& operator=(GURL&& other) noexcept;
 
   // Returns true when this object represents a valid parsed URL. When not
   // valid, other functions will still succeed, but you will not get canonical
@@ -101,13 +101,12 @@ class URL_EXPORT GURL {
   // the empty string (for safety in release builds, to keep them from being
   // misused which might be a security problem).
   //
-  // The URL will be ASCII except the reference fragment, which may be UTF-8.
-  // It is guaranteed to be valid UTF-8.
+  // The URL will be ASCII (non-ASCII characters will be %-escaped UTF-8).
   //
   // The exception is for empty() URLs (which are !is_valid()) but this will
   // return the empty string without asserting.
   //
-  // Used invalid_spec() below to get the unusable spec of an invalid URL. This
+  // Use invalid_spec() below to get the unusable spec of an invalid URL. This
   // separation is designed to prevent errors that may cause security problems
   // that could result from the mistaken use of an invalid URL.
   const std::string& spec() const;
@@ -152,8 +151,8 @@ class URL_EXPORT GURL {
   //
   // It is an error to resolve a URL relative to an invalid URL. The result
   // will be the empty URL.
-  GURL Resolve(const std::string& relative) const;
-  GURL Resolve(const base::string16& relative) const;
+  GURL Resolve(base::StringPiece relative) const;
+  GURL Resolve(base::StringPiece16 relative) const;
 
   // Creates a new GURL by replacing the current URL's components with the
   // supplied versions. See the Replacements class in url_canon.h for more.
@@ -251,19 +250,12 @@ class URL_EXPORT GURL {
   // higher-level and more complete semantics. See that function's documentation
   // for more detail.
   bool SchemeIsCryptographic() const {
-    return SchemeIs(url::kHttpsScheme) || SchemeIs(url::kWssScheme) ||
-           SchemeIs(url::kHttpsSuboriginScheme);
+    return SchemeIs(url::kHttpsScheme) || SchemeIs(url::kWssScheme);
   }
 
   // Returns true if the scheme is "blob".
   bool SchemeIsBlob() const {
     return SchemeIs(url::kBlobScheme);
-  }
-
-  // Returns true if the scheme indicates a serialized suborigin.
-  bool SchemeIsSuborigin() const {
-    return SchemeIs(url::kHttpSuboriginScheme) ||
-           SchemeIs(url::kHttpsSuboriginScheme);
   }
 
   // The "content" of the URL is everything after the scheme (skipping the
@@ -356,8 +348,8 @@ class URL_EXPORT GURL {
     return ComponentStringPiece(parsed_.query);
   }
 
-  // Stuff following '#' to the end of the string. This will be UTF-8 encoded
-  // (not necessarily ASCII). The getters will not include the '#'.
+  // Stuff following '#' to the end of the string. This will be %-escaped UTF-8.
+  // The getters will not include the '#'.
   bool has_ref() const {
     return parsed_.ref.len >= 0;
   }
@@ -398,15 +390,15 @@ class URL_EXPORT GURL {
   // "www.google.com".
   //
   // The input domain should match host canonicalization rules. i.e. the input
-  // show be lowercase except for escape chars.
+  // should be lowercase except for escape chars.
   //
   // This call is more efficient than getting the host and checking whether the
   // host has the specific domain or not because no copies or object
   // constructions are done.
   bool DomainIs(base::StringPiece canonical_domain) const;
 
-  // Checks whether or not two URLs are differing only in the ref (the part
-  // after the # character).
+  // Checks whether or not two URLs differ only in the ref (the part after
+  // the # character).
   bool EqualsIgnoringRef(const GURL& other) const;
 
   // Swaps the contents of this GURL object with |other|, without doing
@@ -488,5 +480,11 @@ URL_EXPORT bool operator==(const GURL& x, const base::StringPiece& spec);
 URL_EXPORT bool operator==(const base::StringPiece& spec, const GURL& x);
 URL_EXPORT bool operator!=(const GURL& x, const base::StringPiece& spec);
 URL_EXPORT bool operator!=(const base::StringPiece& spec, const GURL& x);
+
+// DEBUG_ALIAS_FOR_GURL(var_name, url) copies |url| into a new stack-allocated
+// variable named |<var_name>|.  This helps ensure that the value of |url| gets
+// preserved in crash dumps.
+#define DEBUG_ALIAS_FOR_GURL(var_name, url) \
+  DEBUG_ALIAS_FOR_CSTR(var_name, (url).possibly_invalid_spec().c_str(), 128)
 
 #endif  // URL_GURL_H_

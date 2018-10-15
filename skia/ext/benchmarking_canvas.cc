@@ -251,8 +251,6 @@ std::unique_ptr<base::Value> AsValue(const SkPaint& paint) {
 std::unique_ptr<base::Value> SaveLayerFlagsAsValue(
     SkCanvas::SaveLayerFlags flags) {
   FlagsBuilder builder('|');
-  builder.addFlag(flags & SkCanvas::kIsOpaque_SaveLayerFlag,
-                  "kIsOpaque");
   builder.addFlag(flags & SkCanvas::kPreserveLCDText_SaveLayerFlag,
                   "kPreserveLCDText");
 
@@ -388,7 +386,7 @@ public:
 
    op_record_->SetString("cmd_string", op_name);
    op_params_ =
-       op_record_->SetList("info", base::MakeUnique<base::ListValue>());
+       op_record_->SetList("info", std::make_unique<base::ListValue>());
 
    if (paint) {
      this->addParam("paint", AsValue(*paint));
@@ -691,18 +689,6 @@ void BenchmarkingCanvas::onDrawPosTextH(const void* text, size_t byteLength,
   op.addParam("pos", AsListValue(xpos, count));
 
   INHERITED::onDrawPosTextH(text, byteLength, xpos, constY, *op.paint());
-}
-
-void BenchmarkingCanvas::onDrawTextOnPath(const void* text, size_t byteLength,
-                                          const SkPath& path, const SkMatrix* matrix,
-                                          const SkPaint& paint) {
-  AutoOp op(this, "DrawTextOnPath", &paint);
-  op.addParam("count", AsValue(SkIntToScalar(paint.countText(text, byteLength))));
-  op.addParam("path", AsValue(path));
-  if (matrix)
-    op.addParam("matrix", AsValue(*matrix));
-
-  INHERITED::onDrawTextOnPath(text, byteLength, path, matrix, *op.paint());
 }
 
 void BenchmarkingCanvas::onDrawTextBlob(const SkTextBlob* blob, SkScalar x, SkScalar y,

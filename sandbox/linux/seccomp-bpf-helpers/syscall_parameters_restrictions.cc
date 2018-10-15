@@ -334,15 +334,21 @@ ResultExpr RestrictPrlimit64(pid_t target_pid) {
 
 ResultExpr RestrictGetrusage() {
   const Arg<int> who(0);
-  return If(who == RUSAGE_SELF, Allow()).Else(CrashSIGSYS());
+  return If(AnyOf(who == RUSAGE_SELF, who == RUSAGE_THREAD), Allow())
+         .Else(CrashSIGSYS());
 }
 #endif  // !defined(OS_NACL_NONSFI)
 
 ResultExpr RestrictClockID() {
   static_assert(4 == sizeof(clockid_t), "clockid_t is not 32bit");
   const Arg<clockid_t> clockid(0);
-  return Switch(clockid)
-      .CASES((
+
+  // Clock IDs < 0 are per pid/tid or are clockfds.
+  const unsigned int kIsPidBit = 1u<<31;
+
+  return
+    If((clockid & kIsPidBit) == 0,
+      Switch(clockid).CASES((
 #if defined(OS_ANDROID)
               CLOCK_BOOTTIME,
 #endif
@@ -353,7 +359,12 @@ ResultExpr RestrictClockID() {
               CLOCK_REALTIME_COARSE,
               CLOCK_THREAD_CPUTIME_ID),
              Allow())
-      .Default(CrashSIGSYS());
+      .Default(CrashSIGSYS()))
+#if defined(OS_ANDROID)
+    // Allow per-pid and per-tid clocks.
+    .ElseIf((clockid & CPUCLOCK_CLOCK_MASK) != CLOCKFD, Allow())
+#endif
+    .Else(CrashSIGSYS());
 }
 
 #if !defined(GRND_NONBLOCK)

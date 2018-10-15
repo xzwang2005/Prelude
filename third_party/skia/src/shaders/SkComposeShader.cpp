@@ -43,17 +43,12 @@ sk_sp<SkFlattenable> SkComposeShader::CreateProc(SkReadBuffer& buffer) {
     sk_sp<SkShader> dst(buffer.readShader());
     sk_sp<SkShader> src(buffer.readShader());
     unsigned        mode = buffer.read32();
-
-    float lerp = 1;
-    if (!buffer.isVersionLT(SkReadBuffer::kComposeShaderCanLerp_Version)) {
-        lerp = buffer.readScalar();
-    }
+    float           lerp = buffer.readScalar();
 
     // check for valid mode before we cast to the enum type
-    if (mode > (unsigned)SkBlendMode::kLastMode) {
+    if (!buffer.validate(mode <= (unsigned)SkBlendMode::kLastMode)) {
         return nullptr;
     }
-
     return MakeCompose(std::move(dst), std::move(src), static_cast<SkBlendMode>(mode), lerp);
 }
 
@@ -124,7 +119,7 @@ bool SkComposeShader::onAppendStages(const StageRec& rec) const {
 /////////////////////////////////////////////////////////////////////
 
 std::unique_ptr<GrFragmentProcessor> SkComposeShader::asFragmentProcessor(
-        const AsFPArgs& args) const {
+        const GrFPArgs& args) const {
     if (this->isJustMode()) {
         SkASSERT(fMode != SkBlendMode::kSrc && fMode != SkBlendMode::kDst); // caught in factory
         if (fMode == SkBlendMode::kClear) {
@@ -144,22 +139,5 @@ std::unique_ptr<GrFragmentProcessor> SkComposeShader::asFragmentProcessor(
     // TODO: account for fLerpT when it is < 1
     return GrXfermodeFragmentProcessor::MakeFromTwoProcessors(std::move(fpB),
                                                               std::move(fpA), fMode);
-}
-#endif
-
-#ifndef SK_IGNORE_TO_STRING
-void SkComposeShader::toString(SkString* str) const {
-    str->append("SkComposeShader: (");
-
-    str->append("dst: ");
-    as_SB(fDst)->toString(str);
-    str->append(" src: ");
-    as_SB(fSrc)->toString(str);
-    str->appendf(" mode: %s", SkBlendMode_Name(fMode));
-    str->appendf(" lerpT: %g", fLerpT);
-
-    this->INHERITED::toString(str);
-
-    str->append(")");
 }
 #endif

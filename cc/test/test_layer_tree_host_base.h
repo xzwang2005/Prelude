@@ -32,7 +32,7 @@ class TestLayerTreeHostBase : public testing::Test {
       TaskRunnerProvider* task_runner_provider,
       TaskGraphRunner* task_graph_runner);
   virtual std::unique_ptr<TaskGraphRunner> CreateTaskGraphRunner();
-  virtual void InitializeRenderer();
+  virtual void InitializeFrameSink();
 
   void ResetLayerTreeFrameSink(
       std::unique_ptr<LayerTreeFrameSink> layer_tree_frame_sink);
@@ -42,9 +42,11 @@ class TestLayerTreeHostBase : public testing::Test {
   void SetupTrees(scoped_refptr<RasterSource> pending_raster_source,
                   scoped_refptr<RasterSource> active_raster_source);
   void SetupPendingTree(scoped_refptr<RasterSource> raster_source);
-  void SetupPendingTree(scoped_refptr<RasterSource> raster_source,
-                        const gfx::Size& tile_size,
-                        const Region& invalidation);
+  void SetupPendingTree(
+      scoped_refptr<RasterSource> raster_source,
+      const gfx::Size& tile_size,
+      const Region& invalidation,
+      Layer::LayerMaskType mask_type = Layer::LayerMaskType::NOT_MASK);
   void ActivateTree();
   void PerformImplSideInvalidation();
   void RebuildPropertyTreesOnPendingTree();

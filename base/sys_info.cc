@@ -4,13 +4,19 @@
 
 #include "base/sys_info.h"
 
+#include <algorithm>
+
 #include "base/base_switches.h"
+#include "base/bind.h"
+#include "base/callback.h"
 #include "base/command_line.h"
 #include "base/lazy_instance.h"
-#include "base/metrics/field_trial.h"
-#include "base/strings/string_number_conversions.h"
-#include "base/strings/string_util.h"
+#include "base/location.h"
+#include "base/logging.h"
 #include "base/sys_info_internal.h"
+#include "base/task/post_task.h"
+#include "base/task/task_traits.h"
+#include "base/task_runner_util.h"
 #include "base/time/time.h"
 #include "build/build_config.h"
 
@@ -45,6 +51,15 @@ int64_t SysInfo::AmountOfAvailablePhysicalMemory() {
   return AmountOfAvailablePhysicalMemoryImpl();
 }
 
+bool SysInfo::IsLowEndDevice() {
+  if (base::CommandLine::ForCurrentProcess()->HasSwitch(
+          switches::kEnableLowEndDeviceMode)) {
+    return true;
+  }
+
+  return IsLowEndDeviceImpl();
+}
+
 #if !defined(OS_ANDROID)
 
 bool DetectLowEndDevice() {
@@ -63,15 +78,7 @@ static LazyInstance<
   g_lazy_low_end_device = LAZY_INSTANCE_INITIALIZER;
 
 // static
-bool SysInfo::IsLowEndDevice() {
-  const std::string group_name =
-      base::FieldTrialList::FindFullName("MemoryReduction");
-
-  // Low End Device Mode will be enabled if this client is assigned to
-  // one of those EnabledXXX groups.
-  if (StartsWith(group_name, "Enabled", CompareCase::SENSITIVE))
-    return true;
-
+bool SysInfo::IsLowEndDeviceImpl() {
   return g_lazy_low_end_device.Get().value();
 }
 #endif
@@ -81,6 +88,25 @@ std::string SysInfo::HardwareModelName() {
   return std::string();
 }
 #endif
+
+void SysInfo::GetHardwareInfo(base::OnceCallback<void(HardwareInfo)> callback) {
+#if defined(OS_WIN)
+  base::PostTaskAndReplyWithResult(
+      base::CreateCOMSTATaskRunnerWithTraits({}).get(), FROM_HERE,
+      base::BindOnce(&GetHardwareInfoSync), std::move(callback));
+#elif defined(OS_ANDROID) || defined(OS_MACOSX)
+  base::PostTaskAndReplyWithResult(
+      FROM_HERE, base::BindOnce(&GetHardwareInfoSync), std::move(callback));
+#elif defined(OS_LINUX)
+  base::PostTaskWithTraitsAndReplyWithResult(
+      FROM_HERE, {base::MayBlock()}, base::BindOnce(&GetHardwareInfoSync),
+      std::move(callback));
+#else
+  NOTIMPLEMENTED();
+  base::PostTask(FROM_HERE,
+                 base::BindOnce(std::move(callback), HardwareInfo()));
+#endif
+}
 
 // static
 base::TimeDelta SysInfo::Uptime() {

@@ -263,8 +263,13 @@ base::Optional<SkColor> SolidColorAnalyzer::DetermineIfSolidColor(
         break;
       }
 
-      // The rest of the ops should only affect our state canvas.
+      // Don't affect the canvas, so ignore.
       case PaintOpType::Annotate:
+      case PaintOpType::CustomData:
+      case PaintOpType::Noop:
+        break;
+
+      // The rest of the ops should only affect our state canvas.
       case PaintOpType::Concat:
       case PaintOpType::Scale:
       case PaintOpType::SetMatrix:
@@ -272,7 +277,6 @@ base::Optional<SkColor> SolidColorAnalyzer::DetermineIfSolidColor(
       case PaintOpType::Rotate:
       case PaintOpType::Save:
       case PaintOpType::Translate:
-      case PaintOpType::Noop:
         op->Raster(&canvas, params);
         break;
     }

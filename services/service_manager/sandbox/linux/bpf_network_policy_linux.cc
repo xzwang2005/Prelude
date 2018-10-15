@@ -10,7 +10,6 @@
 #include "base/compiler_specific.h"
 #include "base/logging.h"
 #include "base/macros.h"
-#include "base/memory/ptr_util.h"
 #include "build/build_config.h"
 #include "sandbox/linux/bpf_dsl/bpf_dsl.h"
 #include "sandbox/linux/seccomp-bpf-helpers/syscall_parameters_restrictions.h"
@@ -34,46 +33,13 @@ NetworkProcessPolicy::NetworkProcessPolicy() {}
 NetworkProcessPolicy::~NetworkProcessPolicy() {}
 
 ResultExpr NetworkProcessPolicy::EvaluateSyscall(int sysno) const {
-  switch (sysno) {
-#if defined(__NR_access)
-    case __NR_access:
-#endif
-#if defined(__NR_open)
-    case __NR_open:
-#endif
-#if defined(__NR_faccessat)
-    case __NR_faccessat:
-#endif
-#if defined(__NR_openat)
-    case __NR_openat:
-#endif
-#if defined(__NR_stat)
-    case __NR_stat:
-#endif
-#if defined(__NR_stat64)
-    case __NR_stat64:
-#endif
-#if defined(__NR_fstatat)
-    case __NR_fstatat:
-#endif
-#if defined(__NR_newfstatat)
-    case __NR_newfstatat:
-#endif
-#if defined(__NR_rename)
-    case __NR_rename:
-#endif
-#if defined(__NR_readlink)
-    case __NR_readlink:
-#endif
-#if defined(__NR_readlinkat)
-    case __NR_readlinkat:
-#endif
-      return Trap(BrokerProcess::SIGSYS_Handler,
-                  SandboxLinux::GetInstance()->broker_process());
-    default:
-      // TODO(tsepez): FIX this.
-      return Allow();
+  auto* broker_process = SandboxLinux::GetInstance()->broker_process();
+  if (broker_process->IsSyscallAllowed(sysno)) {
+    return Trap(BrokerProcess::SIGSYS_Handler, broker_process);
   }
+
+  // TODO(tsepez): FIX this.
+  return Allow();
 }
 
 }  // namespace service_manager

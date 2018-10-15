@@ -41,10 +41,10 @@ typedef std::vector<std::unique_ptr<CdmKeyInformation>> CdmKeysInfo;
 // Must be consistent with the values specified in the spec:
 // https://w3c.github.io/encrypted-media/#idl-def-MediaKeySessionType
 enum class CdmSessionType {
-  TEMPORARY_SESSION,
-  PERSISTENT_LICENSE_SESSION,
-  PERSISTENT_RELEASE_MESSAGE_SESSION,
-  SESSION_TYPE_MAX = PERSISTENT_RELEASE_MESSAGE_SESSION
+  kTemporary,
+  kPersistentLicense,
+  kPersistentUsageRecord,
+  kMaxValue = kPersistentUsageRecord
 };
 
 // Type of message being sent to the application.
@@ -68,7 +68,8 @@ enum class HdcpVersion {
   kHdcpVersion2_0,
   kHdcpVersion2_1,
   kHdcpVersion2_2,
-  kHdcpVersionMax = kHdcpVersion2_2
+  kHdcpVersion2_3,
+  kHdcpVersionMax = kHdcpVersion2_3
 };
 
 // An interface that represents the Content Decryption Module (CDM) in the
@@ -158,13 +159,8 @@ class MEDIA_EXPORT ContentDecryptionModule
 
   // Returns the CdmContext associated with |this|. The returned CdmContext is
   // owned by |this| and the caller needs to make sure it is not used after
-  // |this| is destructed.
-  // Returns null if CdmContext is not supported. Instead the media player may
-  // use the CDM via some platform specific method.
-  // By default this method returns null.
-  // TODO(xhwang): Convert all SetCdm() implementations to use CdmContext so
-  // that this function should never return nullptr.
-  virtual CdmContext* GetCdmContext();
+  // |this| is destructed. This method should never return null.
+  virtual CdmContext* GetCdmContext() = 0;
 
   // Deletes |this| on the correct thread. By default |this| is deleted
   // immediately. Override this method if |this| needs to be deleted on a

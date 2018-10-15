@@ -24,8 +24,8 @@ class SERVICE_MANAGER_PUBLIC_CPP_EXPORT Service {
   virtual ~Service();
 
   // Called exactly once when a bidirectional connection with the Service
-  // Manager has been established. No calls to OnConnect() or OnBindInterface()
-  // will be made before this.
+  // Manager has been established. No calls to OnBindInterface() will be made
+  // before this.
   virtual void OnStart();
 
   // Called when the service identified by |source.identity| requests this
@@ -59,6 +59,7 @@ class SERVICE_MANAGER_PUBLIC_CPP_EXPORT Service {
  private:
   friend class ForwardingService;
   friend class ServiceContext;
+  friend class TestServiceDecorator;
 
   // NOTE: This MUST be called before any public Service methods. ServiceContext
   // satisfies this guarantee for any Service instance it owns.

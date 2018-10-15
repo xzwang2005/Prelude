@@ -26,11 +26,16 @@ import urllib
 import urlparse
 from cStringIO import StringIO
 
+import auth
 import gclient_utils
+import subprocess2
 from third_party import httplib2
 
 LOGGER = logging.getLogger()
-TRY_LIMIT = 5
+# With a starting sleep time of 1.5 seconds, 2^n exponential backoff, and seven
+# total tries, the sleep time between the first and last tries will be 94.5 sec.
+# TODO(crbug.com/881860): Lower this when crbug.com/877717 is fixed.
+TRY_LIMIT = 7
 
 
 # Controls the transport protocol used to communicate with gerrit.
@@ -83,6 +88,10 @@ class Authenticator(object):
     Probes the local system and its environment and identifies the
     Authenticator instance to use.
     """
+    # LUCI Context takes priority since it's normally present only on bots,
+    # which then must use it.
+    if LuciContextAuthenticator.is_luci():
+      return LuciContextAuthenticator()
     if GceAuthenticator.is_gce():
       return GceAuthenticator()
     return CookiesAuthenticator()
@@ -126,16 +135,17 @@ class CookiesAuthenticator(Authenticator):
   def _get_netrc(cls):
     # Buffer the '.netrc' path. Use an empty file if it doesn't exist.
     path = cls.get_netrc_path()
-    content = ''
-    if os.path.exists(path):
-      st = os.stat(path)
-      if st.st_mode & (stat.S_IRWXG | stat.S_IRWXO):
-        print >> sys.stderr, (
-            'WARNING: netrc file %s cannot be used because its file '
-            'permissions are insecure.  netrc file permissions should be '
-            '600.' % path)
-      with open(path) as fd:
-        content = fd.read()
+    if not os.path.exists(path):
+      return netrc.netrc(os.devnull)
+
+    st = os.stat(path)
+    if st.st_mode & (stat.S_IRWXG | stat.S_IRWXO):
+      print >> sys.stderr, (
+          'WARNING: netrc file %s cannot be used because its file '
+          'permissions are insecure.  netrc file permissions should be '
+          '600.' % path)
+    with open(path) as fd:
+      content = fd.read()
 
     # Load the '.netrc' file. We strip comments from it because processing them
     # can trigger a bug in Windows. See crbug.com/664664.
@@ -164,7 +174,11 @@ class CookiesAuthenticator(Authenticator):
   def get_gitcookies_path(cls):
     if os.getenv('GIT_COOKIES_PATH'):
       return os.getenv('GIT_COOKIES_PATH')
-    return os.path.join(os.environ['HOME'], '.gitcookies')
+    try:
+      return subprocess2.check_output(
+          ['git', 'config', '--path', 'http.cookiefile']).strip()
+    except subprocess2.CalledProcessError:
+      return os.path.join(os.environ['HOME'], '.gitcookies')
 
   @classmethod
   def _get_gitcookies(cls):
@@ -200,17 +214,17 @@ class CookiesAuthenticator(Authenticator):
     return self.netrc.authenticators(host)
 
   def get_auth_header(self, host):
-    auth = self._get_auth_for_host(host)
-    if auth:
-      return 'Basic %s' % (base64.b64encode('%s:%s' % (auth[0], auth[2])))
+    a = self._get_auth_for_host(host)
+    if a:
+      return 'Basic %s' % (base64.b64encode('%s:%s' % (a[0], a[2])))
     return None
 
   def get_auth_email(self, host):
     """Best effort parsing of email to be used for auth for the given host."""
-    auth = self._get_auth_for_host(host)
-    if not auth:
+    a = self._get_auth_for_host(host)
+    if not a:
       return None
-    login = auth[0]
+    login = a[0]
     # login typically looks like 'git-xxx.example.com'
     if not login.startswith('git-') or '.' not in login:
       return None
@@ -249,7 +263,8 @@ class GceAuthenticator(Authenticator):
     # Based on https://cloud.google.com/compute/docs/metadata#runninggce
     try:
       resp, _ = cls._get(cls._INFO_URL)
-    except (socket.error, httplib2.ServerNotFoundError):
+    except (socket.error, httplib2.ServerNotFoundError,
+            httplib2.socks.HTTPError):
       # Could not resolve URL.
       return False
     return resp.get('metadata-flavor') == 'Google'
@@ -258,19 +273,21 @@ class GceAuthenticator(Authenticator):
   def _get(url, **kwargs):
     next_delay_sec = 1
     for i in xrange(TRY_LIMIT):
-      if i > 0:
-        # Retry server error status codes.
-        LOGGER.info('Encountered server error; retrying after %d second(s).',
-                    next_delay_sec)
-        time.sleep(next_delay_sec)
-        next_delay_sec *= 2
-
       p = urlparse.urlparse(url)
       c = GetConnectionObject(protocol=p.scheme)
       resp, contents = c.request(url, 'GET', **kwargs)
       LOGGER.debug('GET [%s] #%d/%d (%d)', url, i+1, TRY_LIMIT, resp.status)
       if resp.status < httplib.INTERNAL_SERVER_ERROR:
         return (resp, contents)
+
+      # Retry server error status codes.
+      LOGGER.warn('Encountered server error')
+      if TRY_LIMIT - i > 1:
+        LOGGER.info('Will retry in %d seconds (%d more times)...',
+                    next_delay_sec, TRY_LIMIT - i - 1)
+        time.sleep(next_delay_sec)
+        next_delay_sec *= 2
+
 
   @classmethod
   def _get_token_dict(cls):
@@ -293,14 +310,36 @@ class GceAuthenticator(Authenticator):
     return '%(token_type)s %(access_token)s' % token_dict
 
 
+class LuciContextAuthenticator(Authenticator):
+  """Authenticator implementation that uses LUCI_CONTEXT ambient local auth.
+  """
+
+  @staticmethod
+  def is_luci():
+    return auth.has_luci_context_local_auth()
+
+  def __init__(self):
+    self._access_token = None
+    self._ensure_fresh()
+
+  def _ensure_fresh(self):
+    if not self._access_token or self._access_token.needs_refresh():
+      self._access_token = auth.get_luci_context_access_token(
+          scopes=' '.join([auth.OAUTH_SCOPE_EMAIL, auth.OAUTH_SCOPE_GERRIT]))
+
+  def get_auth_header(self, _host):
+    self._ensure_fresh()
+    return 'Bearer %s' % self._access_token.token
+
+
 def CreateHttpConn(host, path, reqtype='GET', headers=None, body=None):
   """Opens an https connection to a gerrit service, and sends a request."""
   headers = headers or {}
   bare_host = host.partition(':')[0]
 
-  auth = Authenticator.get().get_auth_header(bare_host)
-  if auth:
-    headers.setdefault('Authorization', auth)
+  a = Authenticator.get().get_auth_header(bare_host)
+  if a:
+    headers.setdefault('Authorization', a)
   else:
     LOGGER.debug('No authorization found for %s.' % bare_host)
 
@@ -322,6 +361,8 @@ def CreateHttpConn(host, path, reqtype='GET', headers=None, body=None):
     if body:
       LOGGER.debug(body)
   conn = GetConnectionObject()
+  # HACK: httplib.Http has no such attribute; we store req_host here for later
+  # use in ReadHttpResponse.
   conn.req_host = host
   conn.req_params = {
       'uri': urlparse.urljoin('%s://%s' % (GERRIT_PROTOCOL, host), url),
@@ -341,7 +382,7 @@ def ReadHttpResponse(conn, accept_statuses=frozenset([200])):
                      Common additions include 204, 400, and 404.
   Returns: A string buffer containing the connection's reply.
   """
-  sleep_time = 0.5
+  sleep_time = 1.5
   for idx in range(TRY_LIMIT):
     response, contents = conn.request(**conn.req_params)
 
@@ -356,9 +397,9 @@ def ReadHttpResponse(conn, accept_statuses=frozenset([200])):
       raise GerritAuthenticationError(response.status, reason)
 
     # If response.status < 500 then the result is final; break retry loop.
-    # If the response is 404, it might be because of replication lag, so
+    # If the response is 404/409, it might be because of replication lag, so
     # keep trying anyway.
-    if ((response.status < 500 and response.status != 404)
+    if ((response.status < 500 and response.status not in [404, 409])
         or response.status in accept_statuses):
       LOGGER.debug('got response %d for %s %s', response.status,
                    conn.req_params['method'], conn.req_params['uri'])
@@ -370,14 +411,29 @@ def ReadHttpResponse(conn, accept_statuses=frozenset([200])):
       break
     # A status >=500 is assumed to be a possible transient error; retry.
     http_version = 'HTTP/%s' % ('1.1' if response.version == 11 else '1.0')
-    LOGGER.warn('A transient error occurred while querying %s:\n'
-                '%s %s %s\n'
-                '%s %d %s',
-                conn.req_host, conn.req_params['method'],
-                conn.req_params['uri'],
-                http_version, http_version, response.status, response.reason)
+
+    # TODO(crbug/881860): remove this special 404 handling.
+    if response.status == 404:
+      LOGGER.warn(
+          '404 NotFound error occurred while querying %s %s: %s\n'
+          'NOTE: if see this while running `git cl upload`,\n'
+          'consider reporting this to https://crbug.com/881860.\n'
+          'Please, include response headers below:\n'
+          '  %s\n',
+          conn.req_params['method'], conn.req_params['uri'], response.reason,
+          '\n  '.join(
+              json.dumps(response, sort_keys=True, indent=2).splitlines()))
+    else:
+      LOGGER.warn('A transient error occurred while querying %s:\n'
+                  '%s %s\n'
+                  '%s %d %s\n',
+                  conn.req_host,
+                  conn.req_params['method'], conn.req_params['uri'],
+                  http_version, response.status, response.reason)
+
     if TRY_LIMIT - idx > 1:
-      LOGGER.warn('... will retry %d more times.', TRY_LIMIT - idx - 1)
+      LOGGER.info('Will retry in %d seconds (%d more times)...',
+                  sleep_time, TRY_LIMIT - idx - 1)
       time.sleep(sleep_time)
       sleep_time = sleep_time * 2
   if response.status not in accept_statuses:
@@ -861,3 +917,14 @@ def tempdir():
   finally:
     if tdir:
       gclient_utils.rmtree(tdir)
+
+
+def ChangeIdentifier(project, change_number):
+  """Returns change identifier "project~number" suitable for |chagne| arg of
+  this module API.
+
+  Such format is allows for more efficient Gerrit routing of HTTP requests,
+  comparing to specifying just change_number.
+  """
+  assert int(change_number)
+  return '%s~%s' % (urllib.quote(project, safe=''), change_number)

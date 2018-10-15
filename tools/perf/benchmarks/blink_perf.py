@@ -24,7 +24,7 @@ from telemetry.value import trace
 
 
 BLINK_PERF_BASE_DIR = os.path.join(path_util.GetChromiumSrcDir(),
-                                   'third_party', 'WebKit', 'PerformanceTests')
+                                   'third_party', 'blink', 'perf_tests')
 SKIPPED_FILE = os.path.join(BLINK_PERF_BASE_DIR, 'Skipped')
 
 EventBoundary = collections.namedtuple('EventBoundary',
@@ -32,6 +32,13 @@ EventBoundary = collections.namedtuple('EventBoundary',
 
 MergedEvent = collections.namedtuple('MergedEvent',
                                      ['bounds', 'thread_or_wall_duration'])
+
+
+class _BlinkPerfPage(page_module.Page):
+  def RunPageInteractions(self, action_runner):
+    action_runner.ExecuteJavaScript('testRunner.scheduleTestRun()')
+    action_runner.WaitForJavaScriptCondition('testRunner.isDone', timeout=600)
+
 
 def CreateStorySetFromPath(path, skipped_file,
                            shared_page_state_class=(
@@ -77,9 +84,9 @@ def CreateStorySetFromPath(path, skipped_file,
 
   all_urls = [p.rstrip('/') for p in page_urls]
   common_prefix = os.path.dirname(os.path.commonprefix(all_urls))
-  for url in page_urls:
+  for url in sorted(page_urls):
     name = url[len(common_prefix):].strip('/')
-    ps.AddStory(page_module.Page(
+    ps.AddStory(_BlinkPerfPage(
         url, ps, ps.base_dir,
         shared_page_state_class=shared_page_state_class,
         name=name))
@@ -230,25 +237,23 @@ class _BlinkPerfMeasurement(legacy_page_test.LegacyPageTest):
                            'blink_perf.js'), 'r') as f:
       self._blink_perf_js = f.read()
     self._extra_chrome_categories = None
+    self._enable_systrace = None
 
   def WillNavigateToPage(self, page, tab):
     del tab  # unused
     page.script_to_evaluate_on_commit = self._blink_perf_js
 
+  def DidNavigateToPage(self, page, tab):
+    tab.WaitForJavaScriptCondition('testRunner.isWaitingForTelemetry')
+    tracing_categories = tab.EvaluateJavaScript('testRunner.tracingCategories')
+    if tracing_categories:
+      self._StartTracing(tab, tracing_categories)
+
   def CustomizeBrowserOptions(self, options):
     options.AppendExtraBrowserArgs([
         '--js-flags=--expose_gc',
         '--enable-experimental-web-platform-features',
-        # Note that both this flag:
-        '--ignore-autoplay-restrictions',
-        # and this flag:
-        '--disable-gesture-requirement-for-media-playback',
-        # should be used until every build from
-        # ToT to Stable switches over to one flag or another. This is to support
-        # reference builds.
-        # --disable-gesture-requirement-for-media-playback is the old one and
-        # can be removed after M60 goes to stable.
-        '--enable-experimental-canvas-features'
+        '--autoplay-policy=no-user-gesture-required'
     ])
 
   def SetOptions(self, options):
@@ -258,10 +263,10 @@ class _BlinkPerfMeasurement(legacy_page_test.LegacyPageTest):
       options.AppendExtraBrowserArgs('--expose-internals-for-testing')
     if options.extra_chrome_categories:
       self._extra_chrome_categories = options.extra_chrome_categories
+    if options.enable_systrace:
+      self._enable_systrace = True
 
-  def _ContinueTestRunWithTracing(self, tab):
-    tracing_categories = tab.EvaluateJavaScript(
-        'testRunner.tracingCategories')
+  def _StartTracing(self, tab, tracing_categories):
     config = tracing_config.TracingConfig()
     config.enable_chrome_trace = True
     config.chrome_trace_config.category_filter.AddFilterString(
@@ -271,20 +276,9 @@ class _BlinkPerfMeasurement(legacy_page_test.LegacyPageTest):
     if self._extra_chrome_categories:
       config.chrome_trace_config.category_filter.AddFilterString(
           self._extra_chrome_categories)
+    if self._enable_systrace:
+      config.chrome_trace_config.SetEnableSystrace()
     tab.browser.platform.tracing_controller.StartTracing(config)
-    tab.EvaluateJavaScript('testRunner.scheduleTestRun()')
-    tab.WaitForJavaScriptCondition('testRunner.isDone')
-
-    trace_data = tab.browser.platform.tracing_controller.StopTracing()
-
-    # TODO(charliea): This is part of a three-sided Chromium/Telemetry patch
-    # where we're changing the return type of StopTracing from a TraceValue to a
-    # (TraceValue, nonfatal_exception_list) tuple. Once the tuple return value
-    # lands in Chromium, the non-tuple logic should be deleted.
-    if isinstance(trace_data, tuple):
-      trace_data = trace_data[0]
-
-    return trace_data
 
 
   def PrintAndCollectTraceEventMetrics(self, trace_cpu_time_metrics, results):
@@ -305,11 +299,9 @@ class _BlinkPerfMeasurement(legacy_page_test.LegacyPageTest):
     print '\n'
 
   def ValidateAndMeasurePage(self, page, tab, results):
-    tab.WaitForJavaScriptCondition(
-        'testRunner.isDone || testRunner.isWaitingForTracingStart', timeout=600)
     trace_cpu_time_metrics = {}
-    if tab.EvaluateJavaScript('testRunner.isWaitingForTracingStart'):
-      trace_data = self._ContinueTestRunWithTracing(tab)
+    if tab.EvaluateJavaScript('testRunner.tracingCategories'):
+      trace_data = tab.browser.platform.tracing_controller.StopTracing()[0]
       # TODO(#763375): Rely on results.telemetry_info.trace_local_path/etc.
       kwargs = {}
       if hasattr(results.telemetry_info, 'trace_local_path'):
@@ -323,7 +315,7 @@ class _BlinkPerfMeasurement(legacy_page_test.LegacyPageTest):
       trace_events_to_measure = tab.EvaluateJavaScript(
           'window.testRunner.traceEventsToMeasure')
       model = model_module.TimelineModel(trace_data)
-      renderer_thread = model.GetRendererThreadFromTabId(tab.id)
+      renderer_thread = model.GetFirstRendererThread(tab.id)
       trace_cpu_time_metrics = _ComputeTraceEventsThreadTimeForBlinkPerf(
           model, renderer_thread, trace_events_to_measure)
 
@@ -356,60 +348,60 @@ class _BlinkPerfBenchmark(perf_benchmark.PerfBenchmark):
 
   test = _BlinkPerfMeasurement
 
-  @classmethod
-  def Name(cls):
-    return 'blink_perf.' + cls.tag
-
   def CreateStorySet(self, options):
     path = os.path.join(BLINK_PERF_BASE_DIR, self.subdir)
     return CreateStorySetFromPath(path, SKIPPED_FILE)
 
 
-@benchmark.Owner(emails=['jbroman@chromium.org',
-                         'yukishiino@chromium.org',
-                         'haraken@chromium.org'])
+@benchmark.Info(emails=['dmazzoni@chromium.org'],
+                component=['Blink>Accessibility'],
+                documentation_url='https://bit.ly/blink-perf-benchmarks')
+class BlinkPerfAccessibility(_BlinkPerfBenchmark):
+  tag = 'accessibility'
+  subdir = 'accessibility'
+
+  @classmethod
+  def Name(cls):
+    return 'blink_perf.accessibility'
+
+  def SetExtraBrowserOptions(self, options):
+    options.AppendExtraBrowserArgs([
+        '--force-renderer-accessibility',
+    ])
+
+
+@benchmark.Info(
+    emails=['jbroman@chromium.org', 'yukishiino@chromium.org',
+            'haraken@chromium.org'],
+    documentation_url='https://bit.ly/blink-perf-benchmarks')
 class BlinkPerfBindings(_BlinkPerfBenchmark):
-  tag = 'bindings'
-  subdir = 'Bindings'
+  subdir = 'bindings'
 
-  def GetExpectations(self):
-    class StoryExpectations(story.expectations.StoryExpectations):
-      def SetExpectations(self):
-        self.DisableStory(
-            'structured-clone-long-string-serialize.html',
-            [story.expectations.ANDROID_ONE],
-            'crbug.com/764868')
-        self.DisableStory(
-            'structured-clone-json-serialize.html',
-            [story.expectations.ANDROID_ONE],
-            'crbug.com/764868')
-        self.DisableStory(
-            'structured-clone-long-string-deserialize.html',
-            [story.expectations.ANDROID_ONE],
-            'crbug.com/764868')
-        self.DisableStory(
-            'structured-clone-json-deserialize.html',
-            [story.expectations.ANDROID_ONE],
-            'crbug.com/764868')
-    return StoryExpectations()
+  @classmethod
+  def Name(cls):
+    return 'blink_perf.bindings'
 
 
-@benchmark.Owner(emails=['rune@opera.com'])
+@benchmark.Info(emails=['futhark@chromium.org', 'andruud@chromium.org'],
+                documentation_url='https://bit.ly/blink-perf-benchmarks',
+                component='Blink>CSS')
 class BlinkPerfCSS(_BlinkPerfBenchmark):
-  tag = 'css'
-  subdir = 'CSS'
+  subdir = 'css'
 
-  def GetExpectations(self):
-    class StoryExpectations(story.expectations.StoryExpectations):
-      def SetExpectations(self):
-        pass # Nothing disabled.
-    return StoryExpectations()
+  @classmethod
+  def Name(cls):
+    return 'blink_perf.css'
 
 
-@benchmark.Owner(emails=['junov@chromium.org'])
+
+@benchmark.Info(emails=['fserb@chromium.org'],
+                documentation_url='https://bit.ly/blink-perf-benchmarks')
 class BlinkPerfCanvas(_BlinkPerfBenchmark):
-  tag = 'canvas'
-  subdir = 'Canvas'
+  subdir = 'canvas'
+
+  @classmethod
+  def Name(cls):
+    return 'blink_perf.canvas'
 
   def CreateStorySet(self, options):
     path = os.path.join(BLINK_PERF_BASE_DIR, self.subdir)
@@ -423,161 +415,115 @@ class BlinkPerfCanvas(_BlinkPerfBenchmark):
       page.skipped_gpus = []
     return story_set
 
-  def GetExpectations(self):
-    class StoryExpectations(story.expectations.StoryExpectations):
-      def SetExpectations(self):
-        self.DisableBenchmark([story.expectations.ANDROID_SVELTE],
-                              'crbug.com/593973')
-        self.DisableStory('putImageData.html',
-            [story.expectations.ANDROID_NEXUS6], 'crbug.com/738453')
-        # pylint: disable=line-too-long
-        self.DisableStory('draw-static-canvas-2d-to-hw-accelerated-canvas-2d.html',
-            [story.expectations.ANDROID_NEXUS6], 'crbug.com/765799')
-        self.DisableStory(
-            'draw-static-canvas-2d-to-hw-accelerated-canvas-2d.html',
-            [story.expectations.ANDROID_NEXUS5,
-             story.expectations.ANDROID_NEXUS5X],
-            'crbug.com/784540')
-        self.DisableStory(
-            'draw-dynamic-canvas-2d-to-hw-accelerated-canvas-2d.html',
-            [story.expectations.ANDROID_NEXUS5,
-             story.expectations.ANDROID_NEXUS5X],
-            'crbug.com/784540')
-    return StoryExpectations()
 
-@benchmark.Owner(emails=['jbroman@chromium.org',
-                         'yukishiino@chromium.org',
-                         'haraken@chromium.org'])
+@benchmark.Info(emails=['hayato@chromium.org',
+                        'tkent@chromium.org',
+                        'yosin@chromium.org'],
+                component='Blink>DOM',
+                documentation_url='https://bit.ly/blink-perf-benchmarks')
 class BlinkPerfDOM(_BlinkPerfBenchmark):
-  tag = 'dom'
-  subdir = 'DOM'
+  subdir = 'dom'
 
-  def GetExpectations(self):
-    class StoryExpectations(story.expectations.StoryExpectations):
-      def SetExpectations(self):
-        pass # Nothing disabled.
-    return StoryExpectations()
+  @classmethod
+  def Name(cls):
+    return 'blink_perf.dom'
 
 
-@benchmark.Owner(emails=['hayato@chromium.org'])
+@benchmark.Info(emails=['hayato@chromium.org'],
+                component='Blink>DOM',
+                documentation_url='https://bit.ly/blink-perf-benchmarks')
 class BlinkPerfEvents(_BlinkPerfBenchmark):
-  tag = 'events'
-  subdir = 'Events'
+  subdir = 'events'
 
-  def GetExpectations(self):
-    class StoryExpectations(story.expectations.StoryExpectations):
-      def SetExpectations(self):
-        pass # Nothing disabled.
-    return StoryExpectations()
+  @classmethod
+  def Name(cls):
+    return 'blink_perf.events'
 
 
-@benchmark.Owner(emails=['cblume@chromium.org'])
+@benchmark.Info(emails=['cblume@chromium.org'],
+                documentation_url='https://bit.ly/blink-perf-benchmarks')
 class BlinkPerfImageDecoder(_BlinkPerfBenchmark):
   tag = 'image_decoder'
-  subdir = 'ImageDecoder'
+  subdir = 'image_decoder'
+
+  @classmethod
+  def Name(cls):
+    return 'blink_perf.image_decoder'
 
   def SetExtraBrowserOptions(self, options):
     options.AppendExtraBrowserArgs([
         '--enable-blink-features=JSImageDecode',
     ])
 
-  def GetExpectations(self):
-    class StoryExpectations(story.expectations.StoryExpectations):
-      def SetExpectations(self):
-        pass # Nothing disabled.
-    return StoryExpectations()
 
-
-@benchmark.Owner(emails=['eae@chromium.org'])
+@benchmark.Info(emails=['eae@chromium.org'],
+                documentation_url='https://bit.ly/blink-perf-benchmarks')
 class BlinkPerfLayout(_BlinkPerfBenchmark):
-  tag = 'layout'
-  subdir = 'Layout'
+  subdir = 'layout'
 
-  def GetExpectations(self):
-    class Expectations(story.expectations.StoryExpectations):
-      def SetExpectations(self):
-        self.DisableBenchmark([story.expectations.ANDROID_SVELTE],
-                              'crbug.com/551950')
-    return Expectations()
+  @classmethod
+  def Name(cls):
+    return 'blink_perf.layout'
 
 
-@benchmark.Owner(emails=['dmurph@chromium.org'])
+@benchmark.Info(emails=['dmurph@chromium.org'],
+                documentation_url='https://bit.ly/blink-perf-benchmarks')
 class BlinkPerfOWPStorage(_BlinkPerfBenchmark):
-  tag = 'owp_storage'
-  subdir = 'OWPStorage'
+  subdir = 'owp_storage'
 
-  def GetExpectations(self):
-    class StoryExpectations(story.expectations.StoryExpectations):
-      def SetExpectations(self):
-        pass # Nothing disabled.
-    return StoryExpectations()
+  @classmethod
+  def Name(cls):
+    return 'blink_perf.owp_storage'
+
+  # This ensures that all blobs >= 20MB will be transported by files.
+  def SetExtraBrowserOptions(self, options):
+    options.AppendExtraBrowserArgs([
+        '--blob-transport-by-file-trigger=307300',
+        '--blob-transport-min-file-size=2048',
+        '--blob-transport-max-file-size=10240',
+        '--blob-transport-shared-memory-max-size=30720'
+    ])
 
 
-@benchmark.Owner(emails=['wangxianzhu@chromium.org'])
+@benchmark.Info(emails=['wangxianzhu@chromium.org'],
+                documentation_url='https://bit.ly/blink-perf-benchmarks')
 class BlinkPerfPaint(_BlinkPerfBenchmark):
-  tag = 'paint'
-  subdir = 'Paint'
+  subdir = 'paint'
 
-  def GetExpectations(self):
-    class StoryExpectations(story.expectations.StoryExpectations):
-      def SetExpectations(self):
-        self.DisableBenchmark([story.expectations.ANDROID_SVELTE],
-                              'crbug.com/574483')
-    return StoryExpectations()
+  @classmethod
+  def Name(cls):
+    return 'blink_perf.paint'
 
 
-@benchmark.Owner(emails=['jbroman@chromium.org',
+@benchmark.Info(emails=['jbroman@chromium.org',
                          'yukishiino@chromium.org',
-                         'haraken@chromium.org'])
+                         'haraken@chromium.org'],
+                documentation_url='https://bit.ly/blink-perf-benchmarks')
 class BlinkPerfParser(_BlinkPerfBenchmark):
-  tag = 'parser'
-  subdir = 'Parser'
+  subdir = 'parser'
 
-  def GetExpectations(self):
-    class StoryExpectations(story.expectations.StoryExpectations):
-      def SetExpectations(self):
-        pass # Nothing disabled.
-    return StoryExpectations()
+  @classmethod
+  def Name(cls):
+    return 'blink_perf.parser'
 
 
-@benchmark.Owner(emails=['kouhei@chromium.org', 'fs@opera.com'])
+@benchmark.Info(emails=['kouhei@chromium.org', 'fs@opera.com'],
+                component='Blink>SVG',
+                documentation_url='https://bit.ly/blink-perf-benchmarks')
 class BlinkPerfSVG(_BlinkPerfBenchmark):
-  tag = 'svg'
-  subdir = 'SVG'
+  subdir = 'svg'
 
-  def GetExpectations(self):
-    class StoryExpectations(story.expectations.StoryExpectations):
-      def SetExpectations(self):
-        self.DisableStory('Debian.html', [story.expectations.ANDROID_NEXUS5X],
-                          'crbug.com/736817')
-        self.DisableStory('FlowerFromMyGarden.html',
-                          [story.expectations.ANDROID_NEXUS5X],
-                          'crbug.com/736817')
-        self.DisableStory('HarveyRayner.html',
-                          [story.expectations.ANDROID_NEXUS5X],
-                          'crbug.com/736817')
-        self.DisableStory('SvgCubics.html',
-                          [story.expectations.ANDROID_NEXUS5X],
-                          'crbug.com/736817')
-        self.DisableStory('SvgNestedUse.html',
-                          [story.expectations.ANDROID_NEXUS5X],
-                          'crbug.com/736817')
-        self.DisableStory('Worldcup.html', [story.expectations.ANDROID_NEXUS5X],
-                          'crbug.com/736817')
-        self.DisableStory('CrawFishGanson.html',
-                          [story.expectations.ANDROID_NEXUS5X],
-                          'crbug.com/736817')
-    return StoryExpectations()
+  @classmethod
+  def Name(cls):
+    return 'blink_perf.svg'
 
 
-@benchmark.Owner(emails=['hayato@chromium.org'])
+@benchmark.Info(emails=['hayato@chromium.org'],
+                component='Blink>DOM>ShadowDOM',
+                documentation_url='https://bit.ly/blink-perf-benchmarks')
 class BlinkPerfShadowDOM(_BlinkPerfBenchmark):
-  tag = 'shadow_dom'
-  subdir = 'ShadowDOM'
+  subdir = 'shadow_dom'
 
-  def GetExpectations(self):
-    class StoryExpectations(story.expectations.StoryExpectations):
-      def SetExpectations(self):
-        self.DisableBenchmark([story.expectations.ANDROID_NEXUS5X],
-                              'crbug.com/702319')
-    return StoryExpectations()
+  @classmethod
+  def Name(cls):
+    return 'blink_perf.shadow_dom'

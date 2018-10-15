@@ -9,11 +9,11 @@
 #include <utility>
 #include <vector>
 
-#include "base/memory/ptr_util.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_split.h"
 #include "base/strings/stringprintf.h"
 #include "third_party/re2/src/re2/re2.h"
+#include "ui/display/util/display_util.h"
 
 using base::StringPiece;
 
@@ -21,11 +21,9 @@ namespace display {
 
 namespace {
 
-static const float kInchInMm = 25.4f;
-
 // Get pixel pitch in millimeters from DPI.
-float PixelPitchMmFromDPI(float dpi) {
-  return (1.0f / dpi) * kInchInMm;
+constexpr float PixelPitchMmFromDPI(float dpi) {
+  return kInchInMm / dpi;
 }
 
 // Extracts text after specified delimiter. If the delimiter doesn't appear
@@ -163,8 +161,9 @@ std::unique_ptr<FakeDisplaySnapshot> Builder::Build() {
 
   return std::make_unique<FakeDisplaySnapshot>(
       id_, origin_, physical_size, type_, is_aspect_preserving_scaling_,
-      has_overscan_, has_color_correction_matrix_, name_, std::move(modes_),
-      current_mode_, native_mode_, product_id_, maximum_cursor_size_);
+      has_overscan_, has_color_correction_matrix_,
+      color_correction_in_linear_space_, name_, std::move(modes_),
+      current_mode_, native_mode_, product_code_, maximum_cursor_size_);
 }
 
 Builder& Builder::SetId(int64_t id) {
@@ -227,13 +226,18 @@ Builder& Builder::SetHasColorCorrectionMatrix(bool val) {
   return *this;
 }
 
+Builder& Builder::SetColorCorrectionInLinearSpace(bool val) {
+  color_correction_in_linear_space_ = val;
+  return *this;
+}
+
 Builder& Builder::SetName(const std::string& name) {
   name_ = name;
   return *this;
 }
 
-Builder& Builder::SetProductId(int64_t product_id) {
-  product_id_ = product_id;
+Builder& Builder::SetProductCode(int64_t product_code) {
+  product_code_ = product_code;
   return *this;
 }
 
@@ -288,11 +292,12 @@ FakeDisplaySnapshot::FakeDisplaySnapshot(int64_t display_id,
                                          bool is_aspect_preserving_scaling,
                                          bool has_overscan,
                                          bool has_color_correction_matrix,
+                                         bool color_correction_in_linear_space,
                                          std::string display_name,
                                          DisplayModeList modes,
                                          const DisplayMode* current_mode,
                                          const DisplayMode* native_mode,
-                                         int64_t product_id,
+                                         int64_t product_code,
                                          const gfx::Size& maximum_cursor_size)
     : DisplaySnapshot(display_id,
                       origin,
@@ -301,6 +306,7 @@ FakeDisplaySnapshot::FakeDisplaySnapshot(int64_t display_id,
                       is_aspect_preserving_scaling,
                       has_overscan,
                       has_color_correction_matrix,
+                      color_correction_in_linear_space,
                       gfx::ColorSpace(),
                       display_name,
                       base::FilePath(),
@@ -308,7 +314,8 @@ FakeDisplaySnapshot::FakeDisplaySnapshot(int64_t display_id,
                       std::vector<uint8_t>(),
                       current_mode,
                       native_mode,
-                      product_id,
+                      product_code,
+                      2018 /*year_of_manufacture */,
                       maximum_cursor_size) {}
 
 FakeDisplaySnapshot::~FakeDisplaySnapshot() {}

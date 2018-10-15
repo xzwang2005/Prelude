@@ -2,8 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifndef V8_DATA_HANDLER_H_
-#define V8_DATA_HANDLER_H_
+#ifndef V8_OBJECTS_DATA_HANDLER_H_
+#define V8_OBJECTS_DATA_HANDLER_H_
 
 #include "src/objects.h"
 
@@ -26,19 +26,26 @@ class DataHandler : public Struct {
   // [validity_cell]: A validity Cell that guards prototype chain modifications.
   DECL_ACCESSORS(validity_cell, Object)
 
-  // [data1,2]: These are optional general-purpose fields whose content and
+  // Returns number of optional data fields available in the object.
+  inline int data_field_count() const;
+
+  // [data1-3]: These are optional general-purpose fields whose content and
   // presence depends on the handler kind.
-  DECL_ACCESSORS(data1, Object)
-  DECL_ACCESSORS(data2, Object)
+  DECL_ACCESSORS(data1, MaybeObject)
+  DECL_ACCESSORS(data2, MaybeObject)
+  DECL_ACCESSORS(data3, MaybeObject)
 
 // Layout description.
 #define DATA_HANDLER_FIELDS(V)         \
   V(kSmiHandlerOffset, kPointerSize)   \
   V(kValidityCellOffset, kPointerSize) \
+  V(kSizeWithData0, 0)                 \
   V(kData1Offset, kPointerSize)        \
   V(kSizeWithData1, 0)                 \
   V(kData2Offset, kPointerSize)        \
-  V(kSizeWithData2, 0)
+  V(kSizeWithData2, 0)                 \
+  V(kData3Offset, kPointerSize)        \
+  V(kSizeWithData3, 0)
 
   DEFINE_FIELD_OFFSET_CONSTANTS(HeapObject::kHeaderSize, DATA_HANDLER_FIELDS)
 #undef DATA_HANDLER_FIELDS
@@ -46,6 +53,8 @@ class DataHandler : public Struct {
   DECL_CAST(DataHandler)
 
   DECL_VERIFIER(DataHandler)
+
+  class BodyDescriptor;
 };
 
 }  // namespace internal
@@ -53,4 +62,4 @@ class DataHandler : public Struct {
 
 #include "src/objects/object-macros-undef.h"
 
-#endif  // V8_DATA_HANDLER_H_
+#endif  // V8_OBJECTS_DATA_HANDLER_H_

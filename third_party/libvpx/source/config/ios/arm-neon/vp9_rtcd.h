@@ -1,3 +1,4 @@
+// This file is generated. Do not edit.
 #ifndef VP9_RTCD_H_
 #define VP9_RTCD_H_
 
@@ -11,10 +12,10 @@
  * VP9
  */
 
-#include "vpx/vpx_integer.h"
 #include "vp9/common/vp9_common.h"
 #include "vp9/common/vp9_enums.h"
 #include "vp9/common/vp9_filter.h"
+#include "vpx/vpx_integer.h"
 
 struct macroblockd;
 
@@ -142,7 +143,11 @@ void vp9_iht16x16_256_add_c(const tran_low_t* input,
                             uint8_t* output,
                             int pitch,
                             int tx_type);
-#define vp9_iht16x16_256_add vp9_iht16x16_256_add_c
+void vp9_iht16x16_256_add_neon(const tran_low_t* input,
+                               uint8_t* output,
+                               int pitch,
+                               int tx_type);
+#define vp9_iht16x16_256_add vp9_iht16x16_256_add_neon
 
 void vp9_iht4x4_16_add_c(const tran_low_t* input,
                          uint8_t* dest,

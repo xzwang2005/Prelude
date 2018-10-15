@@ -6,11 +6,13 @@
  */
 
 #include "SkAtomics.h"
-#include "SkSurface_Base.h"
-#include "SkImagePriv.h"
 #include "SkCanvas.h"
-
 #include "SkFontLCDConfig.h"
+#include "SkImagePriv.h"
+#include "SkSurface_Base.h"
+
+#include "GrBackendSurface.h"
+
 static SkPixelGeometry compute_default_geometry() {
     SkFontLCDConfig::LCDOrder order = SkFontLCDConfig::GetSubpixelOrder();
     if (SkFontLCDConfig::kNONE_LCDOrder == order) {
@@ -68,6 +70,14 @@ SkSurface_Base::~SkSurface_Base() {
     if (fCachedCanvas) {
         fCachedCanvas->setSurfaceBase(nullptr);
     }
+}
+
+GrBackendTexture SkSurface_Base::onGetBackendTexture(BackendHandleAccess) {
+    return GrBackendTexture(); // invalid
+}
+
+GrBackendRenderTarget SkSurface_Base::onGetBackendRenderTarget(BackendHandleAccess) {
+    return GrBackendRenderTarget(); // invalid
 }
 
 void SkSurface_Base::onDraw(SkCanvas* canvas, SkScalar x, SkScalar y, const SkPaint* paint) {
@@ -184,12 +194,36 @@ bool SkSurface::readPixels(const SkBitmap& bitmap, int srcX, int srcY) {
     return bitmap.peekPixels(&pm) && this->readPixels(pm, srcX, srcY);
 }
 
-GrBackendObject SkSurface::getTextureHandle(BackendHandleAccess access) {
-    return asSB(this)->onGetTextureHandle(access);
+void SkSurface::writePixels(const SkPixmap& pmap, int x, int y) {
+    if (pmap.addr() == nullptr || pmap.width() <= 0 || pmap.height() <= 0) {
+        return;
+    }
+
+    const SkIRect srcR = SkIRect::MakeXYWH(x, y, pmap.width(), pmap.height());
+    const SkIRect dstR = SkIRect::MakeWH(this->width(), this->height());
+    if (SkIRect::Intersects(srcR, dstR)) {
+        ContentChangeMode mode = kRetain_ContentChangeMode;
+        if (srcR.contains(dstR)) {
+            mode = kDiscard_ContentChangeMode;
+        }
+        asSB(this)->aboutToDraw(mode);
+        asSB(this)->onWritePixels(pmap, x, y);
+    }
 }
 
-bool SkSurface::getRenderTargetHandle(GrBackendObject* obj, BackendHandleAccess access) {
-    return asSB(this)->onGetRenderTargetHandle(obj, access);
+void SkSurface::writePixels(const SkBitmap& src, int x, int y) {
+    SkPixmap pm;
+    if (src.peekPixels(&pm)) {
+        this->writePixels(pm, x, y);
+    }
+}
+
+GrBackendTexture SkSurface::getBackendTexture(BackendHandleAccess access) {
+    return asSB(this)->onGetBackendTexture(access);
+}
+
+GrBackendRenderTarget SkSurface::getBackendRenderTarget(BackendHandleAccess access) {
+    return asSB(this)->onGetBackendRenderTarget(access);
 }
 
 void SkSurface::prepareForExternalIO() {
@@ -232,6 +266,7 @@ protected:
         return MakeNull(info.width(), info.height());
     }
     sk_sp<SkImage> onNewImageSnapshot() override { return nullptr; }
+    void onWritePixels(const SkPixmap&, int x, int y) override {}
     void onDraw(SkCanvas*, SkScalar x, SkScalar y, const SkPaint*) override {}
     void onCopyOnWrite(ContentChangeMode) override {}
 };
@@ -247,20 +282,27 @@ sk_sp<SkSurface> SkSurface::MakeNull(int width, int height) {
 
 #if !SK_SUPPORT_GPU
 
-sk_sp<SkSurface> SkSurface::MakeRenderTarget(GrContext*, SkBudgeted, const SkImageInfo&,
-                                             int, GrSurfaceOrigin, const SkSurfaceProps*, bool) {
+sk_sp<SkSurface> SkSurface::MakeRenderTarget(GrContext*, SkBudgeted, const SkImageInfo&, int,
+                                             GrSurfaceOrigin, const SkSurfaceProps*, bool) {
+    return nullptr;
+}
+
+sk_sp<SkSurface> SkSurface::MakeRenderTarget(GrContext*, const SkSurfaceCharacterization&,
+                                             SkBudgeted) {
     return nullptr;
 }
 
 sk_sp<SkSurface> SkSurface::MakeFromBackendTexture(GrContext*, const GrBackendTexture&,
                                                    GrSurfaceOrigin origin, int sampleCnt,
-                                                   sk_sp<SkColorSpace>, const SkSurfaceProps*) {
+                                                   SkColorType, sk_sp<SkColorSpace>,
+                                                   const SkSurfaceProps*) {
     return nullptr;
 }
 
 sk_sp<SkSurface> SkSurface::MakeFromBackendRenderTarget(GrContext*,
                                                         const GrBackendRenderTarget&,
                                                         GrSurfaceOrigin origin,
+                                                        SkColorType,
                                                         sk_sp<SkColorSpace>,
                                                         const SkSurfaceProps*) {
     return nullptr;
@@ -270,6 +312,7 @@ sk_sp<SkSurface> SkSurface::MakeFromBackendTextureAsRenderTarget(GrContext*,
                                                                  const GrBackendTexture&,
                                                                  GrSurfaceOrigin origin,
                                                                  int sampleCnt,
+                                                                 SkColorType,
                                                                  sk_sp<SkColorSpace>,
                                                                  const SkSurfaceProps*) {
     return nullptr;

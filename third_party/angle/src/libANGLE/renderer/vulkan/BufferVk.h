@@ -10,14 +10,15 @@
 #ifndef LIBANGLE_RENDERER_VULKAN_BUFFERVK_H_
 #define LIBANGLE_RENDERER_VULKAN_BUFFERVK_H_
 
+#include "libANGLE/Observer.h"
 #include "libANGLE/renderer/BufferImpl.h"
-#include "libANGLE/renderer/vulkan/renderervk_utils.h"
+#include "libANGLE/renderer/vulkan/vk_helpers.h"
 
 namespace rx
 {
 class RendererVk;
 
-class BufferVk : public BufferImpl, public ResourceVk
+class BufferVk : public BufferImpl, public vk::CommandGraphResource
 {
   public:
     BufferVk(const gl::BufferState &state);
@@ -53,16 +54,22 @@ class BufferVk : public BufferImpl, public ResourceVk
                             size_t count,
                             bool primitiveRestartEnabled,
                             gl::IndexRange *outRange) override;
+    GLint64 getSize();
 
     const vk::Buffer &getVkBuffer() const;
 
+    angle::Result mapImpl(ContextVk *contextVk, void **mapPtr);
+    angle::Result unmapImpl(ContextVk *contextVk);
+
   private:
-    vk::Error setDataImpl(ContextVk *contextVk, const uint8_t *data, size_t size, size_t offset);
+    angle::Result setDataImpl(ContextVk *contextVk,
+                              const uint8_t *data,
+                              size_t size,
+                              size_t offset);
     void release(RendererVk *renderer);
 
     vk::Buffer mBuffer;
     vk::DeviceMemory mBufferMemory;
-    size_t mCurrentRequiredSize;
 };
 
 }  // namespace rx

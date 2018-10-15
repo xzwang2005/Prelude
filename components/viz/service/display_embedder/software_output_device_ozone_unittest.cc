@@ -42,11 +42,10 @@ class TestPlatformWindowDelegate : public ui::PlatformWindowDelegate {
   void OnClosed() override {}
   void OnWindowStateChanged(ui::PlatformWindowState new_state) override {}
   void OnLostCapture() override {}
-  void OnAcceleratedWidgetAvailable(gfx::AcceleratedWidget widget,
-                                    float device_pixel_ratio) override {
+  void OnAcceleratedWidgetAvailable(gfx::AcceleratedWidget widget) override {
     widget_ = widget;
   }
-  void OnAcceleratedWidgetDestroyed() override { NOTREACHED(); }
+  void OnAcceleratedWidgetDestroyed() override {}
   void OnActivationChanged(bool active) override {}
 
  private:
@@ -92,7 +91,7 @@ void SoftwareOutputDeviceOzoneTest::SetUp() {
       false /* enable_surface_synchronization */,
       false /* enable_pixel_canvas */);
   compositor_->SetAcceleratedWidget(window_delegate_.GetAcceleratedWidget());
-  compositor_->SetScaleAndSize(1.0f, size);
+  compositor_->SetScaleAndSize(1.0f, size, LocalSurfaceId());
 
   ui::SurfaceFactoryOzone* factory =
       ui::OzonePlatform::GetInstance()->GetSurfaceFactoryOzone();

@@ -21,6 +21,7 @@ import android.net.Network;
 import android.net.NetworkCapabilities;
 import android.net.NetworkRequest;
 import android.os.Build;
+import android.os.StrictMode;
 import android.support.test.InstrumentationRegistry;
 import android.support.test.annotation.UiThreadTest;
 import android.support.test.filters.MediumTest;
@@ -66,7 +67,7 @@ public class NetworkChangeNotifierTest {
      */
     private static class NetworkChangeNotifierTestObserver
             implements NetworkChangeNotifier.ConnectionTypeObserver {
-        private boolean mReceivedNotification = false;
+        private boolean mReceivedNotification;
 
         @Override
         public void onConnectionTypeChanged(int connectionType) {
@@ -99,7 +100,7 @@ public class NetworkChangeNotifierTest {
             mReceivedConnectionSubtypeNotification = false;
         }
 
-        private boolean mReceivedConnectionSubtypeNotification = false;
+        private boolean mReceivedConnectionSubtypeNotification;
     }
 
     private static class Helper {
@@ -230,8 +231,8 @@ public class NetworkChangeNotifierTest {
         // Dummy implementations to avoid NullPointerExceptions in default implementations:
 
         @Override
-        public long getDefaultNetId() {
-            return NetId.INVALID;
+        public Network getDefaultNetwork() {
+            return null;
         }
 
         @Override
@@ -455,7 +456,7 @@ public class NetworkChangeNotifierTest {
 
     @Before
     public void setUp() throws Throwable {
-        LibraryLoader.get(LibraryProcessType.PROCESS_BROWSER).ensureInitialized();
+        LibraryLoader.getInstance().ensureInitialized(LibraryProcessType.PROCESS_BROWSER);
 
         mUiThreadRule.runOnUiThread(new Runnable() {
             @Override
@@ -709,8 +710,12 @@ public class NetworkChangeNotifierTest {
     public void testConnectivityManagerDelegateDoesNotCrash() {
         ConnectivityManagerDelegate delegate =
                 new ConnectivityManagerDelegate(InstrumentationRegistry.getTargetContext());
-        delegate.getNetworkState(
-                new WifiManagerDelegate(InstrumentationRegistry.getTargetContext()));
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            delegate.getNetworkState(null);
+        } else {
+            delegate.getNetworkState(
+                    new WifiManagerDelegate(InstrumentationRegistry.getTargetContext()));
+        }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
             // getConnectionType(Network) doesn't crash upon invalid Network argument.
             Network invalidNetwork = Helper.netIdToNetwork(NetId.INVALID);
@@ -722,7 +727,7 @@ public class NetworkChangeNotifierTest {
             if (networks.length >= 1) {
                 delegate.getConnectionType(networks[0]);
             }
-            delegate.getDefaultNetId();
+            delegate.getDefaultNetwork();
             NetworkCallback networkCallback = new NetworkCallback();
             NetworkRequest networkRequest = new NetworkRequest.Builder().build();
             delegate.registerNetworkCallback(networkRequest, networkCallback);
@@ -785,8 +790,8 @@ public class NetworkChangeNotifierTest {
             }
 
             @Override
-            long getDefaultNetId() {
-                return Integer.parseInt(mNetworks[1].toString());
+            Network getDefaultNetwork() {
+                return mNetworks[1];
             }
 
             @Override
@@ -802,7 +807,7 @@ public class NetworkChangeNotifierTest {
 
         // Verify that the mock delegate connectivity manager is being used
         // by the network change notifier auto-detector.
-        Assert.assertEquals(333, ncn.getDefaultNetId());
+        Assert.assertEquals(333, demungeNetId(ncn.getDefaultNetId()));
 
         // The api {@link NetworkChangeNotifierAutoDetect#getNetworksAndTypes()}
         // returns an array of a repeated sequence of: (NetID, ConnectionType).
@@ -972,5 +977,41 @@ public class NetworkChangeNotifierTest {
         }
         ConnectivityManager.setProcessDefaultNetwork(null);
         Assert.assertFalse(NetworkChangeNotifier.isProcessBoundToNetwork());
+    }
+
+    /**
+     * Regression test for crbug.com/805424 where ConnectivityManagerDelegate.vpnAccessible() was
+     * found to leak.
+     */
+    @Test
+    @MediumTest
+    @MinAndroidSdkLevel(Build.VERSION_CODES.LOLLIPOP)
+    public void testVpnAccessibleDoesNotLeak() {
+        ConnectivityManagerDelegate connectivityManagerDelegate = new ConnectivityManagerDelegate(
+                InstrumentationRegistry.getInstrumentation().getTargetContext());
+        StrictMode.VmPolicy oldPolicy = StrictMode.getVmPolicy();
+        StrictMode.setVmPolicy(new StrictMode.VmPolicy.Builder()
+                                       .detectLeakedClosableObjects()
+                                       .penaltyDeath()
+                                       .penaltyLog()
+                                       .build());
+        try {
+            // Test non-existent Network (NetIds only go to 65535).
+            connectivityManagerDelegate.vpnAccessible(Helper.netIdToNetwork(65537));
+            // Test existing Networks.
+            for (Network network : connectivityManagerDelegate.getAllNetworksUnfiltered()) {
+                connectivityManagerDelegate.vpnAccessible(network);
+            }
+
+            // Run GC and finalizers a few times to pick up leaked closeables
+            for (int i = 0; i < 10; i++) {
+                System.gc();
+                System.runFinalization();
+            }
+            System.gc();
+            System.runFinalization();
+        } finally {
+            StrictMode.setVmPolicy(oldPolicy);
+        }
     }
 }

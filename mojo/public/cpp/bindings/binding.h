@@ -194,6 +194,8 @@ class Binding {
   // pipe has been bound to the implementation).
   bool is_bound() const { return internal_state_.is_bound(); }
 
+  explicit operator bool() const { return internal_state_.is_bound(); }
+
   // Returns the value of the handle currently bound to this Binding which can
   // be used to make explicit Wait/WaitMany calls. Requires that the Binding be
   // bound. Ownership of the handle is retained by the Binding, it is not
@@ -235,6 +237,11 @@ class Binding {
   // Allows test code to swap the interface implementation.
   ImplPointerType SwapImplForTesting(ImplPointerType new_impl) {
     return internal_state_.SwapImplForTesting(new_impl);
+  }
+
+  // DO NOT USE. Exposed only for internal use and for testing.
+  internal::BindingState<Interface, ImplRefTraits>* internal_state() {
+    return &internal_state_;
   }
 
  private:

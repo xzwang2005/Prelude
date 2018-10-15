@@ -26,7 +26,7 @@
 #include "common/debug.h"
 #include "Main/FrameBuffer.hpp"
 
-#if defined(__linux__) && !defined(__ANDROID__)
+#if defined(USE_X11)
 #include "Main/libX11.hpp"
 #elif defined(_WIN32)
 #include <tchar.h>
@@ -51,20 +51,6 @@ namespace egl
 {
 Surface::Surface(const Display *display, const Config *config) : display(display), config(config)
 {
-	backBuffer = nullptr;
-	depthStencil = nullptr;
-	texture = nullptr;
-
-	width = 0;
-	height = 0;
-	largestPBuffer = EGL_FALSE;
-	pixelAspectRatio = (EGLint)(1.0 * EGL_DISPLAY_SCALING);   // FIXME: Determine actual pixel aspect ratio
-	renderBuffer = EGL_BACK_BUFFER;
-	swapBehavior = EGL_BUFFER_PRESERVED;
-	textureFormat = EGL_NO_TEXTURE;
-	textureTarget = EGL_NO_TEXTURE;
-	swapInterval = -1;
-	setSwapInterval(1);
 }
 
 Surface::~Surface()
@@ -78,7 +64,15 @@ bool Surface::initialize()
 
 	if(libGLESv2)
 	{
-		backBuffer = libGLESv2->createBackBuffer(width, height, config->mRenderTargetFormat, config->mSamples);
+		if(clientBuffer)
+		{
+			backBuffer = libGLESv2->createBackBufferFromClientBuffer(
+				egl::ClientBuffer(width, height, getClientBufferFormat(), clientBuffer, clientBufferPlane));
+		}
+		else
+		{
+			backBuffer = libGLESv2->createBackBuffer(width, height, config->mRenderTargetFormat, config->mSamples);
+		}
 	}
 	else if(libGLES_CM)
 	{
@@ -155,6 +149,16 @@ egl::Image *Surface::getDepthStencil()
 	return depthStencil;
 }
 
+void Surface::setMipmapLevel(EGLint mipmapLevel)
+{
+	this->mipmapLevel = mipmapLevel;
+}
+
+void Surface::setMultisampleResolve(EGLenum multisampleResolve)
+{
+	this->multisampleResolve = multisampleResolve;
+}
+
 void Surface::setSwapBehavior(EGLenum swapBehavior)
 {
 	this->swapBehavior = swapBehavior;
@@ -182,11 +186,6 @@ EGLenum Surface::getSurfaceType() const
 	return config->mSurfaceType;
 }
 
-sw::Format Surface::getInternalFormat() const
-{
-	return config->mRenderTargetFormat;
-}
-
 EGLint Surface::getWidth() const
 {
 	return width;
@@ -195,6 +194,16 @@ EGLint Surface::getWidth() const
 EGLint Surface::getHeight() const
 {
 	return height;
+}
+
+EGLint Surface::getMipmapLevel() const
+{
+	return mipmapLevel;
+}
+
+EGLenum Surface::getMultisampleResolve() const
+{
+	return multisampleResolve;
 }
 
 EGLint Surface::getPixelAspectRatio() const
@@ -227,6 +236,52 @@ EGLBoolean Surface::getLargestPBuffer() const
 	return largestPBuffer;
 }
 
+sw::Format Surface::getClientBufferFormat() const
+{
+	switch(clientBufferType)
+	{
+	case GL_UNSIGNED_BYTE:
+		switch(clientBufferFormat)
+		{
+		case GL_RED:
+			return sw::FORMAT_R8;
+		case GL_RG:
+			return sw::FORMAT_G8R8;
+		case GL_BGRA_EXT:
+			return sw::FORMAT_A8R8G8B8;
+		default:
+			UNREACHABLE(clientBufferFormat);
+			break;
+		}
+		break;
+	case GL_UNSIGNED_SHORT:
+		switch(clientBufferFormat)
+		{
+		case GL_R16UI:
+			return sw::FORMAT_R16UI;
+		default:
+			UNREACHABLE(clientBufferFormat);
+			break;
+		}
+		break;
+	case GL_HALF_FLOAT_OES:
+	case GL_HALF_FLOAT:
+		switch(clientBufferFormat)
+		{
+		case GL_RGBA:
+			return sw::FORMAT_A16B16G16R16F;
+		default:
+			UNREACHABLE(clientBufferFormat);
+			break;
+		}
+	default:
+		UNREACHABLE(clientBufferType);
+		break;
+	}
+
+	return sw::FORMAT_NULL;
+}
+
 void Surface::setBoundTexture(egl::Texture *texture)
 {
 	this->texture = texture;
@@ -240,7 +295,7 @@ egl::Texture *Surface::getBoundTexture() const
 WindowSurface::WindowSurface(Display *display, const Config *config, EGLNativeWindowType window)
 	: Surface(display, config), window(window)
 {
-	frameBuffer = nullptr;
+	pixelAspectRatio = (EGLint)(1.0 * EGL_DISPLAY_SCALING);   // FIXME: Determine actual pixel aspect ratio
 }
 
 WindowSurface::~WindowSurface()
@@ -274,7 +329,9 @@ bool WindowSurface::checkForResize()
 {
 	#if defined(_WIN32)
 		RECT client;
-		if(!GetClientRect(window, &client))
+		BOOL status = GetClientRect(window, &client);
+
+		if(status == 0)
 		{
 			return error(EGL_BAD_NATIVE_WINDOW, false);
 		}
@@ -284,16 +341,29 @@ bool WindowSurface::checkForResize()
 	#elif defined(__ANDROID__)
 		int windowWidth;  window->query(window, NATIVE_WINDOW_WIDTH, &windowWidth);
 		int windowHeight; window->query(window, NATIVE_WINDOW_HEIGHT, &windowHeight);
-	#elif defined(__linux__)
+	#elif defined(USE_X11)
 		XWindowAttributes windowAttributes;
-		libX11->XGetWindowAttributes((::Display*)display->getNativeDisplay(), window, &windowAttributes);
+		Status status = libX11->XGetWindowAttributes((::Display*)display->getNativeDisplay(), window, &windowAttributes);
+
+		if(status == 0)
+		{
+			return error(EGL_BAD_NATIVE_WINDOW, false);
+		}
 
 		int windowWidth = windowAttributes.width;
 		int windowHeight = windowAttributes.height;
+	#elif defined(__linux__)
+		// Non X11 linux is headless only
+		int windowWidth = 100;
+		int windowHeight = 100;
 	#elif defined(__APPLE__)
 		int windowWidth;
 		int windowHeight;
 		sw::OSX::GetNativeWindowSize(window, windowWidth, windowHeight);
+	#elif defined(__Fuchsia__)
+		// TODO(crbug.com/800951): Integrate with Mozart.
+		int windowWidth = 100;
+		int windowHeight = 100;
 	#else
 		#error "WindowSurface::checkForResize unimplemented for this platform"
 	#endif
@@ -350,12 +420,21 @@ bool WindowSurface::reset(int backBufferWidth, int backBufferHeight)
 	return Surface::initialize();
 }
 
-PBufferSurface::PBufferSurface(Display *display, const Config *config, EGLint width, EGLint height, EGLenum textureFormat, EGLenum textureType, EGLBoolean largestPBuffer)
+PBufferSurface::PBufferSurface(Display *display, const Config *config, EGLint width, EGLint height,
+                               EGLenum textureFormat, EGLenum textureTarget, EGLenum clientBufferFormat,
+                               EGLenum clientBufferType, EGLBoolean largestPBuffer, EGLClientBuffer clientBuffer,
+                               EGLint clientBufferPlane)
 	: Surface(display, config)
 {
 	this->width = width;
 	this->height = height;
 	this->largestPBuffer = largestPBuffer;
+	this->textureFormat = textureFormat;
+	this->textureTarget = textureTarget;
+	this->clientBufferFormat = clientBufferFormat;
+	this->clientBufferType = clientBufferType;
+	this->clientBuffer = clientBuffer;
+	this->clientBufferPlane = clientBufferPlane;
 }
 
 PBufferSurface::~PBufferSurface()

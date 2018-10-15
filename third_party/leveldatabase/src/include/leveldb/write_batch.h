@@ -32,6 +32,11 @@ class Slice;
 class LEVELDB_EXPORT WriteBatch {
  public:
   WriteBatch();
+
+  // Intentionally copyable.
+  WriteBatch(const WriteBatch&) = default;
+  WriteBatch& operator =(const WriteBatch&) = default;
+
   ~WriteBatch();
 
   // Store the mapping "key->value" in the database.
@@ -49,6 +54,13 @@ class LEVELDB_EXPORT WriteBatch {
   // releases. It is intended for LevelDB usage metrics.
   size_t ApproximateSize();
 
+  // Copies the operations in "source" to this batch.
+  //
+  // This runs in O(source size) time. However, the constant factor is better
+  // than calling Iterate() over the source batch with a Handler that replicates
+  // the operations into this batch.
+  void Append(const WriteBatch& source);
+
   // Support for iterating over the contents of a batch.
   class Handler {
    public:
@@ -62,8 +74,6 @@ class LEVELDB_EXPORT WriteBatch {
   friend class WriteBatchInternal;
 
   std::string rep_;  // See comment in write_batch.cc for the format of rep_
-
-  // Intentionally copyable
 };
 
 }  // namespace leveldb

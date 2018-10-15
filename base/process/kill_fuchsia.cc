@@ -7,7 +7,7 @@
 #include <zircon/syscalls.h>
 
 #include "base/process/process_iterator.h"
-#include "base/task_scheduler/post_task.h"
+#include "base/task/post_task.h"
 #include "base/threading/platform_thread.h"
 
 namespace base {
@@ -48,22 +48,6 @@ TerminationStatus GetTerminationStatus(ProcessHandle handle, int* exit_code) {
   return process_info.return_code == 0
              ? TERMINATION_STATUS_NORMAL_TERMINATION
              : TERMINATION_STATUS_ABNORMAL_TERMINATION;
-}
-
-void EnsureProcessTerminated(Process process) {
-  DCHECK(!process.is_current());
-
-  // Wait for up to two seconds for the process to terminate, and then kill it
-  // forcefully if it hasn't already exited.
-  zx_signals_t signals;
-  if (zx_object_wait_one(process.Handle(), ZX_TASK_TERMINATED,
-                         zx_deadline_after(ZX_SEC(2)), &signals) == ZX_OK) {
-    DCHECK(signals & ZX_TASK_TERMINATED);
-    // If already signaled, then the process is terminated.
-    return;
-  }
-
-  process.Terminate(/*exit_code=*/1, /*wait=*/false);
 }
 
 }  // namespace base

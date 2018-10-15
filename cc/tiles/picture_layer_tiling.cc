@@ -13,7 +13,6 @@
 
 #include "base/containers/flat_map.h"
 #include "base/logging.h"
-#include "base/memory/ptr_util.h"
 #include "base/numerics/safe_conversions.h"
 #include "base/trace_event/trace_event.h"
 #include "base/trace_event/trace_event_argument.h"
@@ -128,7 +127,6 @@ void PictureLayerTiling::CreateMissingTilesInLiveTilesRect() {
 void PictureLayerTiling::TakeTilesAndPropertiesFrom(
     PictureLayerTiling* pending_twin,
     const Region& layer_invalidation) {
-  TRACE_EVENT0("cc", "TakeTilesAndPropertiesFrom");
   SetRasterSourceAndResize(pending_twin->raster_source_);
 
   RemoveTilesInRegion(layer_invalidation, false /* recreate tiles */);

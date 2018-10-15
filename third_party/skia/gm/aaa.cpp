@@ -44,6 +44,7 @@ protected:
 
         y += 200;
 
+        canvas->save();
         canvas->translate(0, y);
         canvas->rotate(1);
         canvas->drawRect({ 20, 20, 20.2f, 200 }, p);
@@ -74,6 +75,28 @@ protected:
         path.close();
         // Manually setting convexity is required. Otherwise, this path will be considered concave.
         path.setConvexity(SkPath::kConvex_Convexity);
+        canvas->drawPath(path, p);
+
+        // skbug.com/7573
+        y += 200;
+        canvas->save();
+        canvas->translate(0, y);
+        p.setAntiAlias(true);
+        path.reset();
+        path.moveTo(1.98009784f, 9.0162744f);
+        path.lineTo(47.843992f, 10.1922744f);
+        path.lineTo(47.804008f, 11.7597256f);
+        path.lineTo(1.93990216f, 10.5837256f);
+        canvas->drawPath(path, p);
+        canvas->restore();
+
+        // skbug.com/7813
+        // t8888 splits the 800-high canvas into 3 pieces; the boundary is close to 266 and 534
+        path.reset();
+        path.moveTo(700, 266);
+        path.lineTo(710, 266);
+        path.lineTo(710, 534);
+        path.lineTo(700, 534);
         canvas->drawPath(path, p);
     }
 

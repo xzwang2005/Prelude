@@ -7,94 +7,88 @@
 #include <stdint.h>
 
 #include "base/macros.h"
-#include "base/memory/ptr_util.h"
-#include "base/single_thread_task_runner.h"
 #include "base/trace_event/trace_event.h"
 #include "cc/layers/surface_layer_impl.h"
 #include "cc/trees/layer_tree_host.h"
-#include "cc/trees/swap_promise.h"
-#include "cc/trees/swap_promise_manager.h"
-#include "cc/trees/task_runner_provider.h"
-#include "components/viz/common/surfaces/surface_sequence_generator.h"
 
 namespace cc {
 
-class SatisfySwapPromise : public SwapPromise {
- public:
-  SatisfySwapPromise(
-      base::Closure reference_returner,
-      scoped_refptr<base::SingleThreadTaskRunner> main_task_runner)
-      : reference_returner_(reference_returner),
-        main_task_runner_(std::move(main_task_runner)) {}
-
-  ~SatisfySwapPromise() override = default;
-
- private:
-  void DidActivate() override {}
-
-  void WillSwap(viz::CompositorFrameMetadata* metadata) override {}
-
-  void DidSwap() override {
-    main_task_runner_->PostTask(FROM_HERE, reference_returner_);
-  }
-
-  DidNotSwapAction DidNotSwap(DidNotSwapReason reason) override {
-    main_task_runner_->PostTask(FROM_HERE, reference_returner_);
-    return DidNotSwapAction::BREAK_PROMISE;
-  }
-
-  int64_t TraceId() const override { return 0; }
-
-  base::Closure reference_returner_;
-  scoped_refptr<base::SingleThreadTaskRunner> main_task_runner_;
-
-  DISALLOW_COPY_AND_ASSIGN(SatisfySwapPromise);
-};
-
-scoped_refptr<SurfaceLayer> SurfaceLayer::Create(
-    scoped_refptr<viz::SurfaceReferenceFactory> ref_factory) {
-  return base::WrapRefCounted(new SurfaceLayer(std::move(ref_factory)));
+scoped_refptr<SurfaceLayer> SurfaceLayer::Create() {
+  return base::WrapRefCounted(new SurfaceLayer());
 }
 
+scoped_refptr<SurfaceLayer> SurfaceLayer::Create(
+    UpdateSubmissionStateCB update_submission_state_callback) {
+  return base::WrapRefCounted(
+      new SurfaceLayer(std::move(update_submission_state_callback)));
+}
+
+SurfaceLayer::SurfaceLayer() = default;
+
 SurfaceLayer::SurfaceLayer(
-    scoped_refptr<viz::SurfaceReferenceFactory> ref_factory)
-    : ref_factory_(std::move(ref_factory)) {}
+    UpdateSubmissionStateCB update_submission_state_callback)
+    : update_submission_state_callback_(
+          std::move(update_submission_state_callback)) {}
 
 SurfaceLayer::~SurfaceLayer() {
   DCHECK(!layer_tree_host());
 }
 
-void SurfaceLayer::SetPrimarySurfaceId(const viz::SurfaceId& surface_id) {
-  if (primary_surface_id_ == surface_id)
+void SurfaceLayer::SetPrimarySurfaceId(const viz::SurfaceId& surface_id,
+                                       const DeadlinePolicy& deadline_policy) {
+  if (surface_range_.end() == surface_id &&
+      deadline_policy.use_existing_deadline()) {
     return;
-  primary_surface_id_ = surface_id;
+  }
+
+  TRACE_EVENT_WITH_FLOW2(
+      TRACE_DISABLED_BY_DEFAULT("viz.surface_id_flow"),
+      "LocalSurfaceId.Embed.Flow",
+      TRACE_ID_GLOBAL(surface_id.local_surface_id().embed_trace_id()),
+      TRACE_EVENT_FLAG_FLOW_IN | TRACE_EVENT_FLAG_FLOW_OUT, "step",
+      "SetPrimarySurfaceId", "surface_id", surface_id.ToString());
+
+  if (layer_tree_host() && surface_range_.IsValid())
+    layer_tree_host()->RemoveSurfaceRange(surface_range_);
+
+  surface_range_ = viz::SurfaceRange(surface_range_.start(), surface_id);
+
+  if (layer_tree_host() && surface_range_.IsValid())
+    layer_tree_host()->AddSurfaceRange(surface_range_);
+
+  // We should never block or set a deadline on an invalid
+  // |surface_range_|.
+  if (!surface_range_.IsValid()) {
+    deadline_in_frames_ = 0u;
+  } else if (!deadline_policy.use_existing_deadline()) {
+    deadline_in_frames_ = deadline_policy.deadline_in_frames();
+  }
   UpdateDrawsContent(HasDrawableContent());
   SetNeedsCommit();
 }
 
 void SurfaceLayer::SetFallbackSurfaceId(const viz::SurfaceId& surface_id) {
-  if (fallback_surface_id_ == surface_id)
+  if (surface_range_.start() == surface_id)
     return;
+  TRACE_EVENT_WITH_FLOW2(
+      TRACE_DISABLED_BY_DEFAULT("viz.surface_id_flow"),
+      "LocalSurfaceId.Submission.Flow",
+      TRACE_ID_GLOBAL(surface_id.local_surface_id().submission_trace_id()),
+      TRACE_EVENT_FLAG_FLOW_IN | TRACE_EVENT_FLAG_FLOW_OUT, "step",
+      "SetFallbackSurfaceId", "surface_id", surface_id.ToString());
 
-  RemoveReference(std::move(fallback_reference_returner_));
-  if (layer_tree_host())
-    layer_tree_host()->RemoveSurfaceLayerId(fallback_surface_id_);
+  if (layer_tree_host() && surface_range_.IsValid())
+    layer_tree_host()->RemoveSurfaceRange(surface_range_);
 
-  fallback_surface_id_ = surface_id;
+  surface_range_ = viz::SurfaceRange(
+      surface_id.is_valid() ? base::Optional<viz::SurfaceId>(surface_id)
+                            : base::nullopt,
+      surface_range_.end());
 
-  if (layer_tree_host() && fallback_surface_id_.is_valid()) {
-    fallback_reference_returner_ =
-        ref_factory_->CreateReference(layer_tree_host(), fallback_surface_id_);
-    layer_tree_host()->AddSurfaceLayerId(fallback_surface_id_);
-  }
+  if (layer_tree_host() && surface_range_.IsValid())
+    layer_tree_host()->AddSurfaceRange(surface_range_);
+
   SetNeedsCommit();
-}
-
-void SurfaceLayer::SetDefaultBackgroundColor(SkColor background_color) {
-  if (default_background_color_ == background_color)
-    return;
-  default_background_color_ = background_color;
-  SetNeedsPushProperties();
 }
 
 void SurfaceLayer::SetStretchContentToFillBounds(
@@ -105,51 +99,62 @@ void SurfaceLayer::SetStretchContentToFillBounds(
   SetNeedsPushProperties();
 }
 
+void SurfaceLayer::SetSurfaceHitTestable(bool surface_hit_testable) {
+  if (surface_hit_testable_ == surface_hit_testable)
+    return;
+  surface_hit_testable_ = surface_hit_testable;
+}
+
+void SurfaceLayer::SetHasPointerEventsNone(bool has_pointer_events_none) {
+  if (has_pointer_events_none_ == has_pointer_events_none)
+    return;
+  has_pointer_events_none_ = has_pointer_events_none;
+  SetNeedsPushProperties();
+  // Change of pointer-events property triggers an update of viz hit test data,
+  // we need to commit in order to submit the new data with compositor frame.
+  SetNeedsCommit();
+}
+
+void SurfaceLayer::SetMayContainVideo(bool may_contain_video) {
+  may_contain_video_ = may_contain_video;
+}
+
 std::unique_ptr<LayerImpl> SurfaceLayer::CreateLayerImpl(
     LayerTreeImpl* tree_impl) {
-  return SurfaceLayerImpl::Create(tree_impl, id());
+  auto layer_impl = SurfaceLayerImpl::Create(tree_impl, id(),
+                                             update_submission_state_callback_);
+  layer_impl->set_may_contain_video(may_contain_video_);
+  return layer_impl;
 }
 
 bool SurfaceLayer::HasDrawableContent() const {
-  return primary_surface_id_.is_valid() && Layer::HasDrawableContent();
+  return surface_range_.IsValid() && Layer::HasDrawableContent();
 }
 
 void SurfaceLayer::SetLayerTreeHost(LayerTreeHost* host) {
   if (layer_tree_host() == host) {
     return;
   }
+  if (layer_tree_host() && surface_range_.IsValid())
+    layer_tree_host()->RemoveSurfaceRange(surface_range_);
 
-  if (layer_tree_host() && fallback_surface_id_.is_valid())
-    layer_tree_host()->RemoveSurfaceLayerId(fallback_surface_id_);
-
-  RemoveReference(std::move(fallback_reference_returner_));
   Layer::SetLayerTreeHost(host);
 
-  if (layer_tree_host() && fallback_surface_id_.is_valid()) {
-    fallback_reference_returner_ =
-        ref_factory_->CreateReference(layer_tree_host(), fallback_surface_id_);
-    layer_tree_host()->AddSurfaceLayerId(fallback_surface_id_);
-  }
+  if (layer_tree_host() && surface_range_.IsValid())
+    layer_tree_host()->AddSurfaceRange(surface_range_);
 }
 
 void SurfaceLayer::PushPropertiesTo(LayerImpl* layer) {
   Layer::PushPropertiesTo(layer);
   TRACE_EVENT0("cc", "SurfaceLayer::PushPropertiesTo");
   SurfaceLayerImpl* layer_impl = static_cast<SurfaceLayerImpl*>(layer);
-  layer_impl->SetPrimarySurfaceId(primary_surface_id_);
-  layer_impl->SetFallbackSurfaceId(fallback_surface_id_);
+  layer_impl->SetRange(surface_range_, std::move(deadline_in_frames_));
+  // Unless the client explicitly calls SetPrimarySurfaceId again after this
+  // commit, don't block on |surface_range_| again.
+  deadline_in_frames_ = 0u;
   layer_impl->SetStretchContentToFillBounds(stretch_content_to_fill_bounds_);
-  layer_impl->SetDefaultBackgroundColor(default_background_color_);
-}
-
-void SurfaceLayer::RemoveReference(base::Closure reference_returner) {
-  if (!reference_returner)
-    return;
-  auto swap_promise = std::make_unique<SatisfySwapPromise>(
-      std::move(reference_returner),
-      layer_tree_host()->GetTaskRunnerProvider()->MainThreadTaskRunner());
-  layer_tree_host()->GetSwapPromiseManager()->QueueSwapPromise(
-      std::move(swap_promise));
+  layer_impl->SetSurfaceHitTestable(surface_hit_testable_);
+  layer_impl->SetHasPointerEventsNone(has_pointer_events_none_);
 }
 
 }  // namespace cc

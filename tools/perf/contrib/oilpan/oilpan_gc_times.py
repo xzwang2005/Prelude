@@ -27,7 +27,6 @@ def _AddTracingResults(thread, results):
       if args['forced']:
         return 'forced'
       return 'precise' if args['precise'] else 'conservative'
-
     if args['gcReason'] == 'ConservativeGC':
       return 'conservative'
     if args['gcReason'] == 'PreciseGC':
@@ -56,7 +55,7 @@ def _AddTracingResults(thread, results):
                   if s.name == 'BlinkGCTimeMeasurement']
 
   # Prepare
-  values = {'oilpan_coalesce': []}
+  values = {}
   for reason in _GC_REASONS:
     for stage in _GC_STAGES:
       values['oilpan_%s_%s' % (reason, stage)] = []
@@ -68,10 +67,7 @@ def _AddTracingResults(thread, results):
   complete_sweep_time = 0
   for event in events:
     duration = event.thread_duration or event.duration
-    if event.name == 'ThreadHeap::coalesce':
-      values['oilpan_coalesce'].append(duration)
-      continue
-    if event.name == 'BlinkGCMarking':
+    if event.name == 'BlinkGC.AtomicPhaseMarking':
       if reason is not None:
         values['oilpan_%s_mark' % reason].append(mark_time)
         values['oilpan_%s_lazy_sweep' % reason].append(lazy_sweep_time)
@@ -82,10 +78,10 @@ def _AddTracingResults(thread, results):
       lazy_sweep_time = 0
       complete_sweep_time = 0
       continue
-    if event.name == 'ThreadHeap::lazySweepPages':
+    if event.name == 'BlinkGC.LazySweepInIdle':
       lazy_sweep_time += duration
       continue
-    if event.name == 'ThreadState::completeSweep':
+    if event.name == 'BlinkGC.CompleteSweep':
       complete_sweep_time += duration
       continue
 
@@ -98,7 +94,6 @@ def _AddTracingResults(thread, results):
   unit = 'ms'
 
   # Dump each metric
-  DumpMetric(page, 'oilpan_coalesce', values, unit, results)
   for reason in _GC_REASONS:
     for stage in _GC_STAGES:
       DumpMetric(page, 'oilpan_%s_%s' % (reason, stage), values, unit, results)
@@ -146,15 +141,7 @@ class _OilpanGCTimesBase(legacy_page_test.LegacyPageTest):
 
   def ValidateAndMeasurePage(self, page, tab, results):
     del page  # unused
-    timeline_data = tab.browser.platform.tracing_controller.StopTracing()
-
-    # TODO(charliea): This is part of a three-sided Chromium/Telemetry patch
-    # where we're changing the return type of StopTracing from a TraceValue to a
-    # (TraceValue, nonfatal_exception_list) tuple. Once the tuple return value
-    # lands in Chromium, the non-tuple logic should be deleted.
-    if isinstance(timeline_data, tuple):
-      timeline_data = timeline_data[0]
-
+    timeline_data = tab.browser.platform.tracing_controller.StopTracing()[0]
     timeline_model = TimelineModel(timeline_data)
     threads = timeline_model.GetAllThreads()
     for thread in threads:

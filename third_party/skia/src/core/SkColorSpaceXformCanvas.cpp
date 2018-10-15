@@ -5,6 +5,7 @@
  * found in the LICENSE file.
  */
 
+#include "SkCanvasVirtualEnforcer.h"
 #include "SkColorFilter.h"
 #include "SkColorSpaceXformCanvas.h"
 #include "SkColorSpaceXformer.h"
@@ -29,11 +30,11 @@ namespace {
     };
 };
 
-class SkColorSpaceXformCanvas : public SkNoDrawCanvas {
+class SkColorSpaceXformCanvas : public SkCanvasVirtualEnforcer<SkNoDrawCanvas> {
 public:
     SkColorSpaceXformCanvas(SkCanvas* target, sk_sp<SkColorSpace> targetCS,
                             std::unique_ptr<SkColorSpaceXformer> xformer)
-        : SkNoDrawCanvas(SkIRect::MakeSize(target->getBaseLayerSize()))
+        : SkCanvasVirtualEnforcer<SkNoDrawCanvas>(SkIRect::MakeSize(target->getBaseLayerSize()))
         , fTarget(target)
         , fTargetCS(targetCS)
         , fXformer(std::move(xformer))
@@ -89,8 +90,9 @@ public:
                       const SkPaint& paint) override {
         fTarget->drawPoints(mode, count, pts, fXformer->apply(paint));
     }
-    void onDrawVerticesObject(const SkVertices* vertices, SkBlendMode mode,
-                              const SkPaint& paint) override {
+
+    void onDrawVerticesObject(const SkVertices* vertices, const SkVertices::Bone bones[], int boneCount,
+                              SkBlendMode mode, const SkPaint& paint) override {
         sk_sp<SkVertices> copy;
         if (vertices->hasColors()) {
             int count = vertices->vertexCount();
@@ -98,11 +100,12 @@ public:
             fXformer->apply(xformed.begin(), vertices->colors(), count);
             copy = SkVertices::MakeCopy(vertices->mode(), count, vertices->positions(),
                                         vertices->texCoords(), xformed.begin(),
+                                        vertices->boneIndices(), vertices->boneWeights(),
                                         vertices->indexCount(), vertices->indices());
             vertices = copy.get();
         }
 
-        fTarget->drawVertices(vertices, mode, fXformer->apply(paint));
+        fTarget->drawVertices(vertices, bones, boneCount, mode, fXformer->apply(paint));
     }
 
     void onDrawText(const void* ptr, size_t len,
@@ -120,11 +123,6 @@ public:
                         const SkPaint& paint) override {
         fTarget->drawPosTextH(ptr, len, xs, y, fXformer->apply(paint));
     }
-    void onDrawTextOnPath(const void* ptr, size_t len,
-                          const SkPath& path, const SkMatrix* matrix,
-                          const SkPaint& paint) override {
-        fTarget->drawTextOnPath(ptr, len, path, matrix, fXformer->apply(paint));
-    }
     void onDrawTextRSXform(const void* ptr, size_t len,
                            const SkRSXform* xforms, const SkRect* cull,
                            const SkPaint& paint) override {
@@ -139,26 +137,39 @@ public:
     void onDrawImage(const SkImage* img,
                      SkScalar l, SkScalar t,
                      const SkPaint* paint) override {
-        fTarget->drawImage(prepareImage(img).get(), l, t, MaybePaint(paint, fXformer.get()));
+        if (!fTarget->quickReject(SkRect::Make(img->bounds()).makeOffset(l,t))) {
+            fTarget->drawImage(prepareImage(img).get(), l, t, MaybePaint(paint, fXformer.get()));
+        }
     }
     void onDrawImageRect(const SkImage* img,
                          const SkRect* src, const SkRect& dst,
                          const SkPaint* paint, SrcRectConstraint constraint) override {
-        fTarget->drawImageRect(prepareImage(img).get(),
-                               src ? *src : SkRect::MakeIWH(img->width(), img->height()), dst,
-                               MaybePaint(paint, fXformer.get()), constraint);
+        if (!fTarget->quickReject(dst)) {
+            fTarget->drawImageRect(prepareImage(img).get(),
+                                   src ? *src : SkRect::MakeIWH(img->width(), img->height()), dst,
+                                   MaybePaint(paint, fXformer.get()), constraint);
+        }
     }
     void onDrawImageNine(const SkImage* img,
                          const SkIRect& center, const SkRect& dst,
                          const SkPaint* paint) override {
-        fTarget->drawImageNine(prepareImage(img).get(), center, dst,
-                               MaybePaint(paint, fXformer.get()));
+        if (!fTarget->quickReject(dst)) {
+            fTarget->drawImageNine(prepareImage(img).get(), center, dst,
+                                   MaybePaint(paint, fXformer.get()));
+        }
     }
     void onDrawImageLattice(const SkImage* img,
                             const Lattice& lattice, const SkRect& dst,
                             const SkPaint* paint) override {
-        fTarget->drawImageLattice(prepareImage(img).get(), lattice, dst,
-                                  MaybePaint(paint, fXformer.get()));
+        if (!fTarget->quickReject(dst)) {
+            SkSTArray<16, SkColor> colorBuffer;
+            int count = lattice.fRectTypes && lattice.fColors ?
+                        (lattice.fXCount + 1) * (lattice.fYCount + 1) : 0;
+            colorBuffer.reset(count);
+            fTarget->drawImageLattice(prepareImage(img).get(),
+                                      fXformer->apply(lattice, colorBuffer.begin(), count),
+                                      dst, MaybePaint(paint, fXformer.get()));
+        }
     }
     void onDrawAtlas(const SkImage* atlas, const SkRSXform* xforms, const SkRect* tex,
                      const SkColor* colors, int count, SkBlendMode mode,
@@ -173,6 +184,7 @@ public:
                            MaybePaint(paint, fXformer.get()));
     }
 
+    // TODO: quick reject bitmap draw calls before transforming too?
     void onDrawBitmap(const SkBitmap& bitmap,
                       SkScalar l, SkScalar t,
                       const SkPaint* paint) override {
@@ -214,13 +226,18 @@ public:
                                               MaybePaint(paint, fXformer.get()));
         }
 
-
-        fTarget->drawImageLattice(fXformer->apply(bitmap).get(), lattice, dst,
+        SkSTArray<16, SkColor> colorBuffer;
+        int count = lattice.fRectTypes && lattice.fColors?
+                    (lattice.fXCount + 1) * (lattice.fYCount + 1) : 0;
+        colorBuffer.reset(count);
+        fTarget->drawImageLattice(fXformer->apply(bitmap).get(),
+                                  fXformer->apply(lattice, colorBuffer.begin(), count), dst,
                                   MaybePaint(paint, fXformer.get()));
     }
     void onDrawShadowRec(const SkPath& path, const SkDrawShadowRec& rec) override {
         SkDrawShadowRec newRec(rec);
-        newRec.fColor = fXformer->apply(rec.fColor);
+        newRec.fAmbientColor = fXformer->apply(rec.fAmbientColor);
+        newRec.fSpotColor = fXformer->apply(rec.fSpotColor);
         fTarget->private_draw_shadow_rec(path, newRec);
     }
     void onDrawPicture(const SkPicture* pic,
@@ -245,13 +262,6 @@ public:
         });
         return kNoLayer_SaveLayerStrategy;
     }
-
-#ifdef SK_SUPPORT_LEGACY_DRAWFILTER
-    SkDrawFilter* setDrawFilter(SkDrawFilter* filter) override {
-        SkCanvas::setDrawFilter(filter);
-        return fTarget->setDrawFilter(filter);
-    }
-#endif
 
     // Everything from here on should be uninteresting strictly proxied state-change calls.
     void willSave()    override { fTarget->save(); }
@@ -311,10 +321,11 @@ public:
 private:
     sk_sp<SkImage> prepareImage(const SkImage* image) {
         GrContext* gr = fTarget->getGrContext();
-        if (gr) {
-            // If fTarget is GPU-accelerated, we want to upload to a texture
-            // before applying the transform. This way, we can get cache hits
-            // in the texture cache and the transform gets applied on the GPU.
+        // If fTarget is GPU-accelerated, we want to upload to a texture before applying the
+        // transform. This way, we can get cache hits in the texture cache and the transform gets
+        // applied on the GPU. We can't do A2B transforms on the GPU, though, so force those down
+        // the slower CPU path.
+        if (gr && (!image->colorSpace() || image->colorSpace()->toXYZD50())) {
             sk_sp<SkImage> textureImage = image->makeTextureImage(gr, nullptr);
             if (textureImage)
                 return fXformer->apply(textureImage.get());

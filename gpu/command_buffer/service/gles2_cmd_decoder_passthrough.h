@@ -7,6 +7,12 @@
 #ifndef GPU_COMMAND_BUFFER_SERVICE_GLES2_CMD_DECODER_PASSTHROUGH_H_
 #define GPU_COMMAND_BUFFER_SERVICE_GLES2_CMD_DECODER_PASSTHROUGH_H_
 
+#include <algorithm>
+#include <memory>
+#include <set>
+#include <unordered_map>
+#include <vector>
+
 #include "base/containers/circular_deque.h"
 #include "base/memory/ref_counted.h"
 #include "gpu/command_buffer/common/debug_marker_manager.h"
@@ -20,6 +26,7 @@
 #include "gpu/command_buffer/service/image_manager.h"
 #include "gpu/command_buffer/service/logger.h"
 #include "gpu/command_buffer/service/mailbox_manager.h"
+#include "gpu/command_buffer/service/passthrough_abstract_texture_impl.h"
 #include "gpu/command_buffer/service/texture_manager.h"
 #include "ui/gl/gl_bindings.h"
 #include "ui/gl/gl_context.h"
@@ -36,6 +43,7 @@ namespace gles2 {
 
 class ContextGroup;
 class GPUTracer;
+class PassthroughAbstractTextureImpl;
 
 struct MappedBuffer {
   GLsizeiptr size;
@@ -52,6 +60,14 @@ struct PassthroughResources {
 
   // api is null if we don't have a context (e.g. lost).
   void Destroy(gl::GLApi* api);
+
+  // Resources stores a shared list of textures pending deletion.
+  // If we have don't context when this function is called, we can mark
+  // these textures as lost context and drop all references to them.
+  void DestroyPendingTextures(bool has_context);
+
+  // If there are any textures pending destruction.
+  bool HasTexturesPendingDestruction() const;
 
   // Mappings from client side IDs to service side IDs.
   ClientServiceMap<GLuint, GLuint> texture_id_map;
@@ -70,6 +86,11 @@ struct PassthroughResources {
   // using the mailbox are deleted
   ClientServiceMap<GLuint, scoped_refptr<TexturePassthrough>>
       texture_object_map;
+
+  // A set of yet-to-be-deleted TexturePassthrough, which should be tossed
+  // whenever a context switch happens or the resources is destroyed.
+  base::flat_set<scoped_refptr<TexturePassthrough>>
+      textures_pending_destruction;
 
   // Mapping of client buffer IDs that are mapped to the shared memory used to
   // back the mapping so that it can be flushed when the buffer is unmapped
@@ -107,9 +128,9 @@ class ScopedTexture2DBindingReset {
   GLint texture_;
 };
 
-class GPU_EXPORT GLES2DecoderPassthroughImpl : public GLES2Decoder {
+class GPU_GLES2_EXPORT GLES2DecoderPassthroughImpl : public GLES2Decoder {
  public:
-  GLES2DecoderPassthroughImpl(GLES2DecoderClient* client,
+  GLES2DecoderPassthroughImpl(DecoderClient* client,
                               CommandBufferServiceBase* command_buffer_service,
                               Outputter* outputter,
                               ContextGroup* group);
@@ -126,14 +147,14 @@ class GPU_EXPORT GLES2DecoderPassthroughImpl : public GLES2Decoder {
                        int num_entries,
                        int* entries_processed);
 
-  base::WeakPtr<GLES2Decoder> AsWeakPtr() override;
+  base::WeakPtr<DecoderContext> AsWeakPtr() override;
 
   gpu::ContextResult Initialize(
       const scoped_refptr<gl::GLSurface>& surface,
       const scoped_refptr<gl::GLContext>& context,
       bool offscreen,
       const DisallowedFeatures& disallowed_features,
-      const ContextCreationAttribHelper& attrib_helper) override;
+      const ContextCreationAttribs& attrib_helper) override;
 
   // Destroys the graphics context.
   void Destroy(bool have_context) override;
@@ -160,8 +181,9 @@ class GPU_EXPORT GLES2DecoderPassthroughImpl : public GLES2Decoder {
   // Gets the GLES2 Util which holds info.
   GLES2Util* GetGLES2Util() override;
 
-  // Gets the associated GLContext.
+  // Gets the associated GLContext and GLSurface.
   gl::GLContext* GetGLContext() override;
+  gl::GLSurface* GetGLSurface() override;
 
   // Gets the associated ContextGroup
   ContextGroup* GetContextGroup() override;
@@ -200,6 +222,13 @@ class GPU_EXPORT GLES2DecoderPassthroughImpl : public GLES2Decoder {
 
   // Gets the QueryManager for this context.
   QueryManager* GetQueryManager() override;
+
+  // Set a callback to be called when a query is complete.
+  void SetQueryCallback(unsigned int query_client_id,
+                        base::OnceClosure callback) override;
+
+  // Gets the GpuFenceManager for this context.
+  GpuFenceManager* GetGpuFenceManager() override;
 
   // Gets the FramebufferManager for this context.
   FramebufferManager* GetFramebufferManager() override;
@@ -271,7 +300,17 @@ class GPU_EXPORT GLES2DecoderPassthroughImpl : public GLES2Decoder {
 
   ErrorState* GetErrorState() override;
 
-  void WaitForReadPixels(base::Closure callback) override;
+  std::unique_ptr<AbstractTexture> CreateAbstractTexture(
+      unsigned target,
+      unsigned internal_format,
+      int width,
+      int height,
+      int depth,
+      int border,
+      unsigned format,
+      unsigned type) override;
+
+  void WaitForReadPixels(base::OnceClosure callback) override;
 
   // Returns true if the context was lost either by GL_ARB_robustness, forced
   // context loss or command buffer parse error.
@@ -299,6 +338,20 @@ class GPU_EXPORT GLES2DecoderPassthroughImpl : public GLES2Decoder {
                  uint32_t texture_target,
                  gl::GLImage* image,
                  bool can_bind_to_sampler) override;
+
+  void OnDebugMessage(GLenum source,
+                      GLenum type,
+                      GLuint id,
+                      GLenum severity,
+                      GLsizei length,
+                      const GLchar* message);
+
+  void SetCopyTextureResourceManagerForTest(
+      CopyTextureCHROMIUMResourceManager* copy_texture_resource_manager)
+      override;
+
+  void OnAbstractTextureDestroyed(PassthroughAbstractTextureImpl*,
+                                  scoped_refptr<TexturePassthrough>);
 
  private:
   // Allow unittests to inspect internal state tracking
@@ -358,15 +411,16 @@ class GPU_EXPORT GLES2DecoderPassthroughImpl : public GLES2Decoder {
   GLenum PopError();
   bool FlushErrors();
 
-  // Inject a driver-level GL error that will replace the result of the next
-  // call to glGetError
-  void InjectDriverError(GLenum error);
-
   bool IsRobustnessSupported();
 
   bool IsEmulatedQueryTarget(GLenum target) const;
   error::Error ProcessQueries(bool did_finish);
   void RemovePendingQuery(GLuint service_id);
+
+  struct BufferShadowUpdate;
+  // BufferShadowUpdateMap's key is a buffer client id.
+  using BufferShadowUpdateMap = base::flat_map<GLuint, BufferShadowUpdate>;
+  void ReadBackBuffersIntoShadowCopies(const BufferShadowUpdateMap& updates);
 
   error::Error ProcessReadPixels(bool did_finish);
 
@@ -388,7 +442,43 @@ class GPU_EXPORT GLES2DecoderPassthroughImpl : public GLES2Decoder {
 
   void ExitCommandProcessingEarly() { commands_to_process_ = 0; }
 
-  GLES2DecoderClient* client_;
+  error::Error CheckSwapBuffersResult(gfx::SwapResult result,
+                                      const char* function_name);
+
+  // Issue BindTexImage / CopyTexImage calls for |passthrough_texture|, if
+  // they're pending.
+  void BindOnePendingImage(GLenum target, TexturePassthrough* texture);
+
+  // Issue BindTexImage / CopyTexImage calls for any GLImages that
+  // requested it in BindImage, and are currently bound to textures that
+  // are bound to samplers (i.e., are in |textures_pending_binding_|).
+  void BindPendingImagesForSamplers();
+
+  // Fail-fast inline version of BindPendingImagesForSamplers.
+  inline void BindPendingImagesForSamplersIfNeeded() {
+    if (textures_pending_binding_.size() > 0)
+      BindPendingImagesForSamplers();
+  }
+
+  // Fail-fast version of BindPendingImages that operates on a single texture
+  // that's specified by |client_id|.
+  inline void BindPendingImageForClientIDIfNeeded(int client_id) {
+    scoped_refptr<TexturePassthrough> texture = nullptr;
+
+    // We could keep track of the number of |is_bind_pending| textures in
+    // |resources_|, and elide all of this if it's zero.
+    if (!resources_->texture_object_map.GetServiceID(client_id, &texture))
+      return;
+
+    if (texture && texture->is_bind_pending())
+      BindOnePendingImage(texture->target(), texture.get());
+  }
+
+  DecoderClient* client_ = nullptr;
+
+  // A set of raw pointers to currently living PassthroughAbstractTextures
+  // which allow us to properly signal to them when we are destroyed.
+  base::flat_set<PassthroughAbstractTextureImpl*> abstract_textures_;
 
   int commands_to_process_;
 
@@ -417,7 +507,7 @@ class GPU_EXPORT GLES2DecoderPassthroughImpl : public GLES2Decoder {
   static const CommandInfo command_info[kNumCommands - kFirstGLES2Command];
 
   // The GLApi to make the gl calls on.
-  gl::GLApi* api_;
+  gl::GLApi* api_ = nullptr;
 
   // The GL context this decoder renders to on behalf of the client.
   scoped_refptr<gl::GLSurface> surface_;
@@ -438,7 +528,7 @@ class GPU_EXPORT GLES2DecoderPassthroughImpl : public GLES2Decoder {
   bool bind_generates_resource_;
 
   // Mappings from client side IDs to service side IDs for shared objects
-  PassthroughResources* resources_;
+  PassthroughResources* resources_ = nullptr;
 
   // Mappings from client side IDs to service side IDs for per-context objects
   ClientServiceMap<GLuint, GLuint> framebuffer_id_map_;
@@ -447,10 +537,26 @@ class GPU_EXPORT GLES2DecoderPassthroughImpl : public GLES2Decoder {
   ClientServiceMap<GLuint, GLuint> vertex_array_id_map_;
 
   // Mailboxes
-  MailboxManager* mailbox_manager_;
+  MailboxManager* mailbox_manager_ = nullptr;
+
+  std::unique_ptr<GpuFenceManager> gpu_fence_manager_;
 
   // State tracking of currently bound 2D textures (client IDs)
   size_t active_texture_unit_;
+
+  enum class TextureTarget : uint8_t {
+    k2D = 0,
+    kCubeMap = 1,
+    k2DArray = 2,
+    k3D = 3,
+    k2DMultisample = 4,
+    kExternal = 5,
+    kRectangle = 6,
+
+    kUnkown = 7,
+    kCount = kUnkown,
+  };
+  static TextureTarget GLenumToTextureTarget(GLenum target);
 
   struct BoundTexture {
     BoundTexture();
@@ -463,7 +569,29 @@ class GPU_EXPORT GLES2DecoderPassthroughImpl : public GLES2Decoder {
     GLuint client_id = 0;
     scoped_refptr<TexturePassthrough> texture;
   };
-  std::unordered_map<GLenum, std::vector<BoundTexture>> bound_textures_;
+
+  // Use a limit that is at least ANGLE's IMPLEMENTATION_MAX_ACTIVE_TEXTURES
+  // constant
+  static constexpr size_t kMaxTextureUnits = 64;
+  static constexpr size_t kNumTextureTypes =
+      static_cast<size_t>(TextureTarget::kCount);
+  std::array<std::array<BoundTexture, kMaxTextureUnits>, kNumTextureTypes>
+      bound_textures_;
+
+  // [target, texture unit] = texture that has a bound GLImage that requires
+  // bind / copy before draw.
+  using TargetUnitPair = std::pair<GLenum, GLuint>;
+  struct TargetUnitPairHasher {
+    std::size_t operator()(const TargetUnitPair& target_unit_pair) const {
+      // Combine them into disjoint ints.
+      return target_unit_pair.first * kMaxTextureUnits +
+             target_unit_pair.second;
+    }
+  };
+  std::unordered_map<TargetUnitPair,
+                     base::WeakPtr<TexturePassthrough>,
+                     TargetUnitPairHasher>
+      textures_pending_binding_;
 
   // State tracking of currently bound buffers
   std::unordered_map<GLenum, GLuint> bound_buffers_;
@@ -478,9 +606,9 @@ class GPU_EXPORT GLES2DecoderPassthroughImpl : public GLES2Decoder {
   struct PendingQuery {
     PendingQuery();
     ~PendingQuery();
-    PendingQuery(const PendingQuery&);
+    PendingQuery(const PendingQuery&) = delete;
     PendingQuery(PendingQuery&&);
-    PendingQuery& operator=(const PendingQuery&);
+    PendingQuery& operator=(const PendingQuery&) = delete;
     PendingQuery& operator=(PendingQuery&&);
 
     GLenum target = GL_NONE;
@@ -489,6 +617,10 @@ class GPU_EXPORT GLES2DecoderPassthroughImpl : public GLES2Decoder {
     scoped_refptr<gpu::Buffer> shm;
     QuerySync* sync = nullptr;
     base::subtle::Atomic32 submit_count = 0;
+
+    std::vector<base::OnceClosure> callbacks;
+    std::unique_ptr<gl::GLFence> buffer_shadow_update_fence = nullptr;
+    BufferShadowUpdateMap buffer_shadow_updates;
   };
   base::circular_deque<PendingQuery> pending_queries_;
 
@@ -496,9 +628,9 @@ class GPU_EXPORT GLES2DecoderPassthroughImpl : public GLES2Decoder {
   struct ActiveQuery {
     ActiveQuery();
     ~ActiveQuery();
-    ActiveQuery(const ActiveQuery&);
+    ActiveQuery(const ActiveQuery&) = delete;
     ActiveQuery(ActiveQuery&&);
-    ActiveQuery& operator=(const ActiveQuery&);
+    ActiveQuery& operator=(const ActiveQuery&) = delete;
     ActiveQuery& operator=(ActiveQuery&&);
 
     GLuint service_id = 0;
@@ -530,9 +662,26 @@ class GPU_EXPORT GLES2DecoderPassthroughImpl : public GLES2Decoder {
   };
   base::circular_deque<PendingReadPixels> pending_read_pixels_;
 
+  struct BufferShadowUpdate {
+    BufferShadowUpdate();
+    ~BufferShadowUpdate();
+    BufferShadowUpdate(BufferShadowUpdate&&);
+    BufferShadowUpdate& operator=(BufferShadowUpdate&&);
+
+    scoped_refptr<gpu::Buffer> shm;
+    GLuint shm_offset = 0;
+    GLuint size = 0;
+    DISALLOW_COPY_AND_ASSIGN(BufferShadowUpdate);
+  };
+  BufferShadowUpdateMap buffer_shadow_updates_;
+
   // Error state
-  base::circular_deque<GLenum> injected_driver_errors_;
   std::set<GLenum> errors_;
+
+  // Checks if an error has been generated since the last call to
+  // CheckErrorCallbackState
+  bool CheckErrorCallbackState();
+  bool had_error_callback_ = false;
 
   // Default framebuffer emulation
   struct EmulatedDefaultFramebufferFormat {
@@ -616,8 +765,10 @@ class GPU_EXPORT GLES2DecoderPassthroughImpl : public GLES2Decoder {
   std::vector<std::unique_ptr<EmulatedColorBuffer>> available_color_textures_;
   size_t create_color_buffer_count_for_test_;
 
-  // Maximum 2D texture size for limiting offscreen framebuffer sizes
-  GLint max_2d_texture_size_;
+  // Maximum 2D resource sizes for limiting offscreen framebuffer sizes
+  GLint max_2d_texture_size_ = 0;
+  GLint max_renderbuffer_size_ = 0;
+  GLint max_offscreen_framebuffer_size_ = 0;
 
   // State tracking of currently bound draw and read framebuffers (client IDs)
   GLuint bound_draw_framebuffer_;
@@ -625,7 +776,7 @@ class GPU_EXPORT GLES2DecoderPassthroughImpl : public GLES2Decoder {
 
   // Tracing
   std::unique_ptr<GPUTracer> gpu_tracer_;
-  const unsigned char* gpu_decoder_category_;
+  const unsigned char* gpu_decoder_category_ = nullptr;
   int gpu_trace_level_;
   bool gpu_trace_commands_;
   bool gpu_debug_commands_;

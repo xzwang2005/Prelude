@@ -10,13 +10,15 @@
 #include "base/strings/utf_string_conversions.h"
 #include "ui/aura/window.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "ui/display/display.h"
+#include "ui/display/screen.h"
 #include "ui/gfx/canvas.h"
 #include "ui/gfx/geometry/insets.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/geometry/size.h"
 #include "ui/gfx/text_utils.h"
 #include "ui/strings/grit/ui_strings.h"
-#include "ui/views/bubble/bubble_dialog_delegate.h"
+#include "ui/views/bubble/bubble_dialog_delegate_view.h"
 #include "ui/views/controls/button/button.h"
 #include "ui/views/controls/button/label_button.h"
 #include "ui/views/layout/box_layout.h"
@@ -101,8 +103,8 @@ TouchSelectionMenuRunnerViews::Menu::Menu(TouchSelectionMenuRunnerViews* owner,
   set_adjust_if_offscreen(true);
   EnableCanvasFlippingForRTLUI(true);
 
-  SetLayoutManager(new BoxLayout(BoxLayout::kHorizontal, gfx::Insets(),
-                                 kSpacingBetweenButtons));
+  SetLayoutManager(std::make_unique<BoxLayout>(
+      BoxLayout::kHorizontal, gfx::Insets(), kSpacingBetweenButtons));
   CreateButtons();
 
   // After buttons are created, check if there is enough room between handles to
@@ -120,7 +122,21 @@ TouchSelectionMenuRunnerViews::Menu::Menu(TouchSelectionMenuRunnerViews* owner,
   SetAnchorRect(adjusted_anchor_rect);
 
   BubbleDialogDelegateView::CreateBubble(this);
-  GetWidget()->Show();
+  Widget* widget = GetWidget();
+  gfx::Rect bounds = widget->GetWindowBoundsInScreen();
+  gfx::Rect work_area = display::Screen::GetScreen()
+                            ->GetDisplayNearestPoint(bounds.origin())
+                            .work_area();
+  if (!work_area.IsEmpty()) {
+    bounds.AdjustToFit(work_area);
+    widget->SetBounds(bounds);
+  }
+  // Using BubbleDialogDelegateView engages its CreateBubbleWidget() which
+  // invokes widget->StackAbove(context). That causes the bubble to stack
+  // _immediately_ above |context|; below any already-existing bubbles. That
+  // doesn't make sense for a menu, so put it back on top.
+  widget->StackAtTop();
+  widget->Show();
 }
 
 bool TouchSelectionMenuRunnerViews::Menu::IsMenuAvailable(

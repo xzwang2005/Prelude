@@ -5,6 +5,7 @@
 #include "src/profiler/allocation-tracker.h"
 
 #include "src/frames-inl.h"
+#include "src/global-handles.h"
 #include "src/objects-inl.h"
 #include "src/profiler/heap-snapshot-generator-inl.h"
 
@@ -74,11 +75,6 @@ AllocationTraceTree::AllocationTraceTree()
       root_(this, 0) {
 }
 
-
-AllocationTraceTree::~AllocationTraceTree() {
-}
-
-
 AllocationTraceNode* AllocationTraceTree::AddPathFromEnd(
     const Vector<unsigned>& path) {
   AllocationTraceNode* node = root();
@@ -143,8 +139,8 @@ void AddressToTraceMap::Clear() {
 void AddressToTraceMap::Print() {
   PrintF("[AddressToTraceMap (%" PRIuS "): \n", ranges_.size());
   for (RangeMap::iterator it = ranges_.begin(); it != ranges_.end(); ++it) {
-    PrintF("[%p - %p] => %u\n", static_cast<void*>(it->second.start),
-           static_cast<void*>(it->first), it->second.trace_node_id);
+    PrintF("[%p - %p] => %u\n", reinterpret_cast<void*>(it->second.start),
+           reinterpret_cast<void*>(it->first), it->second.trace_node_id);
   }
   PrintF("]\n");
 }
@@ -238,7 +234,7 @@ void AllocationTracker::AllocationEvent(Address addr, int size) {
 
 
 static uint32_t SnapshotObjectIdHash(SnapshotObjectId id) {
-  return ComputeIntegerHash(static_cast<uint32_t>(id));
+  return ComputeUnseededHash(static_cast<uint32_t>(id));
 }
 
 
@@ -248,7 +244,7 @@ unsigned AllocationTracker::AddFunctionInfo(SharedFunctionInfo* shared,
       reinterpret_cast<void*>(id), SnapshotObjectIdHash(id));
   if (entry->value == nullptr) {
     FunctionInfo* info = new FunctionInfo();
-    info->name = names_->GetFunctionName(shared->DebugName());
+    info->name = names_->GetName(shared->DebugName());
     info->function_id = id;
     if (shared->script()->IsScript()) {
       Script* script = Script::cast(shared->script());
@@ -260,7 +256,7 @@ unsigned AllocationTracker::AddFunctionInfo(SharedFunctionInfo* shared,
       // Converting start offset into line and column may cause heap
       // allocations so we postpone them until snapshot serialization.
       unresolved_locations_.push_back(
-          new UnresolvedLocation(script, shared->start_position(), info));
+          new UnresolvedLocation(script, shared->StartPosition(), info));
     }
     entry->value = reinterpret_cast<void*>(function_info_list_.size());
     function_info_list_.push_back(info);

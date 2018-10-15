@@ -24,28 +24,27 @@ public:
                                                GrMipMapsStatus);
 
     static sk_sp<GrVkTexture> MakeWrappedTexture(GrVkGpu*, const GrSurfaceDesc&,
-                                                 GrWrapOwnership, const GrVkImageInfo*);
+                                                 GrWrapOwnership, const GrVkImageInfo&,
+                                                 sk_sp<GrVkImageLayout>);
 
     ~GrVkTexture() override;
 
-    GrBackendObject getTextureHandle() const override;
+    GrBackendTexture getBackendTexture() const override;
 
     void textureParamsModified() override {}
 
-    const GrVkImageView* textureView(bool allowSRGB);
-
-    bool reallocForMipmap(GrVkGpu* gpu, uint32_t mipLevels);
+    const GrVkImageView* textureView();
 
     // In Vulkan we call the release proc after we are finished with the underlying
     // GrVkImage::Resource object (which occurs after the GPU has finsihed all work on it).
-    void setRelease(GrTexture::ReleaseProc proc, GrTexture::ReleaseCtx ctx) override {
+    void setRelease(sk_sp<GrReleaseProcHelper> releaseHelper) override {
         // Forward the release proc on to GrVkImage
-        this->setResourceRelease(proc, ctx);
+        this->setResourceRelease(std::move(releaseHelper));
     }
 
 protected:
-    GrVkTexture(GrVkGpu*, const GrSurfaceDesc&, const GrVkImageInfo&, const GrVkImageView*,
-                GrMipMapsStatus, GrBackendObjectOwnership);
+    GrVkTexture(GrVkGpu*, const GrSurfaceDesc&, const GrVkImageInfo&, sk_sp<GrVkImageLayout>,
+                const GrVkImageView*, GrMipMapsStatus, GrBackendObjectOwnership);
 
     GrVkGpu* getVkGpu() const;
 
@@ -58,15 +57,14 @@ protected:
 
 private:
     enum Wrapped { kWrapped };
-    GrVkTexture(GrVkGpu*, SkBudgeted, const GrSurfaceDesc&,
-                const GrVkImageInfo&, const GrVkImageView* imageView,
+    GrVkTexture(GrVkGpu*, SkBudgeted, const GrSurfaceDesc&, const GrVkImageInfo&,
+                sk_sp<GrVkImageLayout> layout, const GrVkImageView* imageView,
                 GrMipMapsStatus);
-    GrVkTexture(GrVkGpu*, Wrapped, const GrSurfaceDesc&,
-                const GrVkImageInfo&, const GrVkImageView* imageView, GrMipMapsStatus,
+    GrVkTexture(GrVkGpu*, Wrapped, const GrSurfaceDesc&, const GrVkImageInfo&,
+                sk_sp<GrVkImageLayout> layout, const GrVkImageView* imageView, GrMipMapsStatus,
                 GrBackendObjectOwnership);
 
     const GrVkImageView*     fTextureView;
-    const GrVkImageView*     fLinearTextureView;
 
     typedef GrTexture INHERITED;
 };

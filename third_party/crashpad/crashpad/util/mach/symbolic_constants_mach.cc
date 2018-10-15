@@ -101,7 +101,7 @@ constexpr const char* kFlavorNames[] = {
     "PPC_THREAD_STATE64",
     "PPC_EXCEPTION_STATE64",
     "THREAD_STATE_NONE",
-#elif defined(__arm__) || defined(__arm64__)
+#elif defined(__arm__) || defined(__aarch64__)
     // sed -Ene 's/^#define ((ARM|THREAD)_[[:graph:]]+)[[:space:]]+[[:digit:]]{1,2}.*$/    "\1",/p'
     //     usr/include/mach/arm/thread_status.h
     // (iOS 7 SDK)
@@ -153,7 +153,7 @@ std::string ThreadStateFlavorFullToShort(const base::StringPiece& flavor) {
   static constexpr char kArchPrefix[] = "x86_";
 #elif defined(__ppc__) || defined(__ppc64__)
   static constexpr char kArchPrefix[] = "PPC_";
-#elif defined(__arm__) || defined(__arm64__)
+#elif defined(__arm__) || defined(__aarch64__)
   static constexpr char kArchPrefix[] = "ARM_"
 #endif
   prefix_len = strlen(kArchPrefix);
@@ -239,7 +239,8 @@ bool StringToException(const base::StringPiece& string,
   }
 
   if (options & kAllowNumber) {
-    return StringToNumber(string, reinterpret_cast<unsigned int*>(exception));
+    return StringToNumber(std::string(string.data(), string.length()),
+                          reinterpret_cast<unsigned int*>(exception));
   }
 
   return false;
@@ -352,7 +353,7 @@ bool StringToExceptionMask(const base::StringPiece& string,
   }
 
   if (options & kAllowNumber) {
-    return StringToNumber(string,
+    return StringToNumber(std::string(string.data(), string.length()),
                           reinterpret_cast<unsigned int*>(exception_mask));
   }
 
@@ -452,7 +453,8 @@ bool StringToExceptionBehavior(const base::StringPiece& string,
 
   if (options & kAllowNumber) {
     exception_behavior_t temp_behavior;
-    if (!StringToNumber(sp, reinterpret_cast<unsigned int*>(&temp_behavior))) {
+    if (!StringToNumber(std::string(sp.data(), sp.length()),
+                        reinterpret_cast<unsigned int*>(&temp_behavior))) {
       return false;
     }
     build_behavior |= temp_behavior;
@@ -539,7 +541,8 @@ bool StringToThreadStateFlavor(const base::StringPiece& string,
   }
 
   if (options & kAllowNumber) {
-    return StringToNumber(string, reinterpret_cast<unsigned int*>(flavor));
+    return StringToNumber(std::string(string.data(), string.length()),
+                          reinterpret_cast<unsigned int*>(flavor));
   }
 
   return false;

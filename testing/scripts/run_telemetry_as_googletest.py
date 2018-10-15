@@ -66,12 +66,15 @@ def main():
     # This harness takes the test names to run as the first arguments.
     # The first argument of rest_args is the script to run, so insert
     # the test names after that.
-    rest_args = [rest_args[0]] + filter_list + rest_args[1:]
+    rest_args = ([rest_args[0]] + filter_list + ['--exact-test-filter'] +
+                 rest_args[1:])
 
   # Compatibility with gtest-based sharding.
   total_shards = None
   shard_index = None
   env = os.environ.copy()
+  env['CHROME_HEADLESS'] = '1'
+
   if 'GTEST_TOTAL_SHARDS' in env:
     total_shards = int(env['GTEST_TOTAL_SHARDS'])
     del env['GTEST_TOTAL_SHARDS']

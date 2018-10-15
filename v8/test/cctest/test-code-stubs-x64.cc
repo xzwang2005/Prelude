@@ -31,12 +31,13 @@
 
 #include "src/base/platform/platform.h"
 #include "src/code-stubs.h"
-#include "src/factory.h"
+#include "src/heap/factory.h"
 #include "src/macro-assembler.h"
 #include "src/objects-inl.h"
 #include "src/register-configuration.h"
 #include "test/cctest/cctest.h"
 #include "test/cctest/test-code-stubs.h"
+#include "test/common/assembler-tester.h"
 
 namespace v8 {
 namespace internal {
@@ -53,8 +54,8 @@ ConvertDToIFunc MakeConvertDToIFuncTrampoline(Isolate* isolate,
   MacroAssembler masm(isolate, buffer, static_cast<int>(allocated),
                       v8::internal::CodeObjectRequired::kYes);
 
-  DoubleToIStub stub(isolate, destination_reg);
-  byte* start = stub.GetCode()->instruction_start();
+  Handle<Code> code = BUILTIN_CODE(isolate, DoubleToI);
+  Address start = code->InstructionStart();
 
   __ pushq(rbx);
   __ pushq(rcx);
@@ -80,6 +81,7 @@ ConvertDToIFunc MakeConvertDToIFuncTrampoline(Isolate* isolate,
 
   // Call through to the actual stub
   __ Call(start, RelocInfo::EXTERNAL_REFERENCE);
+  __ movl(destination_reg, MemOperand(rsp, 0));
 
   __ addq(rsp, Immediate(kDoubleSize));
 
@@ -89,7 +91,7 @@ ConvertDToIFunc MakeConvertDToIFuncTrampoline(Isolate* isolate,
         Register::from_code(config->GetAllocatableGeneralCode(reg_num));
     if (reg != rsp && reg != rbp && reg != destination_reg) {
       __ cmpq(reg, MemOperand(rsp, 0));
-      __ Assert(equal, kRegisterWasClobbered);
+      __ Assert(equal, AbortReason::kRegisterWasClobbered);
       __ addq(rsp, Immediate(kPointerSize));
     }
   }

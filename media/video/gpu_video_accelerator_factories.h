@@ -17,6 +17,8 @@
 #include "gpu/command_buffer/client/gles2_interface.h"
 #include "gpu/command_buffer/common/mailbox.h"
 #include "media/base/media_export.h"
+#include "media/base/overlay_info.h"
+#include "media/base/video_decoder.h"
 #include "media/base/video_types.h"
 #include "media/video/video_decode_accelerator.h"
 #include "media/video/video_encode_accelerator.h"
@@ -28,19 +30,21 @@ class SharedMemory;
 }  // namespace base
 
 namespace gfx {
+class ColorSpace;
 class Size;
 }
 
 namespace gpu {
 struct SyncToken;
-};
-
-namespace viz {
-class ContextProvider;
 }
+
+namespace ws {
+class ContextProviderCommandBuffer;
+}  // namespace ws
 
 namespace media {
 
+class MediaLog;
 class VideoDecodeAccelerator;
 
 // Helper interface for specifying factories needed to instantiate a hardware
@@ -53,22 +57,16 @@ class VideoDecodeAccelerator;
 //   loop.
 class MEDIA_EXPORT GpuVideoAcceleratorFactories {
  public:
-  class ScopedGLContextLock {
-   public:
-    ScopedGLContextLock() {}
-    virtual gpu::gles2::GLES2Interface* ContextGL() = 0;
-    virtual ~ScopedGLContextLock(){};
-
-   private:
-    DISALLOW_COPY_AND_ASSIGN(ScopedGLContextLock);
-  };
-
   enum class OutputFormat {
     UNDEFINED = 0,    // Unset state
     I420,             // 3 x R8 GMBs
     UYVY,             // One 422 GMB
     NV12_SINGLE_GMB,  // One NV12 GMB
     NV12_DUAL_GMB,    // One R8, one RG88 GMB
+    XR30,             // 10:10:10:2 BGRX in one GMB (Usually Mac)
+    XB30,             // 10:10:10:2 RGBX in one GMB
+    RGBA,             // One 8:8:8:8 RGBA
+    BGRA,             // One 8:8:8:8 BGRA (Usually Mac)
   };
 
   // Return whether GPU encoding/decoding is enabled.
@@ -79,6 +77,15 @@ class MEDIA_EXPORT GpuVideoAcceleratorFactories {
 
   // Returns the |route_id| of the command buffer, or 0 if there is none.
   virtual int32_t GetCommandBufferRouteId() = 0;
+
+  // Return true if |config| is potentially supported by a decoder created with
+  // CreateVideoDecoder().
+  virtual bool IsDecoderConfigSupported(const VideoDecoderConfig& config) = 0;
+
+  virtual std::unique_ptr<media::VideoDecoder> CreateVideoDecoder(
+      MediaLog* media_log,
+      const RequestOverlayInfoCB& request_overlay_info_cb,
+      const gfx::ColorSpace& target_color_space) = 0;
 
   // Caller owns returned pointer, but should call Destroy() on it (instead of
   // directly deleting) for proper destruction, as per the
@@ -103,19 +110,31 @@ class MEDIA_EXPORT GpuVideoAcceleratorFactories {
   virtual void ShallowFlushCHROMIUM() = 0;
 
   virtual void WaitSyncToken(const gpu::SyncToken& sync_token) = 0;
+  virtual void SignalSyncToken(const gpu::SyncToken& sync_token,
+                               base::OnceClosure callback) = 0;
 
   virtual std::unique_ptr<gfx::GpuMemoryBuffer> CreateGpuMemoryBuffer(
       const gfx::Size& size,
       gfx::BufferFormat format,
       gfx::BufferUsage usage) = 0;
 
-  virtual bool ShouldUseGpuMemoryBuffersForVideoFrames() const = 0;
+  // |for_media_stream| specifies webrtc use case of media streams.
+  virtual bool ShouldUseGpuMemoryBuffersForVideoFrames(
+      bool for_media_stream) const = 0;
+
+  // The GLContextLock must be taken when calling this.
   virtual unsigned ImageTextureTarget(gfx::BufferFormat format) = 0;
+
   // Pixel format of the hardware video frames created when GpuMemoryBuffers
   // video frames are enabled.
-  virtual OutputFormat VideoFrameOutputFormat() = 0;
+  virtual OutputFormat VideoFrameOutputFormat(
+      VideoPixelFormat pixel_format) = 0;
 
-  virtual std::unique_ptr<ScopedGLContextLock> GetGLContextLock() = 0;
+  // Returns a GL Context that can be used on the task runner associated with
+  // the same instance of GpuVideoAcceleratorFactories.
+  // nullptr will be returned in cases where a context couldn't be created or
+  // the context was lost.
+  virtual gpu::gles2::GLES2Interface* ContextGL() = 0;
 
   // Allocate & return a shared memory segment.
   virtual std::unique_ptr<base::SharedMemory> CreateSharedMemory(
@@ -133,11 +152,13 @@ class MEDIA_EXPORT GpuVideoAcceleratorFactories {
   virtual VideoEncodeAccelerator::SupportedProfiles
   GetVideoEncodeAcceleratorSupportedProfiles() = 0;
 
-  virtual viz::ContextProvider* GetMediaContextProvider() = 0;
+  virtual scoped_refptr<ws::ContextProviderCommandBuffer>
+  GetMediaContextProvider() = 0;
 
- protected:
-  friend class base::RefCounted<GpuVideoAcceleratorFactories>;
-  virtual ~GpuVideoAcceleratorFactories() {}
+  // Sets the current pipeline rendering color space.
+  virtual void SetRenderingColorSpace(const gfx::ColorSpace& color_space) = 0;
+
+  virtual ~GpuVideoAcceleratorFactories() = default;
 };
 
 }  // namespace media

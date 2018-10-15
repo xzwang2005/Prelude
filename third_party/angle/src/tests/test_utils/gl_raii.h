@@ -75,6 +75,22 @@ using GLTransformFeedback = GLWrapper<glGenTransformFeedbacks, glDeleteTransform
 using GLProgramPipeline   = GLWrapper<glGenProgramPipelines, glDeleteProgramPipelines>;
 using GLQueryEXT          = GLWrapper<glGenQueriesEXT, glDeleteQueriesEXT>;
 
+class GLShader : angle::NonCopyable
+{
+  public:
+    GLShader() = delete;
+    explicit GLShader(GLenum shaderType) { mHandle = glCreateShader(shaderType); }
+
+    ~GLShader() { glDeleteShader(mHandle); }
+
+    GLuint get() { return mHandle; }
+
+    operator GLuint() { return get(); }
+
+  private:
+    GLuint mHandle;
+};
+
 // Don't use GLProgram directly, use ANGLE_GL_PROGRAM.
 namespace priv
 {
@@ -85,6 +101,8 @@ class GLProgram
 
     ~GLProgram() { glDeleteProgram(mHandle); }
 
+    void makeEmpty() { mHandle = glCreateProgram(); }
+
     void makeCompute(const std::string &computeShader)
     {
         mHandle = CompileComputeProgram(computeShader);
@@ -93,6 +111,13 @@ class GLProgram
     void makeRaster(const std::string &vertexShader, const std::string &fragmentShader)
     {
         mHandle = CompileProgram(vertexShader, fragmentShader);
+    }
+
+    void makeRaster(const std::string &vertexShader,
+                    const std::string &geometryShader,
+                    const std::string &fragmentShader)
+    {
+        mHandle = CompileProgramWithGS(vertexShader, geometryShader, fragmentShader);
     }
 
     void makeRasterWithTransformFeedback(const std::string &vertexShader,
@@ -129,9 +154,19 @@ class GLProgram
 };
 }  // namespace priv
 
+#define ANGLE_GL_EMPTY_PROGRAM(name) \
+    priv::GLProgram name;            \
+    name.makeEmpty();                \
+    ASSERT_TRUE(name.valid());
+
 #define ANGLE_GL_PROGRAM(name, vertex, fragment) \
     priv::GLProgram name;                        \
     name.makeRaster(vertex, fragment);           \
+    ASSERT_TRUE(name.valid());
+
+#define ANGLE_GL_PROGRAM_WITH_GS(name, vertex, geometry, fragment) \
+    priv::GLProgram name;                                          \
+    name.makeRaster(vertex, geometry, fragment);                   \
     ASSERT_TRUE(name.valid());
 
 #define ANGLE_GL_PROGRAM_TRANSFORM_FEEDBACK(name, vertex, fragment, tfVaryings, bufferMode) \

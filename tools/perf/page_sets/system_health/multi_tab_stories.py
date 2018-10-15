@@ -2,8 +2,9 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-import py_utils
 import logging
+
+import py_utils
 
 from page_sets.system_health import system_health_story
 from page_sets.system_health import story_tags
@@ -45,7 +46,7 @@ class MultiTabStory(system_health_story.SystemHealthStory):
 class MultiTabTypical24Story(MultiTabStory):
   """Load 24 different web sites in 24 tabs, then cycle through each tab."""
   NAME = 'multitab:misc:typical24'
-  TAGS = [story_tags.TABS_SWITCHING]
+  TAGS = [story_tags.TABS_SWITCHING, story_tags.YEAR_2016]
   URL_LIST = [
     # Why: Alexa games #48
     'http://www.nick.com/games',

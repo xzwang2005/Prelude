@@ -17,7 +17,9 @@ namespace views {
 
 // static
 std::unique_ptr<EventMonitor> EventMonitor::CreateApplicationMonitor(
-    ui::EventHandler* event_handler) {
+    ui::EventHandler* event_handler,
+    gfx::NativeWindow context) {
+  // |context| is not needed on Mac.
   return base::WrapUnique(new EventMonitorMac(event_handler, nullptr));
 }
 
@@ -28,27 +30,42 @@ std::unique_ptr<EventMonitor> EventMonitor::CreateWindowMonitor(
   return base::WrapUnique(new EventMonitorMac(event_handler, target_window));
 }
 
-// static
-gfx::Point EventMonitor::GetLastMouseLocation() {
-  return display::Screen::GetScreen()->GetCursorScreenPoint();
-}
-
 EventMonitorMac::EventMonitorMac(ui::EventHandler* event_handler,
-                                 gfx::NativeWindow target_window) {
+                                 gfx::NativeWindow target_window)
+    : factory_(this) {
   DCHECK(event_handler);
+
+  // Capture a WeakPtr via NSObject. This allows the block to detect another
+  // event monitor for the same event deleting |this|.
+  WeakPtrNSObject* handle = factory_.handle();
+
+  auto block = ^NSEvent*(NSEvent* event) {
+    if (!ui::WeakPtrNSObjectFactory<EventMonitorMac>::Get(handle))
+      return event;
+
+    if (!target_window || [event window] == target_window) {
+      std::unique_ptr<ui::Event> ui_event = ui::EventFromNative(event);
+      if (ui_event) {
+        event_handler->OnEvent(ui_event.get());
+        // If an event is handled, swallow it by returning nil so the event
+        // never proceeds to the normal event handling machinery.
+        if (ui_event->handled())
+          return nil;
+      }
+    }
+    return event;
+  };
+
   monitor_ = [NSEvent addLocalMonitorForEventsMatchingMask:NSAnyEventMask
-      handler:^NSEvent*(NSEvent* event) {
-          if (!target_window || [event window] == target_window) {
-            std::unique_ptr<ui::Event> ui_event = ui::EventFromNative(event);
-            if (ui_event)
-              event_handler->OnEvent(ui_event.get());
-          }
-          return event;
-      }];
+                                                   handler:block];
 }
 
 EventMonitorMac::~EventMonitorMac() {
   [NSEvent removeMonitor:monitor_];
+}
+
+gfx::Point EventMonitorMac::GetLastMouseLocation() {
+  return display::Screen::GetScreen()->GetCursorScreenPoint();
 }
 
 }  // namespace views

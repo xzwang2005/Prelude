@@ -37,6 +37,7 @@ class GClientSmokeBase(fake_repos.FakeReposTestBase):
     # Make sure it doesn't try to auto update when testing!
     self.env = os.environ.copy()
     self.env['DEPOT_TOOLS_UPDATE'] = '0'
+    self.env['DEPOT_TOOLS_METRICS'] = '0'
 
   def gclient(self, cmd, cwd=None):
     if not cwd:
@@ -96,31 +97,35 @@ class GClientSmokeBase(fake_repos.FakeReposTestBase):
       # Intentionally skips empty lines.
       if not line:
         continue
-      if line.startswith('__'):
-        match = re.match(r'^________ ([a-z]+) \'(.*)\' in \'(.*)\'$', line)
-        if not match:
-          match = re.match(r'^_____ (.*) is missing, synching instead$', line)
-          if match:
-            # Blah, it's when a dependency is deleted, we should probably not
-            # output this message.
-            results.append([line])
-          elif (
-              not re.match(
-                  r'_____ [^ ]+ : Attempting rebase onto [0-9a-f]+...',
-                  line) and
-              not re.match(r'_____ [^ ]+ at [^ ]+', line)):
-            # The two regexp above are a bit too broad, they are necessary only
-            # for git checkouts.
-            self.fail(line)
+      if not line.startswith('__'):
+        if results:
+          results[-1].append(line)
         else:
-          results.append([[match.group(1), match.group(2), match.group(3)]])
-      else:
-        if not results:
           # TODO(maruel): gclient's git stdout is inconsistent.
           # This should fail the test instead!!
           pass
-        else:
-          results[-1].append(line)
+        continue
+
+      match = re.match(r'^________ ([a-z]+) \'(.*)\' in \'(.*)\'$', line)
+      if match:
+        results.append([[match.group(1), match.group(2), match.group(3)]])
+        continue
+
+      match = re.match(r'^_____ (.*) is missing, synching instead$', line)
+      if match:
+        # Blah, it's when a dependency is deleted, we should probably not
+        # output this message.
+        results.append([line])
+        continue
+
+      # These two regexps are a bit too broad, they are necessary only for git
+      # checkouts.
+      if (re.match(r'_____ [^ ]+ at [^ ]+', line) or
+          re.match(r'_____ [^ ]+ : Attempting rebase onto [0-9a-f]+...', line)):
+        continue
+
+      # Fail for any unrecognized lines that start with '__'.
+      self.fail(line)
     return results
 
   def checkBlock(self, stdout, items):
@@ -150,23 +155,6 @@ class GClientSmoke(GClientSmokeBase):
   @property
   def git_base(self):
     return 'git://random.server/git/'
-
-  def testHelp(self):
-    """testHelp: make sure no new command was added."""
-    result = self.gclient(['help'])
-    # Roughly, not too short, not too long.
-    self.assertTrue(1000 < len(result[0]) and len(result[0]) < 2300,
-                    'Too much written to stdout: %d bytes' % len(result[0]))
-    self.assertEquals(0, len(result[1]))
-    self.assertEquals(0, result[2])
-
-  def testUnknown(self):
-    result = self.gclient(['foo'])
-    # Roughly, not too short, not too long.
-    self.assertTrue(1000 < len(result[0]) and len(result[0]) < 2300,
-                    'Too much written to stdout: %d bytes' % len(result[0]))
-    self.assertEquals(0, len(result[1]))
-    self.assertEquals(0, result[2])
 
   def testNotConfigured(self):
     res = ('', 'Error: client not configured; see \'gclient config\'\n', 1)
@@ -202,10 +190,10 @@ class GClientSmoke(GClientSmokeBase):
           '    },\n'
           '    "custom_vars": {},\n'
           '  },\n'
-          ']\n'
-          'cache_dir = None\n') % self.git_base)
+          ']\n' % self.git_base))
 
-    test(['config', self.git_base + 'repo_1', '--name', 'src'],
+    test(['config', self.git_base + 'repo_1', '--name', 'src',
+          '--cache-dir', 'none'],
          ('solutions = [\n'
           '  { "name"        : "src",\n'
           '    "url"         : "%srepo_1",\n'
@@ -218,31 +206,31 @@ class GClientSmoke(GClientSmokeBase):
           ']\n'
           'cache_dir = None\n') % self.git_base)
 
-    test(['config', 'foo', 'faa'],
+    test(['config', 'https://example.com/foo', 'faa',
+          '--cache-dir', 'something'],
          'solutions = [\n'
          '  { "name"        : "foo",\n'
-         '    "url"         : "foo",\n'
+         '    "url"         : "https://example.com/foo",\n'
          '    "deps_file"   : "DEPS",\n'
-          '    "managed"     : True,\n'
-         '    "custom_deps" : {\n'
-         '    },\n'
-         '    "custom_vars": {},\n'
-         '  },\n'
-         ']\n'
-         'cache_dir = None\n')
-
-    test(['config', 'foo', '--deps', 'blah'],
-         'solutions = [\n'
-         '  { "name"        : "foo",\n'
-         '    "url"         : "foo",\n'
-         '    "deps_file"   : "blah",\n'
          '    "managed"     : True,\n'
          '    "custom_deps" : {\n'
          '    },\n'
          '    "custom_vars": {},\n'
          '  },\n'
          ']\n'
-         'cache_dir = None\n')
+         'cache_dir = \'something\'\n')
+
+    test(['config', 'https://example.com/foo', '--deps', 'blah'],
+         'solutions = [\n'
+         '  { "name"        : "foo",\n'
+         '    "url"         : "https://example.com/foo",\n'
+         '    "deps_file"   : "blah",\n'
+         '    "managed"     : True,\n'
+         '    "custom_deps" : {\n'
+         '    },\n'
+         '    "custom_vars": {},\n'
+         '  },\n'
+         ']\n')
 
     test(['config', self.git_base + 'src/',
           '--custom-var', 'bool_var=True',
@@ -256,8 +244,7 @@ class GClientSmoke(GClientSmokeBase):
           '    },\n'
           '    "custom_vars": {\'bool_var\': True, \'str_var\': \'abc\'},\n'
           '  },\n'
-          ']\n'
-          'cache_dir = None\n') % self.git_base)
+          ']\n') % self.git_base)
 
     test(['config', '--spec', '["blah blah"]'], '["blah blah"]')
 
@@ -318,7 +305,7 @@ class GClientSmokeGIT(GClientSmokeBase):
     # Test unversioned checkout.
     self.parseGclient(
         ['sync', '--deps', 'mac', '--jobs', '1'],
-        ['running', 'running'])
+        ['running', 'running', 'running'])
     # TODO(maruel): http://crosbug.com/3582 hooks run even if not matching, must
     # add sync parsing to get the list of updated files.
     tree = self.mangle_git_tree(('repo_1@2', 'src'),
@@ -375,6 +362,45 @@ class GClientSmokeGIT(GClientSmokeBase):
     ])
     self.assertTree(tree)
 
+  def testSyncJsonOutput(self):
+    self.gclient(['config', self.git_base + 'repo_1', '--name', 'src'])
+    output_json = os.path.join(self.root_dir, 'output.json')
+    self.gclient(['sync', '--deps', 'mac', '--output-json', output_json])
+    with open(output_json) as f:
+      output_json = json.load(f)
+
+    self.maxDiff = None
+    out = {
+        'solutions': {
+            'src/': {
+                'scm': 'git',
+                'url': self.git_base + 'repo_1',
+                'revision': self.githash('repo_1', 2),
+                'was_processed': True,
+            },
+            'src/repo2/': {
+                'scm': 'git',
+                'url':
+                    self.git_base + 'repo_2@' + self.githash('repo_2', 1)[:7],
+                'revision': self.githash('repo_2', 1),
+                'was_processed': True,
+            },
+            'src/repo2/repo_renamed/': {
+                'scm': 'git',
+                'url': self.git_base + 'repo_3',
+                'revision': self.githash('repo_3', 2),
+                'was_processed': True,
+            },
+            'src/should_not_process/': {
+                'scm': None,
+                'url': self.git_base + 'repo_4',
+                'revision': None,
+                'was_processed': False,
+            },
+        },
+    }
+    self.assertEqual(out, output_json)
+
   def testSyncIgnoredSolutionName(self):
     """TODO(maruel): This will become an error soon."""
     if not self.enabled:
@@ -383,9 +409,9 @@ class GClientSmokeGIT(GClientSmokeBase):
     self.parseGclient(
         ['sync', '--deps', 'mac', '--jobs', '1',
          '--revision', 'invalid@' + self.githash('repo_1', 1)],
-        ['running', 'running'],
+        ['running', 'running', 'running'],
         'Please fix your script, having invalid --revision flags '
-        'will soon considered an error.\n')
+        'will soon be considered an error.\n')
     tree = self.mangle_git_tree(('repo_1@2', 'src'),
                                 ('repo_2@1', 'src/repo2'),
                                 ('repo_3@2', 'src/repo2/repo_renamed'))
@@ -401,7 +427,7 @@ class GClientSmokeGIT(GClientSmokeBase):
     self.parseGclient(
         ['sync', '--deps', 'mac', '--jobs', '1',
          '--revision', self.githash('repo_1', 1)],
-        [])
+        ['running'])
     tree = self.mangle_git_tree(('repo_1@1', 'src'),
                                 ('repo_2@2', 'src/repo2'),
                                 ('repo_3@1', 'src/repo2/repo3'),
@@ -424,7 +450,7 @@ class GClientSmokeGIT(GClientSmokeBase):
     # Test unversioned checkout.
     self.parseGclient(
         ['sync', '--deps', 'mac', '--jobs', '8'],
-        ['running', 'running'],
+        ['running', 'running', 'running'],
         untangle=True)
     # TODO(maruel): http://crosbug.com/3582 hooks run even if not matching, must
     # add sync parsing to get the list of updated files.
@@ -488,7 +514,8 @@ class GClientSmokeGIT(GClientSmokeBase):
     if not self.enabled:
       return
     self.gclient(['config', self.git_base + 'repo_13', '--name', 'src'])
-    _out, _err, rc = self.gclient(['sync', '-v', '-v', '-v'])
+    _out, _err, rc = self.gclient(
+        ['sync', '-v', '-v', '-v', '--revision', self.githash('repo_13', 2)])
     self.assertEquals(0, rc)
 
   def testSyncFetchUpdate(self):
@@ -503,7 +530,8 @@ class GClientSmokeGIT(GClientSmokeBase):
     self.assertEquals(0, rc)
 
     # Make sure update that pulls a non-standard ref works.
-    _out, _err, rc = self.gclient(['sync', '-v', '-v', '-v'])
+    _out, _err, rc = self.gclient(
+        ['sync', '-v', '-v', '-v', '--revision', self.githash('repo_13', 2)])
     self.assertEquals(0, rc)
 
   def testSyncDirect(self):
@@ -513,6 +541,113 @@ class GClientSmokeGIT(GClientSmokeBase):
     _out, _err, rc = self.gclient(
         ['sync', '-v', '-v', '-v', '--revision', 'refs/changes/1212'])
     self.assertEquals(0, rc)
+
+  def testSyncUnmanaged(self):
+    if not self.enabled:
+      return
+    self.gclient([
+        'config', '--spec',
+        'solutions=[{"name":"src", "url": "%s", "managed": False}]' % (
+            self.git_base + 'repo_5')])
+    self.gclient([
+        'sync', '--revision', 'src@' + self.githash('repo_5', 2)])
+    self.gclient([
+        'sync', '--revision', 'src/repo1@%s' % self.githash('repo_1', 1)])
+    # src is unmanaged, so gclient shouldn't have updated it. It should've
+    # stayed synced at @2
+    tree = self.mangle_git_tree(('repo_5@2', 'src'),
+                                ('repo_1@1', 'src/repo1'),
+                                ('repo_2@1', 'src/repo2'))
+    tree['src/git_pre_deps_hooked'] = 'git_pre_deps_hooked'
+    self.maxDiff = None
+    self.assertTree(tree)
+
+  def testSyncUrl(self):
+    if not self.enabled:
+      return
+    self.gclient(['config', self.git_base + 'repo_1', '--name', 'src'])
+    self.gclient([
+        'sync', '-v', '-v', '-v',
+        '--revision', 'src/repo2@%s' % self.githash('repo_2', 1),
+        '--revision', '%srepo_2@%s' % (self.git_base, self.githash('repo_2', 2))
+    ])
+    # repo_2 should've been synced to @2 instead of @1, since URLs override
+    # paths.
+    tree = self.mangle_git_tree(('repo_1@2', 'src'),
+                                ('repo_2@2', 'src/repo2'),
+                                ('repo_3@2', 'src/repo2/repo_renamed'))
+    tree['src/git_hooked1'] = 'git_hooked1'
+    tree['src/git_hooked2'] = 'git_hooked2'
+    self.assertTree(tree)
+
+  def testSyncPatchRef(self):
+    if not self.enabled:
+      return
+    self.gclient(['config', self.git_base + 'repo_1', '--name', 'src'])
+    self.gclient([
+        'sync', '-v', '-v', '-v',
+        '--revision', 'src/repo2@%s' % self.githash('repo_2', 1),
+        '--patch-ref',
+        '%srepo_2@%s' % (self.git_base, self.githash('repo_2', 2)),
+    ])
+    # Assert that repo_2 files coincide with revision @2 (the patch ref)
+    tree = self.mangle_git_tree(('repo_1@2', 'src'),
+                                ('repo_2@2', 'src/repo2'),
+                                ('repo_3@2', 'src/repo2/repo_renamed'))
+    tree['src/git_hooked1'] = 'git_hooked1'
+    tree['src/git_hooked2'] = 'git_hooked2'
+    self.assertTree(tree)
+    # Assert that HEAD revision of repo_2 is @1 (the base we synced to) since we
+    # should have done a soft reset.
+    self.assertEqual(
+        self.githash('repo_2', 1),
+        self.gitrevparse(os.path.join(self.root_dir, 'src/repo2')))
+
+  def testSyncPatchRefBranch(self):
+    if not self.enabled:
+      return
+    self.gclient(['config', self.git_base + 'repo_1', '--name', 'src'])
+    self.gclient([
+        'sync', '-v', '-v', '-v',
+        '--revision', 'src/repo2@%s' % self.githash('repo_2', 1),
+        '--patch-ref',
+        '%srepo_2@refs/heads/master:%s' % (
+            self.git_base, self.githash('repo_2', 2)),
+    ])
+    # Assert that repo_2 files coincide with revision @2 (the patch ref)
+    tree = self.mangle_git_tree(('repo_1@2', 'src'),
+                                ('repo_2@2', 'src/repo2'),
+                                ('repo_3@2', 'src/repo2/repo_renamed'))
+    tree['src/git_hooked1'] = 'git_hooked1'
+    tree['src/git_hooked2'] = 'git_hooked2'
+    self.assertTree(tree)
+    # Assert that HEAD revision of repo_2 is @1 (the base we synced to) since we
+    # should have done a soft reset.
+    self.assertEqual(
+        self.githash('repo_2', 1),
+        self.gitrevparse(os.path.join(self.root_dir, 'src/repo2')))
+
+  def testSyncPatchRefNoHooks(self):
+    if not self.enabled:
+      return
+    self.gclient(['config', self.git_base + 'repo_1', '--name', 'src'])
+    self.gclient([
+        'sync', '-v', '-v', '-v',
+        '--revision', 'src/repo2@%s' % self.githash('repo_2', 1),
+        '--patch-ref',
+        '%srepo_2@%s' % (self.git_base, self.githash('repo_2', 2)),
+        '--nohooks',
+    ])
+    # Assert that repo_2 files coincide with revision @2 (the patch ref)
+    tree = self.mangle_git_tree(('repo_1@2', 'src'),
+                                ('repo_2@2', 'src/repo2'),
+                                ('repo_3@2', 'src/repo2/repo_renamed'))
+    self.assertTree(tree)
+    # Assert that HEAD revision of repo_2 is @1 (the base we synced to) since we
+    # should have done a soft reset.
+    self.assertEqual(
+        self.githash('repo_2', 1),
+        self.gitrevparse(os.path.join(self.root_dir, 'src/repo2')))
 
   def testRunHooks(self):
     if not self.enabled:
@@ -554,13 +689,15 @@ class GClientSmokeGIT(GClientSmokeBase):
       return
     self.gclient(['config', self.git_base + 'repo_5', '--name', 'src'])
     expectation = [
+        ('running', self.root_dir),                 # git clone
         ('running', self.root_dir),                 # pre-deps hook
     ]
     out = self.parseGclient(['sync', '--deps', 'mac', '--jobs=1',
                              '--revision', 'src@' + self.githash('repo_5', 2)],
                             expectation)
-    self.assertEquals(2, len(out[0]))
-    self.assertEquals('pre-deps hook', out[0][1])
+    self.assertEquals('Cloning into ', out[0][1][:13])
+    self.assertEquals(2, len(out[1]), out[1])
+    self.assertEquals('pre-deps hook', out[1][1])
     tree = self.mangle_git_tree(('repo_5@2', 'src'),
                                 ('repo_1@2', 'src/repo1'),
                                 ('repo_2@1', 'src/repo2')
@@ -604,6 +741,7 @@ class GClientSmokeGIT(GClientSmokeBase):
       return
     self.gclient(['config', self.git_base + 'repo_5', '--name', 'src'])
     expectated_stdout = [
+        ('running', self.root_dir),                 # git clone
         ('running', self.root_dir),                 # pre-deps hook
         ('running', self.root_dir),                 # pre-deps hook (fails)
     ]
@@ -631,6 +769,12 @@ class GClientSmokeGIT(GClientSmokeBase):
             'hash2': self.githash('repo_2', 1)[:7],
           })
     self.check((out, '', 0), results)
+
+  def testRevInfoActual(self):
+    if not self.enabled:
+      return
+    self.gclient(['config', self.git_base + 'repo_1', '--name', 'src'])
+    self.gclient(['sync', '--deps', 'mac'])
     results = self.gclient(['revinfo', '--deps', 'mac', '--actual'])
     out = ('src: %(base)srepo_1@%(hash1)s\n'
            'src/repo2: %(base)srepo_2@%(hash2)s\n'
@@ -643,6 +787,165 @@ class GClientSmokeGIT(GClientSmokeBase):
           })
     self.check((out, '', 0), results)
 
+  def testRevInfoFilterPath(self):
+    if not self.enabled:
+      return
+    self.gclient(['config', self.git_base + 'repo_1', '--name', 'src'])
+    self.gclient(['sync', '--deps', 'mac'])
+    results = self.gclient(['revinfo', '--deps', 'mac', '--filter', 'src'])
+    out = ('src: %(base)srepo_1\n' %
+          {
+            'base': self.git_base,
+          })
+    self.check((out, '', 0), results)
+
+  def testRevInfoFilterURL(self):
+    if not self.enabled:
+      return
+    self.gclient(['config', self.git_base + 'repo_1', '--name', 'src'])
+    self.gclient(['sync', '--deps', 'mac'])
+    results = self.gclient(['revinfo', '--deps', 'mac',
+                            '--filter', '%srepo_2' % self.git_base])
+    out = ('src/repo2: %(base)srepo_2@%(hash2)s\n' %
+          {
+            'base': self.git_base,
+            'hash2': self.githash('repo_2', 1)[:7],
+          })
+    self.check((out, '', 0), results)
+
+  def testRevInfoFilterURLOrPath(self):
+    if not self.enabled:
+      return
+    self.gclient(['config', self.git_base + 'repo_1', '--name', 'src'])
+    self.gclient(['sync', '--deps', 'mac'])
+    results = self.gclient(['revinfo', '--deps', 'mac', '--filter', 'src',
+                            '--filter', '%srepo_2' % self.git_base])
+    out = ('src: %(base)srepo_1\n'
+           'src/repo2: %(base)srepo_2@%(hash2)s\n' %
+          {
+            'base': self.git_base,
+            'hash2': self.githash('repo_2', 1)[:7],
+          })
+    self.check((out, '', 0), results)
+
+  def testRevInfoJsonOutput(self):
+    if not self.enabled:
+      return
+    self.gclient(['config', self.git_base + 'repo_1', '--name', 'src'])
+    self.gclient(['sync', '--deps', 'mac'])
+    output_json = os.path.join(self.root_dir, 'output.json')
+    self.gclient(['revinfo', '--deps', 'mac', '--output-json', output_json])
+    with open(output_json) as f:
+      output_json = json.load(f)
+
+    out = {
+        'src': {
+            'url': self.git_base + 'repo_1',
+            'rev': None,
+        },
+        'src/repo2': {
+            'url': self.git_base + 'repo_2',
+            'rev': self.githash('repo_2', 1)[:7],
+        },
+       'src/repo2/repo_renamed': {
+           'url': self.git_base + 'repo_3',
+           'rev': None,
+        },
+    }
+    self.assertEqual(out, output_json)
+
+  def testRevInfoJsonOutputSnapshot(self):
+    if not self.enabled:
+      return
+    self.gclient(['config', self.git_base + 'repo_1', '--name', 'src'])
+    self.gclient(['sync', '--deps', 'mac'])
+    output_json = os.path.join(self.root_dir, 'output.json')
+    self.gclient(['revinfo', '--deps', 'mac', '--snapshot',
+                  '--output-json', output_json])
+    with open(output_json) as f:
+      output_json = json.load(f)
+
+    out = [{
+        'solution_url': self.git_base + 'repo_1',
+        'managed': True,
+        'name': 'src',
+        'deps_file': 'DEPS',
+        'custom_deps': {
+            'src/repo2': '%srepo_2@%s' % (
+                self.git_base, self.githash('repo_2', 1)),
+            'src/repo2/repo_renamed': '%srepo_3@%s' % (
+                self.git_base, self.githash('repo_3', 2)),
+            'src/should_not_process': None,
+        },
+    }]
+    self.assertEqual(out, output_json)
+
+  def testSetDep(self):
+    fake_deps = os.path.join(self.root_dir, 'DEPS.fake')
+    with open(fake_deps, 'w') as f:
+      f.write('\n'.join([
+          'vars = { ',
+          '  "foo_var": "foo_val",',
+          '  "foo_rev": "foo_rev",',
+          '}',
+          'deps = {',
+          '  "foo": {',
+          '    "url": "url@{foo_rev}",',
+          '  },',
+          '  "bar": "url@bar_rev",',
+          '}',
+      ]))
+
+    results = self.gclient([
+        'setdep', '-r', 'foo@new_foo', '-r', 'bar@new_bar',
+        '--var', 'foo_var=new_val', '--deps-file', fake_deps])
+
+    with open(fake_deps) as f:
+      contents = f.read().splitlines()
+
+    self.assertEqual('', results[1])
+    self.assertEqual(0, results[2])
+    self.assertEqual([
+          'vars = { ',
+          '  "foo_var": "new_val",',
+          '  "foo_rev": "new_foo",',
+          '}',
+          'deps = {',
+          '  "foo": {',
+          '    "url": "url@{foo_rev}",',
+          '  },',
+          '  "bar": "url@new_bar",',
+          '}',
+    ], contents)
+
+  def testGetDep(self):
+    fake_deps = os.path.join(self.root_dir, 'DEPS.fake')
+    with open(fake_deps, 'w') as f:
+      f.write('\n'.join([
+          'vars = { ',
+          '  "foo_var": "foo_val",',
+          '  "foo_rev": "foo_rev",',
+          '}',
+          'deps = {',
+          '  "foo": {',
+          '    "url": "url@{foo_rev}",',
+          '  },',
+          '  "bar": "url@bar_rev",',
+          '}',
+      ]))
+
+    results = self.gclient([
+        'getdep', '-r', 'foo', '-r', 'bar','--var', 'foo_var',
+        '--deps-file', fake_deps])
+
+    self.assertEqual('', results[1])
+    self.assertEqual([
+        'foo_val',
+        'foo_rev',
+        'bar_rev',
+    ], results[0].splitlines())
+    self.assertEqual(0, results[2])
+
   def testFlatten(self):
     if not self.enabled:
       return
@@ -650,86 +953,101 @@ class GClientSmokeGIT(GClientSmokeBase):
     output_deps = os.path.join(self.root_dir, 'DEPS.flattened')
     self.assertFalse(os.path.exists(output_deps))
 
-    self.gclient(['config', self.git_base + 'repo_6', '--name', 'src'])
+    self.gclient(['config', self.git_base + 'repo_6', '--name', 'src',
+                  # This should be ignored because 'custom_true_var' isn't
+                  # defined in the DEPS.
+                  '--custom-var', 'custom_true_var=True',
+                  # This should override 'true_var=True' from the DEPS.
+                  '--custom-var', 'true_var="False"'])
     self.gclient(['sync'])
     self.gclient(['flatten', '-v', '-v', '-v', '--output-deps', output_deps])
+
+    # Assert we can sync to the flattened DEPS we just wrote.
+    solutions = [{
+        "url": self.git_base + 'repo_6',
+        'name': 'src',
+        'deps_file': output_deps
+    }]
+    results = self.gclient([
+        'sync',
+        '--spec=solutions=%s' % solutions
+    ])
+    self.assertEqual(results[2], 0)
 
     with open(output_deps) as f:
       deps_contents = f.read()
 
-    self.maxDiff = None
+    self.maxDiff = None  # pylint: disable=attribute-defined-outside-init
     self.assertEqual([
         'gclient_gn_args_file = "src/repo2/gclient.args"',
         'gclient_gn_args = [\'false_var\', \'false_str_var\', \'true_var\', '
             '\'true_str_var\', \'str_var\', \'cond_var\']',
         'allowed_hosts = [',
-        '  "git://127.0.0.1:20000/git/",',
+        '  "' + self.git_base + '",',
         ']',
         '',
         'deps = {',
         '  # src -> src/repo2 -> foo/bar',
         '  "foo/bar": {',
-        '    "url": "/repo_3",',
+        '    "url": "' + self.git_base + 'repo_3",',
+        '    "condition": \'(repo2_false_var) and (true_str_var)\',',
         '  },',
         '',
         '  # src',
         '  "src": {',
-        '    "url": "git://127.0.0.1:20000/git/repo_6",',
+        '    "url": "' + self.git_base + 'repo_6",',
+        '  },',
+        '',
+        '  # src -> src/mac_repo',
+        '  "src/mac_repo": {',
+        '    "url": "' + self.git_base + 'repo_5",',
+        '    "condition": \'checkout_mac\',',
+        '  },',
+        '',
+        '  # src -> src/repo8 -> src/recursed_os_repo',
+        '  "src/recursed_os_repo": {',
+        '    "url": "' + self.git_base + 'repo_5",',
+        '    "condition": \'(checkout_linux) or (checkout_mac)\',',
+        '  },',
+        '',
+        '  # src -> src/repo15',
+        '  "src/repo15": {',
+        '    "url": "git://127.0.0.1:20000/git/repo_15",',
+        '  },',
+        '',
+        '  # src -> src/repo16',
+        '  "src/repo16": {',
+        '    "url": "git://127.0.0.1:20000/git/repo_16",',
         '  },',
         '',
         '  # src -> src/repo2',
         '  "src/repo2": {',
-        '    "url": "{git_base}repo_2@%s",' % (
+        '    "url": "' + self.git_base + 'repo_2@%s",' % (
                  self.githash('repo_2', 1)[:7]),
-        '    "condition": \'True\',',
+        '    "condition": \'true_str_var\',',
         '  },',
         '',
         '  # src -> src/repo4',
         '  "src/repo4": {',
-        '    "url": "/repo_4",',
+        '    "url": "' + self.git_base + 'repo_4",',
         '    "condition": \'False\',',
         '  },',
         '',
         '  # src -> src/repo8',
         '  "src/repo8": {',
-        '    "url": "/repo_8",',
+        '    "url": "' + self.git_base + 'repo_8",',
         '  },',
         '',
-        '}',
-        '',
-        'deps_os = {',
-        '  "mac": {',
-        '    # src -> src/mac_repo',
-        '    "src/mac_repo": {',
-        '      "url": "{repo5_var}",',
-        '    },',
-        '',
-        '    # src -> src/repo8 -> src/recursed_os_repo',
-        '    "src/recursed_os_repo": {',
-        '      "url": "/repo_5",',
-        '    },',
-        '',
+        '  # src -> src/unix_repo',
+        '  "src/unix_repo": {',
+        '    "url": "' + self.git_base + 'repo_5",',
+        '    "condition": \'checkout_linux\',',
         '  },',
         '',
-        '  "unix": {',
-        '    # src -> src/repo8 -> src/recursed_os_repo',
-        '    "src/recursed_os_repo": {',
-        '      "url": "/repo_5",',
-        '    },',
-        '',
-        '    # src -> src/unix_repo',
-        '    "src/unix_repo": {',
-        '      "url": "{repo5_var}",',
-        '    },',
-        '',
-        '  },',
-        '',
-        '  "win": {',
-        '    # src -> src/win_repo',
-        '    "src/win_repo": {',
-        '      "url": "{repo5_var}",',
-        '    },',
-        '',
+        '  # src -> src/win_repo',
+        '  "src/win_repo": {',
+        '    "url": "' + self.git_base + 'repo_5",',
+        '    "condition": \'checkout_win\',',
         '  },',
         '',
         '}',
@@ -744,7 +1062,7 @@ class GClientSmokeGIT(GClientSmokeBase):
         '        "python",',
         '        "-c",',
         '        "open(\'src/git_hooked1\', \'w\')'
-            '.write(\'{hook1_contents}\')",',
+            '.write(\'git_hooked1\')",',
         '    ]',
         '  },',
         '',
@@ -759,25 +1077,43 @@ class GClientSmokeGIT(GClientSmokeBase):
         '    ]',
         '  },',
         '',
+        '  # src',
+        '  {',
+        '    "pattern": ".",',
+        '    "condition": \'checkout_mac\',',
+        '    "cwd": ".",',
+        '    "action": [',
+        '        "python",',
+        '        "-c",',
+        '        "open(\'src/git_hooked_mac\', \'w\').write('
+                           '\'git_hooked_mac\')",',
+        '    ]',
+        '  },',
+        '',
+        '  # src -> src/repo15',
+        '  {',
+        '    "name": "absolute_cwd",',
+        '    "pattern": ".",',
+        '    "cwd": ".",',
+        '    "action": [',
+        '        "python",',
+        '        "-c",',
+        '        "pass",',
+        '    ]',
+        '  },',
+        '',
+        '  # src -> src/repo16',
+        '  {',
+        '    "name": "relative_cwd",',
+        '    "pattern": ".",',
+        '    "cwd": "src/repo16",',
+        '    "action": [',
+        '        "python",',
+        '        "relative.py",',
+        '    ]',
+        '  },',
+        '',
         ']',
-        '',
-        'hooks_os = {',
-        '  "mac": [',
-        '    # src',
-        '    {',
-        '      "pattern": ".",',
-        '      "cwd": ".",',
-        '      "action": [',
-        '          "python",',
-        '          "-c",',
-        '          "open(\'src/git_hooked_mac\', \'w\').write('
-                             '\'git_hooked_mac\')",',
-        '      ]',
-        '    },',
-        '',
-        '  ],',
-        '',
-        '}',
         '',
         'vars = {',
         '  # src',
@@ -793,10 +1129,13 @@ class GClientSmokeGIT(GClientSmokeBase):
         '  "false_var": False,',
         '',
         '  # src',
-        '  "git_base": \'git://127.0.0.1:20000/git/\',',
+        '  "git_base": \'' + self.git_base + '\',',
         '',
         '  # src',
         '  "hook1_contents": \'git_hooked1\',',
+        '',
+        '  # src -> src/repo2',
+        '  "repo2_false_var": \'False\',',
         '',
         '  # src',
         '  "repo5_var": \'/repo_5\',',
@@ -807,14 +1146,17 @@ class GClientSmokeGIT(GClientSmokeBase):
         '  # src',
         '  "true_str_var": \'True\',',
         '',
-        '  # src',
-        '  "true_var": True,',
+        '  # src [custom_var override]',
+        '  "true_var": \'False\',',
         '',
         '}',
         '',
-        '# git://127.0.0.1:20000/git/repo_2@%s, DEPS' % (
+        '# ' + self.git_base + 'repo_15, DEPS',
+        '# ' + self.git_base + 'repo_16, DEPS',
+        '# ' + self.git_base + 'repo_2@%s, DEPS' % (
                  self.githash('repo_2', 1)[:7]),
-        '# git://127.0.0.1:20000/git/repo_8, DEPS'
+        '# ' + self.git_base + 'repo_6, DEPS',
+        '# ' + self.git_base + 'repo_8, DEPS',
     ], deps_contents.splitlines())
 
   def testFlattenPinAllDeps(self):
@@ -832,79 +1174,87 @@ class GClientSmokeGIT(GClientSmokeBase):
     with open(output_deps) as f:
       deps_contents = f.read()
 
+    self.maxDiff = None  # pylint: disable=attribute-defined-outside-init
     self.assertEqual([
         'gclient_gn_args_file = "src/repo2/gclient.args"',
         'gclient_gn_args = [\'false_var\', \'false_str_var\', \'true_var\', '
             '\'true_str_var\', \'str_var\', \'cond_var\']',
         'allowed_hosts = [',
-        '  "git://127.0.0.1:20000/git/",',
+        '  "' + self.git_base + '",',
         ']',
         '',
         'deps = {',
         '  # src -> src/repo2 -> foo/bar',
         '  "foo/bar": {',
-        '    "url": "/repo_3@%s",' % (self.githash('repo_3', 2)),
+        '    "url": "' + self.git_base + 'repo_3@%s",' % (
+                self.githash('repo_3', 2)),
+        '    "condition": \'(repo2_false_var) and (true_str_var)\',',
         '  },',
         '',
         '  # src',
         '  "src": {',
-        '    "url": "git://127.0.0.1:20000/git/repo_6@%s",' % (
+        '    "url": "' + self.git_base + 'repo_6@%s",' % (
                  self.githash('repo_6', 1)),
+        '  },',
+        '',
+        '  # src -> src/mac_repo',
+        '  "src/mac_repo": {',
+        '    "url": "' + self.git_base + 'repo_5@%s",' % (
+                self.githash('repo_5', 3)),
+        '    "condition": \'checkout_mac\',',
+        '  },',
+        '',
+        '  # src -> src/repo8 -> src/recursed_os_repo',
+        '  "src/recursed_os_repo": {',
+        '    "url": "' + self.git_base + 'repo_5@%s",' % (
+                self.githash('repo_5', 3)),
+        '    "condition": \'(checkout_linux) or (checkout_mac)\',',
+        '  },',
+        '',
+        '  # src -> src/repo15',
+        '  "src/repo15": {',
+        '    "url": "' + self.git_base + 'repo_15@%s",' % (
+                self.githash('repo_15', 1)),
+        '  },',
+        '',
+        '  # src -> src/repo16',
+        '  "src/repo16": {',
+        '    "url": "' + self.git_base + 'repo_16@%s",' % (
+                self.githash('repo_16', 1)),
         '  },',
         '',
         '  # src -> src/repo2',
         '  "src/repo2": {',
-        '    "url": "{git_base}repo_2@%s",' % (
+        '    "url": "' + self.git_base + 'repo_2@%s",' % (
                  self.githash('repo_2', 1)),
-        '    "condition": \'True\',',
+        '    "condition": \'true_str_var\',',
         '  },',
         '',
         '  # src -> src/repo4',
         '  "src/repo4": {',
-        '    "url": "/repo_4@%s",' % (self.githash('repo_4', 2)),
+        '    "url": "' + self.git_base + 'repo_4@%s",' % (
+                self.githash('repo_4', 2)),
         '    "condition": \'False\',',
         '  },',
         '',
         '  # src -> src/repo8',
         '  "src/repo8": {',
-        '    "url": "/repo_8@%s",' % (self.githash('repo_8', 1)),
+        '    "url": "' + self.git_base + 'repo_8@%s",' % (
+                self.githash('repo_8', 1)),
         '  },',
         '',
-        '}',
-        '',
-        'deps_os = {',
-        '  "mac": {',
-        '    # src -> src/mac_repo',
-        '    "src/mac_repo": {',
-        '      "url": "{repo5_var}@%s",' % (self.githash('repo_5', 3)),
-        '    },',
-        '',
-        '    # src -> src/repo8 -> src/recursed_os_repo',
-        '    "src/recursed_os_repo": {',
-        '      "url": "/repo_5@%s",' % (self.githash('repo_5', 3)),
-        '    },',
-        '',
+        '  # src -> src/unix_repo',
+        '  "src/unix_repo": {',
+        '    "url": "' + self.git_base + 'repo_5@%s",' % (
+                self.githash('repo_5', 3)),
+        '    "condition": \'checkout_linux\',',
         '  },',
         '',
-        '  "unix": {',
-        '    # src -> src/repo8 -> src/recursed_os_repo',
-        '    "src/recursed_os_repo": {',
-        '      "url": "/repo_5@%s",' % (self.githash('repo_5', 3)),
-        '    },',
-        '',
-        '    # src -> src/unix_repo',
-        '    "src/unix_repo": {',
-        '      "url": "{repo5_var}@%s",' % (self.githash('repo_5', 3)),
-        '    },',
-        '',
-        '  },',
-        '',
-        '  "win": {',
-        '    # src -> src/win_repo',
-        '    "src/win_repo": {',
-        '      "url": "{repo5_var}@%s",' % (self.githash('repo_5', 3)),
-        '    },',
-        '',
+        '  # src -> src/win_repo',
+        '  "src/win_repo": {',
+        '    "url": "' + self.git_base + 'repo_5@%s",' % (
+                self.githash('repo_5', 3)),
+        '    "condition": \'checkout_win\',',
         '  },',
         '',
         '}',
@@ -919,7 +1269,7 @@ class GClientSmokeGIT(GClientSmokeBase):
         '        "python",',
         '        "-c",',
         '        "open(\'src/git_hooked1\', \'w\')'
-            '.write(\'{hook1_contents}\')",',
+            '.write(\'git_hooked1\')",',
         '    ]',
         '  },',
         '',
@@ -934,25 +1284,43 @@ class GClientSmokeGIT(GClientSmokeBase):
         '    ]',
         '  },',
         '',
+        '  # src',
+        '  {',
+        '    "pattern": ".",',
+        '    "condition": \'checkout_mac\',',
+        '    "cwd": ".",',
+        '    "action": [',
+        '        "python",',
+        '        "-c",',
+        '        "open(\'src/git_hooked_mac\', \'w\').write('
+                           '\'git_hooked_mac\')",',
+        '    ]',
+        '  },',
+        '',
+        '  # src -> src/repo15',
+        '  {',
+        '    "name": "absolute_cwd",',
+        '    "pattern": ".",',
+        '    "cwd": ".",',
+        '    "action": [',
+        '        "python",',
+        '        "-c",',
+        '        "pass",',
+        '    ]',
+        '  },',
+        '',
+        '  # src -> src/repo16',
+        '  {',
+        '    "name": "relative_cwd",',
+        '    "pattern": ".",',
+        '    "cwd": "src/repo16",',
+        '    "action": [',
+        '        "python",',
+        '        "relative.py",',
+        '    ]',
+        '  },',
+        '',
         ']',
-        '',
-        'hooks_os = {',
-        '  "mac": [',
-        '    # src',
-        '    {',
-        '      "pattern": ".",',
-        '      "cwd": ".",',
-        '      "action": [',
-        '          "python",',
-        '          "-c",',
-        '          "open(\'src/git_hooked_mac\', \'w\').write('
-                             '\'git_hooked_mac\')",',
-        '      ]',
-        '    },',
-        '',
-        '  ],',
-        '',
-        '}',
         '',
         'vars = {',
         '  # src',
@@ -968,10 +1336,13 @@ class GClientSmokeGIT(GClientSmokeBase):
         '  "false_var": False,',
         '',
         '  # src',
-        '  "git_base": \'git://127.0.0.1:20000/git/\',',
+        '  "git_base": \'' + self.git_base + '\',',
         '',
         '  # src',
         '  "hook1_contents": \'git_hooked1\',',
+        '',
+        '  # src -> src/repo2',
+        '  "repo2_false_var": \'False\',',
         '',
         '  # src',
         '  "repo5_var": \'/repo_5\',',
@@ -987,9 +1358,15 @@ class GClientSmokeGIT(GClientSmokeBase):
         '',
         '}',
         '',
-        '# git://127.0.0.1:20000/git/repo_2@%s, DEPS' % (
+        '# ' + self.git_base + 'repo_15@%s, DEPS' % (
+            self.githash('repo_15', 1)),
+        '# ' + self.git_base + 'repo_16@%s, DEPS' % (
+            self.githash('repo_16', 1)),
+        '# ' + self.git_base + 'repo_2@%s, DEPS' % (
             self.githash('repo_2', 1)),
-        '# git://127.0.0.1:20000/git/repo_8@%s, DEPS' % (
+        '# ' + self.git_base + 'repo_6@%s, DEPS' % (
+            self.githash('repo_6', 1)),
+        '# ' + self.git_base + 'repo_8@%s, DEPS' % (
             self.githash('repo_8', 1)),
     ], deps_contents.splitlines())
 
@@ -1012,98 +1389,155 @@ class GClientSmokeGIT(GClientSmokeBase):
     with open(output_deps) as f:
       deps_contents = f.read()
 
+    self.maxDiff = None
     self.assertEqual([
+        'gclient_gn_args_file = "src/repo2/gclient.args"',
+        "gclient_gn_args = ['str_var']",
         'deps = {',
         '  # src',
         '  "src": {',
-        '    "url": "git://127.0.0.1:20000/git/repo_10",',
+        '    "url": "' + self.git_base + 'repo_10",',
+        '  },',
+        '',
+        '  # src -> src/repo9 -> src/repo8 -> src/recursed_os_repo',
+        '  "src/recursed_os_repo": {',
+        '    "url": "' + self.git_base + 'repo_5",',
+        '    "condition": \'(checkout_linux) or (checkout_mac)\',',
+        '  },',
+        '',
+        '  # src -> src/repo11',
+        '  "src/repo11": {',
+        '    "url": "' + self.git_base + 'repo_11",',
+        '    "condition": \'(checkout_ios) or (checkout_mac)\',',
+        '  },',
+        '',
+        '  # src -> src/repo11 -> src/repo12',
+        '  "src/repo12": {',
+        '    "url": "' + self.git_base + 'repo_12",',
+        '    "condition": \'(checkout_ios) or (checkout_mac)\',',
+        '  },',
+        '',
+        '  # src -> src/repo9 -> src/repo4',
+        '  "src/repo4": {',
+        '    "url": "' + self.git_base + 'repo_4",',
+        '    "condition": \'checkout_android\',',
         '  },',
         '',
         '  # src -> src/repo6',
         '  "src/repo6": {',
-        '    "url": "/repo_6",',
+        '    "url": "' + self.git_base + 'repo_6",',
         '  },',
         '',
         '  # src -> src/repo9 -> src/repo7',
         '  "src/repo7": {',
-        '    "url": "/repo_7",',
+        '    "url": "' + self.git_base + 'repo_7",',
         '  },',
         '',
         '  # src -> src/repo9 -> src/repo8',
         '  "src/repo8": {',
-        '    "url": "/repo_8",',
+        '    "url": "' + self.git_base + 'repo_8",',
         '  },',
         '',
         '  # src -> src/repo9',
         '  "src/repo9": {',
-        '    "url": "/repo_9",',
+        '    "url": "' + self.git_base + 'repo_9",',
         '  },',
         '',
         '}',
         '',
-        'deps_os = {',
-        '  "android": {',
-        '    # src -> src/repo9 -> src/repo4',
-        '    "src/repo4": {',
-        '      "url": "/repo_4",',
-        '    },',
-        '',
-        '  },',
-        '',
-        '  "ios": {',
-        '    # src -> src/repo11',
-        '    "src/repo11": {',
-        '      "url": "/repo_11",',
-        '    },',
-        '',
-        '    # src -> src/repo11 -> src/repo12',
-        '    "src/repo12": {',
-        '      "url": "/repo_12",',
-        '    },',
-        '',
-        '  },',
-        '',
-        '  "mac": {',
-        '    # src -> src/repo9 -> src/repo8 -> src/recursed_os_repo',
-        '    "src/recursed_os_repo": {',
-        '      "url": "/repo_5",',
-        '    },',
-        '',
-        '    # src -> src/repo11',
-        '    "src/repo11": {',
-        '      "url": "/repo_11",',
-        '    },',
-        '',
-        '    # src -> src/repo11 -> src/repo12',
-        '    "src/repo12": {',
-        '      "url": "/repo_12",',
-        '    },',
-        '',
-        '  },',
-        '',
-        '  "unix": {',
-        '    # src -> src/repo9 -> src/repo8 -> src/recursed_os_repo',
-        '    "src/recursed_os_repo": {',
-        '      "url": "/repo_5",',
-        '    },',
-        '',
-        '  },',
+        'vars = {',
+        '  # src -> src/repo9',
+        '  "str_var": \'xyz\',',
         '',
         '}',
         '',
-        '# git://127.0.0.1:20000/git/repo_11, DEPS',
-        '# git://127.0.0.1:20000/git/repo_8, DEPS',
-        '# git://127.0.0.1:20000/git/repo_9, DEPS',
+        '# ' + self.git_base + 'repo_10, DEPS',
+        '# ' + self.git_base + 'repo_11, DEPS',
+        '# ' + self.git_base + 'repo_8, DEPS',
+        '# ' + self.git_base + 'repo_9, DEPS',
     ], deps_contents.splitlines())
 
     with open(output_deps_files) as f:
       deps_files_contents = json.load(f)
 
     self.assertEqual([
-      {'url': 'git://127.0.0.1:20000/git/repo_11', 'deps_file': 'DEPS'},
-      {'url': 'git://127.0.0.1:20000/git/repo_8', 'deps_file': 'DEPS'},
-      {'url': 'git://127.0.0.1:20000/git/repo_9', 'deps_file': 'DEPS'},
+      {'url': self.git_base + 'repo_10', 'deps_file': 'DEPS',
+       'hierarchy': [['src', self.git_base + 'repo_10']]},
+      {'url': self.git_base + 'repo_11', 'deps_file': 'DEPS',
+       'hierarchy': [['src', self.git_base + 'repo_10'],
+                     ['src/repo11', self.git_base + 'repo_11']]},
+      {'url': self.git_base + 'repo_8', 'deps_file': 'DEPS',
+       'hierarchy': [['src', self.git_base + 'repo_10'],
+                     ['src/repo9', self.git_base + 'repo_9'],
+                     ['src/repo8', self.git_base + 'repo_8']]},
+      {'url': self.git_base + 'repo_9', 'deps_file': 'DEPS',
+       'hierarchy': [['src', self.git_base + 'repo_10'],
+                     ['src/repo9', self.git_base + 'repo_9']]},
     ], deps_files_contents)
+
+  def testFlattenCipd(self):
+    if not self.enabled:
+      return
+
+    output_deps = os.path.join(self.root_dir, 'DEPS.flattened')
+    self.assertFalse(os.path.exists(output_deps))
+
+    self.gclient(['config', self.git_base + 'repo_14', '--name', 'src'])
+    self.gclient(['sync'])
+    self.gclient(['flatten', '-v', '-v', '-v', '--output-deps', output_deps])
+
+    with open(output_deps) as f:
+      deps_contents = f.read()
+
+    self.maxDiff = None  # pylint: disable=attribute-defined-outside-init
+    self.assertEqual([
+        'deps = {',
+        '  # src',
+        '  "src": {',
+        '    "url": "' + self.git_base + 'repo_14",',
+        '  },',
+        '',
+        '  # src -> src/another_cipd_dep',
+        '  "src/another_cipd_dep": {',
+        '    "packages": [',
+        '      {',
+        '        "package": "package1",',
+        '        "version": "1.1-cr0",',
+        '      },',
+        '      {',
+        '        "package": "package2",',
+        '        "version": "1.13",',
+        '      },',
+        '    ],',
+        '    "dep_type": "cipd",',
+        '  },',
+        '',
+        '  # src -> src/cipd_dep',
+        '  "src/cipd_dep": {',
+        '    "packages": [',
+        '      {',
+        '        "package": "package0",',
+        '        "version": "0.1",',
+        '      },',
+        '    ],',
+        '    "dep_type": "cipd",',
+        '  },',
+        '',
+        '  # src -> src/cipd_dep_with_cipd_variable',
+        '  "src/cipd_dep_with_cipd_variable": {',
+        '    "packages": [',
+        '      {',
+        '        "package": "package3/${{platform}}",',
+        '        "version": "1.2",',
+        '      },',
+        '    ],',
+        '    "dep_type": "cipd",',
+        '  },',
+        '',
+        '}',
+        '',
+        '# ' + self.git_base + 'repo_14, DEPS',
+    ], deps_contents.splitlines())
 
 
 class GClientSmokeGITMutates(GClientSmokeBase):
@@ -1450,6 +1884,120 @@ class BlinkDEPSTransitionSmokeTest(GClientSmokeBase):
     self.CheckStatusPreMergePoint()
     subprocess2.check_call(
         ['git', 'show-ref', '-q', '--verify', 'refs/heads/foo'], cwd=self.blink)
+
+
+class GClientSmokeCipd(GClientSmokeBase):
+  def setUp(self):
+    super(GClientSmokeCipd, self).setUp()
+    self.enabled = self.FAKE_REPOS.set_up_git()
+    self.env['PATH'] = (os.path.join(ROOT_DIR, 'testing_support')
+                        + os.pathsep + self.env['PATH'])
+
+  def testSyncCipd(self):
+    self.gclient(['config', self.git_base + 'repo_14', '--name', 'src'])
+    out, err, rc = self.gclient(['sync'])
+    self.assertEquals(0, rc, out + err)
+
+    tree = self.mangle_git_tree(('repo_14@1', 'src'))
+    tree.update({
+        '_cipd': '\n'.join([
+            '$ParanoidMode CheckPresence',
+            '',
+            '@Subdir src/another_cipd_dep',
+            'package1 1.1-cr0',
+            'package2 1.13',
+            '',
+            '@Subdir src/cipd_dep',
+            'package0 0.1',
+            '',
+            '@Subdir src/cipd_dep_with_cipd_variable',
+            'package3/${platform} 1.2',
+            '',
+            '',
+        ]),
+        'src/another_cipd_dep/_cipd': '\n'.join([
+            'package1 1.1-cr0',
+            'package2 1.13',
+        ]),
+        'src/cipd_dep/_cipd': 'package0 0.1',
+        'src/cipd_dep_with_cipd_variable/_cipd': 'package3/${platform} 1.2',
+    })
+    self.assertTree(tree)
+
+  def testConvertGitToCipd(self):
+    self.gclient(['config', self.git_base + 'repo_13', '--name', 'src'])
+
+    # repo_13@1 has src/repo12 as a git dependency.
+    out, err, rc = self.gclient(
+        ['sync', '-v', '-v', '-v', '--revision', self.githash('repo_13', 1)])
+    self.assertEquals(0, rc, out + err)
+
+    tree = self.mangle_git_tree(('repo_13@1', 'src'),
+                                ('repo_12@1', 'src/repo12'))
+    self.assertTree(tree)
+
+    # repo_13@3 has src/repo12 as a cipd dependency.
+    out, err, rc = self.gclient(
+        ['sync', '-v', '-v', '-v', '--revision', self.githash('repo_13', 3),
+         '--delete_unversioned_trees'])
+    self.assertEquals(0, rc, out + err)
+
+    tree = self.mangle_git_tree(('repo_13@3', 'src'))
+    tree.update({
+        '_cipd': '\n'.join([
+            '$ParanoidMode CheckPresence',
+            '',
+            '@Subdir src/repo12',
+            'foo 1.3',
+            '',
+            '',
+        ]),
+        'src/repo12/_cipd': 'foo 1.3',
+    })
+    self.assertTree(tree)
+
+  def testConvertCipdToGit(self):
+    self.gclient(['config', self.git_base + 'repo_13', '--name', 'src'])
+
+    # repo_13@3 has src/repo12 as a cipd dependency.
+    out, err, rc = self.gclient(
+        ['sync', '-v', '-v', '-v', '--revision', self.githash('repo_13', 3),
+         '--delete_unversioned_trees'])
+    self.assertEquals(0, rc, out + err)
+
+    tree = self.mangle_git_tree(('repo_13@3', 'src'))
+    tree.update({
+        '_cipd': '\n'.join([
+            '$ParanoidMode CheckPresence',
+            '',
+            '@Subdir src/repo12',
+            'foo 1.3',
+            '',
+            '',
+        ]),
+        'src/repo12/_cipd': 'foo 1.3',
+    })
+    self.assertTree(tree)
+
+    # repo_13@1 has src/repo12 as a git dependency.
+    out, err, rc = self.gclient(
+        ['sync', '-v', '-v', '-v', '--revision', self.githash('repo_13', 1)])
+    self.assertEquals(0, rc, out + err)
+
+    tree = self.mangle_git_tree(('repo_13@1', 'src'),
+                                ('repo_12@1', 'src/repo12'))
+    tree.update({
+        '_cipd': '\n'.join([
+            '$ParanoidMode CheckPresence',
+            '',
+            '@Subdir src/repo12',
+            'foo 1.3',
+            '',
+            '',
+        ]),
+        'src/repo12/_cipd': 'foo 1.3',
+    })
+    self.assertTree(tree)
 
 
 if __name__ == '__main__':

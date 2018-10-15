@@ -155,7 +155,8 @@ class AVDACodecAllocatorTest : public testing::Test {
         FROM_HERE, base::Bind(
                        [](AVDACodecAllocator::CodecFactoryCB factory_cb,
                           scoped_refptr<base::SequencedTaskRunner> task_runner,
-                          base::TickClock* clock, base::WaitableEvent* event) {
+                          const base::TickClock* clock,
+                          base::WaitableEvent* event) {
                          return new AVDACodecAllocator(factory_cb, task_runner,
                                                        clock, event);
                        },
@@ -167,7 +168,7 @@ class AVDACodecAllocatorTest : public testing::Test {
     // Create a SurfaceBundle that provides an overlay.  It will provide a null
     // java ref if requested.
     std::unique_ptr<MockAndroidOverlay> overlay =
-        base::MakeUnique<NiceMock<MockAndroidOverlay>>();
+        std::make_unique<NiceMock<MockAndroidOverlay>>();
     scoped_refptr<CodecConfig> codec_config(new CodecConfig);
     ON_CALL(*overlay, GetJavaSurface())
         .WillByDefault(ReturnRef(null_java_ref_));

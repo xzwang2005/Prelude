@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env vpython
 # Copyright 2016 The Chromium Authors. All rights reserved.
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
@@ -252,6 +252,6 @@ def _FormatHumanReadable(number):
     exponent += 1
   if digits >= 100:
     # Don't append a meaningless '.0' to an integer number.
-    digits = int(digits)
+    digits = int(digits)  # pylint: disable=redefined-variable-type
   # Exponent is now divisible by 3, between -3 and 6 inclusive: (-3, 0, 3, 6).
   return '%s%s' % (digits, metric_prefixes[exponent])

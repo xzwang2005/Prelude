@@ -33,7 +33,8 @@ BeginFrameArgs::BeginFrameArgs()
       source_id(0),
       sequence_number(kInvalidFrameNumber),
       type(BeginFrameArgs::INVALID),
-      on_critical_path(true) {}
+      on_critical_path(true),
+      animate_only(false) {}
 
 BeginFrameArgs::BeginFrameArgs(uint64_t source_id,
                                uint64_t sequence_number,
@@ -47,9 +48,13 @@ BeginFrameArgs::BeginFrameArgs(uint64_t source_id,
       source_id(source_id),
       sequence_number(sequence_number),
       type(type),
-      on_critical_path(true) {
+      on_critical_path(true),
+      animate_only(false) {
   DCHECK_LE(kStartingFrameNumber, sequence_number);
 }
+
+BeginFrameArgs::BeginFrameArgs(const BeginFrameArgs& args) = default;
+BeginFrameArgs& BeginFrameArgs::operator=(const BeginFrameArgs& args) = default;
 
 BeginFrameArgs BeginFrameArgs::Create(BeginFrameArgs::CreationLocation location,
                                       uint64_t source_id,
@@ -91,6 +96,7 @@ void BeginFrameArgs::AsValueInto(base::trace_event::TracedValue* state) const {
   state->SetString("created_from", created_from.ToString());
 #endif
   state->SetBoolean("on_critical_path", on_critical_path);
+  state->SetBoolean("animate_only", animate_only);
 }
 
 // This is a hard-coded deadline adjustment that assumes 60Hz, to be used in
@@ -112,11 +118,19 @@ BeginFrameAck::BeginFrameAck()
       sequence_number(BeginFrameArgs::kInvalidFrameNumber),
       has_damage(false) {}
 
+BeginFrameAck::BeginFrameAck(const BeginFrameArgs& args, bool has_damage)
+    : BeginFrameAck(args.source_id,
+                    args.sequence_number,
+                    has_damage,
+                    args.trace_id) {}
+
 BeginFrameAck::BeginFrameAck(uint64_t source_id,
                              uint64_t sequence_number,
-                             bool has_damage)
+                             bool has_damage,
+                             int64_t trace_id)
     : source_id(source_id),
       sequence_number(sequence_number),
+      trace_id(trace_id),
       has_damage(has_damage) {
   DCHECK_LT(BeginFrameArgs::kInvalidFrameNumber, sequence_number);
 }

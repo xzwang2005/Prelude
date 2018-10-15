@@ -296,7 +296,7 @@ function checkStack(stack, expected_lines) {
   } catch (e) {
     if (!(e instanceof TypeError)) throw e;
     checkStack(stripPath(e.stack), [
-      'TypeError: invalid type',                                // -
+      'TypeError: ' + kTrapMsgs[kTrapTypeError],                // -
       '    at direct (wasm-function[1]:1)',                     // -
       '    at main (wasm-function[3]:3)',                       // -
       /^    at testIllegalImports \(interpreter.js:\d+:22\)$/,  // -
@@ -309,13 +309,38 @@ function checkStack(stack, expected_lines) {
   } catch (e) {
     if (!(e instanceof TypeError)) throw e;
     checkStack(stripPath(e.stack), [
-      'TypeError: invalid type',                                // -
-      '    at indirect (wasm-function[2]:1)',                   // -
+      'TypeError: ' + kTrapMsgs[kTrapTypeError],                // -
+      '    at indirect (wasm-function[2]:3)',                   // -
       '    at main (wasm-function[3]:3)',                       // -
       /^    at testIllegalImports \(interpreter.js:\d+:22\)$/,  // -
       /^    at interpreter.js:\d+:3$/
     ]);
   }
+})();
+
+(function testImportExportedFunction() {
+  // See https://crbug.com/860392.
+  print(arguments.callee.name);
+  let instance0 = (() => {
+    let builder = new WasmModuleBuilder();
+    builder.addFunction('f11', kSig_i_v).addBody(wasmI32Const(11)).exportFunc();
+    builder.addFunction('f17', kSig_i_v).addBody(wasmI32Const(17)).exportFunc();
+    return builder.instantiate();
+  })();
+
+  let builder = new WasmModuleBuilder();
+  let sig_i_v = builder.addType(kSig_i_v);
+  let f11_imp = builder.addImport('q', 'f11', sig_i_v);
+  let f17_imp = builder.addImport('q', 'f17', sig_i_v);
+  let add = builder.addFunction('add', sig_i_v).addBody([
+    kExprCallFunction, f11_imp,  // call f11
+    kExprCallFunction, f17_imp,  // call f17
+    kExprI32Add                  // i32.add
+  ]).exportFunc();
+  let instance = builder.instantiate(
+      {q: {f11: instance0.exports.f11, f17: instance0.exports.f17}});
+
+  assertEquals(28, instance.exports.add());
 })();
 
 (function testInfiniteRecursion() {
@@ -492,4 +517,31 @@ function checkStack(stack, expected_lines) {
   const instance2 = builder2.instantiate({imp: {table: tab}});
   tab.set(0, instance1.exports.exp);
   instance2.exports.call2();
+})();
+
+(function testTableCall3() {
+  // See crbug.com/814562.
+  print(arguments.callee.name);
+  const builder0 = new WasmModuleBuilder();
+  const sig_index = builder0.addType(kSig_i_v);
+  builder0.addFunction('main', kSig_i_i)
+      .addBody([
+        kExprGetLocal, 0,  // --
+        kExprCallIndirect, sig_index, kTableZero
+      ])  // --
+      .exportAs('main');
+  builder0.setFunctionTableBounds(3, 3);
+  builder0.addExportOfKind('table', kExternalTable);
+  const module0 = new WebAssembly.Module(builder0.toBuffer());
+  const instance0 = new WebAssembly.Instance(module0);
+
+  const builder1 = new WasmModuleBuilder();
+  builder1.addFunction('main', kSig_i_v).addBody([kExprUnreachable]);
+  builder1.addImportedTable('z', 'table');
+  builder1.addFunctionTableInit(0, false, [0], true);
+  const module1 = new WebAssembly.Module(builder1.toBuffer());
+  const instance1 =
+      new WebAssembly.Instance(module1, {z: {table: instance0.exports.table}});
+  assertThrows(
+      () => instance0.exports.main(0), WebAssembly.RuntimeError, 'unreachable');
 })();

@@ -11,18 +11,26 @@ from telemetry.page import shared_page_state
 class IntlKoThViPage(page_cycler_story.PageCyclerStory):
 
   def __init__(self, url, page_set, cache_temperature=None):
+    if cache_temperature == cache_temperature_module.COLD:
+      temp_suffix = '_cold'
+    elif cache_temperature == cache_temperature_module.WARM:
+      temp_suffix = '_warm'
+    else:
+      raise NotImplementedError
+
     super(IntlKoThViPage, self).__init__(
         url=url, page_set=page_set,
         shared_page_state_class=shared_page_state.SharedDesktopPageState,
         cache_temperature=cache_temperature,
-        name=url)
+        name=url+temp_suffix)
 
 
 class IntlKoThViPageSet(story.StorySet):
 
   """ Popular pages in Korean, Thai and Vietnamese. """
 
-  def __init__(self, cache_temperatures=None):
+  def __init__(self, cache_temperatures=(cache_temperature_module.COLD,
+                                         cache_temperature_module.WARM)):
     super(IntlKoThViPageSet, self).__init__(
       archive_data_file='data/intl_ko_th_vi.json',
       cloud_storage_bucket=story.PARTNER_BUCKET)
@@ -57,8 +65,3 @@ class IntlKoThViPageSet(story.StorySet):
     for url in urls_list:
       for temp in cache_temperatures:
         self.AddStory(IntlKoThViPage(url, self, cache_temperature=temp))
-
-
-class IntlKoThViStoryExpectations(story.expectations.StoryExpectations):
-  def SetExpectations(self):
-    pass

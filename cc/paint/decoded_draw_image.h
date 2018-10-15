@@ -8,6 +8,7 @@
 #include <cfloat>
 #include <cmath>
 
+#include "base/optional.h"
 #include "cc/paint/paint_export.h"
 #include "third_party/skia/include/core/SkFilterQuality.h"
 #include "third_party/skia/include/core/SkImage.h"
@@ -21,13 +22,22 @@ class CC_PAINT_EXPORT DecodedDrawImage {
   DecodedDrawImage(sk_sp<const SkImage> image,
                    const SkSize& src_rect_offset,
                    const SkSize& scale_adjustment,
-                   SkFilterQuality filter_quality);
-  DecodedDrawImage(sk_sp<const SkImage> image, SkFilterQuality filter_quality);
+                   SkFilterQuality filter_quality,
+                   bool is_budgeted);
+  DecodedDrawImage(base::Optional<uint32_t> transfer_cache_entry_id,
+                   const SkSize& src_rect_offset,
+                   const SkSize& scale_adjustment,
+                   SkFilterQuality filter_quality,
+                   bool needs_mips,
+                   bool is_budgeted);
   DecodedDrawImage(const DecodedDrawImage& other);
   DecodedDrawImage();
   ~DecodedDrawImage();
 
   const sk_sp<const SkImage>& image() const { return image_; }
+  base::Optional<uint32_t> transfer_cache_entry_id() const {
+    return transfer_cache_entry_id_;
+  }
   const SkSize& src_rect_offset() const { return src_rect_offset_; }
   const SkSize& scale_adjustment() const { return scale_adjustment_; }
   SkFilterQuality filter_quality() const { return filter_quality_; }
@@ -35,18 +45,19 @@ class CC_PAINT_EXPORT DecodedDrawImage {
     return std::abs(scale_adjustment_.width() - 1.f) < FLT_EPSILON &&
            std::abs(scale_adjustment_.height() - 1.f) < FLT_EPSILON;
   }
-
-  void set_at_raster_decode(bool at_raster_decode) {
-    at_raster_decode_ = at_raster_decode;
+  bool transfer_cache_entry_needs_mips() const {
+    return transfer_cache_entry_needs_mips_;
   }
-  bool is_at_raster_decode() const { return at_raster_decode_; }
+  bool is_budgeted() const { return is_budgeted_; }
 
  private:
   sk_sp<const SkImage> image_;
+  base::Optional<uint32_t> transfer_cache_entry_id_;
   SkSize src_rect_offset_;
   SkSize scale_adjustment_;
   SkFilterQuality filter_quality_;
-  bool at_raster_decode_;
+  bool transfer_cache_entry_needs_mips_ = false;
+  bool is_budgeted_;
 };
 
 }  // namespace cc

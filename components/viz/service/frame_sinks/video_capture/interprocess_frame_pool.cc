@@ -4,139 +4,195 @@
 
 #include "components/viz/service/frame_sinks/video_capture/interprocess_frame_pool.h"
 
+#include <algorithm>
+
 #include "base/bind.h"
 #include "base/bind_helpers.h"
-#include "media/base/video_frame.h"
-#include "media/capture/video/video_capture_buffer_tracker_factory_impl.h"
-#include "media/mojo/common/mojo_shared_buffer_video_frame.h"
-#include "ui/gfx/geometry/size.h"
+#include "mojo/public/cpp/base/shared_memory_utils.h"
 
-using media::VideoCaptureBufferPool;
-using media::VideoCaptureBufferPoolImpl;
 using media::VideoFrame;
 using media::VideoPixelFormat;
 
 namespace viz {
 
+// static
+constexpr base::TimeDelta InterprocessFramePool::kMinLoggingPeriod;
+
 InterprocessFramePool::InterprocessFramePool(int capacity)
-    : buffer_pool_(new VideoCaptureBufferPoolImpl(
-          std::make_unique<media::VideoCaptureBufferTrackerFactoryImpl>(),
-          capacity)),
-      weak_factory_(this) {}
+    : capacity_(std::max(capacity, 0)), weak_factory_(this) {
+  DCHECK_GT(capacity_, 0u);
+}
 
 InterprocessFramePool::~InterprocessFramePool() = default;
 
 scoped_refptr<VideoFrame> InterprocessFramePool::ReserveVideoFrame(
-    const gfx::Size& size,
-    VideoPixelFormat format) {
+    VideoPixelFormat format,
+    const gfx::Size& size) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
-  BufferId ignored;  // Not applicable to this buffer pool use case.
-  const BufferId buffer_id = buffer_pool_->ReserveForProducer(
-      size, format, media::VideoPixelStorage::CPU,
-      0 /* unused: frame_feedback_id */, &ignored);
-  if (buffer_id == VideoCaptureBufferPool::kInvalidId) {
+  // Calling this method is a signal that there is no intention of resurrecting
+  // the last frame.
+  resurrectable_buffer_memory_ = nullptr;
+
+  const size_t bytes_required = VideoFrame::AllocationSize(format, size);
+
+  // Look for an available buffer that's large enough. If one is found, wrap it
+  // in a VideoFrame and return it.
+  for (auto it = available_buffers_.rbegin(); it != available_buffers_.rend();
+       ++it) {
+    if (it->mapping.size() < bytes_required) {
+      continue;
+    }
+    PooledBuffer taken = std::move(*it);
+    available_buffers_.erase(it.base() - 1);
+    return WrapBuffer(std::move(taken), format, size);
+  }
+
+  // Look for the largest available buffer, reallocate it, wrap it in a
+  // VideoFrame and return it.
+  while (!available_buffers_.empty()) {
+    const auto it =
+        std::max_element(available_buffers_.rbegin(), available_buffers_.rend(),
+                         [this](const PooledBuffer& a, const PooledBuffer& b) {
+                           return a.mapping.size() < b.mapping.size();
+                         });
+    available_buffers_.erase(it.base() - 1);  // Release before allocating more.
+    PooledBuffer reallocated =
+        mojo::CreateReadOnlySharedMemoryRegion(bytes_required);
+    if (!reallocated.IsValid()) {
+      LOG_IF(WARNING, CanLogSharedMemoryFailure())
+          << "Failed to re-allocate " << bytes_required << " bytes.";
+      continue;  // Try again after freeing the next-largest buffer.
+    }
+    return WrapBuffer(std::move(reallocated), format, size);
+  }
+
+  // There are no available buffers. If the pool is at max capacity, punt.
+  // Otherwise, allocate a new buffer, wrap it in a VideoFrame and return it.
+  if (utilized_buffers_.size() >= capacity_) {
     return nullptr;
   }
-  resurrectable_buffer_id_ = VideoCaptureBufferPool::kInvalidId;
-  return WrapBuffer(buffer_id, size, format);
+  PooledBuffer additional =
+      mojo::CreateReadOnlySharedMemoryRegion(bytes_required);
+  if (!additional.IsValid()) {
+    LOG_IF(WARNING, CanLogSharedMemoryFailure())
+        << "Failed to allocate " << bytes_required << " bytes.";
+    return nullptr;
+  }
+  return WrapBuffer(std::move(additional), format, size);
 }
 
 scoped_refptr<VideoFrame> InterprocessFramePool::ResurrectLastVideoFrame(
-    const gfx::Size& expected_size,
-    VideoPixelFormat expected_format) {
+    VideoPixelFormat expected_format,
+    const gfx::Size& expected_size) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
-  const BufferId buffer_id = buffer_pool_->ResurrectLastForProducer(
-      expected_size, expected_format, media::VideoPixelStorage::CPU);
-  if (buffer_id != resurrectable_buffer_id_ ||
-      buffer_id == VideoCaptureBufferPool::kInvalidId) {
+  // Find the tracking entry for the resurrectable buffer. If it is still being
+  // used, or is not of the expected format and size, punt.
+  if (resurrectable_buffer_memory_ == nullptr ||
+      last_delivered_format_ != expected_format ||
+      last_delivered_size_ != expected_size) {
     return nullptr;
   }
-  return WrapBuffer(buffer_id, expected_size, expected_format);
+  const auto it = std::find_if(
+      available_buffers_.rbegin(), available_buffers_.rend(),
+      [this](const PooledBuffer& candidate) {
+        return candidate.mapping.memory() == resurrectable_buffer_memory_;
+      });
+  if (it == available_buffers_.rend()) {
+    return nullptr;
+  }
+
+  // Wrap the buffer in a VideoFrame and return it.
+  PooledBuffer resurrected = std::move(*it);
+  available_buffers_.erase(it.base() - 1);
+  return WrapBuffer(std::move(resurrected), expected_format, expected_size);
 }
 
-base::OnceClosure InterprocessFramePool::HoldFrameForDelivery(
+base::ReadOnlySharedMemoryRegion InterprocessFramePool::CloneHandleForDelivery(
     const VideoFrame* frame) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
-  const auto it = buffer_map_.find(frame);
-  DCHECK(it != buffer_map_.end());
-  const BufferId buffer_id = it->second;
-  resurrectable_buffer_id_ = buffer_id;
-  buffer_pool_->HoldForConsumers(buffer_id, 1);
-  return base::BindOnce(&VideoCaptureBufferPoolImpl::RelinquishConsumerHold,
-                        buffer_pool_, buffer_id, 1);
+  // Record that this frame is the last-delivered one, for possible future calls
+  // to ResurrectLastVideoFrame().
+  const auto it = utilized_buffers_.find(frame);
+  DCHECK(it != utilized_buffers_.end());
+  // Assumption: The first image plane's memory pointer should be the start of
+  // the writable mapped memory. WrapBuffer() sanity-checks this.
+  resurrectable_buffer_memory_ = frame->data(0);
+  last_delivered_format_ = frame->format();
+  last_delivered_size_ = frame->coded_size();
+
+  return it->second.Duplicate();
 }
 
 float InterprocessFramePool::GetUtilization() const {
-  // Note: Technically, the |buffer_pool_| is completely thread-safe; so no
-  // sequence check is needed here.
-  return buffer_pool_->GetBufferPoolUtilization();
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+
+  return static_cast<float>(utilized_buffers_.size()) / capacity_;
 }
 
 scoped_refptr<VideoFrame> InterprocessFramePool::WrapBuffer(
-    BufferId buffer_id,
-    const gfx::Size& size,
-    VideoPixelFormat format) {
+    PooledBuffer pooled_buffer,
+    VideoPixelFormat format,
+    const gfx::Size& size) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  DCHECK(pooled_buffer.IsValid());
 
-  // Mojo takes ownership of shared memory handles. Here, the pool has created
-  // and owns the original shared memory handle, but will duplicate it for Mojo.
-  mojo::ScopedSharedBufferHandle buffer =
-      buffer_pool_->GetHandleForInterProcessTransit(buffer_id,
-                                                    false /* read-write */);
-  if (!buffer.is_valid()) {
-    return nullptr;
-  }
-
-  const gfx::Size& y_plane_size =
-      VideoFrame::PlaneSize(format, VideoFrame::kYPlane, size);
-  const int y_plane_bytes = y_plane_size.GetArea();
-  const gfx::Size& u_plane_size =
-      VideoFrame::PlaneSize(format, VideoFrame::kUPlane, size);
-  const int u_plane_bytes = u_plane_size.GetArea();
-  const gfx::Size& v_plane_size =
-      VideoFrame::PlaneSize(format, VideoFrame::kVPlane, size);
-  const int v_plane_bytes = v_plane_size.GetArea();
-  // TODO(miu): This could all be made much simpler if we had our own ctor in
-  // MojoSharedBufferVideoFrame.
-  const scoped_refptr<VideoFrame> frame =
-      media::MojoSharedBufferVideoFrame::Create(
-          format, size, gfx::Rect(size), size, std::move(buffer),
-          y_plane_bytes + u_plane_bytes + v_plane_bytes, 0 /* y_offset */,
-          y_plane_bytes /* u_offset */,
-          y_plane_bytes + u_plane_bytes /* v_offset */, y_plane_size.width(),
-          u_plane_size.width(), v_plane_size.width(), base::TimeDelta());
+  // Create the VideoFrame wrapper. The two components of |pooled_buffer| are
+  // split: The shared memory handle is moved off to the side (in a
+  // |utilized_buffers_| map entry), while the writable mapping is transferred
+  // to the VideoFrame. When the VideoFrame goes out-of-scope, a destruction
+  // observer will re-assemble the PooledBuffer from these two components and
+  // return it to the |available_buffers_| pool.
+  //
+  // The VideoFrame could be held, externally, beyond the lifetime of this
+  // InterprocessFramePool. However, this is safe because 1) the use of a
+  // WeakPtr cancels the callback that would return the buffer back to the pool,
+  // and 2) the mapped memory remains valid until the
+  // WritableSharedMemoryMapping goes out-of-scope (when the OnceClosure is
+  // destroyed).
+  scoped_refptr<VideoFrame> frame = VideoFrame::WrapExternalData(
+      format, size, gfx::Rect(size), size,
+      static_cast<uint8_t*>(pooled_buffer.mapping.memory()),
+      pooled_buffer.mapping.size(), base::TimeDelta());
   DCHECK(frame);
-
-  // Add an entry so that HoldFrameForDelivery() can identify the buffer backing
-  // this VideoFrame.
-  buffer_map_[frame.get()] = buffer_id;
-
-  // Add a destruction observer to update |buffer_map_|. A WeakPtr is used for
-  // safety, just in case the VideoFrame's scope extends beyond that of this
-  // InterprocessFramePool.
-  frame->AddDestructionObserver(base::BindOnce(
-      &InterprocessFramePool::OnFrameWrapperDestroyed,
-      weak_factory_.GetWeakPtr(), base::Unretained(frame.get())));
-
-  // The second destruction observer is a callback to the
-  // VideoCaptureBufferPoolImpl directly. Since |buffer_pool_| is ref-counted,
-  // this means InterprocessFramePool can be safely destroyed even if there are
-  // still outstanding VideoFrames.
+  // Sanity-check the assumption being made in CloneHandleForDelivery():
+  DCHECK_EQ(frame->data(0), pooled_buffer.mapping.memory());
+  utilized_buffers_.emplace(frame.get(), std::move(pooled_buffer.region));
   frame->AddDestructionObserver(
-      base::BindOnce(&VideoCaptureBufferPoolImpl::RelinquishProducerReservation,
-                     buffer_pool_, buffer_id));
+      base::BindOnce(&InterprocessFramePool::OnFrameWrapperDestroyed,
+                     weak_factory_.GetWeakPtr(), base::Unretained(frame.get()),
+                     std::move(pooled_buffer.mapping)));
   return frame;
 }
 
-void InterprocessFramePool::OnFrameWrapperDestroyed(const VideoFrame* frame) {
+void InterprocessFramePool::OnFrameWrapperDestroyed(
+    const VideoFrame* frame,
+    base::WritableSharedMemoryMapping mapping) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  DCHECK(mapping.IsValid());
+
+  // Return the buffer to the pool by moving the PooledBuffer back into
+  // |available_buffers_|.
+  const auto it = utilized_buffers_.find(frame);
+  DCHECK(it != utilized_buffers_.end());
+  available_buffers_.emplace_back(
+      PooledBuffer{std::move(it->second), std::move(mapping)});
+  DCHECK(available_buffers_.back().IsValid());
+  utilized_buffers_.erase(it);
+  DCHECK_LE(available_buffers_.size() + utilized_buffers_.size(), capacity_);
+}
+
+bool InterprocessFramePool::CanLogSharedMemoryFailure() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
-  const auto it = buffer_map_.find(frame);
-  DCHECK(it != buffer_map_.end());
-  buffer_map_.erase(it);
+  const base::TimeTicks now = base::TimeTicks::Now();
+  if ((now - last_fail_log_time_) >= kMinLoggingPeriod) {
+    last_fail_log_time_ = now;
+    return true;
+  }
+  return false;
 }
 
 }  // namespace viz

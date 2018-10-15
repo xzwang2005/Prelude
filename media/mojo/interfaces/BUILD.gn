@@ -6,18 +6,28 @@ import("//media/media_options.gni")
 import("//mojo/public/tools/bindings/mojom.gni")
 
 mojom("interfaces") {
+  # TODO(crbug.com/676224): Conditionally add source files in this list when we
+  # support EnabledIf attribute in mojom files.
   sources = [
+    "audio_data_pipe.mojom",
     "audio_decoder.mojom",
     "audio_input_stream.mojom",
+    "audio_logging.mojom",
     "audio_output_stream.mojom",
     "audio_parameters.mojom",
+    "cdm_proxy.mojom",
+    "cdm_service.mojom",
     "cdm_storage.mojom",
     "content_decryption_module.mojom",
     "decryptor.mojom",
     "demuxer_stream.mojom",
     "interface_factory.mojom",
     "jpeg_decode_accelerator.mojom",
+    "jpeg_encode_accelerator.mojom",
+    "key_system_support.mojom",
     "media_log.mojom",
+    "media_metrics_provider.mojom",
+    "media_service.mojom",
     "media_types.mojom",
     "output_protection.mojom",
     "platform_verification.mojom",
@@ -30,37 +40,31 @@ mojom("interfaces") {
     "watch_time_recorder.mojom",
   ]
 
-  if (enable_library_cdms) {
-    sources += [ "cdm_proxy.mojom" ]
+  if (is_android) {
+    sources += [
+      "android_overlay.mojom",
+      "media_drm_storage.mojom",
+    ]
   }
 
-  if (is_android) {
-    sources += [ "media_drm_storage.mojom" ]
-  }
-
-  if (is_android) {
-    sources += [ "android_overlay.mojom" ]
+  if (is_chromecast) {
+    sources += [ "application_session_id_manager.mojom" ]
   }
 
   public_deps = [
     "//gpu/ipc/common:interfaces",
-    "//mojo/common:common_custom_types",
-    "//services/service_manager/public/interfaces",
+    "//mojo/public/mojom/base",
+    "//services/service_manager/public/mojom",
     "//ui/gfx/geometry/mojo",
-    "//url/mojo:url_mojom_gurl",
-    "//url/mojo:url_mojom_origin",
+    "//ui/gfx/mojo",
+    "//url/mojom:url_mojom_gurl",
+    "//url/mojom:url_mojom_origin",
   ]
 
-  # TODO(xhwang): Remove media_service_mac.mojom when we support EnabledIf
-  # attribute in mojom files. See https://crbug.com/676224
   if (is_mac) {
-    sources += [ "media_service_mac.mojom" ]
-
     # TODO(xhwang): Ideally media should not worry about sandbox. Find a way to
     # remove this dependency.
     public_deps += [ "//sandbox/mac/mojom" ]
-  } else {
-    sources += [ "media_service.mojom" ]
   }
 }
 

@@ -48,7 +48,7 @@ class V8_EXPORT_PRIVATE AccessBuilder final
   static FieldAccess ForJSObjectElements();
 
   // Provides access to JSObject inobject property fields.
-  static FieldAccess ForJSObjectInObjectProperty(Handle<Map> map, int index);
+  static FieldAccess ForJSObjectInObjectProperty(const MapRef& map, int index);
   static FieldAccess ForJSObjectOffset(
       int offset, WriteBarrierKind write_barrier_kind = kFullWriteBarrier);
 
@@ -70,8 +70,8 @@ class V8_EXPORT_PRIVATE AccessBuilder final
   // Provides access to JSFunction::shared() field.
   static FieldAccess ForJSFunctionSharedFunctionInfo();
 
-  // Provides access to JSFunction::feedback_vector() field.
-  static FieldAccess ForJSFunctionFeedbackVector();
+  // Provides access to JSFunction::feedback_cell() field.
+  static FieldAccess ForJSFunctionFeedbackCell();
 
   // Provides access to JSFunction::code() field.
   static FieldAccess ForJSFunctionCode();
@@ -94,8 +94,8 @@ class V8_EXPORT_PRIVATE AccessBuilder final
   // Provides access to JSGeneratorObject::input_or_debug_pos() field.
   static FieldAccess ForJSGeneratorObjectInputOrDebugPos();
 
-  // Provides access to JSGeneratorObject::register_file() field.
-  static FieldAccess ForJSGeneratorObjectRegisterFile();
+  // Provides access to JSGeneratorObject::parameters_and_registers() field.
+  static FieldAccess ForJSGeneratorObjectParametersAndRegisters();
 
   // Provides access to JSGeneratorObject::function() field.
   static FieldAccess ForJSGeneratorObjectFunction();
@@ -109,8 +109,8 @@ class V8_EXPORT_PRIVATE AccessBuilder final
   // Provides access to JSAsyncGeneratorObject::queue() field.
   static FieldAccess ForJSAsyncGeneratorObjectQueue();
 
-  // Provides access to JSAsyncGeneratorObject::awaited_promise() field.
-  static FieldAccess ForJSAsyncGeneratorObjectAwaitedPromise();
+  // Provides access to JSAsyncGeneratorObject::is_awaiting() field.
+  static FieldAccess ForJSAsyncGeneratorObjectIsAwaiting();
 
   // Provides access to JSArray::length() field.
   static FieldAccess ForJSArrayLength(ElementsKind elements_kind);
@@ -241,15 +241,14 @@ class V8_EXPORT_PRIVATE AccessBuilder final
   // Provides access to JSGlobalProxy::native_context() field.
   static FieldAccess ForJSGlobalProxyNativeContext();
 
-  // Provides access to JSArrayIterator::object() field.
-  static FieldAccess ForJSArrayIteratorObject();
+  // Provides access to JSArrayIterator::iterated_object() field.
+  static FieldAccess ForJSArrayIteratorIteratedObject();
 
-  // Provides access to JSArrayIterator::index() field.
-  static FieldAccess ForJSArrayIteratorIndex(InstanceType type = JS_OBJECT_TYPE,
-                                             ElementsKind kind = NO_ELEMENTS);
+  // Provides access to JSArrayIterator::next_index() field.
+  static FieldAccess ForJSArrayIteratorNextIndex();
 
-  // Provides access to JSArrayIterator::object_map() field.
-  static FieldAccess ForJSArrayIteratorObjectMap();
+  // Provides access to JSArrayIterator::kind() field.
+  static FieldAccess ForJSArrayIteratorKind();
 
   // Provides access to JSStringIterator::string() field.
   static FieldAccess ForJSStringIteratorString();
@@ -274,13 +273,11 @@ class V8_EXPORT_PRIVATE AccessBuilder final
   // Provides access to Context slots.
   static FieldAccess ForContextSlot(size_t index);
 
-  // Provides access to ContextExtension fields.
-  static FieldAccess ForContextExtensionScopeInfo();
-  static FieldAccess ForContextExtensionExtension();
-
   // Provides access to FixedArray elements.
   static ElementAccess ForFixedArrayElement();
-  static ElementAccess ForFixedArrayElement(ElementsKind kind);
+  static ElementAccess ForFixedArrayElement(
+      ElementsKind kind,
+      LoadSensitivity load_sensitivity = LoadSensitivity::kUnsafe);
 
   // Provides access to FixedDoubleArray elements.
   static ElementAccess ForFixedDoubleArrayElement();
@@ -292,8 +289,9 @@ class V8_EXPORT_PRIVATE AccessBuilder final
   static FieldAccess ForEnumCacheIndices();
 
   // Provides access to Fixed{type}TypedArray and External{type}Array elements.
-  static ElementAccess ForTypedArrayElement(ExternalArrayType type,
-                                            bool is_external);
+  static ElementAccess ForTypedArrayElement(
+      ExternalArrayType type, bool is_external,
+      LoadSensitivity load_sensitivity = LoadSensitivity::kUnsafe);
 
   // Provides access to HashTable fields.
   static FieldAccess ForHashTableBaseNumberOfElements();

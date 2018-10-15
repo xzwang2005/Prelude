@@ -34,7 +34,7 @@ class BASE_EXPORT CommandLine {
 #if defined(OS_WIN)
   // The native command line string type.
   using StringType = string16;
-#elif defined(OS_POSIX)
+#elif defined(OS_POSIX) || defined(OS_FUCHSIA)
   using StringType = std::string;
 #endif
 
@@ -215,7 +215,7 @@ class BASE_EXPORT CommandLine {
 
  private:
   // Disallow default constructor; a program name must be explicitly specified.
-  CommandLine();
+  CommandLine() = delete;
   // Allow the copy constructor. A common pattern is to copy of the current
   // process's command line and then add some flags to it. For example:
   //   CommandLine cl(*CommandLine::ForCurrentProcess());

@@ -76,7 +76,7 @@ class NET_EXPORT_PRIVATE NetworkQualityStore {
   // Maximum size of the store that holds network quality estimates.
   // A smaller size may reduce the cache hit rate due to frequent evictions.
   // A larger size may affect performance.
-  static const size_t kMaximumNetworkQualityCacheSize = 10;
+  static const size_t kMaximumNetworkQualityCacheSize = 20;
 
   // Notifies |observer| of the current effective connection type if |observer|
   // is still registered as an observer.
@@ -94,7 +94,7 @@ class NET_EXPORT_PRIVATE NetworkQualityStore {
   CachedNetworkQualities cached_network_qualities_;
 
   // Observer list for changes in the cached network quality.
-  base::ObserverList<NetworkQualitiesCacheObserver>
+  base::ObserverList<NetworkQualitiesCacheObserver>::Unchecked
       network_qualities_cache_observer_list_;
 
   base::ThreadChecker thread_checker_;

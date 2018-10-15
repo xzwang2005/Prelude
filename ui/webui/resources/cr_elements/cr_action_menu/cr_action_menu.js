@@ -4,6 +4,22 @@
 
 /**
  * @typedef {{
+ *   top: (number|undefined),
+ *   left: (number|undefined),
+ *   width: (number|undefined),
+ *   height: (number|undefined),
+ *   anchorAlignmentX: (number|undefined),
+ *   anchorAlignmentY: (number|undefined),
+ *   minX: (number|undefined),
+ *   minY: (number|undefined),
+ *   maxX: (number|undefined),
+ *   maxY: (number|undefined),
+ * }}
+ */
+var ShowAtConfig;
+
+/**
+ * @typedef {{
  *   top: number,
  *   left: number,
  *   width: (number|undefined),
@@ -16,7 +32,7 @@
  *   maxY: (number|undefined),
  * }}
  */
-var ShowConfig;
+var ShowAtPositionConfig;
 
 /**
  * @enum {number}
@@ -81,7 +97,7 @@ function getStartPointWithAnchor(
 
 /**
  * @private
- * @return {!ShowConfig}
+ * @return {!ShowAtPositionConfig}
  */
 function getDefaultShowConfig() {
   var doc = document.scrollingElement;
@@ -101,7 +117,6 @@ function getDefaultShowConfig() {
 
 Polymer({
   is: 'cr-action-menu',
-  extends: 'dialog',
 
   /**
    * The element which the action menu will be anchored to. Also the element
@@ -124,8 +139,24 @@ Polymer({
   /** @private {?PolymerDomApi.ObserveHandle} */
   contentObserver_: null,
 
-  hostAttributes: {
-    tabindex: 0,
+  /** @private {?ResizeObserver} */
+  resizeObserver_: null,
+
+  /** @private {?ShowAtPositionConfig} */
+  lastConfig_: null,
+
+  properties: {
+    // Setting this flag will make the menu listen for content size changes and
+    // reposition to its anchor accordingly.
+    autoReposition: {
+      type: Boolean,
+      value: false,
+    },
+
+    open: {
+      type: Boolean,
+      value: false,
+    },
   },
 
   listeners: {
@@ -139,6 +170,14 @@ Polymer({
     this.removeListeners_();
   },
 
+  /**
+   * Exposing internal <dialog> elements for tests.
+   * @return {!HTMLDialogElement}
+   */
+  getDialog: function() {
+    return this.$.dialog;
+  },
+
   /** @private */
   removeListeners_: function() {
     window.removeEventListener('resize', this.boundClose_);
@@ -147,6 +186,29 @@ Polymer({
       Polymer.dom(this.$.contentNode).unobserveNodes(this.contentObserver_);
       this.contentObserver_ = null;
     }
+
+    if (this.resizeObserver_) {
+      this.resizeObserver_.disconnect();
+      this.resizeObserver_ = null;
+    }
+  },
+
+  /**
+   * @param {!Event} e
+   * @private
+   */
+  onNativeDialogClose_: function(e) {
+    // Ignore any 'close' events not fired directly by the <dialog> element.
+    if (e.target !== this.$.dialog)
+      return;
+
+    // TODO(dpapad): This is necessary to make the code work both for Polymer 1
+    // and Polymer 2. Remove once migration to Polymer 2 is completed.
+    e.stopPropagation();
+
+    // Catch and re-fire the 'close' event such that it bubbles across Shadow
+    // DOM v1.
+    this.fire('close');
   },
 
   /**
@@ -165,6 +227,8 @@ Polymer({
    * @private
    */
   onKeyDown_: function(e) {
+    e.stopPropagation();
+
     if (e.key == 'Tab' || e.key == 'Escape') {
       this.close();
       e.preventDefault();
@@ -178,10 +242,10 @@ Polymer({
     if (nextOption) {
       if (!this.hasMousemoveListener_) {
         this.hasMousemoveListener_ = true;
-        listenOnce(this, 'mousemove', function(e) {
+        listenOnce(this, 'mousemove', e => {
           this.onMouseover_(e);
           this.hasMousemoveListener_ = false;
-        }.bind(this));
+        });
       }
       nextOption.focus();
     }
@@ -207,7 +271,7 @@ Polymer({
     } while (this != target);
 
     // The user moved the mouse off the options. Reset focus to the dialog.
-    this.focus();
+    this.$.dialog.focus();
   },
 
   /**
@@ -225,7 +289,7 @@ Polymer({
     var options = this.querySelectorAll('.dropdown-item');
     var numOptions = options.length;
     var focusedIndex =
-        Array.prototype.indexOf.call(options, this.root.activeElement);
+        Array.prototype.indexOf.call(options, getDeepActiveElement());
 
     // Handle case where nothing is focused and up is pressed.
     if (focusedIndex === -1 && step === -1)
@@ -242,21 +306,24 @@ Polymer({
     return nextOption;
   },
 
-  /** @override */
   close: function() {
     // Removing 'resize' and 'popstate' listeners when dialog is closed.
     this.removeListeners_();
-    HTMLDialogElement.prototype.close.call(this);
+    this.$.dialog.close();
+    this.open = false;
     if (this.anchorElement_) {
       cr.ui.focusWithoutInk(assert(this.anchorElement_));
       this.anchorElement_ = null;
+    }
+    if (this.lastConfig_) {
+      this.lastConfig_ = null;
     }
   },
 
   /**
    * Shows the menu anchored to the given element.
    * @param {!Element} anchorElement
-   * @param {ShowConfig=} opt_config
+   * @param {ShowAtConfig=} opt_config
    */
   showAt: function(anchorElement, opt_config) {
     this.anchorElement_ = anchorElement;
@@ -265,7 +332,7 @@ Polymer({
     this.anchorElement_.scrollIntoViewIfNeeded();
 
     var rect = this.anchorElement_.getBoundingClientRect();
-    this.showAtPosition(/** @type {ShowConfig} */ (Object.assign(
+    this.showAtPosition(/** @type {ShowAtPositionConfig} */ (Object.assign(
         {
           top: rect.top,
           left: rect.left,
@@ -302,7 +369,7 @@ Polymer({
    * (BEFORE_END, AFTER_START), whereas centering the menu below the bottom
    * edge of the anchor would use (CENTER, AFTER_END).
    *
-   * @param {!ShowConfig} config
+   * @param {!ShowAtPositionConfig} config
    */
   showAtPosition: function(config) {
     // Save the scroll position of the viewport.
@@ -314,12 +381,13 @@ Polymer({
     // and so that the dialog is positioned at the top-start corner of the
     // document.
     this.resetStyle_();
-    this.showModal();
+    this.$.dialog.showModal();
+    this.open = true;
 
     config.top += scrollTop;
     config.left += scrollLeft;
 
-    this.positionDialog_(/** @type {ShowConfig} */ (Object.assign(
+    this.positionDialog_(/** @type {ShowAtPositionConfig} */ (Object.assign(
         {
           minX: scrollLeft,
           minY: scrollTop,
@@ -336,18 +404,19 @@ Polymer({
 
   /** @private */
   resetStyle_: function() {
-    this.style.left = '';
-    this.style.right = '';
-    this.style.top = '0';
+    this.$.dialog.style.left = '';
+    this.$.dialog.style.right = '';
+    this.$.dialog.style.top = '0';
   },
 
   /**
    * Position the dialog using the coordinates in config. Coordinates are
    * relative to the top-left of the viewport when scrolled to (0, 0).
-   * @param {!ShowConfig} config
+   * @param {!ShowAtPositionConfig} config
    * @private
    */
   positionDialog_: function(config) {
+    this.lastConfig_ = config;
     var c = Object.assign(getDefaultShowConfig(), config);
 
     var top = c.top;
@@ -360,20 +429,22 @@ Polymer({
     if (rtl)
       c.anchorAlignmentX *= -1;
 
+    const offsetWidth = this.$.dialog.offsetWidth;
     var menuLeft = getStartPointWithAnchor(
-        left, right, this.offsetWidth, c.anchorAlignmentX, c.minX, c.maxX);
+        left, right, offsetWidth, c.anchorAlignmentX, c.minX, c.maxX);
 
     if (rtl) {
       var menuRight =
-          document.scrollingElement.clientWidth - menuLeft - this.offsetWidth;
-      this.style.right = menuRight + 'px';
+          document.scrollingElement.clientWidth - menuLeft - offsetWidth;
+      this.$.dialog.style.right = menuRight + 'px';
     } else {
-      this.style.left = menuLeft + 'px';
+      this.$.dialog.style.left = menuLeft + 'px';
     }
 
     var menuTop = getStartPointWithAnchor(
-        top, bottom, this.offsetHeight, c.anchorAlignmentY, c.minY, c.maxY);
-    this.style.top = menuTop + 'px';
+        top, bottom, this.$.dialog.offsetHeight, c.anchorAlignmentY, c.minY,
+        c.maxY);
+    this.$.dialog.style.top = menuTop + 'px';
   },
 
   /**
@@ -381,7 +452,7 @@ Polymer({
    */
   addListeners_: function() {
     this.boundClose_ = this.boundClose_ || function() {
-      if (this.open)
+      if (this.$.dialog.open)
         this.close();
     }.bind(this);
     window.addEventListener('resize', this.boundClose_);
@@ -397,6 +468,17 @@ Polymer({
             }
           });
         });
+
+    if (this.autoReposition) {
+      this.resizeObserver_ = new ResizeObserver(() => {
+        if (this.lastConfig_) {
+          this.positionDialog_(this.lastConfig_);
+          this.fire('cr-action-menu-repositioned');  // For easier testing.
+        }
+      });
+
+      this.resizeObserver_.observe(this.$.dialog);
+    }
   },
 });
 })();

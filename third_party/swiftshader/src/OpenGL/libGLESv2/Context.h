@@ -53,6 +53,7 @@ class Texture2D;
 class Texture3D;
 class Texture2DArray;
 class TextureCubeMap;
+class Texture2DRect;
 class TextureExternal;
 class Framebuffer;
 class Renderbuffer;
@@ -102,19 +103,17 @@ enum
 	MAX_COMBINED_VERTEX_UNIFORM_COMPONENTS = MAX_VERTEX_UNIFORM_BLOCKS_COMPONENTS + MAX_VERTEX_UNIFORM_COMPONENTS,
 	MAX_TRANSFORM_FEEDBACK_SEPARATE_ATTRIBS = 4,
 	MAX_UNIFORM_BUFFER_BINDINGS = sw::MAX_UNIFORM_BUFFER_BINDINGS,
-	UNIFORM_BUFFER_OFFSET_ALIGNMENT = 1,
+	UNIFORM_BUFFER_OFFSET_ALIGNMENT = 4,
 	NUM_PROGRAM_BINARY_FORMATS = 0,
 };
 
 const GLenum compressedTextureFormats[] =
 {
 	GL_ETC1_RGB8_OES,
-#if (S3TC_SUPPORT)
 	GL_COMPRESSED_RGB_S3TC_DXT1_EXT,
 	GL_COMPRESSED_RGBA_S3TC_DXT1_EXT,
 	GL_COMPRESSED_RGBA_S3TC_DXT3_ANGLE,
 	GL_COMPRESSED_RGBA_S3TC_DXT5_ANGLE,
-#endif
 #if (GL_ES_VERSION_3_0)
 	GL_COMPRESSED_R11_EAC,
 	GL_COMPRESSED_SIGNED_R11_EAC,
@@ -194,7 +193,7 @@ struct Color
 class VertexAttribute
 {
 public:
-	VertexAttribute() : mType(GL_FLOAT), mSize(0), mNormalized(false), mStride(0), mDivisor(0), mPointer(nullptr), mArrayEnabled(false)
+	VertexAttribute() : mType(GL_FLOAT), mSize(4), mNormalized(false), mPureInteger(false), mStride(0), mDivisor(0), mPointer(nullptr), mArrayEnabled(false)
 	{
 		mCurrentValue[0].f = 0.0f;
 		mCurrentValue[1].f = 0.0f;
@@ -215,6 +214,7 @@ public:
 		case GL_UNSIGNED_INT:   return mSize * sizeof(GLuint);
 		case GL_FIXED:          return mSize * sizeof(GLfixed);
 		case GL_FLOAT:          return mSize * sizeof(GLfloat);
+		case GL_HALF_FLOAT_OES:
 		case GL_HALF_FLOAT:     return mSize * sizeof(GLhalf);
 		case GL_INT_2_10_10_10_REV:          return sizeof(GLint);
 		case GL_UNSIGNED_INT_2_10_10_10_REV: return sizeof(GLuint);
@@ -301,6 +301,7 @@ public:
 	GLenum mType;
 	GLint mSize;
 	bool mNormalized;
+	bool mPureInteger;
 	GLsizei mStride;   // 0 means natural stride
 	GLuint mDivisor;   // From glVertexAttribDivisor
 
@@ -422,19 +423,14 @@ struct State
 	gl::BindingPointer<Texture> samplerTexture[TEXTURE_TYPE_COUNT][MAX_COMBINED_TEXTURE_IMAGE_UNITS];
 	gl::BindingPointer<Query> activeQuery[QUERY_TYPE_COUNT];
 
-	egl::Image::UnpackInfo unpackInfo;
-	GLint packAlignment;
-	GLint packRowLength;
-	GLint packImageHeight;
-	GLint packSkipPixels;
-	GLint packSkipRows;
-	GLint packSkipImages;
+	gl::PixelStorageModes unpackParameters;
+	gl::PixelStorageModes packParameters;
 };
 
 class [[clang::lto_visibility_public]] Context : public egl::Context
 {
 public:
-	Context(egl::Display *display, const Context *shareContext, EGLint clientVersion, const egl::Config *config);
+	Context(egl::Display *display, const Context *shareContext, const egl::Config *config);
 
 	void makeCurrent(gl::Surface *surface) override;
 	EGLint getClientVersion() const override;
@@ -515,7 +511,6 @@ public:
 
 	void setFramebufferReadBuffer(GLenum buf);
 	void setFramebufferDrawBuffers(GLsizei n, const GLenum *bufs);
-	GLuint getReadFramebufferColorIndex() const;
 
 	GLuint getActiveQuery(GLenum target) const;
 
@@ -526,7 +521,7 @@ public:
 	void setVertexAttribDivisor(unsigned int attribNum, GLuint divisor);
 	const VertexAttribute &getVertexAttribState(unsigned int attribNum) const;
 	void setVertexAttribState(unsigned int attribNum, Buffer *boundBuffer, GLint size, GLenum type,
-	                          bool normalized, GLsizei stride, const void *pointer);
+	                          bool normalized, bool pureInteger, GLsizei stride, const void *pointer);
 	const void *getVertexAttribPointer(unsigned int attribNum) const;
 
 	const VertexAttributeArray &getVertexArrayAttributes();
@@ -539,14 +534,12 @@ public:
 	void setUnpackSkipPixels(GLint skipPixels);
 	void setUnpackSkipRows(GLint skipRows);
 	void setUnpackSkipImages(GLint skipImages);
-	const egl::Image::UnpackInfo& getUnpackInfo() const;
+	const gl::PixelStorageModes &getUnpackParameters() const;
 
 	void setPackAlignment(GLint alignment);
 	void setPackRowLength(GLint rowLength);
-	void setPackImageHeight(GLint imageHeight);
 	void setPackSkipPixels(GLint skipPixels);
 	void setPackSkipRows(GLint skipRows);
-	void setPackSkipImages(GLint skipImages);
 
 	// These create and destroy methods are merely pass-throughs to
 	// ResourceManager, which owns these object types
@@ -593,11 +586,7 @@ public:
 	void bindPixelPackBuffer(GLuint buffer);
 	void bindPixelUnpackBuffer(GLuint buffer);
 	void bindTransformFeedbackBuffer(GLuint buffer);
-	void bindTexture2D(GLuint texture);
-	void bindTextureCubeMap(GLuint texture);
-	void bindTextureExternal(GLuint texture);
-	void bindTexture3D(GLuint texture);
-	void bindTexture2DArray(GLuint texture);
+	void bindTexture(TextureType type, GLuint texture);
 	void bindReadFramebuffer(GLuint framebuffer);
 	void bindDrawFramebuffer(GLuint framebuffer);
 	void bindRenderbuffer(GLuint renderbuffer);
@@ -646,14 +635,16 @@ public:
 	Buffer *getPixelPackBuffer() const;
 	Buffer *getPixelUnpackBuffer() const;
 	Buffer *getGenericUniformBuffer() const;
-	GLsizei getRequiredBufferSize(GLsizei width, GLsizei height, GLsizei depth, GLint internalformat, GLenum type) const;
+	GLsizei getRequiredBufferSize(GLsizei width, GLsizei height, GLsizei depth, GLenum format, GLenum type) const;
 	GLenum getPixels(const GLvoid **data, GLenum type, GLsizei imageSize) const;
 	bool getBuffer(GLenum target, es2::Buffer **buffer) const;
 	Program *getCurrentProgram() const;
 	Texture2D *getTexture2D() const;
+	Texture2D *getTexture2D(GLenum target) const;
 	Texture3D *getTexture3D() const;
 	Texture2DArray *getTexture2DArray() const;
 	TextureCubeMap *getTextureCubeMap() const;
+	Texture2DRect *getTexture2DRect() const;
 	TextureExternal *getTextureExternal() const;
 	Texture *getSamplerTexture(unsigned int sampler, TextureType type) const;
 	Framebuffer *getReadFramebuffer() const;
@@ -708,6 +699,7 @@ public:
 	Device *getDevice();
 
 	const GLubyte *getExtensions(GLuint index, GLuint *numExt = nullptr) const;
+	sw::MutexLock *getResourceLock() { return mResourceManager->getLock(); }
 
 private:
 	~Context() override;
@@ -734,7 +726,6 @@ private:
 
 	Query *createQuery(GLuint handle, GLenum type);
 
-	const EGLint clientVersion;
 	const egl::Config *const config;
 
 	State mState;
@@ -743,6 +734,7 @@ private:
 	gl::BindingPointer<Texture3D> mTexture3DZero;
 	gl::BindingPointer<Texture2DArray> mTexture2DArrayZero;
 	gl::BindingPointer<TextureCubeMap> mTextureCubeMapZero;
+	gl::BindingPointer<Texture2DRect> mTexture2DRectZero;
 	gl::BindingPointer<TextureExternal> mTextureExternalZero;
 
 	gl::NameSpace<Framebuffer> mFramebufferNameSpace;
@@ -778,6 +770,26 @@ private:
 	Device *device;
 	ResourceManager *mResourceManager;
 };
+
+// ptr to a context, which also holds the context's resource manager's lock.
+class ContextPtr {
+public:
+	explicit ContextPtr(Context *context) : ptr(context)
+	{
+		if (ptr) ptr->getResourceLock()->lock();
+    }
+
+	~ContextPtr() {
+		if (ptr) ptr->getResourceLock()->unlock();
+	}
+
+	Context *operator ->() { return ptr; }
+	operator bool() const { return ptr != nullptr; }
+
+private:
+	Context *ptr;
+};
+
 }
 
 #endif   // INCLUDE_CONTEXT_H_

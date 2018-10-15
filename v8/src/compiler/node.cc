@@ -60,8 +60,8 @@ Node* Node::New(Zone* zone, NodeId id, const Operator* op, int input_count,
   // Verify that none of the inputs are {nullptr}.
   for (int i = 0; i < input_count; i++) {
     if (inputs[i] == nullptr) {
-      V8_Fatal(__FILE__, __LINE__, "Node::New() Error: #%d:%s[%d] is nullptr",
-               static_cast<int>(id), op->mnemonic(), i);
+      FATAL("Node::New() Error: #%d:%s[%d] is nullptr", static_cast<int>(id),
+            op->mnemonic(), i);
     }
   }
 #endif
@@ -296,22 +296,8 @@ bool Node::OwnedBy(Node const* owner1, Node const* owner2) const {
   return mask == 3;
 }
 
-bool Node::OwnedByAddressingOperand() const {
-  for (Use* use = first_use_; use; use = use->next) {
-    Node* from = use->from();
-    if (from->opcode() != IrOpcode::kLoad &&
-        // If {from} is store, make sure it does not use {this} as value
-        (from->opcode() != IrOpcode::kStore || from->InputAt(2) == this) &&
-        from->opcode() != IrOpcode::kInt32Add &&
-        from->opcode() != IrOpcode::kInt64Add) {
-      return false;
-    }
-  }
-  return true;
-}
-
 void Node::Print() const {
-  OFStream os(stdout);
+  StdoutStream os;
   os << *this << std::endl;
   for (Node* input : this->inputs()) {
     os << "  " << *input << std::endl;
@@ -337,7 +323,6 @@ std::ostream& operator<<(std::ostream& os, const Node& n) {
 
 Node::Node(NodeId id, const Operator* op, int inline_count, int inline_capacity)
     : op_(op),
-      type_(nullptr),
       mark_(0),
       bit_field_(IdField::encode(id) | InlineCountField::encode(inline_count) |
                  InlineCapacityField::encode(inline_capacity)),

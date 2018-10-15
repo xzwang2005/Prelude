@@ -39,13 +39,18 @@ def _GoodMatchKey(symbol):
     "._468", "._467"
     ".L__unnamed_1193", ".L__unnamed_712"
   """
-  name = _STRIP_NUMBER_SUFFIX_PATTERN.sub('', symbol.full_name)
-  clone_idx = name.find(' [clone ')
-  if clone_idx != -1:
-    name = name[:clone_idx]
-  if name.startswith('*'):
-    # "symbol gap 3 (bar)" -> "symbol gaps"
-    name = _NORMALIZE_STAR_SYMBOLS_PATTERN.sub('s', name)
+  if symbol.IsPak():
+    # full_name looks like "about_ui_resources.grdp: IDR_ABOUT_UI_CREDITS_HTML".
+    # name is just "IDR_ABOUT_UI_CREDITS_HTML".
+    name = symbol.name
+  else:
+    name = _STRIP_NUMBER_SUFFIX_PATTERN.sub('', symbol.full_name)
+    clone_idx = name.find(' [clone ')
+    if clone_idx != -1:
+      name = name[:clone_idx]
+    if name.startswith('*'):
+      # "symbol gap 3 (bar)" -> "symbol gaps"
+      name = _NORMALIZE_STAR_SYMBOLS_PATTERN.sub('s', name)
 
   return symbol.section, symbol.object_path, name
 
@@ -127,5 +132,4 @@ def Diff(before, after):
       section_sizes[k] = v
 
   symbol_diff = _DiffSymbolGroups(before.raw_symbols, after.raw_symbols)
-  return models.DeltaSizeInfo(section_sizes, symbol_diff, before.metadata,
-                              after.metadata)
+  return models.DeltaSizeInfo(before, after, section_sizes, symbol_diff)

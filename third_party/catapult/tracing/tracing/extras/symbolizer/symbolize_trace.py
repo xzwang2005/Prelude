@@ -332,6 +332,10 @@ class MemoryMap(NodeWrapper):
     def file_offset(self):
       return self._file_offset
 
+    @file_offset.setter
+    def file_offset(self, value):
+      self._file_offset = value
+
     def __cmp__(self, other):
       if isinstance(other, type(self)):
         other_start_address = other._start_address
@@ -354,17 +358,47 @@ class MemoryMap(NodeWrapper):
     regions = []
     for region_node in process_mmaps_node['vm_regions']:
       file_offset = long(region_node['fo'], 16) if 'fo' in region_node else 0
+      file_path = region_node['mf'].replace(" (deleted)", "")
       region = self.Region(long(region_node['sa'], 16),
                            long(region_node['sz'], 16),
-                           region_node['mf'],
+                           file_path,
                            file_offset)
-      regions.append(region)
-
       # Keep track of code-identifier when present.
       if 'ts' in region_node and 'sz' in region_node:
         region._code_id = "%08X%X" % (long(region_node['ts'], 16), region.size)
+      regions.append(region)
 
     regions.sort()
+
+    # Iterate through the regions in order. If two regions border each other,
+    # and have the same file_path, but the latter region has file_offset == 0,
+    # then set the file_offset of the latter region to be
+    # former_region.file_offset + former_region.size.
+    #
+    # Rationale: Semantically, we want file_offset to be the distance between
+    # the base address of the region and the base address of the module [which
+    # breakpad symbols use as a relative-zero]. Technically, this is called
+    # slide (macOS) and load bias (ELF). See
+    # https://chromium-review.googlesource.com/c/chromium/src/+/568413#message-01cf829007882eea8c9d3403871814c4f336d16d
+    # for more details.
+    # Chrome does not emit slide or load bias. This usually doesn't make a
+    # difference because the TEXT segment usually has a slide or load bias of 0.
+    # In the rare cases that it doesn't [observed on Chrome Linux official
+    # builds], this heuristic correctly computes it.
+    #
+    # This hack relies on the assumption that if two regions are being mapped
+    # from the same file, and are next to each other, then their file_offsets
+    # can be computed based on the previous region's size. It's possible to
+    # construct pathological scenarios where this will fail, but those have not
+    # been observed.
+    last_region = None
+    for region in regions:
+      if (last_region and
+          last_region.file_path == region.file_path and
+          last_region.start_address + last_region.size == region.start_address
+          and region.file_offset == 0):
+        region.file_offset = last_region.file_offset + last_region.size
+      last_region = region
 
     # Copy regions without duplicates and check for overlaps.
     self._regions = []
@@ -373,8 +407,8 @@ class MemoryMap(NodeWrapper):
       if previous_region is not None:
         if region == previous_region:
           continue
-        assert region.start_address >= previous_region.end_address, \
-            'Regions {} and {} overlap.'.format(previous_region, region)
+        if region.start_address < previous_region.end_address:
+          print 'Regions {} and {} overlap.'.format(previous_region, region)
       previous_region = region
       self._regions.append(region)
 
@@ -445,11 +479,9 @@ class StringMap(NodeWrapper):
     """Clears all string mappings."""
     if self._string_by_id:
       self._modified = True
-      # ID #0 means 'no entry' and must always be present. Carry it over.
-      null_string = self._string_by_id[0]
+
       self._string_by_id = {}
       self._id_by_string = {}
-      self._Insert(0, null_string)
       self._max_string_id = 0
 
   def AddString(self, string):
@@ -816,6 +848,7 @@ class Trace(NodeWrapper):
     self._is_mac = False
     self._is_linux = False
     self._is_cros = False
+    self._is_android = False
 
     # Misc per-process information needed only during parsing.
     class ProcessExt(object):
@@ -834,30 +867,12 @@ class Trace(NodeWrapper):
       self._version = product_version.split('/', 1)[-1]
       self._os = metadata['os-name']
 
-      command_line = metadata['command_line']
       self._is_win = re.search('windows', metadata['os-name'], re.IGNORECASE)
       self._is_mac = re.search('mac', metadata['os-name'], re.IGNORECASE)
       self._is_linux = re.search('linux', metadata['os-name'], re.IGNORECASE)
       self._is_cros = re.search('cros', metadata['os-name'], re.IGNORECASE)
-
-      if self._is_win:
-        self._is_chromium = (
-            not re.search('Chrome SxS\\\\Application\\\\chrome.exe',
-                          command_line, re.IGNORECASE) and
-            not re.search('Chrome\\\\Application\\\\chrome.exe', command_line,
-                          re.IGNORECASE))
-      if self._is_mac:
-        self._is_chromium = re.search('chromium', command_line, re.IGNORECASE)
-
-      if self._is_linux:
-        self._is_chromium = not re.search('/usr/bin/google-chrome',
-                                          command_line,
-                                          re.IGNORECASE)
-
-      if self._is_cros:
-        self._is_chromium = not re.search('/opt/google/chrome/chrome',
-                                          command_line,
-                                          re.IGNORECASE)
+      self._is_android = re.search(
+          'android', metadata['os-name'], re.IGNORECASE)
 
       self._is_64bit = (
           re.search('x86_64', metadata['os-arch'], re.IGNORECASE) and
@@ -964,6 +979,10 @@ class Trace(NodeWrapper):
   def is_chromium(self):
     return self._is_chromium
 
+  @is_chromium.setter
+  def is_chromium(self, new_value):
+    self._is_chromium = new_value
+
   @property
   def is_mac(self):
     return self._is_mac
@@ -972,14 +991,21 @@ class Trace(NodeWrapper):
   def is_win(self):
     return self._is_win
 
-
   @property
   def is_linux(self):
     return self._is_linux
 
   @property
+  def is_android(self):
+    return self._is_android
+
+  @property
   def is_64bit(self):
     return self._is_64bit
+
+  @property
+  def library_name(self):
+    return self._trace_node['metadata'].get('chrome-library-name')
 
   def ApplyModifications(self):
     """Propagates modifications back to the trace JSON."""
@@ -1309,31 +1335,22 @@ def SymbolizeFiles(symfiles, symbolizer):
     symbolizer.SymbolizeSymfile(symfile)
 
 
-# Matches Android library paths, supports both K (/data/app-lib/<>/lib.so)
-# as well as L+ (/data/app/<>/lib/<>/lib.so). Library name is available
-# via 'name' group.
-ANDROID_PATH_MATCHER = re.compile(
-    r'^/data/(?:'
-    r'app/[^/]+/lib/[^/]+/|'
-    r'app-lib/[^/]+/|'
-    r'data/[^/]+/incremental-install-files/lib/'
-    r')(?P<name>.*\.so)')
-
 # Subpath of output path where unstripped libraries are stored.
 ANDROID_UNSTRIPPED_SUBPATH = 'lib.unstripped'
 
 
-def HaveFilesFromAndroid(symfiles):
-  return any(ANDROID_PATH_MATCHER.match(f.path) for f in symfiles)
-
-
-def RemapAndroidFiles(symfiles, output_path):
+def RemapAndroidFiles(symfiles, output_path, chrome_soname):
   for symfile in symfiles:
-    match = ANDROID_PATH_MATCHER.match(symfile.path)
-    if match:
-      name = match.group('name')
+    filename = os.path.basename(symfile.path)
+    if os.path.splitext(filename)[1] == '.so':
       symfile.symbolizable_path = os.path.join(
-          output_path, ANDROID_UNSTRIPPED_SUBPATH, name)
+          output_path, ANDROID_UNSTRIPPED_SUBPATH, filename)
+    elif os.path.splitext(filename)[1] == '.apk' and chrome_soname:
+      # If there is any pc in .apk memory map, then just assume it is from
+      # chroms.so since we memory map libraries from apk directly. This does
+      # not work for component builds.
+      symfile.symbolizable_path = os.path.join(
+          output_path, ANDROID_UNSTRIPPED_SUBPATH, chrome_soname)
     else:
       # Clobber file path to trigger "not a file" problem in SymbolizeFiles().
       # Without this, files won't be symbolized with "file not found" problem,
@@ -1388,13 +1405,12 @@ def SymbolizeTrace(options, trace, symbolizer):
     RemapBreakpadModules(symfiles, symbolizer,
                          options.only_symbolize_chrome_symbols)
   else:
-    # Android trace files don't have any indication they are from Android.
-    # So we're checking for Android-specific paths.
-    if HaveFilesFromAndroid(symfiles):
+    if trace.is_android:
       if not options.output_directory:
         sys.exit('The trace file appears to be from Android. Please '
                  'specify output directory to properly symbolize it.')
-      RemapAndroidFiles(symfiles, os.path.abspath(options.output_directory))
+      RemapAndroidFiles(symfiles, os.path.abspath(options.output_directory),
+                        trace.library_name)
 
     if not trace.is_chromium:
       if symbolizer.is_mac:
@@ -1441,7 +1457,7 @@ def FetchAndExtractBreakpadSymbols(symbol_base_directory,
         # Some version, like mac, doesn't have the .zip extension.
         gcs_file = gcs_file + '.zip'
       elif not cloud_storage.Exists(cloud_storage_bucket, gcs_file):
-        print "Can't find symbols on GCS."
+        print "Can't find symbols on GCS " + gcs_file + "."
         return False
       print 'Downloading symbols files from GCS, please wait.'
       cloud_storage.Get(cloud_storage_bucket, gcs_file, zip_path)
@@ -1564,8 +1580,12 @@ def main(args):
       help='Trace file to symbolize (.json or .json.gz)')
 
   parser.add_argument(
-      '--no-backup', dest='backup', default='true', action='store_false',
+      '--no-backup', dest='backup', action='store_false',
       help="Don't create {} files".format(BACKUP_FILE_TAG))
+
+  parser.add_argument(
+      '--is-local-build', action='store_true',
+      help="Indicate that the memlog trace is from a local build of Chromium.")
 
   parser.add_argument(
       '--output-directory',
@@ -1617,6 +1637,8 @@ def main(args):
     trace = Trace(json.load(trace_file))
   print 'Trace loaded for %s/%s' % (trace.os, trace.version)
 
+  trace.is_chromium = options.is_local_build
+
   # Perform some sanity checks.
   if (trace.is_win and sys.platform != 'win32' and
       not options.use_breakpad_symbols):
@@ -1627,7 +1649,7 @@ def main(args):
   # Otherwise the trace is from Google Chrome. Assume that this is not a local
   # build of Google Chrome with symbols, and that we need to fetch symbols
   # from gcs.
-  if trace.is_chromium:
+  if trace.is_chromium or options.output_directory:
     if options.use_breakpad_symbols and options.breakpad_symbols_directory:
       # Local build with local symbols.
       FetchAndExtractBreakpadSymbols(

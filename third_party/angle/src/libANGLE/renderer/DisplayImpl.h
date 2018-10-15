@@ -68,12 +68,14 @@ class DisplayImpl : public EGLImplFactory
 
     virtual std::string getVendorString() const = 0;
 
-    virtual egl::Error getDevice(DeviceImpl **device) = 0;
+    virtual DeviceImpl *createDevice() = 0;
 
-    virtual egl::Error waitClient(const gl::Context *context) const = 0;
-    virtual egl::Error waitNative(const gl::Context *context, EGLint engine) const = 0;
+    virtual egl::Error waitClient(const gl::Context *context)                = 0;
+    virtual egl::Error waitNative(const gl::Context *context, EGLint engine) = 0;
     virtual gl::Version getMaxSupportedESVersion() const           = 0;
     const egl::Caps &getCaps() const;
+
+    virtual void setBlobCacheFuncs(EGLSetBlobFuncANDROID set, EGLGetBlobFuncANDROID get) {}
 
     const egl::DisplayExtensions &getExtensions() const;
 

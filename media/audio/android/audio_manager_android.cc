@@ -4,14 +4,14 @@
 
 #include "media/audio/android/audio_manager_android.h"
 
+#include <memory>
+
 #include "base/android/build_info.h"
 #include "base/android/jni_array.h"
 #include "base/android/jni_string.h"
 #include "base/android/scoped_java_ref.h"
 #include "base/bind.h"
 #include "base/logging.h"
-#include "base/memory/ptr_util.h"
-#include "base/message_loop/message_loop.h"
 #include "base/strings/string_number_conversions.h"
 #include "jni/AudioManagerAndroid_jni.h"
 #include "media/audio/android/audio_record_input.h"
@@ -51,7 +51,7 @@ const int kDefaultOutputBufferSize = 2048;
 std::unique_ptr<AudioManager> CreateAudioManager(
     std::unique_ptr<AudioThread> audio_thread,
     AudioLogFactory* audio_log_factory) {
-  return base::MakeUnique<AudioManagerAndroid>(std::move(audio_thread),
+  return std::make_unique<AudioManagerAndroid>(std::move(audio_thread),
                                                audio_log_factory);
 }
 
@@ -156,7 +156,7 @@ AudioParameters AudioManagerAndroid::GetInputStreamParameters(
     buffer_size = user_buffer_size;
 
   AudioParameters params(AudioParameters::AUDIO_PCM_LOW_LATENCY, channel_layout,
-                         GetNativeOutputSampleRate(), 16, buffer_size);
+                         GetNativeOutputSampleRate(), buffer_size);
   params.set_effects(effects);
   return params;
 }
@@ -326,17 +326,16 @@ AudioParameters AudioManagerAndroid::GetPreferredOutputStreamParameters(
   ChannelLayout channel_layout = CHANNEL_LAYOUT_STEREO;
   int sample_rate = GetNativeOutputSampleRate();
   int buffer_size = GetOptimalOutputFrameSize(sample_rate, 2);
-  int bits_per_sample = 16;
   if (input_params.IsValid()) {
     // Use the client's input parameters if they are valid.
     sample_rate = input_params.sample_rate();
-    bits_per_sample = input_params.bits_per_sample();
 
     // Pre-Lollipop devices don't support > stereo OpenSLES output and the
     // AudioManager APIs for GetOptimalOutputFrameSize() don't support channel
     // layouts greater than stereo unless low latency audio is supported.
     if (input_params.channels() <= 2 ||
-        (base::android::BuildInfo::GetInstance()->sdk_int() >= 21 &&
+        (base::android::BuildInfo::GetInstance()->sdk_int() >=
+             base::android::SDK_VERSION_LOLLIPOP &&
          IsAudioLowLatencySupported())) {
       channel_layout = input_params.channel_layout();
     }
@@ -358,7 +357,7 @@ AudioParameters AudioManagerAndroid::GetPreferredOutputStreamParameters(
     buffer_size = user_buffer_size;
 
   return AudioParameters(AudioParameters::AUDIO_PCM_LOW_LATENCY, channel_layout,
-                         sample_rate, bits_per_sample, buffer_size);
+                         sample_rate, buffer_size);
 }
 
 bool AudioManagerAndroid::HasNoAudioInputStreams() {

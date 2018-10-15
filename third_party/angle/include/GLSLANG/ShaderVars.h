@@ -126,7 +126,12 @@ struct ShaderVariable
     // and flattenedOffsetInParentArrays of a[2][1] would be 2*4 + 1 = 9.
     unsigned int flattenedOffsetInParentArrays;
 
+    // Static use means that the variable is accessed somewhere in the shader source.
     bool staticUse;
+    // A variable is active unless the compiler determined that it is not accessed by the shader.
+    // All active variables are statically used, but not all statically used variables are
+    // necessarily active. GLES 3.0.5 section 2.12.6. GLES 3.1 section 7.3.1.
+    bool active;
     std::vector<ShaderVariable> fields;
     std::string structName;
 
@@ -170,6 +175,8 @@ struct Uniform : public VariableWithLocation
 
     int binding;
     int offset;
+    bool readonly;
+    bool writeonly;
 
     // Decide whether two uniforms are the same at shader link time,
     // assuming one from vertex shader and the other from fragment shader.
@@ -224,7 +231,7 @@ struct Varying : public VariableWithLocation
 {
     Varying();
     ~Varying();
-    Varying(const Varying &otherg);
+    Varying(const Varying &other);
     Varying &operator=(const Varying &other);
     bool operator==(const Varying &other) const;
     bool operator!=(const Varying &other) const
@@ -277,6 +284,7 @@ struct InterfaceBlock
 
     int binding;
     bool staticUse;
+    bool active;
     BlockType blockType;
     std::vector<InterfaceBlockField> fields;
 };

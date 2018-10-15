@@ -123,6 +123,8 @@ TEST_P(InvalidFileTest, ReturnCode) { RunTest(); }
 #if CONFIG_VP8_DECODER
 const DecodeParam kVP8InvalidFileTests[] = {
   { 1, "invalid-bug-1443.ivf" },
+  { 1, "invalid-token-partition.ivf" },
+  { 1, "invalid-vp80-00-comprehensive-s17661_r01-05_b6-.ivf" },
 };
 
 VP8_INSTANTIATE_TEST_CASE(InvalidFileTest,
@@ -202,6 +204,7 @@ const DecodeParam kMultiThreadedVP9InvalidFileTests[] = {
   { 2, "invalid-vp90-2-09-aq2.webm.ivf.s3984_r01-05_b6-.v2.ivf" },
   { 4, "invalid-vp90-2-09-subpixel-00.ivf.s19552_r01-05_b6-.v2.ivf" },
   { 2, "invalid-crbug-629481.webm" },
+  { 3, "invalid-crbug-1558.ivf" },
 };
 
 INSTANTIATE_TEST_CASE_P(

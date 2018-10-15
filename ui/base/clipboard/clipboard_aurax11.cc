@@ -42,13 +42,11 @@ namespace {
 const char kClipboard[] = "CLIPBOARD";
 const char kClipboardManager[] = "CLIPBOARD_MANAGER";
 const char kMimeTypeFilename[] = "chromium/filename";
-const char kSaveTargets[] = "SAVE_TARGETS";
-const char kTargets[] = "TARGETS";
 
 ///////////////////////////////////////////////////////////////////////////////
 
 // Uses the XFixes API to provide sequence numbers for GetSequenceNumber().
-class SelectionChangeObserver : public ui::PlatformEventObserver {
+class SelectionChangeObserver : public PlatformEventObserver {
  public:
   static SelectionChangeObserver* GetInstance();
 
@@ -63,9 +61,9 @@ class SelectionChangeObserver : public ui::PlatformEventObserver {
   SelectionChangeObserver();
   ~SelectionChangeObserver() override;
 
-  // ui::PlatformEventObserver:
-  void WillProcessEvent(const ui::PlatformEvent& event) override;
-  void DidProcessEvent(const ui::PlatformEvent& event) override {}
+  // PlatformEventObserver:
+  void WillProcessEvent(const PlatformEvent& event) override;
+  void DidProcessEvent(const PlatformEvent& event) override {}
 
   int event_base_;
   Atom clipboard_atom_;
@@ -97,7 +95,7 @@ SelectionChangeObserver::SelectionChangeObserver()
                                XFixesSelectionWindowDestroyNotifyMask |
                                XFixesSelectionClientCloseNotifyMask);
 
-    ui::PlatformEventSource::GetInstance()->AddPlatformEventObserver(this);
+    PlatformEventSource::GetInstance()->AddPlatformEventObserver(this);
   }
 }
 
@@ -109,7 +107,7 @@ SelectionChangeObserver* SelectionChangeObserver::GetInstance() {
   return base::Singleton<SelectionChangeObserver>::get();
 }
 
-void SelectionChangeObserver::WillProcessEvent(const ui::PlatformEvent& event) {
+void SelectionChangeObserver::WillProcessEvent(const PlatformEvent& event) {
   if (event->type == event_base_ + XFixesSelectionNotify) {
     XFixesSelectionNotifyEvent* ev =
         reinterpret_cast<XFixesSelectionNotifyEvent*>(event);

@@ -26,7 +26,7 @@ class GerritPatch(collections.namedtuple(
   """
 
   def __str__(self):
-    return self.id_string
+    return self.revision[:7]
 
   @property
   def id_string(self):
@@ -47,7 +47,22 @@ class GerritPatch(collections.namedtuple(
     }
 
   def AsDict(self):
-    return self._asdict()
+    patch_info = gerrit_service.GetChange(
+        self.server, self.change, fields=('ALL_REVISIONS', 'DETAILED_ACCOUNTS'))
+    # TODO: Cache this stuff in memcache.
+    revision_info = patch_info['revisions'][self.revision]
+    return {
+        'server': self.server,
+        'change': self.change,
+        'revision': self.revision,
+
+        'url': '%s/c/%s/+/%d/%d' % (
+            self.server, patch_info['project'],
+            patch_info['_number'], revision_info['_number']),
+        'subject': patch_info['subject'],
+        'time': revision_info['created'],
+        'author': revision_info['uploader']['email'],
+    }
 
   @classmethod
   def FromDict(cls, data):
@@ -66,13 +81,25 @@ class GerritPatch(collections.namedtuple(
 
     Raises:
       KeyError: The patch doesn't have the given revision.
+      ValueError: The URL has an unrecognized format.
     """
     if isinstance(data, basestring):
       url_parts = urlparse.urlparse(data)
       server = urlparse.urlunsplit(
           (url_parts.scheme, url_parts.netloc, '', '', ''))
-      change = url_parts.path.rsplit('/', 1)[-1]
-      revision = None
+
+      path_parts = iter(data.split('/'))
+      for path_part in path_parts:
+        if path_part == '+':
+          break
+      else:
+        raise ValueError('Unknown patch URL format: ' + data)
+
+      change = path_parts.next()
+      try:
+        revision = int(path_parts.next())
+      except StopIteration:
+        revision = None
     else:
       server = data['server']
       change = data['change']

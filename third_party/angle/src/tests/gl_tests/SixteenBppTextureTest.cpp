@@ -149,6 +149,9 @@ class SixteenBppTextureTestES3 : public SixteenBppTextureTest
 // Samples from the texture, renders to it, generates mipmaps etc.
 TEST_P(SixteenBppTextureTest, RGB565Validation)
 {
+    // TODO(lucferron): Diagnose and fix http://anglebug.com/2656
+    ANGLE_SKIP_TEST_IF(IsVulkan() && (IsAndroid() || (IsWindows() && IsIntel())));
+
     GLuint test;
     memcpy(&test, &GLColor::black, 4);
 
@@ -176,6 +179,10 @@ TEST_P(SixteenBppTextureTest, RGB565Validation)
 // Samples from the texture, renders to it, generates mipmaps etc.
 TEST_P(SixteenBppTextureTest, RGBA5551Validation)
 {
+    // TODO(lucferron): Diagnose and fix
+    // http://anglebug.com/2649
+    ANGLE_SKIP_TEST_IF(IsVulkan() && (IsAndroid() || (IsWindows() && IsIntel())));
+
     GLushort pixels[4] =
     {
         0xF801, // Red
@@ -202,6 +209,10 @@ TEST_P(SixteenBppTextureTest, RGBA5551Validation)
 // Based on WebGL test conformance/textures/texture-attachment-formats.html
 TEST_P(SixteenBppTextureTest, RGBA5551ClearAlpha)
 {
+    // TODO(lucferron): Diagnose and fix
+    // http://anglebug.com/2649
+    ANGLE_SKIP_TEST_IF(IsVulkan() && (IsAndroid() || (IsWindows() && IsIntel())));
+
     GLTexture tex;
     GLFramebuffer fbo;
 
@@ -358,11 +369,7 @@ TEST_P(SixteenBppTextureTestES3, RGB5A1UploadRGB10A2)
 TEST_P(SixteenBppTextureTestES3, RGBA4FramebufferReadback)
 {
     // TODO(jmadill): Fix bug with GLES
-    if (IsOpenGLES())
-    {
-        std::cout << "Test skipped on GLES." << std::endl;
-        return;
-    }
+    ANGLE_SKIP_TEST_IF(IsOpenGLES());
 
     Vector4 rawColor(0.5f, 0.7f, 1.0f, 0.0f);
     GLColor expectedColor(rawColor);
@@ -416,11 +423,7 @@ TEST_P(SixteenBppTextureTestES3, RGBA4FramebufferReadback)
 TEST_P(SixteenBppTextureTestES3, RGB565FramebufferReadback)
 {
     // TODO(jmadill): Fix bug with GLES
-    if (IsOpenGLES())
-    {
-        std::cout << "Test skipped on GLES." << std::endl;
-        return;
-    }
+    ANGLE_SKIP_TEST_IF(IsOpenGLES());
 
     GLFramebuffer fbo;
     glBindFramebuffer(GL_FRAMEBUFFER, fbo.get());
@@ -502,7 +505,8 @@ ANGLE_INSTANTIATE_TEST(SixteenBppTextureTest,
                        ES2_D3D11(),
                        ES2_D3D11_FL9_3(),
                        ES2_OPENGL(),
-                       ES2_OPENGLES());
+                       ES2_OPENGLES(),
+                       ES2_VULKAN());
 
 ANGLE_INSTANTIATE_TEST(SixteenBppTextureTestES3, ES3_D3D11(), ES3_OPENGL(), ES3_OPENGLES());
 

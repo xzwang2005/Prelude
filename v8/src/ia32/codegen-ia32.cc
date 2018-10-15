@@ -5,7 +5,7 @@
 #if V8_TARGET_ARCH_IA32
 
 #include "src/codegen.h"
-#include "src/factory-inl.h"
+#include "src/heap/factory-inl.h"
 #include "src/heap/heap.h"
 #include "src/macro-assembler.h"
 
@@ -14,14 +14,14 @@ namespace internal {
 
 #define __ masm.
 
-UnaryMathFunctionWithIsolate CreateSqrtFunction(Isolate* isolate) {
+UnaryMathFunction CreateSqrtFunction() {
+  v8::PageAllocator* page_allocator = GetPlatformPageAllocator();
   size_t allocated = 0;
-  byte* buffer =
-      AllocateSystemPage(isolate->heap()->GetRandomMmapAddr(), &allocated);
+  byte* buffer = AllocatePage(page_allocator,
+                              page_allocator->GetRandomMmapAddr(), &allocated);
   if (buffer == nullptr) return nullptr;
 
-  MacroAssembler masm(isolate, buffer, static_cast<int>(allocated),
-                      CodeObjectRequired::kNo);
+  MacroAssembler masm(AssemblerOptions{}, buffer, static_cast<int>(allocated));
   // esp[1 * kPointerSize]: raw double input
   // esp[0 * kPointerSize]: return address
   // Move double input into registers.
@@ -35,13 +35,13 @@ UnaryMathFunctionWithIsolate CreateSqrtFunction(Isolate* isolate) {
   }
 
   CodeDesc desc;
-  masm.GetCode(isolate, &desc);
-  DCHECK(!RelocInfo::RequiresRelocation(isolate, desc));
+  masm.GetCode(nullptr, &desc);
+  DCHECK(!RelocInfo::RequiresRelocationAfterCodegen(desc));
 
-  Assembler::FlushICache(isolate, buffer, allocated);
-  CHECK(base::OS::SetPermissions(buffer, allocated,
-                                 base::OS::MemoryPermission::kReadExecute));
-  return FUNCTION_CAST<UnaryMathFunctionWithIsolate>(buffer);
+  Assembler::FlushICache(buffer, allocated);
+  CHECK(SetPermissions(page_allocator, buffer, allocated,
+                       PageAllocator::kReadExecute));
+  return FUNCTION_CAST<UnaryMathFunction>(buffer);
 }
 
 
@@ -130,15 +130,14 @@ class LabelConverter {
   byte* buffer_;
 };
 
-
-MemMoveFunction CreateMemMoveFunction(Isolate* isolate) {
+MemMoveFunction CreateMemMoveFunction() {
+  v8::PageAllocator* page_allocator = GetPlatformPageAllocator();
   size_t allocated = 0;
-  byte* buffer =
-      AllocateSystemPage(isolate->heap()->GetRandomMmapAddr(), &allocated);
+  byte* buffer = AllocatePage(page_allocator,
+                              page_allocator->GetRandomMmapAddr(), &allocated);
   if (buffer == nullptr) return nullptr;
 
-  MacroAssembler masm(isolate, buffer, static_cast<int>(allocated),
-                      CodeObjectRequired::kNo);
+  MacroAssembler masm(AssemblerOptions{}, buffer, static_cast<int>(allocated));
   LabelConverter conv(buffer);
 
   // Generated code is put into a fixed, unmovable buffer, and not into
@@ -449,11 +448,11 @@ MemMoveFunction CreateMemMoveFunction(Isolate* isolate) {
   MemMoveEmitPopAndReturn(&masm);
 
   CodeDesc desc;
-  masm.GetCode(isolate, &desc);
-  DCHECK(!RelocInfo::RequiresRelocation(isolate, desc));
-  Assembler::FlushICache(isolate, buffer, allocated);
-  CHECK(base::OS::SetPermissions(buffer, allocated,
-                                 base::OS::MemoryPermission::kReadExecute));
+  masm.GetCode(nullptr, &desc);
+  DCHECK(!RelocInfo::RequiresRelocationAfterCodegen(desc));
+  Assembler::FlushICache(buffer, allocated);
+  CHECK(SetPermissions(page_allocator, buffer, allocated,
+                       PageAllocator::kReadExecute));
   // TODO(jkummerow): It would be nice to register this code creation event
   // with the PROFILE / GDBJIT system.
   return FUNCTION_CAST<MemMoveFunction>(buffer);

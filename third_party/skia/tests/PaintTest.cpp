@@ -7,21 +7,23 @@
 
 #include "SkAutoMalloc.h"
 #include "SkBlurMask.h"
-#include "SkBlurMaskFilter.h"
 #include "SkLayerDrawLooper.h"
-#include "SkPaint.h"
+#include "SkMaskFilter.h"
+#include "SkPaintPriv.h"
 #include "SkPath.h"
 #include "SkRandom.h"
 #include "SkReadBuffer.h"
+#include "SkTo.h"
 #include "SkTypeface.h"
-#include "SkUtils.h"
+#include "SkUTF.h"
 #include "SkWriteBuffer.h"
 #include "Test.h"
+#undef ASSERT
 
 static size_t uni_to_utf8(const SkUnichar src[], void* dst, int count) {
     char* u8 = (char*)dst;
     for (int i = 0; i < count; ++i) {
-        int n = SkToInt(SkUTF8_FromUnichar(src[i], u8));
+        int n = SkToInt(SkUTF::ToUTF8(src[i], u8));
         u8 += n;
     }
     return u8 - (char*)dst;
@@ -30,7 +32,7 @@ static size_t uni_to_utf8(const SkUnichar src[], void* dst, int count) {
 static size_t uni_to_utf16(const SkUnichar src[], void* dst, int count) {
     uint16_t* u16 = (uint16_t*)dst;
     for (int i = 0; i < count; ++i) {
-        int n = SkToInt(SkUTF16_FromUnichar(src[i], u16));
+        int n = SkToInt(SkUTF::ToUTF16(src[i], u16));
         u16 += n;
     }
     return (char*)u16 - (char*)dst;
@@ -147,7 +149,7 @@ DEF_TEST(Paint_copy, reporter) {
     // set a few pointers
     SkLayerDrawLooper::Builder looperBuilder;
     paint.setLooper(looperBuilder.detach());
-    paint.setMaskFilter(SkBlurMaskFilter::Make(kNormal_SkBlurStyle,
+    paint.setMaskFilter(SkMaskFilter::MakeBlur(kNormal_SkBlurStyle,
                                                SkBlurMask::ConvertRadiusToSigma(1)));
 
     // copy the paint using the copy constructor and check they are the same
@@ -256,14 +258,14 @@ DEF_TEST(Paint_flattening, reporter) {
     FOR_SETUP(p, styles, setStyle)
 
     SkBinaryWriteBuffer writer;
-    paint.flatten(writer);
+    SkPaintPriv::Flatten(paint, writer);
 
     SkAutoMalloc buf(writer.bytesWritten());
     writer.writeToMemory(buf.get());
     SkReadBuffer reader(buf.get(), writer.bytesWritten());
 
     SkPaint paint2;
-    paint2.unflatten(reader);
+    SkPaintPriv::Unflatten(&paint2, reader);
     REPORTER_ASSERT(reporter, paint2 == paint);
 
     }}}}}}}
@@ -296,14 +298,14 @@ DEF_TEST(Paint_MoreFlattening, r) {
     paint.setLooper(nullptr);  // Default value, ignored.
 
     SkBinaryWriteBuffer writer;
-    paint.flatten(writer);
+    SkPaintPriv::Flatten(paint, writer);
 
     SkAutoMalloc buf(writer.bytesWritten());
     writer.writeToMemory(buf.get());
     SkReadBuffer reader(buf.get(), writer.bytesWritten());
 
     SkPaint other;
-    other.unflatten(reader);
+    SkPaintPriv::Unflatten(&other, reader);
     ASSERT(reader.offset() == writer.bytesWritten());
 
     // No matter the encoding, these must always hold.

@@ -9,7 +9,6 @@ import numbers
 import random
 import uuid
 
-from tracing.value.diagnostics import all_diagnostics
 from tracing.value.diagnostics import diagnostic
 from tracing.value.diagnostics import diagnostic_ref
 from tracing.value.diagnostics import reserved_infos
@@ -234,6 +233,8 @@ class RunningStatistics(object):
   def sum(self):
     return self._sum
 
+  # This returns the variance of the samples after Bessel's correction has
+  # been applied.
   @property
   def variance(self):
     if self.count == 0:
@@ -242,6 +243,8 @@ class RunningStatistics(object):
       return 0
     return self._variance / (self.count - 1)
 
+  # This returns the standard deviation of the samples after Bessel's
+  # correction has been applied.
   @property
   def stddev(self):
     if self.count == 0:
@@ -343,122 +346,6 @@ class RunningStatistics(object):
      result._sum, result._variance] = [int(dct[0])] + [
          AsFloatOrNone(x) for x in dct[1:]]
     return result
-
-class Breakdown(diagnostic.Diagnostic):
-  __slots__ = '_values', '_color_scheme'
-
-  def __init__(self):
-    super(Breakdown, self).__init__()
-    self._values = {}
-    self._color_scheme = None
-
-  @property
-  def color_scheme(self):
-    return self._color_scheme
-
-  @staticmethod
-  def FromDict(d):
-    result = Breakdown()
-    result._color_scheme = d.get('colorScheme')
-    for name, value in d['values'].iteritems():
-      if value in ['NaN', 'Infinity', '-Infinity']:
-        value = float(value)
-      result.Set(name, value)
-    return result
-
-  def _AsDictInto(self, d):
-    d['values'] = {}
-    for name, value in self:
-      # JSON serializes NaN and the infinities as 'null', preventing
-      # distinguishing between them. Override that behavior by serializing them
-      # as their Javascript string names, not their python string names since
-      # the reference implementation is in Javascript.
-      if math.isnan(value):
-        value = 'NaN'
-      elif math.isinf(value):
-        if value > 0:
-          value = 'Infinity'
-        else:
-          value = '-Infinity'
-      d['values'][name] = value
-    if self._color_scheme:
-      d['colorScheme'] = self._color_scheme
-
-  def Set(self, name, value):
-    assert isinstance(name, basestring), (
-        'Expected basestring, found %s: "%r"' % (type(name).__name__, name))
-    assert isinstance(value, numbers.Number), (
-        'Expected number, found %s: "%r"', (type(value).__name__, value))
-    self._values[name] = value
-
-  def Get(self, name):
-    return self._values.get(name, 0)
-
-  def __iter__(self):
-    for name, value in self._values.iteritems():
-      yield name, value
-
-
-# A GenericSet diagnostic can contain any Plain-Ol'-Data objects that can be
-# serialized using json.dumps(): None, boolean, number, string, list, dict.
-# Dicts, lists, and booleans are deduplicated by their JSON representation.
-# Dicts and lists are not hashable.
-# (1 == True) and (0 == False) in Python, but not in JSON.
-class GenericSet(diagnostic.Diagnostic):
-  __slots__ = '_values', '_comparable_set'
-
-  def __init__(self, values):
-    super(GenericSet, self).__init__()
-
-    # Use a list because Python sets cannot store dicts or lists because they
-    # are not hashable.
-    self._values = list(values)
-
-    # Cache a set to facilitate comparing and merging GenericSets.
-    # Dicts, lists, and booleans are serialized; other types are not.
-    self._comparable_set = None
-
-  def __iter__(self):
-    for value in self._values:
-      yield value
-
-  def __len__(self):
-    return len(self._values)
-
-  def __eq__(self, other):
-    return self._GetComparableSet() == other._GetComparableSet()
-
-  def _GetComparableSet(self):
-    if self._comparable_set is None:
-      self._comparable_set = set()
-      for value in self:
-        if isinstance(value, (dict, list, bool)):
-          self._comparable_set.add(json.dumps(value, sort_keys=True))
-        else:
-          self._comparable_set.add(value)
-    return self._comparable_set
-
-  def CanAddDiagnostic(self, other_diagnostic):
-    return isinstance(other_diagnostic, GenericSet)
-
-  def AddDiagnostic(self, other_diagnostic):
-    comparable_set = self._GetComparableSet()
-    for value in other_diagnostic:
-      if isinstance(value, (dict, list, bool)):
-        json_value = json.dumps(value, sort_keys=True)
-        if json_value not in comparable_set:
-          self._values.append(value)
-          self._comparable_set.add(json_value)
-      elif value not in comparable_set:
-        self._values.append(value)
-        self._comparable_set.add(value)
-
-  def _AsDictInto(self, dct):
-    dct['values'] = list(self)
-
-  @staticmethod
-  def FromDict(dct):
-    return GenericSet(dct['values'])
 
 
 class DateRange(diagnostic.Diagnostic):
@@ -893,6 +780,7 @@ class HistogramBin(object):
 # TODO(#3814) Presubmit to compare with unit.html.
 UNIT_NAMES = [
     'ms',
+    'msBestFitFormat',
     'tsMs',
     'n%',
     'sizeInBytes',
@@ -1501,9 +1389,42 @@ class HistogramBinBoundaries(object):
 HistogramBinBoundaries.SINGULAR = HistogramBinBoundaries(JS_MAX_VALUE)
 
 
+# The JS version computes these values using tr.b.convertUnit, which is
+# not implemented in Python, so we write them out here.
+def _CreateMsAutoFormatBins():
+  bins = [
+      2000,
+      5000,
+      10000,
+      30000,
+      60000,
+      120000,
+      300000,
+      600000,
+      1800000,
+      3600000,
+      7200000,
+      21600000,
+      43200000,
+      86400000,
+      604800000,
+      2629743840,
+      31556926080
+  ]
+
+  boundaries = HistogramBinBoundaries(0).AddBinBoundary(1).AddExponentialBins(
+      1e3, 3)
+
+  for b in bins:
+    boundaries.AddBinBoundary(b)
+
+  return boundaries
+
+
 DEFAULT_BOUNDARIES_FOR_UNIT = {
     'ms': HistogramBinBoundaries.CreateExponential(1e-3, 1e6, 100),
     'tsMs': HistogramBinBoundaries.CreateLinear(0, 1e10, 1000),
+    'msBestFitFormat': _CreateMsAutoFormatBins(),
     'n%': HistogramBinBoundaries.CreateLinear(0, 1.0, 20),
     'sizeInBytes': HistogramBinBoundaries.CreateExponential(1, 1e12, 100),
     'J': HistogramBinBoundaries.CreateExponential(1e-3, 1e3, 50),
@@ -1512,16 +1433,3 @@ DEFAULT_BOUNDARIES_FOR_UNIT = {
     'count': HistogramBinBoundaries.CreateExponential(1, 1e3, 20),
     'sigma': HistogramBinBoundaries.CreateLinear(-5, 5, 50),
 }
-
-
-all_diagnostics.DIAGNOSTICS_BY_NAME.update({
-    'Breakdown': Breakdown,
-    'GenericSet': GenericSet,
-    'UnmergeableDiagnosticSet': UnmergeableDiagnosticSet,
-    'RelatedEventSet': RelatedEventSet,
-    'DateRange': DateRange,
-    'TagMap': TagMap,
-    'RelatedHistogramBreakdown': RelatedHistogramBreakdown,
-    'RelatedHistogramMap': RelatedHistogramMap,
-    'RelatedNameMap': RelatedNameMap,
-})

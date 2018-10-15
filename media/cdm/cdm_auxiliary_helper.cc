@@ -4,6 +4,7 @@
 
 #include "media/cdm/cdm_auxiliary_helper.h"
 
+#include "media/base/cdm_context.h"
 #include "media/cdm/cdm_helpers.h"
 
 namespace media {
@@ -15,6 +16,14 @@ void CdmAuxiliaryHelper::SetFileReadCB(FileReadCB file_read_cb) {}
 
 cdm::FileIO* CdmAuxiliaryHelper::CreateCdmFileIO(cdm::FileIOClient* client) {
   return nullptr;
+}
+
+cdm::CdmProxy* CdmAuxiliaryHelper::CreateCdmProxy(cdm::CdmProxyClient* client) {
+  return nullptr;
+}
+
+int CdmAuxiliaryHelper::GetCdmProxyCdmId() {
+  return CdmContext::kInvalidCdmId;
 }
 
 cdm::Buffer* CdmAuxiliaryHelper::CreateCdmBuffer(size_t capacity) {

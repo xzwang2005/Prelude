@@ -57,7 +57,7 @@ bool ParamTraits<gpu::SyncToken>::Read(const base::Pickle* m,
     return false;
   }
 
-  p->Set(namespace_id, 0, command_buffer_id, release_count);
+  p->Set(namespace_id, command_buffer_id, release_count);
   if (p->HasData()) {
     if (!verified_flush)
       return false;
@@ -106,7 +106,7 @@ void ParamTraits<gpu::Mailbox>::Write(base::Pickle* m, const param_type& p) {
 bool ParamTraits<gpu::Mailbox>::Read(const base::Pickle* m,
                                      base::PickleIterator* iter,
                                      param_type* p) {
-  const char* bytes = NULL;
+  const char* bytes = nullptr;
   if (!iter->ReadBytes(&bytes, sizeof(p->name)))
     return false;
   DCHECK(bytes);

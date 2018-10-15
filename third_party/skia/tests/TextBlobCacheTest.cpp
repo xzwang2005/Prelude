@@ -9,6 +9,7 @@
 
 #include "SkCanvas.h"
 #include "SkFontMgr.h"
+#include "SkGlyphRun.h"
 #include "SkGraphics.h"
 #include "SkPaint.h"
 #include "SkPoint.h"
@@ -23,9 +24,8 @@
 
 #include "Test.h"
 
-#if SK_SUPPORT_GPU
 #include "GrContext.h"
-#include "GrTest.h"
+#include "GrContextPriv.h"
 
 static void draw(SkCanvas* canvas, int redraw, const SkTArray<sk_sp<SkTextBlob>>& blobs) {
     int yOffset = 0;
@@ -43,6 +43,10 @@ static void draw(SkCanvas* canvas, int redraw, const SkTArray<sk_sp<SkTextBlob>>
 static const int kWidth = 1024;
 static const int kHeight = 768;
 
+static void setup_always_evict_atlas(GrContext* context) {
+    context->contextPriv().getAtlasManager()->setAtlasSizesToMinimum_ForTesting();
+}
+
 // This test hammers the GPU textblobcache and font atlas
 static void text_blob_cache_inner(skiatest::Reporter* reporter, GrContext* context,
                                   int maxTotalText, int maxGlyphID, int maxFamilies, bool normal,
@@ -53,8 +57,8 @@ static void text_blob_cache_inner(skiatest::Reporter* reporter, GrContext* conte
 
     // configure our context for maximum stressing of cache and atlas
     if (stressTest) {
-        GrTest::SetupAlwaysEvictAtlas(context);
-        context->setTextBlobCacheLimit_ForTesting(0);
+        setup_always_evict_atlas(context);
+        context->contextPriv().setTextBlobCacheLimit_ForTesting(0);
     }
 
     SkImageInfo info = SkImageInfo::Make(kWidth, kHeight, kN32_SkColorType, kPremul_SkAlphaType);
@@ -152,7 +156,7 @@ DEF_GPUTEST_FOR_NULLGL_CONTEXT(TextBlobCache, reporter, ctxInfo) {
 }
 
 DEF_GPUTEST_FOR_NULLGL_CONTEXT(TextBlobStressCache, reporter, ctxInfo) {
-    text_blob_cache_inner(reporter, ctxInfo.grContext(), 256, 256, 10, true, true);
+    text_blob_cache_inner(reporter, ctxInfo.grContext(), 512, 256, 10, true, true);
 }
 
 DEF_GPUTEST_FOR_NULLGL_CONTEXT(TextBlobAbnormal, reporter, ctxInfo) {
@@ -160,6 +164,5 @@ DEF_GPUTEST_FOR_NULLGL_CONTEXT(TextBlobAbnormal, reporter, ctxInfo) {
 }
 
 DEF_GPUTEST_FOR_NULLGL_CONTEXT(TextBlobStressAbnormal, reporter, ctxInfo) {
-    text_blob_cache_inner(reporter, ctxInfo.grContext(), 256, 256, 10, false, true);
+    text_blob_cache_inner(reporter, ctxInfo.grContext(), 1024, 256, 10, false, true);
 }
-#endif

@@ -32,10 +32,10 @@
 #include "src/assembler-inl.h"
 #include "src/base/utils/random-number-generator.h"
 #include "src/disassembler.h"
-#include "src/factory.h"
+#include "src/heap/factory.h"
 #include "src/macro-assembler.h"
 #include "src/mips64/macro-assembler-mips64.h"
-#include "src/mips64/simulator-mips64.h"
+#include "src/simulator.h"
 
 #include "test/cctest/cctest.h"
 
@@ -43,11 +43,12 @@ namespace v8 {
 namespace internal {
 
 // Define these function prototypes to match JSEntryFunction in execution.cc.
-typedef Object* (*F1)(int x, int p1, int p2, int p3, int p4);
-typedef Object* (*F2)(int x, int y, int p2, int p3, int p4);
-typedef Object* (*F3)(void* p, int p1, int p2, int p3, int p4);
-typedef Object* (*F4)(int64_t x, int64_t y, int64_t p2, int64_t p3, int64_t p4);
-typedef Object* (*F5)(void* p0, void* p1, int p2, int p3, int p4);
+// TODO(mips64): Refine these signatures per test case.
+typedef Object*(F1)(int x, int p1, int p2, int p3, int p4);
+typedef Object*(F2)(int x, int y, int p2, int p3, int p4);
+typedef Object*(F3)(void* p, int p1, int p2, int p3, int p4);
+typedef Object*(F4)(int64_t x, int64_t y, int64_t p2, int64_t p3, int64_t p4);
+typedef Object*(F5)(void* p0, void* p1, int p2, int p3, int p4);
 
 #define __ assm.
 
@@ -68,9 +69,8 @@ TEST(MIPS0) {
   assm.GetCode(isolate, &desc);
   Handle<Code> code =
       isolate->factory()->NewCode(desc, Code::STUB, Handle<Code>());
-  F2 f = FUNCTION_CAST<F2>(code->entry());
-  int64_t res = reinterpret_cast<int64_t>(
-      CALL_GENERATED_CODE(isolate, f, 0xAB0, 0xC, 0, 0, 0));
+  auto f = GeneratedCode<F2>::FromCode(*code);
+  int64_t res = reinterpret_cast<int64_t>(f.Call(0xAB0, 0xC, 0, 0, 0));
   CHECK_EQ(0xABCL, res);
 }
 
@@ -85,7 +85,7 @@ TEST(MIPS1) {
   Label L, C;
 
   __ mov(a1, a0);
-  __ li(v0, 0);
+  __ li(v0, 0l);
   __ b(&C);
   __ nop();
 
@@ -105,9 +105,8 @@ TEST(MIPS1) {
   assm.GetCode(isolate, &desc);
   Handle<Code> code =
       isolate->factory()->NewCode(desc, Code::STUB, Handle<Code>());
-  F1 f = FUNCTION_CAST<F1>(code->entry());
-  int64_t res = reinterpret_cast<int64_t>(
-      CALL_GENERATED_CODE(isolate, f, 50, 0, 0, 0, 0));
+  auto f = GeneratedCode<F1>::FromCode(*code);
+  int64_t res = reinterpret_cast<int64_t>(f.Call(50, 0, 0, 0, 0));
   CHECK_EQ(1275L, res);
 }
 
@@ -252,9 +251,8 @@ TEST(MIPS2) {
   assm.GetCode(isolate, &desc);
   Handle<Code> code =
       isolate->factory()->NewCode(desc, Code::STUB, Handle<Code>());
-  F2 f = FUNCTION_CAST<F2>(code->entry());
-  int64_t res = reinterpret_cast<int64_t>(
-      CALL_GENERATED_CODE(isolate, f, 0xAB0, 0xC, 0, 0, 0));
+  auto f = GeneratedCode<F2>::FromCode(*code);
+  int64_t res = reinterpret_cast<int64_t>(f.Call(0xAB0, 0xC, 0, 0, 0));
 
   CHECK_EQ(0x31415926L, res);
 }
@@ -356,7 +354,7 @@ TEST(MIPS3) {
   assm.GetCode(isolate, &desc);
   Handle<Code> code =
       isolate->factory()->NewCode(desc, Code::STUB, Handle<Code>());
-  F3 f = FUNCTION_CAST<F3>(code->entry());
+  auto f = GeneratedCode<F3>::FromCode(*code);
   // Double test values.
   t.a = 1.5e14;
   t.b = 2.75e11;
@@ -373,8 +371,7 @@ TEST(MIPS3) {
   t.fd = 0.0;
   t.fe = 0.0;
   t.ff = 0.0;
-  Object* dummy = CALL_GENERATED_CODE(isolate, f, &t, 0, 0, 0, 0);
-  USE(dummy);
+  f.Call(&t, 0, 0, 0, 0);
   // Expected double results.
   CHECK_EQ(1.5e14, t.a);
   CHECK_EQ(1.5e14, t.b);
@@ -451,13 +448,12 @@ TEST(MIPS4) {
   assm.GetCode(isolate, &desc);
   Handle<Code> code =
       isolate->factory()->NewCode(desc, Code::STUB, Handle<Code>());
-  F3 f = FUNCTION_CAST<F3>(code->entry());
+  auto f = GeneratedCode<F3>::FromCode(*code);
   t.a = 1.5e22;
   t.b = 2.75e11;
   t.c = 17.17;
   t.d = -2.75e11;
-  Object* dummy = CALL_GENERATED_CODE(isolate, f, &t, 0, 0, 0, 0);
-  USE(dummy);
+  f.Call(&t, 0, 0, 0, 0);
 
   CHECK_EQ(2.75e11, t.a);
   CHECK_EQ(2.75e11, t.b);
@@ -518,13 +514,12 @@ TEST(MIPS5) {
   assm.GetCode(isolate, &desc);
   Handle<Code> code =
       isolate->factory()->NewCode(desc, Code::STUB, Handle<Code>());
-  F3 f = FUNCTION_CAST<F3>(code->entry());
+  auto f = GeneratedCode<F3>::FromCode(*code);
   t.a = 1.5e4;
   t.b = 2.75e8;
   t.i = 12345678;
   t.j = -100000;
-  Object* dummy = CALL_GENERATED_CODE(isolate, f, &t, 0, 0, 0, 0);
-  USE(dummy);
+  f.Call(&t, 0, 0, 0, 0);
 
   CHECK_EQ(12345678.0, t.a);
   CHECK_EQ(-100000.0, t.b);
@@ -589,11 +584,10 @@ TEST(MIPS6) {
   assm.GetCode(isolate, &desc);
   Handle<Code> code =
       isolate->factory()->NewCode(desc, Code::STUB, Handle<Code>());
-  F3 f = FUNCTION_CAST<F3>(code->entry());
+  auto f = GeneratedCode<F3>::FromCode(*code);
   t.ui = 0x11223344;
   t.si = 0x99AABBCC;
-  Object* dummy = CALL_GENERATED_CODE(isolate, f, &t, 0, 0, 0, 0);
-  USE(dummy);
+  f.Call(&t, 0, 0, 0, 0);
 
   CHECK_EQ(static_cast<int32_t>(0x11223344), t.r1);
   if (kArchEndian == kLittle)  {
@@ -677,7 +671,7 @@ TEST(MIPS7) {
   assm.GetCode(isolate, &desc);
   Handle<Code> code =
       isolate->factory()->NewCode(desc, Code::STUB, Handle<Code>());
-  F3 f = FUNCTION_CAST<F3>(code->entry());
+  auto f = GeneratedCode<F3>::FromCode(*code);
   t.a = 1.5e14;
   t.b = 2.75e11;
   t.c = 2.0;
@@ -685,8 +679,7 @@ TEST(MIPS7) {
   t.e = 0.0;
   t.f = 0.0;
   t.result = 0;
-  Object* dummy = CALL_GENERATED_CODE(isolate, f, &t, 0, 0, 0, 0);
-  USE(dummy);
+  f.Call(&t, 0, 0, 0, 0);
   CHECK_EQ(1.5e14, t.a);
   CHECK_EQ(2.75e11, t.b);
   CHECK_EQ(1, t.result);
@@ -775,10 +768,9 @@ TEST(MIPS8) {
     assm.GetCode(isolate, &desc);
     Handle<Code> code =
         isolate->factory()->NewCode(desc, Code::STUB, Handle<Code>());
-    F3 f = FUNCTION_CAST<F3>(code->entry());
+    auto f = GeneratedCode<F3>::FromCode(*code);
     t.input = 0x12345678;
-    Object* dummy = CALL_GENERATED_CODE(isolate, f, &t, 0x0, 0, 0, 0);
-    USE(dummy);
+    f.Call(&t, 0x0, 0, 0, 0);
     CHECK_EQ(static_cast<int32_t>(0x81234567), t.result_rotr_4);
     CHECK_EQ(static_cast<int32_t>(0x78123456), t.result_rotr_8);
     CHECK_EQ(static_cast<int32_t>(0x67812345), t.result_rotr_12);
@@ -898,12 +890,11 @@ TEST(MIPS10) {
     assm.GetCode(isolate, &desc);
     Handle<Code> code =
         isolate->factory()->NewCode(desc, Code::STUB, Handle<Code>());
-    F3 f = FUNCTION_CAST<F3>(code->entry());
+    auto f = GeneratedCode<F3>::FromCode(*code);
     t.a = 2.147483647e9;       // 0x7FFFFFFF -> 0x41DFFFFFFFC00000 as double.
     t.b_long_hi = 0x000000FF;  // 0xFF00FF00FF -> 0x426FE01FE01FE000 as double.
     t.b_long_lo = 0x00FF00FF;
-    Object* dummy = CALL_GENERATED_CODE(isolate, f, &t, 0, 0, 0, 0);
-    USE(dummy);
+    f.Call(&t, 0, 0, 0, 0);
 
     CHECK_EQ(static_cast<int32_t>(0x41DFFFFF), t.dbl_exp);
     CHECK_EQ(static_cast<int32_t>(0xFFC00000), t.dbl_mant);
@@ -1034,12 +1025,11 @@ TEST(MIPS11) {
     assm.GetCode(isolate, &desc);
     Handle<Code> code =
         isolate->factory()->NewCode(desc, Code::STUB, Handle<Code>());
-    F3 f = FUNCTION_CAST<F3>(code->entry());
+    auto f = GeneratedCode<F3>::FromCode(*code);
     t.reg_init = 0xAABBCCDD;
     t.mem_init = 0x11223344;
 
-    Object* dummy = CALL_GENERATED_CODE(isolate, f, &t, 0, 0, 0, 0);
-    USE(dummy);
+    f.Call(&t, 0, 0, 0, 0);
 
     if (kArchEndian == kLittle) {
       CHECK_EQ(static_cast<int32_t>(0x44BBCCDD), t.lwl_0);
@@ -1160,7 +1150,7 @@ TEST(MIPS12) {
   assm.GetCode(isolate, &desc);
   Handle<Code> code =
       isolate->factory()->NewCode(desc, Code::STUB, Handle<Code>());
-  F3 f = FUNCTION_CAST<F3>(code->entry());
+  auto f = GeneratedCode<F3>::FromCode(*code);
   t.x = 1;
   t.y = 2;
   t.y1 = 3;
@@ -1168,8 +1158,7 @@ TEST(MIPS12) {
   t.y3 = 0XBABA;
   t.y4 = 0xDEDA;
 
-  Object* dummy = CALL_GENERATED_CODE(isolate, f, &t, 0, 0, 0, 0);
-  USE(dummy);
+  f.Call(&t, 0, 0, 0, 0);
 
   CHECK_EQ(3, t.y1);
 }
@@ -1215,13 +1204,12 @@ TEST(MIPS13) {
   assm.GetCode(isolate, &desc);
   Handle<Code> code =
       isolate->factory()->NewCode(desc, Code::STUB, Handle<Code>());
-  F3 f = FUNCTION_CAST<F3>(code->entry());
+  auto f = GeneratedCode<F3>::FromCode(*code);
 
   t.cvt_big_in = 0xFFFFFFFF;
   t.cvt_small_in  = 333;
 
-  Object* dummy = CALL_GENERATED_CODE(isolate, f, &t, 0, 0, 0, 0);
-  USE(dummy);
+  f.Call(&t, 0, 0, 0, 0);
 
   CHECK_EQ(t.cvt_big_out, static_cast<double>(t.cvt_big_in));
   CHECK_EQ(t.cvt_small_out, static_cast<double>(t.cvt_small_in));
@@ -1337,7 +1325,7 @@ TEST(MIPS14) {
   assm.GetCode(isolate, &desc);
   Handle<Code> code =
       isolate->factory()->NewCode(desc, Code::STUB, Handle<Code>());
-  F3 f = FUNCTION_CAST<F3>(code->entry());
+  auto f = GeneratedCode<F3>::FromCode(*code);
 
   t.round_up_in = 123.51;
   t.round_down_in = 123.49;
@@ -1348,8 +1336,7 @@ TEST(MIPS14) {
   t.err3_in = static_cast<double>(1) + 0xFFFFFFFF;
   t.err4_in = NAN;
 
-  Object* dummy = CALL_GENERATED_CODE(isolate, f, &t, 0, 0, 0, 0);
-  USE(dummy);
+  f.Call(&t, 0, 0, 0, 0);
 
 #define GET_FPU_ERR(x) (static_cast<int>(x & kFCSRFlagMask))
 #define CHECK_NAN2008(x) (x & kFCSRNaN2008FlagMask)
@@ -1376,7 +1363,7 @@ TEST(MIPS15) {
   CcTest::InitializeVM();
   Isolate* isolate = CcTest::i_isolate();
   HandleScope scope(isolate);
-  Assembler assm(isolate, nullptr, 0);
+  Assembler assm(AssemblerOptions{}, nullptr, 0);
 
   Label target;
   __ beq(v0, v1, &target);
@@ -1468,7 +1455,7 @@ TEST(MIPS16) {
   assm.GetCode(isolate, &desc);
   Handle<Code> code =
       isolate->factory()->NewCode(desc, Code::STUB, Handle<Code>());
-  F3 f = FUNCTION_CAST<F3>(code->entry());
+  auto f = GeneratedCode<F3>::FromCode(*code);
   t.ui = 0x44332211;
   t.si = 0x99AABBCC;
   t.r1 = 0x5555555555555555;
@@ -1484,8 +1471,7 @@ TEST(MIPS16) {
   t.r11 = 0x5555555555555555;
   t.r12 = 0x5555555555555555;
 
-  Object* dummy = CALL_GENERATED_CODE(isolate, f, &t, 0, 0, 0, 0);
-  USE(dummy);
+  f.Call(&t, 0, 0, 0, 0);
 
   if (kArchEndian == kLittle) {
     // Unsigned data, 32 & 64
@@ -1597,9 +1583,9 @@ TEST(seleqz_selnez) {
     assm.GetCode(isolate, &desc);
     Handle<Code> code =
         isolate->factory()->NewCode(desc, Code::STUB, Handle<Code>());
-    F3 f = FUNCTION_CAST<F3>(code->entry());
+    auto f = GeneratedCode<F3>::FromCode(*code);
 
-    (CALL_GENERATED_CODE(isolate, f, &test, 0, 0, 0, 0));
+    f.Call(&test, 0, 0, 0, 0);
 
     CHECK_EQ(1, test.a);
     CHECK_EQ(0, test.b);
@@ -1627,7 +1613,7 @@ TEST(seleqz_selnez) {
         test.f = tests_D[j];
         test.i = inputs_S[i];
         test.j = tests_S[j];
-        (CALL_GENERATED_CODE(isolate, f, &test, 0, 0, 0, 0));
+        f.Call(&test, 0, 0, 0, 0);
         CHECK_EQ(outputs_D[i], test.g);
         CHECK_EQ(0, test.h);
         CHECK_EQ(outputs_S[i], test.k);
@@ -1635,7 +1621,7 @@ TEST(seleqz_selnez) {
 
         test.f = tests_D[j+1];
         test.j = tests_S[j+1];
-        (CALL_GENERATED_CODE(isolate, f, &test, 0, 0, 0, 0));
+        f.Call(&test, 0, 0, 0, 0);
         CHECK_EQ(0, test.g);
         CHECK_EQ(outputs_D[i], test.h);
         CHECK_EQ(0, test.k);
@@ -1713,14 +1699,14 @@ TEST(min_max) {
     assm.GetCode(isolate, &desc);
     Handle<Code> code =
         isolate->factory()->NewCode(desc, Code::STUB, Handle<Code>());
-    F3 f = FUNCTION_CAST<F3>(code->entry());
+    auto f = GeneratedCode<F3>::FromCode(*code);
     for (int i = 4; i < kTableLength; i++) {
       test.a = inputsa[i];
       test.b = inputsb[i];
       test.e = inputse[i];
       test.f = inputsf[i];
 
-      CALL_GENERATED_CODE(isolate, f, &test, 0, 0, 0, 0);
+      f.Call(&test, 0, 0, 0, 0);
 
       CHECK_EQ(0, memcmp(&test.c, &outputsdmin[i], sizeof(test.c)));
       CHECK_EQ(0, memcmp(&test.d, &outputsdmax[i], sizeof(test.d)));
@@ -1822,13 +1808,13 @@ TEST(rint_d)  {
     assm.GetCode(isolate, &desc);
     Handle<Code> code =
         isolate->factory()->NewCode(desc, Code::STUB, Handle<Code>());
-    F3 f = FUNCTION_CAST<F3>(code->entry());
+    auto f = GeneratedCode<F3>::FromCode(*code);
 
     for (int j = 0; j < 4; j++) {
       test.fcsr = fcsr_inputs[j];
       for (int i = 0; i < kTableLength; i++) {
         test.a = inputs[i];
-        (CALL_GENERATED_CODE(isolate, f, &test, 0, 0, 0, 0));
+        f.Call(&test, 0, 0, 0, 0);
         CHECK_EQ(test.b, outputs[j][i]);
       }
     }
@@ -1870,7 +1856,7 @@ TEST(sel) {
     assm.GetCode(isolate, &desc);
     Handle<Code> code =
         isolate->factory()->NewCode(desc, Code::STUB, Handle<Code>());
-    F3 f = FUNCTION_CAST<F3>(code->entry());
+    auto f = GeneratedCode<F3>::FromCode(*code);
 
     const int test_size = 3;
     const int input_size = 5;
@@ -1895,13 +1881,13 @@ TEST(sel) {
         test.ft = inputs_ft[i];
         test.fd = tests_S[j];
         test.fs = inputs_fs[i];
-        (CALL_GENERATED_CODE(isolate, f, &test, 0, 0, 0, 0));
+        f.Call(&test, 0, 0, 0, 0);
         CHECK_EQ(test.dd, inputs_ds[i]);
         CHECK_EQ(test.fd, inputs_fs[i]);
 
         test.dd = tests_D[j+1];
         test.fd = tests_S[j+1];
-        (CALL_GENERATED_CODE(isolate, f, &test, 0, 0, 0, 0));
+        f.Call(&test, 0, 0, 0, 0);
         CHECK_EQ(test.dd, inputs_dt[i]);
         CHECK_EQ(test.fd, inputs_ft[i]);
       }
@@ -2003,13 +1989,13 @@ TEST(rint_s)  {
     assm.GetCode(isolate, &desc);
     Handle<Code> code =
         isolate->factory()->NewCode(desc, Code::STUB, Handle<Code>());
-    F3 f = FUNCTION_CAST<F3>(code->entry());
+    auto f = GeneratedCode<F3>::FromCode(*code);
 
     for (int j = 0; j < 4; j++) {
       test.fcsr = fcsr_inputs[j];
       for (int i = 0; i < kTableLength; i++) {
         test.a = inputs[i];
-        (CALL_GENERATED_CODE(isolate, f, &test, 0, 0, 0, 0));
+        f.Call(&test, 0, 0, 0, 0);
         CHECK_EQ(test.b, outputs[j][i]);
       }
     }
@@ -2089,13 +2075,13 @@ TEST(mina_maxa) {
     assm.GetCode(isolate, &desc);
     Handle<Code> code =
         isolate->factory()->NewCode(desc, Code::STUB, Handle<Code>());
-    F3 f = FUNCTION_CAST<F3>(code->entry());
+    auto f = GeneratedCode<F3>::FromCode(*code);
     for (int i = 0; i < kTableLength; i++) {
       test.a = inputsa[i];
       test.b = inputsb[i];
       test.c = inputsc[i];
       test.d = inputsd[i];
-      (CALL_GENERATED_CODE(isolate, f, &test, 0, 0, 0, 0));
+      f.Call(&test, 0, 0, 0, 0);
 
       if (i < kTableLength - 1) {
         CHECK_EQ(test.resd, resd[i]);
@@ -2171,11 +2157,11 @@ TEST(trunc_l) {
     assm.GetCode(isolate, &desc);
     Handle<Code> code =
         isolate->factory()->NewCode(desc, Code::STUB, Handle<Code>());
-    F3 f = FUNCTION_CAST<F3>(code->entry());
+    auto f = GeneratedCode<F3>::FromCode(*code);
     for (int i = 0; i < kTableLength; i++) {
       test.a = inputs_D[i];
       test.b = inputs_S[i];
-      (CALL_GENERATED_CODE(isolate, f, &test, 0, 0, 0, 0));
+      f.Call(&test, 0, 0, 0, 0);
       if ((test.isNaN2008 & kFCSRNaN2008FlagMask) &&
               kArchVariant == kMips64r6) {
         CHECK_EQ(test.c, outputsNaN2008[i]);
@@ -2252,20 +2238,20 @@ TEST(movz_movn) {
     assm.GetCode(isolate, &desc);
     Handle<Code> code =
         isolate->factory()->NewCode(desc, Code::STUB, Handle<Code>());
-    F3 f = FUNCTION_CAST<F3>(code->entry());
+    auto f = GeneratedCode<F3>::FromCode(*code);
     for (int i = 0; i < kTableLength; i++) {
       test.a = inputs_D[i];
       test.c = inputs_S[i];
 
       test.rt = 1;
-      (CALL_GENERATED_CODE(isolate, f, &test, 0, 0, 0, 0));
+      f.Call(&test, 0, 0, 0, 0);
       CHECK_EQ(test.b, test.bold);
       CHECK_EQ(test.d, test.dold);
       CHECK_EQ(test.b1, outputs_D[i]);
       CHECK_EQ(test.d1, outputs_S[i]);
 
       test.rt = 0;
-      (CALL_GENERATED_CODE(isolate, f, &test, 0, 0, 0, 0));
+      f.Call(&test, 0, 0, 0, 0);
       CHECK_EQ(test.b, outputs_D[i]);
       CHECK_EQ(test.d, outputs_S[i]);
       CHECK_EQ(test.b1, test.bold1);
@@ -2330,7 +2316,7 @@ TEST(movt_movd) {
         __ Lw(t1, MemOperand(a0, offsetof(TestFloat, fcsr)));
         __ cfc1(t0, FCSR);
         __ ctc1(t1, FCSR);
-        __ li(t2, 0x0);
+        __ li(t2, 0x0l);
         __ mtc1(t2, f12);
         __ mtc1(t2, f10);
         __ Sdc1(f10, MemOperand(a0, offsetof(TestFloat, dstdold)));
@@ -2353,15 +2339,15 @@ TEST(movt_movd) {
         assm.GetCode(isolate, &desc);
         Handle<Code> code =
             isolate->factory()->NewCode(desc, Code::STUB, Handle<Code>());
-        F3 f = FUNCTION_CAST<F3>(code->entry());
+        auto f = GeneratedCode<F3>::FromCode(*code);
 
-        (CALL_GENERATED_CODE(isolate, f, &test, 0, 0, 0, 0));
+        f.Call(&test, 0, 0, 0, 0);
         CHECK_EQ(test.dstf, outputs_S[i]);
         CHECK_EQ(test.dstd, outputs_D[i]);
         CHECK_EQ(test.dstf1, test.dstfold1);
         CHECK_EQ(test.dstd1, test.dstdold1);
         test.fcsr = 0;
-        (CALL_GENERATED_CODE(isolate, f, &test, 0, 0, 0, 0));
+        f.Call(&test, 0, 0, 0, 0);
         CHECK_EQ(test.dstf, test.dstfold);
         CHECK_EQ(test.dstd, test.dstdold);
         CHECK_EQ(test.dstf1, outputs_S[i]);
@@ -2440,12 +2426,12 @@ TEST(cvt_w_d) {
   assm.GetCode(isolate, &desc);
   Handle<Code> code =
       isolate->factory()->NewCode(desc, Code::STUB, Handle<Code>());
-  F3 f = FUNCTION_CAST<F3>(code->entry());
+  auto f = GeneratedCode<F3>::FromCode(*code);
   for (int j = 0; j < 4; j++) {
     test.fcsr = fcsr_inputs[j];
     for (int i = 0; i < kTableLength; i++) {
       test.a = inputs[i];
-      (CALL_GENERATED_CODE(isolate, f, &test, 0, 0, 0, 0));
+      f.Call(&test, 0, 0, 0, 0);
       CHECK_EQ(test.b, outputs[j][i]);
     }
   }
@@ -2508,11 +2494,11 @@ TEST(trunc_w) {
   assm.GetCode(isolate, &desc);
   Handle<Code> code =
       isolate->factory()->NewCode(desc, Code::STUB, Handle<Code>());
-  F3 f = FUNCTION_CAST<F3>(code->entry());
+  auto f = GeneratedCode<F3>::FromCode(*code);
   for (int i = 0; i < kTableLength; i++) {
     test.a = inputs_D[i];
     test.b = inputs_S[i];
-    (CALL_GENERATED_CODE(isolate, f, &test, 0, 0, 0, 0));
+    f.Call(&test, 0, 0, 0, 0);
     if ((test.isNaN2008 & kFCSRNaN2008FlagMask) && kArchVariant == kMips64r6) {
       CHECK_EQ(test.c, outputsNaN2008[i]);
     } else {
@@ -2578,11 +2564,11 @@ TEST(round_w) {
   assm.GetCode(isolate, &desc);
   Handle<Code> code =
       isolate->factory()->NewCode(desc, Code::STUB, Handle<Code>());
-  F3 f = FUNCTION_CAST<F3>(code->entry());
+  auto f = GeneratedCode<F3>::FromCode(*code);
   for (int i = 0; i < kTableLength; i++) {
     test.a = inputs_D[i];
     test.b = inputs_S[i];
-    (CALL_GENERATED_CODE(isolate, f, &test, 0, 0, 0, 0));
+    f.Call(&test, 0, 0, 0, 0);
     if ((test.isNaN2008 & kFCSRNaN2008FlagMask) && kArchVariant == kMips64r6) {
       CHECK_EQ(test.c, outputsNaN2008[i]);
     } else {
@@ -2649,11 +2635,11 @@ TEST(round_l) {
     assm.GetCode(isolate, &desc);
     Handle<Code> code =
         isolate->factory()->NewCode(desc, Code::STUB, Handle<Code>());
-    F3 f = FUNCTION_CAST<F3>(code->entry());
+    auto f = GeneratedCode<F3>::FromCode(*code);
     for (int i = 0; i < kTableLength; i++) {
       test.a = inputs_D[i];
       test.b = inputs_S[i];
-      (CALL_GENERATED_CODE(isolate, f, &test, 0, 0, 0, 0));
+      f.Call(&test, 0, 0, 0, 0);
       if ((test.isNaN2008 & kFCSRNaN2008FlagMask) &&
               kArchVariant == kMips64r6) {
         CHECK_EQ(test.c, outputsNaN2008[i]);
@@ -2722,13 +2708,13 @@ TEST(sub) {
   assm.GetCode(isolate, &desc);
   Handle<Code> code =
       isolate->factory()->NewCode(desc, Code::STUB, Handle<Code>());
-  F3 f = FUNCTION_CAST<F3>(code->entry());
+  auto f = GeneratedCode<F3>::FromCode(*code);
   for (int i = 0; i < kTableLength; i++) {
     test.a = inputfs_S[i];
     test.b = inputft_S[i];
     test.c = inputfs_D[i];
     test.d = inputft_D[i];
-    (CALL_GENERATED_CODE(isolate, f, &test, 0, 0, 0, 0));
+    f.Call(&test, 0, 0, 0, 0);
     CHECK_EQ(test.resultS, outputs_S[i]);
     CHECK_EQ(test.resultD, outputs_D[i]);
   }
@@ -2795,7 +2781,7 @@ TEST(sqrt_rsqrt_recip) {
   assm.GetCode(isolate, &desc);
   Handle<Code> code =
       isolate->factory()->NewCode(desc, Code::STUB, Handle<Code>());
-  F3 f = FUNCTION_CAST<F3>(code->entry());
+  auto f = GeneratedCode<F3>::FromCode(*code);
 
   for (int i = 0; i < kTableLength; i++) {
     float f1;
@@ -2803,7 +2789,7 @@ TEST(sqrt_rsqrt_recip) {
     test.a = inputs_S[i];
     test.c = inputs_D[i];
 
-    (CALL_GENERATED_CODE(isolate, f, &test, 0, 0, 0, 0));
+    f.Call(&test, 0, 0, 0, 0);
 
     CHECK_EQ(test.resultS, outputs_S[i]);
     CHECK_EQ(test.resultD, outputs_D[i]);
@@ -2874,11 +2860,11 @@ TEST(neg) {
   assm.GetCode(isolate, &desc);
   Handle<Code> code =
       isolate->factory()->NewCode(desc, Code::STUB, Handle<Code>());
-  F3 f = FUNCTION_CAST<F3>(code->entry());
+  auto f = GeneratedCode<F3>::FromCode(*code);
   for (int i = 0; i < kTableLength; i++) {
     test.a = inputs_S[i];
     test.c = inputs_D[i];
-    (CALL_GENERATED_CODE(isolate, f, &test, 0, 0, 0, 0));
+    f.Call(&test, 0, 0, 0, 0);
     CHECK_EQ(test.resultS, outputs_S[i]);
     CHECK_EQ(test.resultD, outputs_D[i]);
   }
@@ -2933,13 +2919,13 @@ TEST(mul) {
   assm.GetCode(isolate, &desc);
   Handle<Code> code =
       isolate->factory()->NewCode(desc, Code::STUB, Handle<Code>());
-  F3 f = FUNCTION_CAST<F3>(code->entry());
+  auto f = GeneratedCode<F3>::FromCode(*code);
   for (int i = 0; i < kTableLength; i++) {
     test.a = inputfs_S[i];
     test.b = inputft_S[i];
     test.c = inputfs_D[i];
     test.d = inputft_D[i];
-    (CALL_GENERATED_CODE(isolate, f, &test, 0, 0, 0, 0));
+    f.Call(&test, 0, 0, 0, 0);
     CHECK_EQ(test.resultS, inputfs_S[i]*inputft_S[i]);
     CHECK_EQ(test.resultD, inputfs_D[i]*inputft_D[i]);
   }
@@ -2989,12 +2975,12 @@ TEST(mov) {
   assm.GetCode(isolate, &desc);
   Handle<Code> code =
       isolate->factory()->NewCode(desc, Code::STUB, Handle<Code>());
-  F3 f = FUNCTION_CAST<F3>(code->entry());
+  auto f = GeneratedCode<F3>::FromCode(*code);
   for (int i = 0; i < kTableLength; i++) {
     test.a = inputs_D[i];
     test.c = inputs_S[i];
 
-    (CALL_GENERATED_CODE(isolate, f, &test, 0, 0, 0, 0));
+    f.Call(&test, 0, 0, 0, 0);
     CHECK_EQ(test.b, outputs_D[i]);
     CHECK_EQ(test.d, outputs_S[i]);
   }
@@ -3057,11 +3043,11 @@ TEST(floor_w) {
   assm.GetCode(isolate, &desc);
   Handle<Code> code =
       isolate->factory()->NewCode(desc, Code::STUB, Handle<Code>());
-  F3 f = FUNCTION_CAST<F3>(code->entry());
+  auto f = GeneratedCode<F3>::FromCode(*code);
   for (int i = 0; i < kTableLength; i++) {
     test.a = inputs_D[i];
     test.b = inputs_S[i];
-    (CALL_GENERATED_CODE(isolate, f, &test, 0, 0, 0, 0));
+    f.Call(&test, 0, 0, 0, 0);
     if ((test.isNaN2008 & kFCSRNaN2008FlagMask) && kArchVariant == kMips64r6) {
       CHECK_EQ(test.c, outputsNaN2008[i]);
     } else {
@@ -3128,11 +3114,11 @@ TEST(floor_l) {
     assm.GetCode(isolate, &desc);
     Handle<Code> code =
         isolate->factory()->NewCode(desc, Code::STUB, Handle<Code>());
-    F3 f = FUNCTION_CAST<F3>(code->entry());
+    auto f = GeneratedCode<F3>::FromCode(*code);
     for (int i = 0; i < kTableLength; i++) {
       test.a = inputs_D[i];
       test.b = inputs_S[i];
-      (CALL_GENERATED_CODE(isolate, f, &test, 0, 0, 0, 0));
+      f.Call(&test, 0, 0, 0, 0);
       if ((test.isNaN2008 & kFCSRNaN2008FlagMask) &&
               kArchVariant == kMips64r6) {
         CHECK_EQ(test.c, outputsNaN2008[i]);
@@ -3200,11 +3186,11 @@ TEST(ceil_w) {
   assm.GetCode(isolate, &desc);
   Handle<Code> code =
       isolate->factory()->NewCode(desc, Code::STUB, Handle<Code>());
-  F3 f = FUNCTION_CAST<F3>(code->entry());
+  auto f = GeneratedCode<F3>::FromCode(*code);
   for (int i = 0; i < kTableLength; i++) {
     test.a = inputs_D[i];
     test.b = inputs_S[i];
-    (CALL_GENERATED_CODE(isolate, f, &test, 0, 0, 0, 0));
+    f.Call(&test, 0, 0, 0, 0);
     if ((test.isNaN2008 & kFCSRNaN2008FlagMask) && kArchVariant == kMips64r6) {
       CHECK_EQ(test.c, outputsNaN2008[i]);
     } else {
@@ -3271,11 +3257,11 @@ TEST(ceil_l) {
     assm.GetCode(isolate, &desc);
     Handle<Code> code =
         isolate->factory()->NewCode(desc, Code::STUB, Handle<Code>());
-    F3 f = FUNCTION_CAST<F3>(code->entry());
+    auto f = GeneratedCode<F3>::FromCode(*code);
     for (int i = 0; i < kTableLength; i++) {
       test.a = inputs_D[i];
       test.b = inputs_S[i];
-      (CALL_GENERATED_CODE(isolate, f, &test, 0, 0, 0, 0));
+      f.Call(&test, 0, 0, 0, 0);
       if ((test.isNaN2008 & kFCSRNaN2008FlagMask) &&
               kArchVariant == kMips64r6) {
         CHECK_EQ(test.c, outputsNaN2008[i]);
@@ -3307,15 +3293,13 @@ TEST(jump_tables1) {
   Label done;
   {
     __ BlockTrampolinePoolFor(kNumCases * 2 + 6);
-    PredictableCodeSizeScope predictable(
-        &assm, (kNumCases * 2 + 6) * Assembler::kInstrSize);
-    Label here;
+    PredictableCodeSizeScope predictable(&assm,
+                                         (kNumCases * 2 + 6) * kInstrSize);
 
-    __ bal(&here);
+    __ nal();
     __ dsll(at, a0, 3);  // In delay slot.
-    __ bind(&here);
     __ daddu(at, at, ra);
-    __ Ld(at, MemOperand(at, 4 * Assembler::kInstrSize));
+    __ Ld(at, MemOperand(at, 4 * kInstrSize));
     __ jr(at);
     __ nop();
     for (int i = 0; i < kNumCases; ++i) {
@@ -3346,10 +3330,9 @@ TEST(jump_tables1) {
 #ifdef OBJECT_PRINT
   code->Print(std::cout);
 #endif
-  F1 f = FUNCTION_CAST<F1>(code->entry());
+  auto f = GeneratedCode<F1>::FromCode(*code);
   for (int i = 0; i < kNumCases; ++i) {
-    int64_t res = reinterpret_cast<int64_t>(
-        CALL_GENERATED_CODE(isolate, f, i, 0, 0, 0, 0));
+    int64_t res = reinterpret_cast<int64_t>(f.Call(i, 0, 0, 0, 0));
     ::printf("f(%d) = %" PRId64 "\n", i, res);
     CHECK_EQ(values[i], static_cast<int>(res));
   }
@@ -3388,15 +3371,13 @@ TEST(jump_tables2) {
   __ bind(&dispatch);
   {
     __ BlockTrampolinePoolFor(kNumCases * 2 + 6);
-    PredictableCodeSizeScope predictable(
-        &assm, (kNumCases * 2 + 6) * Assembler::kInstrSize);
-    Label here;
+    PredictableCodeSizeScope predictable(&assm,
+                                         (kNumCases * 2 + 6) * kInstrSize);
 
-    __ bal(&here);
+    __ nal();
     __ dsll(at, a0, 3);  // In delay slot.
-    __ bind(&here);
     __ daddu(at, at, ra);
-    __ Ld(at, MemOperand(at, 4 * Assembler::kInstrSize));
+    __ Ld(at, MemOperand(at, 4 * kInstrSize));
     __ jr(at);
     __ nop();
     for (int i = 0; i < kNumCases; ++i) {
@@ -3417,10 +3398,9 @@ TEST(jump_tables2) {
 #ifdef OBJECT_PRINT
   code->Print(std::cout);
 #endif
-  F1 f = FUNCTION_CAST<F1>(code->entry());
+  auto f = GeneratedCode<F1>::FromCode(*code);
   for (int i = 0; i < kNumCases; ++i) {
-    int64_t res = reinterpret_cast<int64_t>(
-        CALL_GENERATED_CODE(isolate, f, i, 0, 0, 0, 0));
+    int64_t res = reinterpret_cast<int64_t>(f.Call(i, 0, 0, 0, 0));
     ::printf("f(%d) = %" PRId64 "\n", i, res);
     CHECK_EQ(values[i], res);
   }
@@ -3439,7 +3419,7 @@ TEST(jump_tables3) {
   Handle<Object> values[kNumCases];
   for (int i = 0; i < kNumCases; ++i) {
     double value = isolate->random_number_generator()->NextDouble();
-    values[i] = isolate->factory()->NewHeapNumber(value, IMMUTABLE, TENURED);
+    values[i] = isolate->factory()->NewHeapNumber(value, TENURED);
   }
   Label labels[kNumCases];
   Object* obj;
@@ -3469,15 +3449,13 @@ TEST(jump_tables3) {
   __ bind(&dispatch);
   {
     __ BlockTrampolinePoolFor(kNumCases * 2 + 6);
-    PredictableCodeSizeScope predictable(
-        &assm, (kNumCases * 2 + 6) * Assembler::kInstrSize);
-    Label here;
+    PredictableCodeSizeScope predictable(&assm,
+                                         (kNumCases * 2 + 6) * kInstrSize);
 
-    __ bal(&here);
+    __ nal();
     __ dsll(at, a0, 3);  // In delay slot.
-    __ bind(&here);
     __ daddu(at, at, ra);
-    __ Ld(at, MemOperand(at, 4 * Assembler::kInstrSize));
+    __ Ld(at, MemOperand(at, 4 * kInstrSize));
     __ jr(at);
     __ nop();
     for (int i = 0; i < kNumCases; ++i) {
@@ -3498,10 +3476,9 @@ TEST(jump_tables3) {
 #ifdef OBJECT_PRINT
   code->Print(std::cout);
 #endif
-  F1 f = FUNCTION_CAST<F1>(code->entry());
+  auto f = GeneratedCode<F1>::FromCode(*code);
   for (int i = 0; i < kNumCases; ++i) {
-    Handle<Object> result(
-        CALL_GENERATED_CODE(isolate, f, i, 0, 0, 0, 0), isolate);
+    Handle<Object> result(f.Call(i, 0, 0, 0, 0), isolate);
 #ifdef OBJECT_PRINT
     ::printf("f(%d) = ", i);
     result->Print(std::cout);
@@ -3569,15 +3546,14 @@ TEST(BITSWAP) {
     assm.GetCode(isolate, &desc);
     Handle<Code> code =
         isolate->factory()->NewCode(desc, Code::STUB, Handle<Code>());
-    F3 f = FUNCTION_CAST<F3>(code->entry());
+    auto f = GeneratedCode<F3>::FromCode(*code);
     t.r1 = 0x00102100781A15C3;
     t.r2 = 0x001021008B71FCDE;
     t.r3 = 0xFF8017FF781A15C3;
     t.r4 = 0xFF8017FF8B71FCDE;
     t.r5 = 0x10C021098B71FCDE;
     t.r6 = 0xFB8017FF781A15C3;
-    Object* dummy = CALL_GENERATED_CODE(isolate, f, &t, 0, 0, 0, 0);
-    USE(dummy);
+    f.Call(&t, 0, 0, 0, 0);
 
     CHECK_EQ(static_cast<int64_t>(0x000000001E58A8C3L), t.r1);
     CHECK_EQ(static_cast<int64_t>(0xFFFFFFFFD18E3F7BL), t.r2);
@@ -3712,7 +3688,7 @@ TEST(class_fmt) {
     assm.GetCode(isolate, &desc);
     Handle<Code> code =
         isolate->factory()->NewCode(desc, Code::STUB, Handle<Code>());
-    F3 f = FUNCTION_CAST<F3>(code->entry());
+    auto f = GeneratedCode<F3>::FromCode(*code);
 
     // Double test values.
     t.dSignalingNan =  std::numeric_limits<double>::signaling_NaN();
@@ -3738,8 +3714,7 @@ TEST(class_fmt) {
     t.fPosSubnorm   = FLT_MIN / 20.0;
     t.fPosZero      = +0.0;
 
-    Object* dummy = CALL_GENERATED_CODE(isolate, f, &t, 0, 0, 0, 0);
-    USE(dummy);
+    f.Call(&t, 0, 0, 0, 0);
     // Expected double results.
     CHECK_EQ(bit_cast<int64_t>(t.dSignalingNan), 0x001);
     CHECK_EQ(bit_cast<int64_t>(t.dQuietNan),     0x002);
@@ -3807,37 +3782,37 @@ TEST(ABS) {
   assm.GetCode(isolate, &desc);
   Handle<Code> code =
       isolate->factory()->NewCode(desc, Code::STUB, Handle<Code>());
-  F3 f = FUNCTION_CAST<F3>(code->entry());
+  auto f = GeneratedCode<F3>::FromCode(*code);
   test.a = -2.0;
   test.b = -2.0;
-  (CALL_GENERATED_CODE(isolate, f, &test, 0, 0, 0, 0));
+  f.Call(&test, 0, 0, 0, 0);
   CHECK_EQ(test.a, 2.0);
   CHECK_EQ(test.b, 2.0);
 
   test.a = 2.0;
   test.b = 2.0;
-  (CALL_GENERATED_CODE(isolate, f, &test, 0, 0, 0, 0));
+  f.Call(&test, 0, 0, 0, 0);
   CHECK_EQ(test.a, 2.0);
   CHECK_EQ(test.b, 2.0);
 
   // Testing biggest positive number
   test.a = std::numeric_limits<double>::max();
   test.b = std::numeric_limits<float>::max();
-  (CALL_GENERATED_CODE(isolate, f, &test, 0, 0, 0, 0));
+  f.Call(&test, 0, 0, 0, 0);
   CHECK_EQ(test.a, std::numeric_limits<double>::max());
   CHECK_EQ(test.b, std::numeric_limits<float>::max());
 
   // Testing smallest negative number
   test.a = -std::numeric_limits<double>::max();  // lowest()
   test.b = -std::numeric_limits<float>::max();   // lowest()
-  (CALL_GENERATED_CODE(isolate, f, &test, 0, 0, 0, 0));
+  f.Call(&test, 0, 0, 0, 0);
   CHECK_EQ(test.a, std::numeric_limits<double>::max());
   CHECK_EQ(test.b, std::numeric_limits<float>::max());
 
   // Testing smallest positive number
   test.a = -std::numeric_limits<double>::min();
   test.b = -std::numeric_limits<float>::min();
-  (CALL_GENERATED_CODE(isolate, f, &test, 0, 0, 0, 0));
+  f.Call(&test, 0, 0, 0, 0);
   CHECK_EQ(test.a, std::numeric_limits<double>::min());
   CHECK_EQ(test.b, std::numeric_limits<float>::min());
 
@@ -3846,7 +3821,7 @@ TEST(ABS) {
           / std::numeric_limits<double>::min();
   test.b = -std::numeric_limits<float>::max()
           / std::numeric_limits<float>::min();
-  (CALL_GENERATED_CODE(isolate, f, &test, 0, 0, 0, 0));
+  f.Call(&test, 0, 0, 0, 0);
   CHECK_EQ(test.a, std::numeric_limits<double>::max()
                  / std::numeric_limits<double>::min());
   CHECK_EQ(test.b, std::numeric_limits<float>::max()
@@ -3854,13 +3829,13 @@ TEST(ABS) {
 
   test.a = std::numeric_limits<double>::quiet_NaN();
   test.b = std::numeric_limits<float>::quiet_NaN();
-  (CALL_GENERATED_CODE(isolate, f, &test, 0, 0, 0, 0));
+  f.Call(&test, 0, 0, 0, 0);
   CHECK(std::isnan(test.a));
   CHECK(std::isnan(test.b));
 
   test.a = std::numeric_limits<double>::signaling_NaN();
   test.b = std::numeric_limits<float>::signaling_NaN();
-  (CALL_GENERATED_CODE(isolate, f, &test, 0, 0, 0, 0));
+  f.Call(&test, 0, 0, 0, 0);
   CHECK(std::isnan(test.a));
   CHECK(std::isnan(test.b));
 }
@@ -3901,12 +3876,12 @@ TEST(ADD_FMT) {
   assm.GetCode(isolate, &desc);
   Handle<Code> code =
       isolate->factory()->NewCode(desc, Code::STUB, Handle<Code>());
-  F3 f = FUNCTION_CAST<F3>(code->entry());
+  auto f = GeneratedCode<F3>::FromCode(*code);
   test.a = 2.0;
   test.b = 3.0;
   test.fa = 2.0;
   test.fb = 3.0;
-  (CALL_GENERATED_CODE(isolate, f, &test, 0, 0, 0, 0));
+  f.Call(&test, 0, 0, 0, 0);
   CHECK_EQ(test.c, 5.0);
   CHECK_EQ(test.fc, 5.0);
 
@@ -3914,7 +3889,7 @@ TEST(ADD_FMT) {
   test.b = -std::numeric_limits<double>::max();  // lowest()
   test.fa = std::numeric_limits<float>::max();
   test.fb = -std::numeric_limits<float>::max();  // lowest()
-  (CALL_GENERATED_CODE(isolate, f, &test, 0, 0, 0, 0));
+  f.Call(&test, 0, 0, 0, 0);
   CHECK_EQ(test.c, 0.0);
   CHECK_EQ(test.fc, 0.0);
 
@@ -3922,7 +3897,7 @@ TEST(ADD_FMT) {
   test.b = std::numeric_limits<double>::max();
   test.fa = std::numeric_limits<float>::max();
   test.fb = std::numeric_limits<float>::max();
-  (CALL_GENERATED_CODE(isolate, f, &test, 0, 0, 0, 0));
+  f.Call(&test, 0, 0, 0, 0);
   CHECK(!std::isfinite(test.c));
   CHECK(!std::isfinite(test.fc));
 
@@ -3930,7 +3905,7 @@ TEST(ADD_FMT) {
   test.b = std::numeric_limits<double>::signaling_NaN();
   test.fa = 5.0;
   test.fb = std::numeric_limits<float>::signaling_NaN();
-  (CALL_GENERATED_CODE(isolate, f, &test, 0, 0, 0, 0));
+  f.Call(&test, 0, 0, 0, 0);
   CHECK(std::isnan(test.c));
   CHECK(std::isnan(test.fc));
 }
@@ -4056,12 +4031,12 @@ TEST(C_COND_FMT) {
     assm.GetCode(isolate, &desc);
     Handle<Code> code =
         isolate->factory()->NewCode(desc, Code::STUB, Handle<Code>());
-    F3 f = FUNCTION_CAST<F3>(code->entry());
+    auto f = GeneratedCode<F3>::FromCode(*code);
     test.dOp1 = 2.0;
     test.dOp2 = 3.0;
     test.fOp1 = 2.0;
     test.fOp2 = 3.0;
-    (CALL_GENERATED_CODE(isolate, f, &test, 0, 0, 0, 0));
+    f.Call(&test, 0, 0, 0, 0);
     CHECK_EQ(test.dF, 0U);
     CHECK_EQ(test.dUn, 0U);
     CHECK_EQ(test.dEq, 0U);
@@ -4083,7 +4058,7 @@ TEST(C_COND_FMT) {
     test.dOp2 = std::numeric_limits<double>::min();
     test.fOp1 = std::numeric_limits<float>::min();
     test.fOp2 = -std::numeric_limits<float>::max();  // lowest()
-    (CALL_GENERATED_CODE(isolate, f, &test, 0, 0, 0, 0));
+    f.Call(&test, 0, 0, 0, 0);
     CHECK_EQ(test.dF, 0U);
     CHECK_EQ(test.dUn, 0U);
     CHECK_EQ(test.dEq, 0U);
@@ -4105,7 +4080,7 @@ TEST(C_COND_FMT) {
     test.dOp2 = -std::numeric_limits<double>::max();  // lowest()
     test.fOp1 = std::numeric_limits<float>::max();
     test.fOp2 = std::numeric_limits<float>::max();
-    (CALL_GENERATED_CODE(isolate, f, &test, 0, 0, 0, 0));
+    f.Call(&test, 0, 0, 0, 0);
     CHECK_EQ(test.dF, 0U);
     CHECK_EQ(test.dUn, 0U);
     CHECK_EQ(test.dEq, 1U);
@@ -4127,7 +4102,7 @@ TEST(C_COND_FMT) {
     test.dOp2 = 0.0;
     test.fOp1 = std::numeric_limits<float>::quiet_NaN();
     test.fOp2 = 0.0;
-    (CALL_GENERATED_CODE(isolate, f, &test, 0, 0, 0, 0));
+    f.Call(&test, 0, 0, 0, 0);
     CHECK_EQ(test.dF, 0U);
     CHECK_EQ(test.dUn, 1U);
     CHECK_EQ(test.dEq, 0U);
@@ -4257,7 +4232,7 @@ TEST(CMP_COND_FMT) {
     assm.GetCode(isolate, &desc);
     Handle<Code> code =
         isolate->factory()->NewCode(desc, Code::STUB, Handle<Code>());
-    F3 f = FUNCTION_CAST<F3>(code->entry());
+    auto f = GeneratedCode<F3>::FromCode(*code);
     uint64_t dTrue  = 0xFFFFFFFFFFFFFFFF;
     uint64_t dFalse = 0x0000000000000000;
     uint32_t fTrue  = 0xFFFFFFFF;
@@ -4267,7 +4242,7 @@ TEST(CMP_COND_FMT) {
     test.dOp2 = 3.0;
     test.fOp1 = 2.0;
     test.fOp2 = 3.0;
-    (CALL_GENERATED_CODE(isolate, f, &test, 0, 0, 0, 0));
+    f.Call(&test, 0, 0, 0, 0);
     CHECK_EQ(bit_cast<uint64_t>(test.dF), dFalse);
     CHECK_EQ(bit_cast<uint64_t>(test.dUn), dFalse);
     CHECK_EQ(bit_cast<uint64_t>(test.dEq), dFalse);
@@ -4292,7 +4267,7 @@ TEST(CMP_COND_FMT) {
     test.dOp2 = std::numeric_limits<double>::min();
     test.fOp1 = std::numeric_limits<float>::min();
     test.fOp2 = -std::numeric_limits<float>::max();  // lowest()
-    (CALL_GENERATED_CODE(isolate, f, &test, 0, 0, 0, 0));
+    f.Call(&test, 0, 0, 0, 0);
     CHECK_EQ(bit_cast<uint64_t>(test.dF), dFalse);
     CHECK_EQ(bit_cast<uint64_t>(test.dUn), dFalse);
     CHECK_EQ(bit_cast<uint64_t>(test.dEq), dFalse);
@@ -4317,7 +4292,7 @@ TEST(CMP_COND_FMT) {
     test.dOp2 = -std::numeric_limits<double>::max();  // lowest()
     test.fOp1 = std::numeric_limits<float>::max();
     test.fOp2 = std::numeric_limits<float>::max();
-    (CALL_GENERATED_CODE(isolate, f, &test, 0, 0, 0, 0));
+    f.Call(&test, 0, 0, 0, 0);
     CHECK_EQ(bit_cast<uint64_t>(test.dF), dFalse);
     CHECK_EQ(bit_cast<uint64_t>(test.dUn), dFalse);
     CHECK_EQ(bit_cast<uint64_t>(test.dEq), dTrue);
@@ -4342,7 +4317,7 @@ TEST(CMP_COND_FMT) {
     test.dOp2 = 0.0;
     test.fOp1 = std::numeric_limits<float>::quiet_NaN();
     test.fOp2 = 0.0;
-    (CALL_GENERATED_CODE(isolate, f, &test, 0, 0, 0, 0));
+    f.Call(&test, 0, 0, 0, 0);
     CHECK_EQ(bit_cast<uint64_t>(test.dF), dFalse);
     CHECK_EQ(bit_cast<uint64_t>(test.dUn), dTrue);
     CHECK_EQ(bit_cast<uint64_t>(test.dEq), dFalse);
@@ -4436,7 +4411,7 @@ TEST(CVT) {
   assm.GetCode(isolate, &desc);
   Handle<Code> code =
       isolate->factory()->NewCode(desc, Code::STUB, Handle<Code>());
-  F3 f = FUNCTION_CAST<F3>(code->entry());
+  auto f = GeneratedCode<F3>::FromCode(*code);
 
   test.cvt_d_s_in = -0.51;
   test.cvt_d_w_in = -1;
@@ -4449,7 +4424,7 @@ TEST(CVT) {
   test.cvt_w_s_in = -0.51;
   test.cvt_w_d_in = -0.51;
 
-  (CALL_GENERATED_CODE(isolate, f, &test, 0, 0, 0, 0));
+  f.Call(&test, 0, 0, 0, 0);
   CHECK_EQ(test.cvt_d_s_out, static_cast<double>(test.cvt_d_s_in));
   CHECK_EQ(test.cvt_d_w_out, static_cast<double>(test.cvt_d_w_in));
   CHECK_EQ(test.cvt_d_l_out, static_cast<double>(test.cvt_d_l_in));
@@ -4472,7 +4447,7 @@ TEST(CVT) {
   test.cvt_w_s_in = 0.49;
   test.cvt_w_d_in = 0.49;
 
-  (CALL_GENERATED_CODE(isolate, f, &test, 0, 0, 0, 0));
+  f.Call(&test, 0, 0, 0, 0);
   CHECK_EQ(test.cvt_d_s_out, static_cast<double>(test.cvt_d_s_in));
   CHECK_EQ(test.cvt_d_w_out, static_cast<double>(test.cvt_d_w_in));
   CHECK_EQ(test.cvt_d_l_out, static_cast<double>(test.cvt_d_l_in));
@@ -4495,7 +4470,7 @@ TEST(CVT) {
   test.cvt_w_s_in = std::numeric_limits<float>::max();
   test.cvt_w_d_in = std::numeric_limits<double>::max();
 
-  (CALL_GENERATED_CODE(isolate, f, &test, 0, 0, 0, 0));
+  f.Call(&test, 0, 0, 0, 0);
   CHECK_EQ(test.cvt_d_s_out, static_cast<double>(test.cvt_d_s_in));
   CHECK_EQ(test.cvt_d_w_out, static_cast<double>(test.cvt_d_w_in));
   CHECK_EQ(test.cvt_d_l_out, static_cast<double>(test.cvt_d_l_in));
@@ -4519,7 +4494,7 @@ TEST(CVT) {
   test.cvt_w_s_in = -std::numeric_limits<float>::max();   // lowest()
   test.cvt_w_d_in = -std::numeric_limits<double>::max();  // lowest()
 
-  (CALL_GENERATED_CODE(isolate, f, &test, 0, 0, 0, 0));
+  f.Call(&test, 0, 0, 0, 0);
   CHECK_EQ(test.cvt_d_s_out, static_cast<double>(test.cvt_d_s_in));
   CHECK_EQ(test.cvt_d_w_out, static_cast<double>(test.cvt_d_w_in));
   CHECK_EQ(test.cvt_d_l_out, static_cast<double>(test.cvt_d_l_in));
@@ -4550,7 +4525,7 @@ TEST(CVT) {
   test.cvt_w_s_in = std::numeric_limits<float>::min();
   test.cvt_w_d_in = std::numeric_limits<double>::min();
 
-  (CALL_GENERATED_CODE(isolate, f, &test, 0, 0, 0, 0));
+  f.Call(&test, 0, 0, 0, 0);
   CHECK_EQ(test.cvt_d_s_out, static_cast<double>(test.cvt_d_s_in));
   CHECK_EQ(test.cvt_d_w_out, static_cast<double>(test.cvt_d_w_in));
   CHECK_EQ(test.cvt_d_l_out, static_cast<double>(test.cvt_d_l_in));
@@ -4608,9 +4583,9 @@ TEST(DIV_FMT) {
   assm.GetCode(isolate, &desc);
   Handle<Code> code =
       isolate->factory()->NewCode(desc, Code::STUB, Handle<Code>());
-  F3 f = FUNCTION_CAST<F3>(code->entry());
+  auto f = GeneratedCode<F3>::FromCode(*code);
 
-  (CALL_GENERATED_CODE(isolate, f, &test, 0, 0, 0, 0));
+  f.Call(&test, 0, 0, 0, 0);
 
   const int test_size = 3;
 
@@ -4651,7 +4626,7 @@ TEST(DIV_FMT) {
     test.fOp1 = fOp1[i];
     test.fOp2 = fOp2[i];
 
-    (CALL_GENERATED_CODE(isolate, f, &test, 0, 0, 0, 0));
+    f.Call(&test, 0, 0, 0, 0);
     CHECK_EQ(test.dRes, dRes[i]);
     CHECK_EQ(test.fRes, fRes[i]);
   }
@@ -4661,7 +4636,7 @@ TEST(DIV_FMT) {
   test.fOp1 = FLT_MAX;
   test.fOp2 = -0.0;
 
-  (CALL_GENERATED_CODE(isolate, f, &test, 0, 0, 0, 0));
+  f.Call(&test, 0, 0, 0, 0);
   CHECK(!std::isfinite(test.dRes));
   CHECK(!std::isfinite(test.fRes));
 
@@ -4670,7 +4645,7 @@ TEST(DIV_FMT) {
   test.fOp1 = 0.0;
   test.fOp2 = -0.0;
 
-  (CALL_GENERATED_CODE(isolate, f, &test, 0, 0, 0, 0));
+  f.Call(&test, 0, 0, 0, 0);
   CHECK(std::isnan(test.dRes));
   CHECK(std::isnan(test.fRes));
 
@@ -4679,7 +4654,7 @@ TEST(DIV_FMT) {
   test.fOp1 = std::numeric_limits<float>::quiet_NaN();
   test.fOp2 = -5.0;
 
-  (CALL_GENERATED_CODE(isolate, f, &test, 0, 0, 0, 0));
+  f.Call(&test, 0, 0, 0, 0);
   CHECK(std::isnan(test.dRes));
   CHECK(std::isnan(test.fRes));
 }
@@ -4701,10 +4676,10 @@ uint64_t run_align(uint64_t rs_value, uint64_t rt_value, uint8_t bp) {
   Handle<Code> code =
       isolate->factory()->NewCode(desc, Code::STUB, Handle<Code>());
 
-  F4 f = FUNCTION_CAST<F4>(code->entry());
+  auto f = GeneratedCode<F4>::FromCode(*code);
 
-  uint64_t res = reinterpret_cast<uint64_t>(
-      CALL_GENERATED_CODE(isolate, f, rs_value, rt_value, 0, 0, 0));
+  uint64_t res =
+      reinterpret_cast<uint64_t>(f.Call(rs_value, rt_value, 0, 0, 0));
 
   return res;
 }
@@ -4757,9 +4732,9 @@ uint64_t run_dalign(uint64_t rs_value, uint64_t rt_value, uint8_t bp) {
   Handle<Code> code =
       isolate->factory()->NewCode(desc, Code::STUB, Handle<Code>());
 
-  F4 f = FUNCTION_CAST<F4>(code->entry());
-  uint64_t res = reinterpret_cast<uint64_t>(
-      CALL_GENERATED_CODE(isolate, f, rs_value, rt_value, 0, 0, 0));
+  auto f = GeneratedCode<F4>::FromCode(*code);
+  uint64_t res =
+      reinterpret_cast<uint64_t>(f.Call(rs_value, rt_value, 0, 0, 0));
 
   return res;
 }
@@ -4818,11 +4793,10 @@ uint64_t run_aluipc(int16_t offset) {
   Handle<Code> code =
       isolate->factory()->NewCode(desc, Code::STUB, Handle<Code>());
 
-  F2 f = FUNCTION_CAST<F2>(code->entry());
-  PC = (uint64_t) f;  // Set the program counter.
+  auto f = GeneratedCode<F2>::FromCode(*code);
+  PC = (uint64_t)code->entry();  // Set the program counter.
 
-  uint64_t res = reinterpret_cast<uint64_t>(
-      CALL_GENERATED_CODE(isolate, f, 0, 0, 0, 0, 0));
+  uint64_t res = reinterpret_cast<uint64_t>(f.Call(0, 0, 0, 0, 0));
 
   return res;
 }
@@ -4873,11 +4847,10 @@ uint64_t run_auipc(int16_t offset) {
   Handle<Code> code =
       isolate->factory()->NewCode(desc, Code::STUB, Handle<Code>());
 
-  F2 f = FUNCTION_CAST<F2>(code->entry());
-  PC = (uint64_t) f;  // Set the program counter.
+  auto f = GeneratedCode<F2>::FromCode(*code);
+  PC = (uint64_t)code->entry();  // Set the program counter.
 
-  uint64_t res = reinterpret_cast<uint64_t>(
-      CALL_GENERATED_CODE(isolate, f, 0, 0, 0, 0, 0));
+  uint64_t res = reinterpret_cast<uint64_t>(f.Call(0, 0, 0, 0, 0));
 
   return res;
 }
@@ -4929,11 +4902,9 @@ uint64_t run_aui(uint64_t rs, uint16_t offset) {
   Handle<Code> code =
       isolate->factory()->NewCode(desc, Code::STUB, Handle<Code>());
 
-  F2 f = FUNCTION_CAST<F2>(code->entry());
+  auto f = GeneratedCode<F2>::FromCode(*code);
 
-  uint64_t res =
-    reinterpret_cast<uint64_t>
-    (CALL_GENERATED_CODE(isolate, f, 0, 0, 0, 0, 0));
+  uint64_t res = reinterpret_cast<uint64_t>(f.Call(0, 0, 0, 0, 0));
 
   return res;
 }
@@ -4956,11 +4927,9 @@ uint64_t run_daui(uint64_t rs, uint16_t offset) {
   Handle<Code> code =
       isolate->factory()->NewCode(desc, Code::STUB, Handle<Code>());
 
-  F2 f = FUNCTION_CAST<F2>(code->entry());
+  auto f = GeneratedCode<F2>::FromCode(*code);
 
-  uint64_t res =
-    reinterpret_cast<uint64_t>
-    (CALL_GENERATED_CODE(isolate, f, 0, 0, 0, 0, 0));
+  uint64_t res = reinterpret_cast<uint64_t>(f.Call(0, 0, 0, 0, 0));
 
   return res;
 }
@@ -4983,11 +4952,9 @@ uint64_t run_dahi(uint64_t rs, uint16_t offset) {
   Handle<Code> code =
       isolate->factory()->NewCode(desc, Code::STUB, Handle<Code>());
 
-  F2 f = FUNCTION_CAST<F2>(code->entry());
+  auto f = GeneratedCode<F2>::FromCode(*code);
 
-  uint64_t res =
-    reinterpret_cast<uint64_t>
-    (CALL_GENERATED_CODE(isolate, f, 0, 0, 0, 0, 0));
+  uint64_t res = reinterpret_cast<uint64_t>(f.Call(0, 0, 0, 0, 0));
 
   return res;
 }
@@ -5010,11 +4977,9 @@ uint64_t run_dati(uint64_t rs, uint16_t offset) {
   Handle<Code> code =
       isolate->factory()->NewCode(desc, Code::STUB, Handle<Code>());
 
-  F2 f = FUNCTION_CAST<F2>(code->entry());
+  auto f = GeneratedCode<F2>::FromCode(*code);
 
-  uint64_t res =
-    reinterpret_cast<uint64_t>
-    (CALL_GENERATED_CODE(isolate, f, 0, 0, 0, 0, 0));
+  uint64_t res = reinterpret_cast<uint64_t>(f.Call(0, 0, 0, 0, 0));
 
   return res;
 }
@@ -5118,10 +5083,9 @@ uint64_t run_li_macro(uint64_t imm, LiFlags mode, int32_t num_instr = 0) {
 #ifdef OBJECT_PRINT
   code->Print(std::cout);
 #endif
-  F2 f = FUNCTION_CAST<F2>(code->entry());
+  auto f = GeneratedCode<F2>::FromCode(*code);
 
-  uint64_t res = reinterpret_cast<uint64_t>(
-      CALL_GENERATED_CODE(isolate, f, 0, 0, 0, 0, 0));
+  uint64_t res = reinterpret_cast<uint64_t>(f.Call(0, 0, 0, 0, 0));
 
   return res;
 }
@@ -5330,10 +5294,9 @@ uint64_t run_lwpc(int offset) {
   Handle<Code> code =
       isolate->factory()->NewCode(desc, Code::STUB, Handle<Code>());
 
-  F2 f = FUNCTION_CAST<F2>(code->entry());
+  auto f = GeneratedCode<F2>::FromCode(*code);
 
-  uint64_t res = reinterpret_cast<uint64_t>(
-      CALL_GENERATED_CODE(isolate, f, 0, 0, 0, 0, 0));
+  uint64_t res = reinterpret_cast<uint64_t>(f.Call(0, 0, 0, 0, 0));
 
   return res;
 }
@@ -5388,6 +5351,7 @@ uint64_t run_lwupc(int offset) {
     __ dd(addiu_new);
   }
 
+  __ lwupc(t8, offset);  // offset 0; 0xEF080000 (t8 register)
   __ mov(v0, t8);
 
   // 256k instructions; 2^8k
@@ -5408,10 +5372,9 @@ uint64_t run_lwupc(int offset) {
   Handle<Code> code =
       isolate->factory()->NewCode(desc, Code::STUB, Handle<Code>());
 
-  F2 f = FUNCTION_CAST<F2>(code->entry());
+  auto f = GeneratedCode<F2>::FromCode(*code);
 
-  uint64_t res = reinterpret_cast<uint64_t>(
-      CALL_GENERATED_CODE(isolate, f, 0, 0, 0, 0, 0));
+  uint64_t res = reinterpret_cast<uint64_t>(f.Call(0, 0, 0, 0, 0));
 
   return res;
 }
@@ -5458,7 +5421,7 @@ uint64_t run_jic(int16_t offset) {
 
   Label get_program_counter, stop_execution;
   __ push(ra);
-  __ li(v0, 0);
+  __ li(v0, 0l);
   __ li(t1, 0x66);
 
   __ addiu(v0, v0, 0x1);        // <-- offset = -32
@@ -5468,8 +5431,8 @@ uint64_t run_jic(int16_t offset) {
   __ beq(v0, t1, &stop_execution);
   __ nop();
 
-  __ bal(&get_program_counter);  // t0 <- program counter
-  __ nop();
+  __ nal();  // t0 <- program counter
+  __ mov(t0, ra);
   __ jic(t0, offset);
 
   __ addiu(v0, v0, 0x100);
@@ -5477,11 +5440,6 @@ uint64_t run_jic(int16_t offset) {
   __ addiu(v0, v0, 0x1000);
   __ addiu(v0, v0, 0x2000);   // <--- offset = 16
   __ pop(ra);
-  __ jr(ra);
-  __ nop();
-
-  __ bind(&get_program_counter);
-  __ mov(t0, ra);
   __ jr(ra);
   __ nop();
 
@@ -5495,10 +5453,9 @@ uint64_t run_jic(int16_t offset) {
   Handle<Code> code =
       isolate->factory()->NewCode(desc, Code::STUB, Handle<Code>());
 
-  F2 f = FUNCTION_CAST<F2>(code->entry());
+  auto f = GeneratedCode<F2>::FromCode(*code);
 
-  uint64_t res = reinterpret_cast<uint64_t>(
-      CALL_GENERATED_CODE(isolate, f, 0, 0, 0, 0, 0));
+  uint64_t res = reinterpret_cast<uint64_t>(f.Call(0, 0, 0, 0, 0));
 
   return res;
 }
@@ -5539,7 +5496,7 @@ uint64_t run_beqzc(int32_t value, int32_t offset) {
                       v8::internal::CodeObjectRequired::kYes);
 
   Label stop_execution;
-  __ li(v0, 0);
+  __ li(v0, 0l);
   __ li(t1, 0x66);
 
   __ addiu(v0, v0, 0x1);        // <-- offset = -8
@@ -5568,10 +5525,9 @@ uint64_t run_beqzc(int32_t value, int32_t offset) {
   Handle<Code> code =
       isolate->factory()->NewCode(desc, Code::STUB, Handle<Code>());
 
-  F2 f = FUNCTION_CAST<F2>(code->entry());
+  auto f = GeneratedCode<F2>::FromCode(*code);
 
-  uint64_t res = reinterpret_cast<uint64_t>(
-      CALL_GENERATED_CODE(isolate, f, value, 0, 0, 0, 0));
+  uint64_t res = reinterpret_cast<uint64_t>(f.Call(value, 0, 0, 0, 0));
 
   return res;
 }
@@ -5674,9 +5630,9 @@ void run_bz_bnz(TestCaseMsaBranch* input, Branch GenerateBranch,
 #ifdef OBJECT_PRINT
   code->Print(std::cout);
 #endif
-  F3 f = FUNCTION_CAST<F3>(code->entry());
+  auto f = GeneratedCode<F3>::FromCode(*code);
 
-  (CALL_GENERATED_CODE(isolate, f, &res, 0, 0, 0, 0));
+  f.Call(&res, 0, 0, 0, 0);
   if (branched) {
     CHECK_EQ(t.wd_lo, res.d[0]);
     CHECK_EQ(t.wd_hi, res.d[1]);
@@ -5799,7 +5755,7 @@ uint64_t run_jialc(int16_t offset) {
 
   Label main_block, get_program_counter;
   __ push(ra);
-  __ li(v0, 0);
+  __ li(v0, 0l);
   __ beq(v0, v0, &main_block);
   __ nop();
 
@@ -5817,8 +5773,8 @@ uint64_t run_jialc(int16_t offset) {
 
   // Block 3 (Main)
   __ bind(&main_block);
-  __ bal(&get_program_counter);  // t0 <- program counter
-  __ nop();
+  __ nal();  // t0 <- program counter
+  __ mov(t0, ra);
   __ jialc(t0, offset);
   __ addiu(v0, v0, 0x4);
   __ pop(ra);
@@ -5837,21 +5793,15 @@ uint64_t run_jialc(int16_t offset) {
   __ jr(ra);
   __ nop();
 
-  __ bind(&get_program_counter);
-  __ mov(t0, ra);
-  __ jr(ra);
-  __ nop();
-
 
   CodeDesc desc;
   assm.GetCode(isolate, &desc);
   Handle<Code> code =
       isolate->factory()->NewCode(desc, Code::STUB, Handle<Code>());
 
-  F2 f = FUNCTION_CAST<F2>(code->entry());
+  auto f = GeneratedCode<F2>::FromCode(*code);
 
-  uint64_t res = reinterpret_cast<uint64_t>(
-      CALL_GENERATED_CODE(isolate, f, 0, 0, 0, 0, 0));
+  uint64_t res = reinterpret_cast<uint64_t>(f.Call(0, 0, 0, 0, 0));
 
   return res;
 }
@@ -5901,11 +5851,10 @@ uint64_t run_addiupc(int32_t imm19) {
   Handle<Code> code =
       isolate->factory()->NewCode(desc, Code::STUB, Handle<Code>());
 
-  F2 f = FUNCTION_CAST<F2>(code->entry());
-  PC = (uint64_t) f;  // Set the program counter.
+  auto f = GeneratedCode<F2>::FromCode(*code);
+  PC = (uint64_t)code->entry();  // Set the program counter.
 
-  uint64_t res = reinterpret_cast<uint64_t>(
-      CALL_GENERATED_CODE(isolate, f, 0, 0, 0, 0, 0));
+  uint64_t res = reinterpret_cast<uint64_t>(f.Call(0, 0, 0, 0, 0));
 
   return res;
 }
@@ -5957,6 +5906,7 @@ uint64_t run_ldpc(int offset) {
     __ dd(addiu_new);
   }
 
+  __ ldpc(t8, offset);  // offset 0; 0xEF080000 (t8 register)
   __ mov(v0, t8);
 
   // 256k instructions; 2 * 2^7k = 2^8k
@@ -5977,10 +5927,9 @@ uint64_t run_ldpc(int offset) {
   Handle<Code> code =
       isolate->factory()->NewCode(desc, Code::STUB, Handle<Code>());
 
-  F2 f = FUNCTION_CAST<F2>(code->entry());
+  auto f = GeneratedCode<F2>::FromCode(*code);
 
-  uint64_t res = reinterpret_cast<uint64_t>(
-      CALL_GENERATED_CODE(isolate, f, 0, 0, 0, 0, 0));
+  uint64_t res = reinterpret_cast<uint64_t>(f.Call(0, 0, 0, 0, 0));
 
   return res;
 }
@@ -6031,8 +5980,8 @@ int64_t run_bc(int32_t offset) {
 
   Label continue_1, stop_execution;
   __ push(ra);
-  __ li(v0, 0);
-  __ li(t8, 0);
+  __ li(v0, 0l);
+  __ li(t8, 0l);
   __ li(t9, 2);   // Condition for the stopping execution.
 
   for (int32_t i = -100; i <= -11; ++i) {
@@ -6067,10 +6016,9 @@ int64_t run_bc(int32_t offset) {
   Handle<Code> code =
       isolate->factory()->NewCode(desc, Code::STUB, Handle<Code>());
 
-  F2 f = FUNCTION_CAST<F2>(code->entry());
+  auto f = GeneratedCode<F2>::FromCode(*code);
 
-  int64_t res = reinterpret_cast<int64_t>(
-      CALL_GENERATED_CODE(isolate, f, 0, 0, 0, 0, 0));
+  int64_t res = reinterpret_cast<int64_t>(f.Call(0, 0, 0, 0, 0));
 
   return res;
 }
@@ -6112,8 +6060,8 @@ int64_t run_balc(int32_t offset) {
 
   Label continue_1, stop_execution;
   __ push(ra);
-  __ li(v0, 0);
-  __ li(t8, 0);
+  __ li(v0, 0l);
+  __ li(t8, 0l);
   __ li(t9, 2);   // Condition for stopping execution.
 
   __ beq(t8, t8, &continue_1);
@@ -6150,10 +6098,9 @@ int64_t run_balc(int32_t offset) {
   Handle<Code> code =
       isolate->factory()->NewCode(desc, Code::STUB, Handle<Code>());
 
-  F2 f = FUNCTION_CAST<F2>(code->entry());
+  auto f = GeneratedCode<F2>::FromCode(*code);
 
-  int64_t res = reinterpret_cast<int64_t>(
-      CALL_GENERATED_CODE(isolate, f, 0, 0, 0, 0, 0));
+  int64_t res = reinterpret_cast<int64_t>(f.Call(0, 0, 0, 0, 0));
 
   return res;
 }
@@ -6201,10 +6148,9 @@ uint64_t run_dsll(uint64_t rt_value, uint16_t sa_value) {
   Handle<Code> code =
       isolate->factory()->NewCode(desc, Code::STUB, Handle<Code>());
 
-  F4 f = FUNCTION_CAST<F4>(code->entry());
+  auto f = GeneratedCode<F4>::FromCode(*code);
 
-  uint64_t res = reinterpret_cast<uint64_t>(
-      CALL_GENERATED_CODE(isolate, f, rt_value, 0, 0, 0, 0));
+  uint64_t res = reinterpret_cast<uint64_t>(f.Call(rt_value, 0, 0, 0, 0));
 
   return res;
 }
@@ -6260,10 +6206,9 @@ uint64_t run_bal(int16_t offset) {
   Handle<Code> code =
       isolate->factory()->NewCode(desc, Code::STUB, Handle<Code>());
 
-  F2 f = FUNCTION_CAST<F2>(code->entry());
+  auto f = GeneratedCode<F2>::FromCode(*code);
 
-  uint64_t res = reinterpret_cast<uint64_t>(
-      CALL_GENERATED_CODE(isolate, f, 0, 0, 0, 0, 0));
+  uint64_t res = reinterpret_cast<uint64_t>(f.Call(0, 0, 0, 0, 0));
 
   return res;
 }
@@ -6302,7 +6247,7 @@ TEST(Trampoline) {
   MacroAssembler assm(isolate, nullptr, 0,
                       v8::internal::CodeObjectRequired::kYes);
   Label done;
-  size_t nr_calls = kMaxBranchOffset / (2 * Instruction::kInstrSize) + 2;
+  size_t nr_calls = kMaxBranchOffset / (2 * kInstrSize) + 2;
 
   for (size_t i = 0; i < nr_calls; ++i) {
     __ BranchShort(&done, eq, a0, Operand(a1));
@@ -6315,10 +6260,9 @@ TEST(Trampoline) {
   assm.GetCode(isolate, &desc);
   Handle<Code> code =
       isolate->factory()->NewCode(desc, Code::STUB, Handle<Code>());
-  F2 f = FUNCTION_CAST<F2>(code->entry());
+  auto f = GeneratedCode<F2>::FromCode(*code);
 
-  int64_t res = reinterpret_cast<int64_t>(
-      CALL_GENERATED_CODE(isolate, f, 42, 42, 0, 0, 0));
+  int64_t res = reinterpret_cast<int64_t>(f.Call(42, 42, 0, 0, 0));
   CHECK_EQ(0, res);
 }
 
@@ -6383,7 +6327,7 @@ void helper_madd_msub_maddf_msubf(F func) {
   assm.GetCode(isolate, &desc);
   Handle<Code> code =
       isolate->factory()->NewCode(desc, Code::STUB, Handle<Code>());
-  F3 f = FUNCTION_CAST<F3>(code->entry());
+  auto f = GeneratedCode<F3>::FromCode(*code);
 
   const size_t kTableLength = sizeof(test_cases) / sizeof(TestCaseMaddMsub<T>);
   TestCaseMaddMsub<T> tc;
@@ -6392,7 +6336,7 @@ void helper_madd_msub_maddf_msubf(F func) {
     tc.fs = test_cases[i].fs;
     tc.ft = test_cases[i].ft;
 
-    (CALL_GENERATED_CODE(isolate, f, &tc, 0, 0, 0, 0));
+    f.Call(&tc, 0, 0, 0, 0);
 
     T res_sub;
     T res_add;
@@ -6470,10 +6414,9 @@ uint64_t run_Subu(uint64_t imm, int32_t num_instr) {
 #ifdef OBJECT_PRINT
   code->Print(std::cout);
 #endif
-  F2 f = FUNCTION_CAST<F2>(code->entry());
+  auto f = GeneratedCode<F2>::FromCode(*code);
 
-  uint64_t res = reinterpret_cast<uint64_t>(
-      CALL_GENERATED_CODE(isolate, f, 0, 0, 0, 0, 0));
+  uint64_t res = reinterpret_cast<uint64_t>(f.Call(0, 0, 0, 0, 0));
 
   return res;
 }
@@ -6555,10 +6498,9 @@ uint64_t run_Dsubu(uint64_t imm, int32_t num_instr) {
 #ifdef OBJECT_PRINT
   code->Print(std::cout);
 #endif
-  F2 f = FUNCTION_CAST<F2>(code->entry());
+  auto f = GeneratedCode<F2>::FromCode(*code);
 
-  uint64_t res = reinterpret_cast<uint64_t>(
-      CALL_GENERATED_CODE(isolate, f, 0, 0, 0, 0, 0));
+  uint64_t res = reinterpret_cast<uint64_t>(f.Call(0, 0, 0, 0, 0));
 
   return res;
 }
@@ -6650,10 +6592,9 @@ uint64_t run_Dins(uint64_t imm, uint64_t source, uint16_t pos, uint16_t size) {
   assm.GetCode(isolate, &desc);
   Handle<Code> code =
       isolate->factory()->NewCode(desc, Code::STUB, Handle<Code>());
-  F2 f = FUNCTION_CAST<F2>(code->entry());
+  auto f = GeneratedCode<F2>::FromCode(*code);
 
-  uint64_t res = reinterpret_cast<uint64_t>(
-      CALL_GENERATED_CODE(isolate, f, 0, 0, 0, 0, 0));
+  uint64_t res = reinterpret_cast<uint64_t>(f.Call(0, 0, 0, 0, 0));
 
   return res;
 }
@@ -6712,10 +6653,9 @@ uint64_t run_Ins(uint64_t imm, uint64_t source, uint16_t pos, uint16_t size) {
   assm.GetCode(isolate, &desc);
   Handle<Code> code =
       isolate->factory()->NewCode(desc, Code::STUB, Handle<Code>());
-  F2 f = FUNCTION_CAST<F2>(code->entry());
+  auto f = GeneratedCode<F2>::FromCode(*code);
 
-  uint64_t res = reinterpret_cast<uint64_t>(
-      CALL_GENERATED_CODE(isolate, f, 0, 0, 0, 0, 0));
+  uint64_t res = reinterpret_cast<uint64_t>(f.Call(0, 0, 0, 0, 0));
 
   return res;
 }
@@ -6782,10 +6722,9 @@ uint64_t run_Ext(uint64_t source, uint16_t pos, uint16_t size) {
   assm.GetCode(isolate, &desc);
   Handle<Code> code =
       isolate->factory()->NewCode(desc, Code::STUB, Handle<Code>());
-  F2 f = FUNCTION_CAST<F2>(code->entry());
+  auto f = GeneratedCode<F2>::FromCode(*code);
 
-  uint64_t res = reinterpret_cast<uint64_t>(
-      CALL_GENERATED_CODE(isolate, f, 0, 0, 0, 0, 0));
+  uint64_t res = reinterpret_cast<uint64_t>(f.Call(0, 0, 0, 0, 0));
 
   return res;
 }
@@ -6870,10 +6809,9 @@ TEST(MSA_fill_copy) {
 #ifdef OBJECT_PRINT
   code->Print(std::cout);
 #endif
-  F3 f = FUNCTION_CAST<F3>(code->entry());
+  auto f = GeneratedCode<F3>::FromCode(*code);
 
-  Object* dummy = CALL_GENERATED_CODE(isolate, f, &t, 0, 0, 0, 0);
-  USE(dummy);
+  f.Call(&t, 0, 0, 0, 0);
 
   CHECK_EQ(0x83u, t.u8);
   CHECK_EQ(0xB683u, t.u16);
@@ -6935,10 +6873,9 @@ TEST(MSA_fill_copy_2) {
 #ifdef OBJECT_PRINT
   code->Print(std::cout);
 #endif
-  F5 f = FUNCTION_CAST<F5>(code->entry());
+  auto f = GeneratedCode<F5>::FromCode(*code);
 
-  Object* dummy = CALL_GENERATED_CODE(isolate, f, &t[0], &t[1], 0, 0, 0);
-  USE(dummy);
+  f.Call(&t[0], &t[1], 0, 0, 0);
 
   CHECK_EQ(0x5555555555555555, t[0].d0);
   CHECK_EQ(0xAAAAAAAAAAAAAAAA, t[0].d1);
@@ -6990,10 +6927,9 @@ TEST(MSA_fill_copy_3) {
 #ifdef OBJECT_PRINT
   code->Print(std::cout);
 #endif
-  F5 f = FUNCTION_CAST<F5>(code->entry());
+  auto f = GeneratedCode<F5>::FromCode(*code);
 
-  Object* dummy = CALL_GENERATED_CODE(isolate, f, &t[0], &t[1], 0, 0, 0);
-  USE(dummy);
+  f.Call(&t[0], &t[1], 0, 0, 0);
 
   CHECK_EQ(0x5555555555555555, t[0].d0);
   CHECK_EQ(0x5555555555555555, t[1].d0);
@@ -7041,9 +6977,9 @@ void run_msa_insert(int64_t rs_value, int n, msa_reg_t* w) {
 #ifdef OBJECT_PRINT
   code->Print(std::cout);
 #endif
-  F3 f = FUNCTION_CAST<F3>(code->entry());
+  auto f = GeneratedCode<F3>::FromCode(*code);
 
-  (CALL_GENERATED_CODE(isolate, f, w, 0, 0, 0, 0));
+  f.Call(w, 0, 0, 0, 0);
 }
 
 TEST(MSA_insert) {
@@ -7136,7 +7072,7 @@ void run_msa_ctc_cfc(uint64_t value) {
 
   MSAControlRegister msareg = {kMSACSRRegister};
   __ li(t0, value);
-  __ li(t2, 0);
+  __ li(t2, 0l);
   __ cfcmsa(t1, msareg);
   __ ctcmsa(msareg, t0);
   __ cfcmsa(t2, msareg);
@@ -7152,10 +7088,10 @@ void run_msa_ctc_cfc(uint64_t value) {
 #ifdef OBJECT_PRINT
   code->Print(std::cout);
 #endif
-  F3 f = FUNCTION_CAST<F3>(code->entry());
+  auto f = GeneratedCode<F3>::FromCode(*code);
 
   uint64_t res;
-  (CALL_GENERATED_CODE(isolate, f, &res, 0, 0, 0, 0));
+  f.Call(&res, 0, 0, 0, 0);
 
   CHECK_EQ(bit_cast<uint64_t>(static_cast<int64_t>(
                bit_cast<int32_t>(static_cast<uint32_t>(value & 0x0167FFFF)))),
@@ -7202,8 +7138,8 @@ TEST(MSA_move_v) {
 #ifdef OBJECT_PRINT
     code->Print(std::cout);
 #endif
-    F3 f = FUNCTION_CAST<F3>(code->entry());
-    (CALL_GENERATED_CODE(isolate, f, &t[i].wd_lo, 0, 0, 0, 0));
+    auto f = GeneratedCode<F3>::FromCode(*code);
+    f.Call(&t[i].wd_lo, 0, 0, 0, 0);
     CHECK_EQ(t[i].ws_lo, t[i].wd_lo);
     CHECK_EQ(t[i].ws_hi, t[i].wd_hi);
   }
@@ -7248,8 +7184,8 @@ void run_msa_sldi(OperFunc GenerateOperation,
 #ifdef OBJECT_PRINT
     code->Print(std::cout);
 #endif
-    F3 f = FUNCTION_CAST<F3>(code->entry());
-    (CALL_GENERATED_CODE(isolate, f, &res[0], 0, 0, 0, 0));
+    auto f = GeneratedCode<F3>::FromCode(*code);
+    f.Call(&res[0], 0, 0, 0, 0);
     GenerateExpectedResult(reinterpret_cast<uint8_t*>(&t[i].ws_lo),
                            reinterpret_cast<uint8_t*>(&t[i].wd_lo));
     CHECK_EQ(res[0], t[i].wd_lo);
@@ -7409,9 +7345,9 @@ void run_msa_i8(SecondaryField opcode, uint64_t ws_lo, uint64_t ws_hi,
 #ifdef OBJECT_PRINT
   code->Print(std::cout);
 #endif
-  F3 f = FUNCTION_CAST<F3>(code->entry());
+  auto f = GeneratedCode<F3>::FromCode(*code);
 
-  (CALL_GENERATED_CODE(isolate, f, &res, 0, 0, 0, 0));
+  f.Call(&res, 0, 0, 0, 0);
 
   uint64_t mask = i8 * 0x0101010101010101ull;
   switch (opcode) {
@@ -7614,9 +7550,9 @@ void run_msa_i5(struct TestCaseMsaI5* input, bool i5_sign_ext,
 #ifdef OBJECT_PRINT
   code->Print(std::cout);
 #endif
-  F3 f = FUNCTION_CAST<F3>(code->entry());
+  auto f = GeneratedCode<F3>::FromCode(*code);
 
-  (CALL_GENERATED_CODE(isolate, f, &res, 0, 0, 0, 0));
+  f.Call(&res, 0, 0, 0, 0);
 
   CHECK_EQ(GenerateOperationFunc(input->ws_lo, input->i5), res.d[0]);
   CHECK_EQ(GenerateOperationFunc(input->ws_hi, input->i5), res.d[1]);
@@ -8041,9 +7977,9 @@ void run_msa_2r(const struct TestCaseMsa2R* input,
 #ifdef OBJECT_PRINT
   code->Print(std::cout);
 #endif
-  F3 f = FUNCTION_CAST<F3>(code->entry());
+  auto f = GeneratedCode<F3>::FromCode(*code);
 
-  (CALL_GENERATED_CODE(isolate, f, &res, 0, 0, 0, 0));
+  f.Call(&res, 0, 0, 0, 0);
 
   CHECK_EQ(input->exp_res_lo, res.d[0]);
   CHECK_EQ(input->exp_res_hi, res.d[1]);
@@ -8239,35 +8175,35 @@ TEST(MSA_fclass) {
   CcTest::InitializeVM();
 
 #define BIT(n) (0x1 << n)
-#define SNAN BIT(0)
-#define QNAN BIT(1)
-#define NEG_INFINITY BIT((2))
-#define NEG_NORMAL BIT(3)
-#define NEG_SUBNORMAL BIT(4)
-#define NEG_ZERO BIT(5)
-#define POS_INFINITY BIT(6)
-#define POS_NORMAL BIT(7)
-#define POS_SUBNORMAL BIT(8)
-#define POS_ZERO BIT(9)
+#define SNAN_BIT BIT(0)
+#define QNAN_BIT BIT(1)
+#define NEG_INFINITY_BIT BIT((2))
+#define NEG_NORMAL_BIT BIT(3)
+#define NEG_SUBNORMAL_BIT BIT(4)
+#define NEG_ZERO_BIT BIT(5)
+#define POS_INFINITY_BIT BIT(6)
+#define POS_NORMAL_BIT BIT(7)
+#define POS_SUBNORMAL_BIT BIT(8)
+#define POS_ZERO_BIT BIT(9)
 
   const float inf_float = std::numeric_limits<float>::infinity();
   const double inf_double = std::numeric_limits<double>::infinity();
 
   const struct TestCaseMsa2RF_F_U tc_s[] = {
-      {1.f, -0.00001, 208e10f, -34.8e-30f, POS_NORMAL, NEG_NORMAL, POS_NORMAL,
-       NEG_NORMAL},
-      {inf_float, -inf_float, 0, -0.f, POS_INFINITY, NEG_INFINITY, POS_ZERO,
-       NEG_ZERO},
-      {3.036e-40f, -6.392e-43f, 1.41e-45f, -1.17e-38f, POS_SUBNORMAL,
-       NEG_SUBNORMAL, POS_SUBNORMAL, NEG_SUBNORMAL}};
+      {1.f, -0.00001, 208e10f, -34.8e-30f, POS_NORMAL_BIT, NEG_NORMAL_BIT,
+       POS_NORMAL_BIT, NEG_NORMAL_BIT},
+      {inf_float, -inf_float, 0, -0.f, POS_INFINITY_BIT, NEG_INFINITY_BIT,
+       POS_ZERO_BIT, NEG_ZERO_BIT},
+      {3.036e-40f, -6.392e-43f, 1.41e-45f, -1.17e-38f, POS_SUBNORMAL_BIT,
+       NEG_SUBNORMAL_BIT, POS_SUBNORMAL_BIT, NEG_SUBNORMAL_BIT}};
 
   const struct TestCaseMsa2RF_D_U tc_d[] = {
-      {1., -0.00000001, POS_NORMAL, NEG_NORMAL},
-      {208e10, -34.8e-300, POS_NORMAL, NEG_NORMAL},
-      {inf_double, -inf_double, POS_INFINITY, NEG_INFINITY},
-      {0, -0., POS_ZERO, NEG_ZERO},
-      {1.036e-308, -6.392e-309, POS_SUBNORMAL, NEG_SUBNORMAL},
-      {1.41e-323, -3.17e208, POS_SUBNORMAL, NEG_NORMAL}};
+      {1., -0.00000001, POS_NORMAL_BIT, NEG_NORMAL_BIT},
+      {208e10, -34.8e-300, POS_NORMAL_BIT, NEG_NORMAL_BIT},
+      {inf_double, -inf_double, POS_INFINITY_BIT, NEG_INFINITY_BIT},
+      {0, -0., POS_ZERO_BIT, NEG_ZERO_BIT},
+      {1.036e-308, -6.392e-309, POS_SUBNORMAL_BIT, NEG_SUBNORMAL_BIT},
+      {1.41e-323, -3.17e208, POS_SUBNORMAL_BIT, NEG_NORMAL_BIT}};
 
   for (size_t i = 0; i < sizeof(tc_s) / sizeof(TestCaseMsa2RF_F_U); ++i) {
     run_msa_2r(reinterpret_cast<const TestCaseMsa2R*>(&tc_s[i]),
@@ -8279,16 +8215,16 @@ TEST(MSA_fclass) {
   }
 
 #undef BIT
-#undef SNAN
-#undef QNAN
-#undef NEG_INFINITY
-#undef NEG_NORMAL
-#undef NEG_SUBNORMAL
-#undef NEG_ZERO
-#undef POS_INFINITY
-#undef POS_NORMAL
-#undef POS_SUBNORMAL
-#undef POS_ZERO
+#undef SNAN_BIT
+#undef QNAN_BIT
+#undef NEG_INFINITY_BIT
+#undef NEG_NORMAL_BIT
+#undef NEG_SUBNORMAL_BIT
+#undef NEG_ZERO_BIT
+#undef POS_INFINITY_BIT
+#undef POS_NORMAL_BIT
+#undef POS_SUBNORMAL_BIT
+#undef POS_ZERO_BIT
 }
 
 struct TestCaseMsa2RF_F_I {
@@ -9092,9 +9028,9 @@ void run_msa_vector(struct TestCaseMsaVector* input,
 #ifdef OBJECT_PRINT
   code->Print(std::cout);
 #endif
-  F3 f = FUNCTION_CAST<F3>(code->entry());
+  auto f = GeneratedCode<F3>::FromCode(*code);
 
-  (CALL_GENERATED_CODE(isolate, f, &res, 0, 0, 0, 0));
+  f.Call(&res, 0, 0, 0, 0);
 
   CHECK_EQ(GenerateOperationFunc(input->wd_lo, input->ws_lo, input->wt_lo),
            res.d[0]);
@@ -9181,9 +9117,9 @@ void run_msa_bit(struct TestCaseMsaBit* input, InstFunc GenerateInstructionFunc,
 #ifdef OBJECT_PRINT
   code->Print(std::cout);
 #endif
-  F3 f = FUNCTION_CAST<F3>(code->entry());
+  auto f = GeneratedCode<F3>::FromCode(*code);
 
-  (CALL_GENERATED_CODE(isolate, f, &res, 0, 0, 0, 0));
+  f.Call(&res, 0, 0, 0, 0);
 
   CHECK_EQ(GenerateOperationFunc(input->wd_lo, input->ws_lo, input->m),
            res.d[0]);
@@ -9655,9 +9591,9 @@ void run_msa_i10(int32_t input, InstFunc GenerateVectorInstructionFunc,
 #ifdef OBJECT_PRINT
   code->Print(std::cout);
 #endif
-  F3 f = FUNCTION_CAST<F3>(code->entry());
+  auto f = GeneratedCode<F3>::FromCode(*code);
 
-  (CALL_GENERATED_CODE(isolate, f, &res, 0, 0, 0, 0));
+  f.Call(&res, 0, 0, 0, 0);
 
   CHECK_EQ(GenerateOperationFunc(input), res.d[0]);
   CHECK_EQ(GenerateOperationFunc(input), res.d[1]);
@@ -9734,9 +9670,9 @@ void run_msa_mi10(InstFunc GenerateVectorInstructionFunc) {
 #ifdef OBJECT_PRINT
   code->Print(std::cout);
 #endif
-  F5 f = FUNCTION_CAST<F5>(code->entry());
+  auto f = GeneratedCode<F5>::FromCode(*code);
 
-  (CALL_GENERATED_CODE(isolate, f, in_array_middle, out_array_middle, 0, 0, 0));
+  f.Call(in_array_middle, out_array_middle, 0, 0, 0);
 
   CHECK_EQ(memcmp(in_test_vector, out_test_vector, arraysize(in_test_vector)),
            0);
@@ -9814,9 +9750,9 @@ void run_msa_3r(struct TestCaseMsa3R* input, InstFunc GenerateI5InstructionFunc,
 #ifdef OBJECT_PRINT
   code->Print(std::cout);
 #endif
-  F3 f = FUNCTION_CAST<F3>(code->entry());
+  auto f = GeneratedCode<F3>::FromCode(*code);
 
-  (CALL_GENERATED_CODE(isolate, f, &res, 0, 0, 0, 0));
+  f.Call(&res, 0, 0, 0, 0);
 
   GenerateOperationFunc(&input->ws_lo, &input->wt_lo, &input->wd_lo);
   if (input->wd_lo != Unpredictable) {
@@ -10819,9 +10755,9 @@ void run_msa_3rf(const struct TestCaseMsa3RF* input,
 #ifdef OBJECT_PRINT
   code->Print(std::cout);
 #endif
-  F3 f = FUNCTION_CAST<F3>(code->entry());
+  auto f = GeneratedCode<F3>::FromCode(*code);
 
-  (CALL_GENERATED_CODE(isolate, f, &res, 0, 0, 0, 0));
+  f.Call(&res, 0, 0, 0, 0);
 
   CHECK_EQ(output->exp_res_lo, res.d[0]);
   CHECK_EQ(output->exp_res_hi, res.d[1]);
@@ -11313,7 +11249,8 @@ TEST(MSA_fexdo) {
        -inf_float, 0, 0, 0, 0},
       {-0.f, 0.f, 123.567f, -765.321f, -6e-8f, 5.9e-8f, 1e-7f, -1e-20f, 0, 0, 0,
        0},
-      {1e-36f, 1e20f, -1e20f, 2e-20f, 6e-8f, -2.9e-8f, -66505.f, -65504.f}};
+      {1e-36f, 1e20f, -1e20f, 2e-20f, 6e-8f, -2.9e-8f, -66505.f, -65504.f, 0, 0,
+       0, 0}};
 
   const struct TestCaseMsa3RF_D tc_d[] = {
       // ws_lo, ws_hi, wt_lo, wt_hi, wd_lo, wd_hi

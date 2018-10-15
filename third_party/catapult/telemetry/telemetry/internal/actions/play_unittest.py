@@ -20,8 +20,6 @@ class PlayActionTest(tab_test_case.TabTestCase):
     tab_test_case.TabTestCase.setUp(self)
     self.Navigate('video_test.html')
 
-  # crbug.com/749890
-  @decorators.Disabled('android', 'linux', 'chromeos')
   def testPlayWithNoSelector(self):
     """Tests that with no selector Play action plays first video element."""
     action = play.PlayAction(playing_event_timeout_in_seconds=5)
@@ -34,8 +32,6 @@ class PlayActionTest(tab_test_case.TabTestCase):
     self.assertTrue(self._tab.EvaluateJavaScript(VIDEO_1_PLAYING_CHECK))
     self.assertFalse(self._tab.EvaluateJavaScript(AUDIO_1_PLAYING_CHECK))
 
-  # crbug.com/749890
-  @decorators.Disabled('android', 'linux', 'chromeos')
   def testPlayWithVideoSelector(self):
     """Tests that Play action plays video element matching selector."""
     action = play.PlayAction(selector='#video_1',
@@ -49,8 +45,6 @@ class PlayActionTest(tab_test_case.TabTestCase):
     self.assertTrue(self._tab.EvaluateJavaScript(VIDEO_1_PLAYING_CHECK))
     self.assertFalse(self._tab.EvaluateJavaScript(AUDIO_1_PLAYING_CHECK))
 
-  # crbug.com/749890
-  @decorators.Disabled('android', 'linux', 'chromeos')
   def testPlayWithAllSelector(self):
     """Tests that Play action plays all video elements with selector='all'."""
     action = play.PlayAction(selector='all',
@@ -64,7 +58,6 @@ class PlayActionTest(tab_test_case.TabTestCase):
     self.assertTrue(self._tab.EvaluateJavaScript(VIDEO_1_PLAYING_CHECK))
     self.assertTrue(self._tab.EvaluateJavaScript(AUDIO_1_PLAYING_CHECK))
 
-  @decorators.Disabled('linux', 'chromeos')  # crbug.com/749890
   def testPlayWaitForPlayTimeout(self):
     """Tests that wait_for_playing timeouts if video does not play."""
     action = play.PlayAction(selector='#video_1',
@@ -74,8 +67,7 @@ class PlayActionTest(tab_test_case.TabTestCase):
     self.assertFalse(self._tab.EvaluateJavaScript(VIDEO_1_PLAYING_CHECK))
     self.assertRaises(py_utils.TimeoutException, action.RunAction, self._tab)
 
-  # crbug.com/749890
-  @decorators.Disabled('android', 'linux', 'chromeos')
+  @decorators.Disabled('mac')  # crbug.com/855885
   def testPlayWaitForEnded(self):
     """Tests that wait_for_ended waits for video to end."""
     action = play.PlayAction(selector='#video_1',
@@ -88,7 +80,6 @@ class PlayActionTest(tab_test_case.TabTestCase):
     # Assert video ended.
     self.assertTrue(self._tab.EvaluateJavaScript(VIDEO_1_ENDED_CHECK))
 
-  @decorators.Disabled('linux', 'chromeos')  # crbug.com/749890
   def testPlayWithoutWaitForEnded(self):
     """Tests that wait_for_ended waits for video to end."""
     action = play.PlayAction(selector='#video_1',
@@ -101,7 +92,6 @@ class PlayActionTest(tab_test_case.TabTestCase):
     # Assert video did not end.
     self.assertFalse(self._tab.EvaluateJavaScript(VIDEO_1_ENDED_CHECK))
 
-  @decorators.Disabled('linux', 'chromeos')  # crbug.com/749890
   def testPlayWaitForEndedTimeout(self):
     """Tests that action raises exception if timeout is reached."""
     action = play.PlayAction(selector='#video_1',

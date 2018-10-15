@@ -41,10 +41,11 @@
 #include "src/arm64/utils-arm64.h"
 #include "src/base/platform/platform.h"
 #include "src/base/utils/random-number-generator.h"
-#include "src/factory.h"
+#include "src/heap/factory.h"
 #include "src/macro-assembler.h"
 #include "test/cctest/cctest.h"
 #include "test/cctest/test-utils-arm64.h"
+#include "test/common/assembler-tester.h"
 
 namespace v8 {
 namespace internal {
@@ -129,13 +130,11 @@ static void InitializeVM() {
       new Decoder<DispatchingDecoderVisitor>();                \
   Simulator simulator(decoder);                                \
   PrintDisassembler* pdis = nullptr;                           \
-  RegisterDump core;
-
-/*  if (Cctest::trace_sim()) {                                                 \
-    pdis = new PrintDisassembler(stdout);                                      \
-    decoder.PrependVisitor(pdis);                                              \
-  }                                                                            \
-  */
+  RegisterDump core;                                           \
+  if (i::FLAG_trace_sim) {                                     \
+    pdis = new PrintDisassembler(stdout);                      \
+    decoder->PrependVisitor(pdis);                             \
+  }
 
 // Reset the assembler and simulator, so that instructions can be generated,
 // but don't actually emit any code. This can be used by tests that need to
@@ -149,7 +148,6 @@ static void InitializeVM() {
   simulator.ResetState();
 
 #define START_AFTER_RESET()                                                    \
-  __ SetStackPointer(csp);                                                     \
   __ PushCalleeSavedRegisters();                                               \
   __ Debug("Start test.", __LINE__, TRACE_ENABLE | LOG_ALL);
 
@@ -183,28 +181,26 @@ static void InitializeVM() {
                       v8::internal::CodeObjectRequired::kYes);   \
   RegisterDump core;
 
-#define RESET()                                                                \
-  __ Reset();                                                                  \
-  /* Reset the machine state (like simulator.ResetState()). */                 \
-  __ Msr(NZCV, xzr);                                                           \
+#define RESET()                                                \
+  MakeAssemblerBufferWritable(buf, allocated);                 \
+  __ Reset();                                                  \
+  /* Reset the machine state (like simulator.ResetState()). */ \
+  __ Msr(NZCV, xzr);                                           \
   __ Msr(FPCR, xzr);
 
-
 #define START_AFTER_RESET()                                                    \
-  __ SetStackPointer(csp);                                                     \
   __ PushCalleeSavedRegisters();
 
 #define START()                                                                \
   RESET();                                                                     \
   START_AFTER_RESET();
 
-#define RUN()                                                       \
-  MakeAssemblerBufferExecutable(buf, allocated);                    \
-  Assembler::FlushICache(isolate, buf, masm.SizeOfGeneratedCode()); \
-  {                                                                 \
-    void (*test_function)(void);                                    \
-    memcpy(&test_function, &buf, sizeof(buf));                      \
-    test_function();                                                \
+#define RUN()                                              \
+  MakeAssemblerBufferExecutable(buf, allocated);           \
+  {                                                        \
+    void (*test_function)(void);                           \
+    memcpy(&test_function, &buf, sizeof(buf));             \
+    test_function();                                       \
   }
 
 #define END()                   \
@@ -213,7 +209,8 @@ static void InitializeVM() {
   __ Ret();                     \
   __ GetCode(masm.isolate(), nullptr);
 
-#define TEARDOWN() CHECK(v8::base::OS::Free(buf, allocated));
+#define TEARDOWN() \
+  CHECK(v8::internal::FreePages(GetPlatformPageAllocator(), buf, allocated));
 
 #endif  // ifdef USE_SIMULATOR.
 
@@ -253,37 +250,37 @@ TEST(stack_ops) {
   SETUP();
 
   START();
-  // save csp.
-  __ Mov(x29, csp);
+  // save sp.
+  __ Mov(x29, sp);
 
-  // Set the csp to a known value.
+  // Set the sp to a known value.
   __ Mov(x16, 0x1000);
-  __ Mov(csp, x16);
-  __ Mov(x0, csp);
+  __ Mov(sp, x16);
+  __ Mov(x0, sp);
 
-  // Add immediate to the csp, and move the result to a normal register.
-  __ Add(csp, csp, Operand(0x50));
-  __ Mov(x1, csp);
+  // Add immediate to the sp, and move the result to a normal register.
+  __ Add(sp, sp, Operand(0x50));
+  __ Mov(x1, sp);
 
-  // Add extended to the csp, and move the result to a normal register.
+  // Add extended to the sp, and move the result to a normal register.
   __ Mov(x17, 0xFFF);
-  __ Add(csp, csp, Operand(x17, SXTB));
-  __ Mov(x2, csp);
+  __ Add(sp, sp, Operand(x17, SXTB));
+  __ Mov(x2, sp);
 
-  // Create an csp using a logical instruction, and move to normal register.
-  __ Orr(csp, xzr, Operand(0x1FFF));
-  __ Mov(x3, csp);
+  // Create an sp using a logical instruction, and move to normal register.
+  __ Orr(sp, xzr, Operand(0x1FFF));
+  __ Mov(x3, sp);
 
-  // Write wcsp using a logical instruction.
-  __ Orr(wcsp, wzr, Operand(0xFFFFFFF8L));
-  __ Mov(x4, csp);
+  // Write wsp using a logical instruction.
+  __ Orr(wsp, wzr, Operand(0xFFFFFFF8L));
+  __ Mov(x4, sp);
 
-  // Write csp, and read back wcsp.
-  __ Orr(csp, xzr, Operand(0xFFFFFFF8L));
-  __ Mov(w5, wcsp);
+  // Write sp, and read back wsp.
+  __ Orr(sp, xzr, Operand(0xFFFFFFF8L));
+  __ Mov(w5, wsp);
 
-  //  restore csp.
-  __ Mov(csp, x29);
+  //  restore sp.
+  __ Mov(sp, x29);
   END();
 
   RUN();
@@ -841,17 +838,15 @@ TEST(bic) {
   __ Bic(x10, x0, Operand(0x1F));
   __ Bic(x11, x0, Operand(0x100));
 
-  // Test bic into csp when the constant cannot be encoded in the immediate
+  // Test bic into sp when the constant cannot be encoded in the immediate
   // field.
-  // Use x20 to preserve csp. We check for the result via x21 because the
-  // test infrastructure requires that csp be restored to its original value.
-  __ SetStackPointer(jssp);  // Change stack pointer to avoid consistency check.
-  __ Mov(x20, csp);
+  // Use x20 to preserve sp. We check for the result via x21 because the
+  // test infrastructure requires that sp be restored to its original value.
+  __ Mov(x20, sp);
   __ Mov(x0, 0xFFFFFF);
-  __ Bic(csp, x0, Operand(0xABCDEF));
-  __ Mov(x21, csp);
-  __ Mov(csp, x20);
-  __ SetStackPointer(csp);  // Restore stack pointer.
+  __ Bic(sp, x0, Operand(0xABCDEF));
+  __ Mov(x21, sp);
+  __ Mov(sp, x20);
   END();
 
   RUN();
@@ -1718,7 +1713,7 @@ TEST(adr_far) {
   INIT_V8();
 
   int max_range = 1 << (Instruction::ImmPCRelRangeBitwidth - 1);
-  SETUP_SIZE(max_range + 1000 * kInstructionSize);
+  SETUP_SIZE(max_range + 1000 * kInstrSize);
 
   Label done, fail;
   Label test_near, near_forward, near_backward;
@@ -1748,7 +1743,7 @@ TEST(adr_far) {
   __ Orr(x0, x0, 1 << 3);
   __ B(&done);
 
-  for (unsigned i = 0; i < max_range / kInstructionSize + 1; ++i) {
+  for (int i = 0; i < max_range / kInstrSize + 1; ++i) {
     if (i % 100 == 0) {
       // If we do land in this code, we do not want to execute so many nops
       // before reaching the end of test (especially if tracing is activated).
@@ -1910,7 +1905,7 @@ TEST(branch_to_reg) {
 
   RUN();
 
-  CHECK_EQUAL_64(core.xreg(3) + kInstructionSize, x0);
+  CHECK_EQUAL_64(core.xreg(3) + kInstrSize, x0);
   CHECK_EQUAL_64(42, x1);
   CHECK_EQUAL_64(84, x2);
 
@@ -2052,7 +2047,7 @@ TEST(far_branch_backward) {
              std::max(Instruction::ImmBranchRange(CompareBranchType),
                       Instruction::ImmBranchRange(CondBranchType)));
 
-  SETUP_SIZE(max_range + 1000 * kInstructionSize);
+  SETUP_SIZE(max_range + 1000 * kInstrSize);
 
   START();
 
@@ -2078,7 +2073,7 @@ TEST(far_branch_backward) {
 
   // Generate enough code to overflow the immediate range of the three types of
   // branches below.
-  for (unsigned i = 0; i < max_range / kInstructionSize + 1; ++i) {
+  for (int i = 0; i < max_range / kInstrSize + 1; ++i) {
     if (i % 100 == 0) {
       // If we do land in this code, we do not want to execute so many nops
       // before reaching the end of test (especially if tracing is activated).
@@ -2099,7 +2094,7 @@ TEST(far_branch_backward) {
 
   // For each out-of-range branch instructions, at least two instructions should
   // have been generated.
-  CHECK_GE(7 * kInstructionSize, __ SizeOfCodeGeneratedSince(&test_tbz));
+  CHECK_GE(7 * kInstrSize, __ SizeOfCodeGeneratedSince(&test_tbz));
 
   __ Bind(&fail);
   __ Mov(x1, 0);
@@ -2126,7 +2121,7 @@ TEST(far_branch_simple_veneer) {
              std::max(Instruction::ImmBranchRange(CompareBranchType),
                       Instruction::ImmBranchRange(CondBranchType)));
 
-  SETUP_SIZE(max_range + 1000 * kInstructionSize);
+  SETUP_SIZE(max_range + 1000 * kInstrSize);
 
   START();
 
@@ -2148,7 +2143,7 @@ TEST(far_branch_simple_veneer) {
 
   // Generate enough code to overflow the immediate range of the three types of
   // branches below.
-  for (unsigned i = 0; i < max_range / kInstructionSize + 1; ++i) {
+  for (int i = 0; i < max_range / kInstrSize + 1; ++i) {
     if (i % 100 == 0) {
       // If we do land in this code, we do not want to execute so many nops
       // before reaching the end of test (especially if tracing is activated).
@@ -2202,7 +2197,7 @@ TEST(far_branch_veneer_link_chain) {
              std::max(Instruction::ImmBranchRange(CompareBranchType),
                       Instruction::ImmBranchRange(CondBranchType)));
 
-  SETUP_SIZE(max_range + 1000 * kInstructionSize);
+  SETUP_SIZE(max_range + 1000 * kInstrSize);
 
   START();
 
@@ -2243,7 +2238,7 @@ TEST(far_branch_veneer_link_chain) {
 
   // Generate enough code to overflow the immediate range of the three types of
   // branches below.
-  for (unsigned i = 0; i < max_range / kInstructionSize + 1; ++i) {
+  for (int i = 0; i < max_range / kInstrSize + 1; ++i) {
     if (i % 100 == 0) {
       // If we do land in this code, we do not want to execute so many nops
       // before reaching the end of test (especially if tracing is activated).
@@ -2292,7 +2287,7 @@ TEST(far_branch_veneer_broken_link_chain) {
   int max_range = Instruction::ImmBranchRange(TestBranchType);
   int inter_range = max_range / 2 + max_range / 10;
 
-  SETUP_SIZE(3 * inter_range + 1000 * kInstructionSize);
+  SETUP_SIZE(3 * inter_range + 1000 * kInstrSize);
 
   START();
 
@@ -2309,7 +2304,7 @@ TEST(far_branch_veneer_broken_link_chain) {
   __ Mov(x0, 1);
   __ B(&far_target);
 
-  for (unsigned i = 0; i < inter_range / kInstructionSize; ++i) {
+  for (int i = 0; i < inter_range / kInstrSize; ++i) {
     if (i % 100 == 0) {
       // Do not allow generating veneers. They should not be needed.
       __ b(&fail);
@@ -2323,7 +2318,7 @@ TEST(far_branch_veneer_broken_link_chain) {
   __ Mov(x0, 2);
   __ Tbz(x10, 7, &far_target);
 
-  for (unsigned i = 0; i < inter_range / kInstructionSize; ++i) {
+  for (int i = 0; i < inter_range / kInstrSize; ++i) {
     if (i % 100 == 0) {
       // Do not allow generating veneers. They should not be needed.
       __ b(&fail);
@@ -2338,7 +2333,7 @@ TEST(far_branch_veneer_broken_link_chain) {
   __ Mov(x0, 3);
   __ Tbz(x10, 7, &far_target);
 
-  for (unsigned i = 0; i < inter_range / kInstructionSize; ++i) {
+  for (int i = 0; i < inter_range / kInstrSize; ++i) {
     if (i % 100 == 0) {
       // Allow generating veneers.
       __ B(&fail);
@@ -6690,13 +6685,23 @@ TEST(ldur_stur) {
   TEARDOWN();
 }
 
+namespace {
+
+void LoadLiteral(MacroAssembler* masm, Register reg, uint64_t imm) {
+  // Since we do not allow non-relocatable entries in the literal pool, we need
+  // to fake a relocation mode that is not NONE here.
+  masm->Ldr(reg, Immediate(imm, RelocInfo::EMBEDDED_OBJECT));
+}
+
+}  // namespace
+
 TEST(ldr_pcrel_large_offset) {
   INIT_V8();
   SETUP_SIZE(1 * MB);
 
   START();
 
-  __ Ldr(x1, Immediate(0x1234567890ABCDEFUL));
+  LoadLiteral(&masm, x1, 0x1234567890ABCDEFUL);
 
   {
     v8::internal::PatchingAssembler::BlockPoolsScope scope(&masm);
@@ -6706,7 +6711,7 @@ TEST(ldr_pcrel_large_offset) {
     }
   }
 
-  __ Ldr(x2, Immediate(0x1234567890ABCDEFUL));
+  LoadLiteral(&masm, x2, 0x1234567890ABCDEFUL);
 
   END();
 
@@ -6723,79 +6728,85 @@ TEST(ldr_literal) {
   SETUP();
 
   START();
-  __ Ldr(x2, Immediate(0x1234567890ABCDEFUL));
-  __ Ldr(d13, 1.234);
+  LoadLiteral(&masm, x2, 0x1234567890ABCDEFUL);
+
   END();
 
   RUN();
 
   CHECK_EQUAL_64(0x1234567890ABCDEFUL, x2);
-  CHECK_EQUAL_FP64(1.234, d13);
 
   TEARDOWN();
 }
 
 #ifdef DEBUG
 // These tests rely on functions available in debug mode.
-enum LiteralPoolEmitOption { NoJumpRequired, JumpRequired };
+enum LiteralPoolEmitOutcome { EmitExpected, NoEmitExpected };
 
-static void LdrLiteralRangeHelper(int range_, LiteralPoolEmitOption option,
-                                  bool expect_dump) {
-  CHECK_GT(range_, 0);
-  SETUP_SIZE(range_ + 1024);
+static void LdrLiteralRangeHelper(size_t range, LiteralPoolEmitOutcome outcome,
+                                  size_t prepadding = 0) {
+  SETUP_SIZE(static_cast<int>(range + 1024));
 
-  Label label_1, label_2;
-
-  size_t range = static_cast<size_t>(range_);
   size_t code_size = 0;
-  size_t pool_guard_size;
-
-  if (option == NoJumpRequired) {
-    // Space for an explicit branch.
-    pool_guard_size = kInstructionSize;
-  } else {
-    pool_guard_size = 0;
-  }
+  const size_t pool_entries = 2;
+  const size_t kEntrySize = 8;
 
   START();
   // Force a pool dump so the pool starts off empty.
   __ CheckConstPool(true, true);
   CHECK_CONSTANT_POOL_SIZE(0);
 
-  __ Ldr(x0, Immediate(0x1234567890ABCDEFUL));
-  __ Ldr(d0, 1.234);
-  CHECK_CONSTANT_POOL_SIZE(16);
+  // Emit prepadding to influence alignment of the pool; we don't count this
+  // into code size.
+  for (size_t i = 0; i < prepadding; ++i) __ Nop();
 
-  code_size += 2 * kInstructionSize;
+  LoadLiteral(&masm, x0, 0x1234567890ABCDEFUL);
+  LoadLiteral(&masm, x1, 0xABCDEF1234567890UL);
+  code_size += 2 * kInstrSize;
+  CHECK_CONSTANT_POOL_SIZE(pool_entries * kEntrySize);
 
   // Check that the requested range (allowing space for a branch over the pool)
   // can be handled by this test.
-  CHECK_LE(code_size + pool_guard_size, range);
+  CHECK_LE(code_size, range);
 
-  // Emit NOPs up to 'range', leaving space for the pool guard.
-  while ((code_size + pool_guard_size + kInstructionSize) < range) {
+  auto PoolSizeAt = [pool_entries](int pc_offset) {
+    // To determine padding, consider the size of the prologue of the pool,
+    // and the jump around the pool, which we always need.
+    size_t prologue_size = 2 * kInstrSize + kInstrSize;
+    size_t pc = pc_offset + prologue_size;
+    const size_t padding = IsAligned(pc, 8) ? 0 : 4;
+    return prologue_size + pool_entries * kEntrySize + padding;
+  };
+
+  int pc_offset_before_emission = -1;
+  // Emit NOPs up to 'range'.
+  while (code_size < range) {
+    pc_offset_before_emission = __ pc_offset() + kInstrSize;
     __ Nop();
-    code_size += kInstructionSize;
+    code_size += kInstrSize;
   }
+  CHECK_EQ(code_size, range);
 
-  // Emit the guard sequence before the literal pool.
-  if (option == NoJumpRequired) {
-    __ B(&label_1);
-    code_size += kInstructionSize;
-  }
-
-  // The next instruction will trigger pool emission when expect_dump is true.
-  CHECK_EQ(code_size, range - kInstructionSize);
-  CHECK_CONSTANT_POOL_SIZE(16);
-
-  // Possibly generate a literal pool.
-  __ Nop();
-
-  __ Bind(&label_1);
-  if (expect_dump) {
+  if (outcome == EmitExpected) {
     CHECK_CONSTANT_POOL_SIZE(0);
+    // Check that the size of the emitted constant pool is as expected.
+    size_t pool_size = PoolSizeAt(pc_offset_before_emission);
+    CHECK_EQ(pc_offset_before_emission + pool_size, __ pc_offset());
+    byte* pool_start = buf + pc_offset_before_emission;
+    Instruction* branch = reinterpret_cast<Instruction*>(pool_start);
+    CHECK(branch->IsImmBranch());
+    CHECK_EQ(pool_size, branch->ImmPCOffset());
+    Instruction* marker =
+        reinterpret_cast<Instruction*>(pool_start + kInstrSize);
+    CHECK(marker->IsLdrLiteralX());
+    const size_t padding =
+        IsAligned(pc_offset_before_emission + kInstrSize, kEntrySize) ? 0 : 1;
+    CHECK_EQ(pool_entries * 2 + 1 + padding, marker->ImmLLiteral());
+
   } else {
-    CHECK_CONSTANT_POOL_SIZE(16);
+    CHECK_EQ(outcome, NoEmitExpected);
+    CHECK_CONSTANT_POOL_SIZE(pool_entries * kEntrySize);
+    CHECK_EQ(pc_offset_before_emission, __ pc_offset());
   }
 
   // Force a pool flush to check that a second pool functions correctly.
@@ -6803,51 +6814,48 @@ static void LdrLiteralRangeHelper(int range_, LiteralPoolEmitOption option,
   CHECK_CONSTANT_POOL_SIZE(0);
 
   // These loads should be after the pool (and will require a new one).
-  __ Ldr(x4, Immediate(0x34567890ABCDEF12UL));
-  __ Ldr(d4, 123.4);
-  CHECK_CONSTANT_POOL_SIZE(16);
+  LoadLiteral(&masm, x4, 0x34567890ABCDEF12UL);
+  LoadLiteral(&masm, x5, 0xABCDEF0123456789UL);
+  CHECK_CONSTANT_POOL_SIZE(pool_entries * kEntrySize);
   END();
 
   RUN();
 
   // Check that the literals loaded correctly.
   CHECK_EQUAL_64(0x1234567890ABCDEFUL, x0);
-  CHECK_EQUAL_FP64(1.234, d0);
+  CHECK_EQUAL_64(0xABCDEF1234567890UL, x1);
   CHECK_EQUAL_64(0x34567890ABCDEF12UL, x4);
-  CHECK_EQUAL_FP64(123.4, d4);
+  CHECK_EQUAL_64(0xABCDEF0123456789UL, x5);
 
   TEARDOWN();
 }
 
-TEST(ldr_literal_range_1) {
+TEST(ldr_literal_range_max_dist_emission_1) {
   INIT_V8();
   LdrLiteralRangeHelper(MacroAssembler::GetApproxMaxDistToConstPoolForTesting(),
-                        NoJumpRequired, true);
+                        EmitExpected);
 }
 
+TEST(ldr_literal_range_max_dist_emission_2) {
+  INIT_V8();
+  LdrLiteralRangeHelper(MacroAssembler::GetApproxMaxDistToConstPoolForTesting(),
+                        EmitExpected, 1);
+}
 
-TEST(ldr_literal_range_2) {
+TEST(ldr_literal_range_max_dist_no_emission_1) {
   INIT_V8();
   LdrLiteralRangeHelper(
-      MacroAssembler::GetApproxMaxDistToConstPoolForTesting() -
-          kInstructionSize,
-      NoJumpRequired, false);
+      MacroAssembler::GetApproxMaxDistToConstPoolForTesting() - kInstrSize,
+      NoEmitExpected);
 }
 
-
-TEST(ldr_literal_range_3) {
-  INIT_V8();
-  LdrLiteralRangeHelper(MacroAssembler::GetCheckConstPoolIntervalForTesting(),
-                        JumpRequired, false);
-}
-
-
-TEST(ldr_literal_range_4) {
+TEST(ldr_literal_range_max_dist_no_emission_2) {
   INIT_V8();
   LdrLiteralRangeHelper(
-      MacroAssembler::GetCheckConstPoolIntervalForTesting() - kInstructionSize,
-      JumpRequired, false);
+      MacroAssembler::GetApproxMaxDistToConstPoolForTesting() - kInstrSize,
+      NoEmitExpected, 1);
 }
+
 #endif
 
 TEST(add_sub_imm) {
@@ -7162,13 +7170,12 @@ TEST(preshift_immediates) {
   // pre-shifted encodable immediate followed by a post-shift applied to
   // the arithmetic or logical operation.
 
-  // Save csp and change stack pointer to avoid consistency check.
-  __ SetStackPointer(jssp);
-  __ Mov(x29, csp);
+  // Save sp.
+  __ Mov(x29, sp);
 
   // Set the registers to known values.
   __ Mov(x0, 0x1000);
-  __ Mov(csp, 0x1000);
+  __ Mov(sp, 0x1000);
 
   // Arithmetic ops.
   __ Add(x1, x0, 0x1F7DE);
@@ -7186,22 +7193,21 @@ TEST(preshift_immediates) {
   __ Eor(x11, x0, 0x18001);
 
   // Ops using the stack pointer.
-  __ Add(csp, csp, 0x1F7F0);
-  __ Mov(x12, csp);
-  __ Mov(csp, 0x1000);
+  __ Add(sp, sp, 0x1F7F0);
+  __ Mov(x12, sp);
+  __ Mov(sp, 0x1000);
 
-  __ Adds(x13, csp, 0x1F7F0);
+  __ Adds(x13, sp, 0x1F7F0);
 
-  __ Orr(csp, x0, 0x1F7F0);
-  __ Mov(x14, csp);
-  __ Mov(csp, 0x1000);
+  __ Orr(sp, x0, 0x1F7F0);
+  __ Mov(x14, sp);
+  __ Mov(sp, 0x1000);
 
-  __ Add(csp, csp, 0x10100);
-  __ Mov(x15, csp);
+  __ Add(sp, sp, 0x10100);
+  __ Mov(x15, sp);
 
-  //  Restore csp.
-  __ Mov(csp, x29);
-  __ SetStackPointer(csp);
+  //  Restore sp.
+  __ Mov(sp, x29);
   END();
 
   RUN();
@@ -11846,8 +11852,7 @@ TEST(system_msr) {
   TEARDOWN();
 }
 
-
-TEST(system_nop) {
+TEST(system) {
   INIT_V8();
   SETUP();
   RegisterDump before;
@@ -11855,6 +11860,7 @@ TEST(system_nop) {
   START();
   before.Dump(&masm);
   __ Nop();
+  __ Csdb();
   END();
 
   RUN();
@@ -11873,7 +11879,7 @@ TEST(zero_dest) {
 
   START();
   // Preserve the system stack pointer, in case we clobber it.
-  __ Mov(x30, csp);
+  __ Mov(x30, sp);
   // Initialize the other registers used in this test.
   uint64_t literal_base = 0x0100001000100101UL;
   __ Mov(x0, 0);
@@ -11913,12 +11919,12 @@ TEST(zero_dest) {
   __ sub(xzr, x7, xzr);
   __ sub(xzr, xzr, x7);
 
-  // Swap the saved system stack pointer with the real one. If csp was written
+  // Swap the saved system stack pointer with the real one. If sp was written
   // during the test, it will show up in x30. This is done because the test
-  // framework assumes that csp will be valid at the end of the test.
+  // framework assumes that sp will be valid at the end of the test.
   __ Mov(x29, x30);
-  __ Mov(x30, csp);
-  __ Mov(csp, x29);
+  __ Mov(x30, sp);
+  __ Mov(sp, x29);
   // We used x29 as a scratch register, so reset it to make sure it doesn't
   // trigger a test failure.
   __ Add(x29, x28, x1);
@@ -11940,7 +11946,7 @@ TEST(zero_dest_setflags) {
 
   START();
   // Preserve the system stack pointer, in case we clobber it.
-  __ Mov(x30, csp);
+  __ Mov(x30, sp);
   // Initialize the other registers used in this test.
   uint64_t literal_base = 0x0100001000100101UL;
   __ Mov(x0, 0);
@@ -11978,12 +11984,12 @@ TEST(zero_dest_setflags) {
   __ subs(xzr, x3, xzr);
   __ subs(xzr, xzr, x3);
 
-  // Swap the saved system stack pointer with the real one. If csp was written
+  // Swap the saved system stack pointer with the real one. If sp was written
   // during the test, it will show up in x30. This is done because the test
-  // framework assumes that csp will be valid at the end of the test.
+  // framework assumes that sp will be valid at the end of the test.
   __ Mov(x29, x30);
-  __ Mov(x30, csp);
-  __ Mov(csp, x29);
+  __ Mov(x30, sp);
+  __ Mov(sp, x29);
   // We used x29 as a scratch register, so reset it to make sure it doesn't
   // trigger a test failure.
   __ Add(x29, x28, x1);
@@ -12014,40 +12020,15 @@ TEST(register_bit) {
   CHECK(xzr.bit() == (1UL << kZeroRegCode));
 
   // Internal ABI definitions.
-  CHECK(jssp.bit() == (1UL << kJSSPCode));
-  CHECK(csp.bit() == (1UL << kSPRegInternalCode));
-  CHECK(csp.bit() != xzr.bit());
+  CHECK(sp.bit() == (1UL << kSPRegInternalCode));
+  CHECK(sp.bit() != xzr.bit());
 
   // xn.bit() == wn.bit() at all times, for the same n.
   CHECK(x0.bit() == w0.bit());
   CHECK(x1.bit() == w1.bit());
   CHECK(x10.bit() == w10.bit());
-  CHECK(jssp.bit() == wjssp.bit());
   CHECK(xzr.bit() == wzr.bit());
-  CHECK(csp.bit() == wcsp.bit());
-}
-
-
-TEST(stack_pointer_override) {
-  // This test generates some stack maintenance code, but the test only checks
-  // the reported state.
-  INIT_V8();
-  SETUP();
-  START();
-
-  // The default stack pointer in V8 is jssp, but for compatibility with W16,
-  // the test framework sets it to csp before calling the test.
-  CHECK(csp.Is(__ StackPointer()));
-  __ SetStackPointer(x0);
-  CHECK(x0.Is(__ StackPointer()));
-  __ SetStackPointer(jssp);
-  CHECK(jssp.Is(__ StackPointer()));
-  __ SetStackPointer(csp);
-  CHECK(csp.Is(__ StackPointer()));
-
-  END();
-  RUN();
-  TEARDOWN();
+  CHECK(sp.bit() == wsp.bit());
 }
 
 
@@ -12276,23 +12257,16 @@ TEST(peek_poke_mixed) {
   __ Poke(x1, 8);
   __ Poke(x0, 0);
   {
-    CHECK(__ StackPointer().Is(csp));
-    __ Mov(x4, __ StackPointer());
-    __ SetStackPointer(x4);
-
-    __ Poke(wzr, 0);    // Clobber the space we're about to drop.
-    __ Drop(1, kWRegSize);
-    __ Peek(x6, 0);
-    __ Claim(1);
-    __ Peek(w7, 10);
-    __ Poke(x3, 28);
+    __ Peek(x6, 4);
+    __ Peek(w7, 6);
     __ Poke(xzr, 0);    // Clobber the space we're about to drop.
-    __ Drop(1);
-    __ Poke(x2, 12);
-    __ Push(w0);
-
-    __ Mov(csp, __ StackPointer());
-    __ SetStackPointer(csp);
+    __ Poke(xzr, 8);    // Clobber the space we're about to drop.
+    __ Drop(2);
+    __ Poke(x3, 8);
+    __ Poke(x2, 0);
+    __ Claim(2);
+    __ Poke(x0, 0);
+    __ Poke(x1, 8);
   }
 
   __ Pop(x0, x1, x2, x3);
@@ -12329,10 +12303,9 @@ enum PushPopMethod {
   PushPopRegList
 };
 
-
-// The maximum number of registers that can be used by the PushPopJssp* tests,
+// The maximum number of registers that can be used by the PushPop* tests,
 // where a reg_count field is provided.
-static int const kPushPopJsspMaxRegCount = -1;
+static int const kPushPopMaxRegCount = -1;
 
 // Test a simple push-pop pattern:
 //  * Push <reg_count> registers with size <reg_size>.
@@ -12341,21 +12314,17 @@ static int const kPushPopJsspMaxRegCount = -1;
 //
 // Different push and pop methods can be specified independently to test for
 // proper word-endian behaviour.
-static void PushPopJsspSimpleHelper(int reg_count,
-                                    int reg_size,
-                                    PushPopMethod push_method,
-                                    PushPopMethod pop_method) {
+static void PushPopSimpleHelper(int reg_count, int reg_size,
+                                PushPopMethod push_method,
+                                PushPopMethod pop_method) {
   SETUP();
 
   START();
 
   // Registers in the TmpList can be used by the macro assembler for debug code
-  // (for example in 'Pop'), so we can't use them here. We can't use jssp
-  // because it will be the stack pointer for this test.
-  // TODO(arm): When removing jssp, remove xzr here, too, for alignment.
-  static RegList const allowed =
-      ~(masm.TmpList()->list() | jssp.bit() | xzr.bit());
-  if (reg_count == kPushPopJsspMaxRegCount) {
+  // (for example in 'Pop'), so we can't use them here.
+  static RegList const allowed = ~(masm.TmpList()->list());
+  if (reg_count == kPushPopMaxRegCount) {
     reg_count = CountSetBits(allowed, kNumberOfRegisters);
   }
   // Work out which registers to use, based on reg_size.
@@ -12372,10 +12341,6 @@ static void PushPopJsspSimpleHelper(int reg_count,
   uint64_t literal_base = 0x0100001000100101UL;
 
   {
-    CHECK(__ StackPointer().Is(csp));
-    __ Mov(jssp, __ StackPointer());
-    __ SetStackPointer(jssp);
-
     int i;
 
     // Initialize the registers.
@@ -12431,9 +12396,6 @@ static void PushPopJsspSimpleHelper(int reg_count,
         __ PopSizeRegList(list, reg_size);
         break;
     }
-
-    __ Mov(csp, __ StackPointer());
-    __ SetStackPointer(csp);
   }
 
   END();
@@ -12455,59 +12417,42 @@ static void PushPopJsspSimpleHelper(int reg_count,
   TEARDOWN();
 }
 
-
-TEST(push_pop_jssp_simple_32) {
+TEST(push_pop_simple_32) {
   INIT_V8();
 
-  for (int count = 0; count <= 8; count += 4) {
-    PushPopJsspSimpleHelper(count, kWRegSizeInBits, PushPopByFour,
-                            PushPopByFour);
-    PushPopJsspSimpleHelper(count, kWRegSizeInBits, PushPopByFour,
-                            PushPopRegList);
-    PushPopJsspSimpleHelper(count, kWRegSizeInBits, PushPopRegList,
-                            PushPopByFour);
-    PushPopJsspSimpleHelper(count, kWRegSizeInBits, PushPopRegList,
-                            PushPopRegList);
+  for (int count = 0; count < kPushPopMaxRegCount; count += 4) {
+    PushPopSimpleHelper(count, kWRegSizeInBits, PushPopByFour, PushPopByFour);
+    PushPopSimpleHelper(count, kWRegSizeInBits, PushPopByFour, PushPopRegList);
+    PushPopSimpleHelper(count, kWRegSizeInBits, PushPopRegList, PushPopByFour);
+    PushPopSimpleHelper(count, kWRegSizeInBits, PushPopRegList, PushPopRegList);
   }
-  // Test with the maximum number of registers.
-  PushPopJsspSimpleHelper(kPushPopJsspMaxRegCount, kWRegSizeInBits,
-                          PushPopByFour, PushPopByFour);
-  PushPopJsspSimpleHelper(kPushPopJsspMaxRegCount, kWRegSizeInBits,
-                          PushPopByFour, PushPopRegList);
-  PushPopJsspSimpleHelper(kPushPopJsspMaxRegCount, kWRegSizeInBits,
-                          PushPopRegList, PushPopByFour);
-  PushPopJsspSimpleHelper(kPushPopJsspMaxRegCount, kWRegSizeInBits,
-                          PushPopRegList, PushPopRegList);
+  // Skip testing kPushPopMaxRegCount, as we exclude the temporary registers
+  // and we end up with a number of registers that is not a multiple of four and
+  // is not supported for pushing.
 }
 
-
-TEST(push_pop_jssp_simple_64) {
+TEST(push_pop_simple_64) {
   INIT_V8();
   for (int count = 0; count <= 8; count += 2) {
-    PushPopJsspSimpleHelper(count, kXRegSizeInBits, PushPopByFour,
-                            PushPopByFour);
-    PushPopJsspSimpleHelper(count, kXRegSizeInBits, PushPopByFour,
-                            PushPopRegList);
-    PushPopJsspSimpleHelper(count, kXRegSizeInBits, PushPopRegList,
-                            PushPopByFour);
-    PushPopJsspSimpleHelper(count, kXRegSizeInBits, PushPopRegList,
-                            PushPopRegList);
+    PushPopSimpleHelper(count, kXRegSizeInBits, PushPopByFour, PushPopByFour);
+    PushPopSimpleHelper(count, kXRegSizeInBits, PushPopByFour, PushPopRegList);
+    PushPopSimpleHelper(count, kXRegSizeInBits, PushPopRegList, PushPopByFour);
+    PushPopSimpleHelper(count, kXRegSizeInBits, PushPopRegList, PushPopRegList);
   }
   // Test with the maximum number of registers.
-  PushPopJsspSimpleHelper(kPushPopJsspMaxRegCount, kXRegSizeInBits,
-                          PushPopByFour, PushPopByFour);
-  PushPopJsspSimpleHelper(kPushPopJsspMaxRegCount, kXRegSizeInBits,
-                          PushPopByFour, PushPopRegList);
-  PushPopJsspSimpleHelper(kPushPopJsspMaxRegCount, kXRegSizeInBits,
-                          PushPopRegList, PushPopByFour);
-  PushPopJsspSimpleHelper(kPushPopJsspMaxRegCount, kXRegSizeInBits,
-                          PushPopRegList, PushPopRegList);
+  PushPopSimpleHelper(kPushPopMaxRegCount, kXRegSizeInBits, PushPopByFour,
+                      PushPopByFour);
+  PushPopSimpleHelper(kPushPopMaxRegCount, kXRegSizeInBits, PushPopByFour,
+                      PushPopRegList);
+  PushPopSimpleHelper(kPushPopMaxRegCount, kXRegSizeInBits, PushPopRegList,
+                      PushPopByFour);
+  PushPopSimpleHelper(kPushPopMaxRegCount, kXRegSizeInBits, PushPopRegList,
+                      PushPopRegList);
 }
 
-
-// The maximum number of registers that can be used by the PushPopFPJssp* tests,
+// The maximum number of registers that can be used by the PushPopFP* tests,
 // where a reg_count field is provided.
-static int const kPushPopFPJsspMaxRegCount = -1;
+static int const kPushPopFPMaxRegCount = -1;
 
 // Test a simple push-pop pattern:
 //  * Push <reg_count> FP registers with size <reg_size>.
@@ -12516,10 +12461,9 @@ static int const kPushPopFPJsspMaxRegCount = -1;
 //
 // Different push and pop methods can be specified independently to test for
 // proper word-endian behaviour.
-static void PushPopFPJsspSimpleHelper(int reg_count,
-                                      int reg_size,
-                                      PushPopMethod push_method,
-                                      PushPopMethod pop_method) {
+static void PushPopFPSimpleHelper(int reg_count, int reg_size,
+                                  PushPopMethod push_method,
+                                  PushPopMethod pop_method) {
   SETUP();
 
   START();
@@ -12527,7 +12471,7 @@ static void PushPopFPJsspSimpleHelper(int reg_count,
   // We can use any floating-point register. None of them are reserved for
   // debug code, for example.
   static RegList const allowed = ~0;
-  if (reg_count == kPushPopFPJsspMaxRegCount) {
+  if (reg_count == kPushPopFPMaxRegCount) {
     reg_count = CountSetBits(allowed, kNumberOfVRegisters);
   }
   // Work out which registers to use, based on reg_size.
@@ -12546,10 +12490,6 @@ static void PushPopFPJsspSimpleHelper(int reg_count,
   uint64_t literal_base = 0x0100001000100101UL;
 
   {
-    CHECK(__ StackPointer().Is(csp));
-    __ Mov(jssp, __ StackPointer());
-    __ SetStackPointer(jssp);
-
     int i;
 
     // Initialize the registers, using X registers to load the literal.
@@ -12607,9 +12547,6 @@ static void PushPopFPJsspSimpleHelper(int reg_count,
         __ PopSizeRegList(list, reg_size, CPURegister::kVRegister);
         break;
     }
-
-    __ Mov(csp, __ StackPointer());
-    __ SetStackPointer(csp);
   }
 
   END();
@@ -12630,65 +12567,59 @@ static void PushPopFPJsspSimpleHelper(int reg_count,
   TEARDOWN();
 }
 
-
-TEST(push_pop_fp_jssp_simple_32) {
+TEST(push_pop_fp_simple_32) {
   INIT_V8();
   for (int count = 0; count <= 8; count += 4) {
-    PushPopFPJsspSimpleHelper(count, kSRegSizeInBits, PushPopByFour,
-                              PushPopByFour);
-    PushPopFPJsspSimpleHelper(count, kSRegSizeInBits, PushPopByFour,
-                              PushPopRegList);
-    PushPopFPJsspSimpleHelper(count, kSRegSizeInBits, PushPopRegList,
-                              PushPopByFour);
-    PushPopFPJsspSimpleHelper(count, kSRegSizeInBits, PushPopRegList,
-                              PushPopRegList);
+    PushPopFPSimpleHelper(count, kSRegSizeInBits, PushPopByFour, PushPopByFour);
+    PushPopFPSimpleHelper(count, kSRegSizeInBits, PushPopByFour,
+                          PushPopRegList);
+    PushPopFPSimpleHelper(count, kSRegSizeInBits, PushPopRegList,
+                          PushPopByFour);
+    PushPopFPSimpleHelper(count, kSRegSizeInBits, PushPopRegList,
+                          PushPopRegList);
   }
   // Test with the maximum number of registers.
-  PushPopFPJsspSimpleHelper(kPushPopFPJsspMaxRegCount, kSRegSizeInBits,
-                            PushPopByFour, PushPopByFour);
-  PushPopFPJsspSimpleHelper(kPushPopFPJsspMaxRegCount, kSRegSizeInBits,
-                            PushPopByFour, PushPopRegList);
-  PushPopFPJsspSimpleHelper(kPushPopFPJsspMaxRegCount, kSRegSizeInBits,
-                            PushPopRegList, PushPopByFour);
-  PushPopFPJsspSimpleHelper(kPushPopFPJsspMaxRegCount, kSRegSizeInBits,
-                            PushPopRegList, PushPopRegList);
+  PushPopFPSimpleHelper(kPushPopFPMaxRegCount, kSRegSizeInBits, PushPopByFour,
+                        PushPopByFour);
+  PushPopFPSimpleHelper(kPushPopFPMaxRegCount, kSRegSizeInBits, PushPopByFour,
+                        PushPopRegList);
+  PushPopFPSimpleHelper(kPushPopFPMaxRegCount, kSRegSizeInBits, PushPopRegList,
+                        PushPopByFour);
+  PushPopFPSimpleHelper(kPushPopFPMaxRegCount, kSRegSizeInBits, PushPopRegList,
+                        PushPopRegList);
 }
 
-
-TEST(push_pop_fp_jssp_simple_64) {
+TEST(push_pop_fp_simple_64) {
   INIT_V8();
   for (int count = 0; count <= 8; count += 2) {
-    PushPopFPJsspSimpleHelper(count, kDRegSizeInBits, PushPopByFour,
-                              PushPopByFour);
-    PushPopFPJsspSimpleHelper(count, kDRegSizeInBits, PushPopByFour,
-                              PushPopRegList);
-    PushPopFPJsspSimpleHelper(count, kDRegSizeInBits, PushPopRegList,
-                              PushPopByFour);
-    PushPopFPJsspSimpleHelper(count, kDRegSizeInBits, PushPopRegList,
-                              PushPopRegList);
+    PushPopFPSimpleHelper(count, kDRegSizeInBits, PushPopByFour, PushPopByFour);
+    PushPopFPSimpleHelper(count, kDRegSizeInBits, PushPopByFour,
+                          PushPopRegList);
+    PushPopFPSimpleHelper(count, kDRegSizeInBits, PushPopRegList,
+                          PushPopByFour);
+    PushPopFPSimpleHelper(count, kDRegSizeInBits, PushPopRegList,
+                          PushPopRegList);
   }
   // Test with the maximum number of registers.
-  PushPopFPJsspSimpleHelper(kPushPopFPJsspMaxRegCount, kDRegSizeInBits,
-                            PushPopByFour, PushPopByFour);
-  PushPopFPJsspSimpleHelper(kPushPopFPJsspMaxRegCount, kDRegSizeInBits,
-                            PushPopByFour, PushPopRegList);
-  PushPopFPJsspSimpleHelper(kPushPopFPJsspMaxRegCount, kDRegSizeInBits,
-                            PushPopRegList, PushPopByFour);
-  PushPopFPJsspSimpleHelper(kPushPopFPJsspMaxRegCount, kDRegSizeInBits,
-                            PushPopRegList, PushPopRegList);
+  PushPopFPSimpleHelper(kPushPopFPMaxRegCount, kDRegSizeInBits, PushPopByFour,
+                        PushPopByFour);
+  PushPopFPSimpleHelper(kPushPopFPMaxRegCount, kDRegSizeInBits, PushPopByFour,
+                        PushPopRegList);
+  PushPopFPSimpleHelper(kPushPopFPMaxRegCount, kDRegSizeInBits, PushPopRegList,
+                        PushPopByFour);
+  PushPopFPSimpleHelper(kPushPopFPMaxRegCount, kDRegSizeInBits, PushPopRegList,
+                        PushPopRegList);
 }
 
 
 // Push and pop data using an overlapping combination of Push/Pop and
 // RegList-based methods.
-static void PushPopJsspMixedMethodsHelper(int reg_size) {
+static void PushPopMixedMethodsHelper(int reg_size) {
   SETUP();
 
-  // Registers x8 and x9 are used by the macro assembler for debug code (for
-  // example in 'Pop'), so we can't use them here. We can't use jssp because it
-  // will be the stack pointer for this test.
-  static RegList const allowed =
-      ~(x8.bit() | x9.bit() | jssp.bit() | xzr.bit());
+  // Registers in the TmpList can be used by the macro assembler for debug code
+  // (for example in 'Pop'), so we can't use them here.
+  static RegList const allowed = ~(masm.TmpList()->list());
   // Work out which registers to use, based on reg_size.
   auto r = CreateRegisterArray<Register, 10>();
   auto x = CreateRegisterArray<Register, 10>();
@@ -12717,10 +12648,6 @@ static void PushPopJsspMixedMethodsHelper(int reg_size) {
 
   START();
   {
-    CHECK(__ StackPointer().Is(csp));
-    __ Mov(jssp, __ StackPointer());
-    __ SetStackPointer(jssp);
-
     __ Mov(x[3], literal_base * 3);
     __ Mov(x[2], literal_base * 2);
     __ Mov(x[1], literal_base * 1);
@@ -12738,9 +12665,6 @@ static void PushPopJsspMixedMethodsHelper(int reg_size) {
     __ Pop(r[4], r[5]);
     Clobber(&masm, r6_to_r9);
     __ Pop(r[6], r[7], r[8], r[9]);
-
-    __ Mov(csp, __ StackPointer());
-    __ SetStackPointer(csp);
   }
 
   END();
@@ -12761,21 +12685,16 @@ static void PushPopJsspMixedMethodsHelper(int reg_size) {
   TEARDOWN();
 }
 
-
-TEST(push_pop_jssp_mixed_methods_64) {
+TEST(push_pop_mixed_methods_64) {
   INIT_V8();
-  PushPopJsspMixedMethodsHelper(kXRegSizeInBits);
+  PushPopMixedMethodsHelper(kXRegSizeInBits);
 }
 
-
-TEST(push_pop_csp) {
+TEST(push_pop) {
   INIT_V8();
   SETUP();
 
   START();
-
-  CHECK(csp.Is(__ StackPointer()));
-
   __ Mov(x3, 0x3333333333333333UL);
   __ Mov(x2, 0x2222222222222222UL);
   __ Mov(x1, 0x1111111111111111UL);
@@ -12863,10 +12782,6 @@ TEST(push_queued) {
 
   START();
 
-  CHECK(__ StackPointer().Is(csp));
-  __ Mov(jssp, __ StackPointer());
-  __ SetStackPointer(jssp);
-
   MacroAssembler::PushPopQueue queue(&masm);
 
   // Queue up registers.
@@ -12915,9 +12830,6 @@ TEST(push_queued) {
   __ Pop(w7, w6, w5, w4);
   __ Pop(x3, x2, x1, x0);
 
-  __ Mov(csp, __ StackPointer());
-  __ SetStackPointer(csp);
-
   END();
 
   RUN();
@@ -12949,10 +12861,6 @@ TEST(pop_queued) {
   SETUP();
 
   START();
-
-  CHECK(__ StackPointer().Is(csp));
-  __ Mov(jssp, __ StackPointer());
-  __ SetStackPointer(jssp);
 
   MacroAssembler::PushPopQueue queue(&masm);
 
@@ -13002,9 +12910,6 @@ TEST(pop_queued) {
   // Actually pop them.
   queue.PopQueued();
 
-  __ Mov(csp, __ StackPointer());
-  __ SetStackPointer(csp);
-
   END();
 
   RUN();
@@ -13042,9 +12947,6 @@ TEST(copy_slots_down) {
   START();
 
   // Test copying 12 slots down one slot.
-  __ Mov(jssp, __ StackPointer());
-  __ SetStackPointer(jssp);
-
   __ Mov(x1, ones);
   __ Mov(x2, twos);
   __ Mov(x3, threes);
@@ -13075,9 +12977,6 @@ TEST(copy_slots_down) {
 
   __ Drop(2);
   __ Pop(x0, xzr);
-
-  __ Mov(csp, jssp);
-  __ SetStackPointer(csp);
 
   END();
 
@@ -13112,9 +13011,6 @@ TEST(copy_slots_up) {
   const uint64_t threes = 0x3333333333333333UL;
 
   START();
-
-  __ Mov(jssp, __ StackPointer());
-  __ SetStackPointer(jssp);
 
   __ Mov(x1, ones);
   __ Mov(x2, twos);
@@ -13154,9 +13050,6 @@ TEST(copy_slots_up) {
   __ Drop(2);
   __ Pop(xzr, x0, x1, x2);
 
-  __ Mov(csp, jssp);
-  __ SetStackPointer(csp);
-
   END();
 
   RUN();
@@ -13182,9 +13075,6 @@ TEST(copy_double_words_downwards_even) {
 
   START();
 
-  __ Mov(jssp, __ StackPointer());
-  __ SetStackPointer(jssp);
-
   // Test copying 12 slots up one slot.
   __ Mov(x1, ones);
   __ Mov(x2, twos);
@@ -13205,9 +13095,6 @@ TEST(copy_double_words_downwards_even) {
   __ Pop(x7, x8, x9, x10);
   __ Pop(x11, x12, x13, x14);
   __ Pop(x15, xzr);
-
-  __ Mov(csp, jssp);
-  __ SetStackPointer(csp);
 
   END();
 
@@ -13243,9 +13130,6 @@ TEST(copy_double_words_downwards_odd) {
 
   START();
 
-  __ Mov(jssp, __ StackPointer());
-  __ SetStackPointer(jssp);
-
   // Test copying 13 slots up one slot.
   __ Mov(x1, ones);
   __ Mov(x2, twos);
@@ -13267,9 +13151,6 @@ TEST(copy_double_words_downwards_odd) {
   __ Pop(x5, x6, x7, x8);
   __ Pop(x9, x10, x11, x12);
   __ Pop(x13, x14, x15, x16);
-
-  __ Mov(csp, jssp);
-  __ SetStackPointer(csp);
 
   END();
 
@@ -13307,9 +13188,6 @@ TEST(copy_noop) {
 
   START();
 
-  __ Mov(jssp, __ StackPointer());
-  __ SetStackPointer(jssp);
-
   __ Mov(x1, ones);
   __ Mov(x2, twos);
   __ Mov(x3, threes);
@@ -13337,9 +13215,6 @@ TEST(copy_noop) {
   __ Pop(x5, x6, x7, x8);
   __ Pop(x9, x10, x11, x12);
   __ Pop(x13, x14, x15, x16);
-
-  __ Mov(csp, jssp);
-  __ SetStackPointer(csp);
 
   END();
 
@@ -13993,8 +13868,8 @@ TEST(isvalid) {
   CHECK(xzr.IsValid());
   CHECK(wzr.IsValid());
 
-  CHECK(csp.IsValid());
-  CHECK(wcsp.IsValid());
+  CHECK(sp.IsValid());
+  CHECK(wsp.IsValid());
 
   CHECK(d0.IsValid());
   CHECK(s0.IsValid());
@@ -14005,14 +13880,14 @@ TEST(isvalid) {
   CHECK(w0.IsRegister());
   CHECK(xzr.IsRegister());
   CHECK(wzr.IsRegister());
-  CHECK(csp.IsRegister());
-  CHECK(wcsp.IsRegister());
+  CHECK(sp.IsRegister());
+  CHECK(wsp.IsRegister());
   CHECK(!x0.IsVRegister());
   CHECK(!w0.IsVRegister());
   CHECK(!xzr.IsVRegister());
   CHECK(!wzr.IsVRegister());
-  CHECK(!csp.IsVRegister());
-  CHECK(!wcsp.IsVRegister());
+  CHECK(!sp.IsVRegister());
+  CHECK(!wsp.IsVRegister());
 
   CHECK(d0.IsVRegister());
   CHECK(s0.IsVRegister());
@@ -14028,8 +13903,8 @@ TEST(isvalid) {
   CHECK(static_cast<CPURegister>(xzr).IsValid());
   CHECK(static_cast<CPURegister>(wzr).IsValid());
 
-  CHECK(static_cast<CPURegister>(csp).IsValid());
-  CHECK(static_cast<CPURegister>(wcsp).IsValid());
+  CHECK(static_cast<CPURegister>(sp).IsValid());
+  CHECK(static_cast<CPURegister>(wsp).IsValid());
 
   CHECK(static_cast<CPURegister>(d0).IsValid());
   CHECK(static_cast<CPURegister>(s0).IsValid());
@@ -14040,14 +13915,14 @@ TEST(isvalid) {
   CHECK(static_cast<CPURegister>(w0).IsRegister());
   CHECK(static_cast<CPURegister>(xzr).IsRegister());
   CHECK(static_cast<CPURegister>(wzr).IsRegister());
-  CHECK(static_cast<CPURegister>(csp).IsRegister());
-  CHECK(static_cast<CPURegister>(wcsp).IsRegister());
+  CHECK(static_cast<CPURegister>(sp).IsRegister());
+  CHECK(static_cast<CPURegister>(wsp).IsRegister());
   CHECK(!static_cast<CPURegister>(x0).IsVRegister());
   CHECK(!static_cast<CPURegister>(w0).IsVRegister());
   CHECK(!static_cast<CPURegister>(xzr).IsVRegister());
   CHECK(!static_cast<CPURegister>(wzr).IsVRegister());
-  CHECK(!static_cast<CPURegister>(csp).IsVRegister());
-  CHECK(!static_cast<CPURegister>(wcsp).IsVRegister());
+  CHECK(!static_cast<CPURegister>(sp).IsVRegister());
+  CHECK(!static_cast<CPURegister>(wsp).IsVRegister());
 
   CHECK(static_cast<CPURegister>(d0).IsVRegister());
   CHECK(static_cast<CPURegister>(s0).IsVRegister());
@@ -14125,11 +14000,11 @@ TEST(cpureglist_utils_x) {
   CHECK(!test.IncludesAliasOf(x4));
   CHECK(!test.IncludesAliasOf(x30));
   CHECK(!test.IncludesAliasOf(xzr));
-  CHECK(!test.IncludesAliasOf(csp));
+  CHECK(!test.IncludesAliasOf(sp));
   CHECK(!test.IncludesAliasOf(w4));
   CHECK(!test.IncludesAliasOf(w30));
   CHECK(!test.IncludesAliasOf(wzr));
-  CHECK(!test.IncludesAliasOf(wcsp));
+  CHECK(!test.IncludesAliasOf(wsp));
 
   CHECK(!test.IncludesAliasOf(d0));
   CHECK(!test.IncludesAliasOf(d1));
@@ -14189,13 +14064,13 @@ TEST(cpureglist_utils_w) {
   CHECK(!test.IncludesAliasOf(x14));
   CHECK(!test.IncludesAliasOf(x30));
   CHECK(!test.IncludesAliasOf(xzr));
-  CHECK(!test.IncludesAliasOf(csp));
+  CHECK(!test.IncludesAliasOf(sp));
   CHECK(!test.IncludesAliasOf(w0));
   CHECK(!test.IncludesAliasOf(w9));
   CHECK(!test.IncludesAliasOf(w14));
   CHECK(!test.IncludesAliasOf(w30));
   CHECK(!test.IncludesAliasOf(wzr));
-  CHECK(!test.IncludesAliasOf(wcsp));
+  CHECK(!test.IncludesAliasOf(wsp));
 
   CHECK(!test.IncludesAliasOf(d10));
   CHECK(!test.IncludesAliasOf(d11));
@@ -14270,8 +14145,8 @@ TEST(cpureglist_utils_d) {
 
   CHECK(!test.IncludesAliasOf(xzr));
   CHECK(!test.IncludesAliasOf(wzr));
-  CHECK(!test.IncludesAliasOf(csp));
-  CHECK(!test.IncludesAliasOf(wcsp));
+  CHECK(!test.IncludesAliasOf(sp));
+  CHECK(!test.IncludesAliasOf(wsp));
 
   CHECK(!test.IsEmpty());
 
@@ -14368,7 +14243,7 @@ TEST(printf) {
   // Initialize x29 to the value of the stack pointer. We will use x29 as a
   // temporary stack pointer later, and initializing it in this way allows the
   // RegisterDump check to pass.
-  __ Mov(x29, __ StackPointer());
+  __ Mov(x29, sp);
 
   // Test simple integer arguments.
   __ Mov(x0, 1234);
@@ -14418,20 +14293,8 @@ TEST(printf) {
   __ Printf("%g\n", d10);
   __ Printf("%%%%%s%%%c%%\n", x2, w13);
 
-  // Print the stack pointer (csp).
-  CHECK(csp.Is(__ StackPointer()));
-  __ Printf("StackPointer(csp): 0x%016" PRIx64 ", 0x%08" PRIx32 "\n",
-            __ StackPointer(), __ StackPointer().W());
-
-  // Test with a different stack pointer.
-  const Register old_stack_pointer = __ StackPointer();
-  __ Mov(x29, old_stack_pointer);
-  __ SetStackPointer(x29);
-  // Print the stack pointer (not csp).
-  __ Printf("StackPointer(not csp): 0x%016" PRIx64 ", 0x%08" PRIx32 "\n",
-            __ StackPointer(), __ StackPointer().W());
-  __ Mov(old_stack_pointer, __ StackPointer());
-  __ SetStackPointer(old_stack_pointer);
+  // Print the stack pointer.
+  __ Printf("StackPointer(sp): 0x%016" PRIx64 ", 0x%08" PRIx32 "\n", sp, wsp);
 
   // Test with three arguments.
   __ Printf("3=%u, 4=%u, 5=%u\n", x10, x11, x12);
@@ -14508,24 +14371,12 @@ TEST(printf_no_preserve) {
   __ PrintfNoPreserve("%g\n", d10);
   __ Mov(x26, x0);
 
-  // Test with a different stack pointer.
-  const Register old_stack_pointer = __ StackPointer();
-  __ Mov(x29, old_stack_pointer);
-  __ SetStackPointer(x29);
-  // Print the stack pointer (not csp).
-  __ PrintfNoPreserve(
-      "StackPointer(not csp): 0x%016" PRIx64 ", 0x%08" PRIx32 "\n",
-      __ StackPointer(), __ StackPointer().W());
-  __ Mov(x27, x0);
-  __ Mov(old_stack_pointer, __ StackPointer());
-  __ SetStackPointer(old_stack_pointer);
-
   // Test with three arguments.
   __ Mov(x3, 3);
   __ Mov(x4, 40);
   __ Mov(x5, 500);
   __ PrintfNoPreserve("3=%u, 4=%u, 5=%u\n", x3, x4, x5);
-  __ Mov(x28, x0);
+  __ Mov(x27, x0);
 
   // Mixed argument types.
   __ Mov(w3, 0xFFFFFFFF);
@@ -14534,7 +14385,7 @@ TEST(printf_no_preserve) {
   __ Fmov(d3, 3.456);
   __ PrintfNoPreserve("w3: %" PRIu32 ", s1: %f, x5: %" PRIu64 ", d3: %f\n",
                       w3, s1, x5, d3);
-  __ Mov(x29, x0);
+  __ Mov(x28, x0);
 
   END();
   RUN();
@@ -14564,14 +14415,10 @@ TEST(printf_no_preserve) {
   CHECK_EQUAL_64(30, x25);
   // 42
   CHECK_EQUAL_64(3, x26);
-  // StackPointer(not csp): 0x00007FB037AE2370, 0x37AE2370
-  // Note: This is an example value, but the field width is fixed here so the
-  // string length is still predictable.
-  CHECK_EQUAL_64(54, x27);
   // 3=3, 4=40, 5=500
-  CHECK_EQUAL_64(17, x28);
+  CHECK_EQUAL_64(17, x27);
   // w3: 4294967295, s1: 1.234000, x5: 18446744073709551615, d3: 3.456000
-  CHECK_EQUAL_64(69, x29);
+  CHECK_EQUAL_64(69, x28);
 
   TEARDOWN();
 }
@@ -15222,13 +15069,11 @@ TEST(default_nan_double) {
 
 
 TEST(call_no_relocation) {
-  Address call_start;
-  Address return_address;
-
   INIT_V8();
   SETUP();
 
   START();
+  Address buf_addr = reinterpret_cast<Address>(buf);
 
   Label function;
   Label test;
@@ -15244,9 +15089,7 @@ TEST(call_no_relocation) {
   __ Push(lr, xzr);
   {
     Assembler::BlockConstPoolScope scope(&masm);
-    call_start = buf + __ pc_offset();
-    __ Call(buf + function.pos(), RelocInfo::NONE64);
-    return_address = buf + __ pc_offset();
+    __ Call(buf_addr + function.pos(), RelocInfo::NONE);
   }
   __ Pop(xzr, lr);
   END();
@@ -15254,13 +15097,6 @@ TEST(call_no_relocation) {
   RUN();
 
   CHECK_EQUAL_64(1, x0);
-
-  // The return_address_from_call_start function doesn't currently encounter any
-  // non-relocatable sequences, so we check it here to make sure it works.
-  // TODO(jbramley): Once Crankshaft is complete, decide if we need to support
-  // non-relocatable calls at all.
-  CHECK(return_address ==
-        Assembler::return_address_from_call_start(call_start));
 
   TEARDOWN();
 }
@@ -15413,7 +15249,7 @@ TEST(pool_size) {
   }
 
   __ RecordVeneerPool(masm.pc_offset(), veneer_pool_size);
-  for (unsigned i = 0; i < veneer_pool_size / kInstructionSize; ++i) {
+  for (unsigned i = 0; i < veneer_pool_size / kInstrSize; ++i) {
     __ nop();
   }
 
@@ -15451,7 +15287,7 @@ TEST(jump_tables_forward) {
   const int kNumCases = 512;
 
   INIT_V8();
-  SETUP_SIZE(kNumCases * 5 * kInstructionSize + 8192);
+  SETUP_SIZE(kNumCases * 5 * kInstrSize + 8192);
   START();
 
   int32_t values[kNumCases];
@@ -15515,7 +15351,7 @@ TEST(jump_tables_backward) {
   const int kNumCases = 512;
 
   INIT_V8();
-  SETUP_SIZE(kNumCases * 5 * kInstructionSize + 8192);
+  SETUP_SIZE(kNumCases * 5 * kInstrSize + 8192);
   START();
 
   int32_t values[kNumCases];

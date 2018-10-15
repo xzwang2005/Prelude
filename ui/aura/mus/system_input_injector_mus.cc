@@ -4,95 +4,68 @@
 
 #include "ui/aura/mus/system_input_injector_mus.h"
 
-#include "ui/aura/mus/window_manager_delegate.h"
-#include "ui/display/display.h"
-#include "ui/display/screen.h"
-#include "ui/events/base_event_utils.h"
-#include "ui/events/event.h"
-#include "ui/events/keycodes/keyboard_code_conversion.h"
+#include "services/service_manager/public/cpp/connector.h"
+#include "services/ws/public/mojom/constants.mojom.h"
+#include "ui/events/event_constants.h"
+#include "ui/events/keycodes/dom/keycode_converter.h"
 
 namespace aura {
 
 namespace {
 
-int KeyboardCodeToModifier(ui::KeyboardCode key) {
-  switch (key) {
-    case ui::VKEY_MENU:
-    case ui::VKEY_LMENU:
-    case ui::VKEY_RMENU:
-      return ui::MODIFIER_ALT;
-    case ui::VKEY_ALTGR:
-      return ui::MODIFIER_ALTGR;
-    case ui::VKEY_CAPITAL:
-      return ui::MODIFIER_CAPS_LOCK;
-    case ui::VKEY_CONTROL:
-    case ui::VKEY_LCONTROL:
-    case ui::VKEY_RCONTROL:
-      return ui::MODIFIER_CONTROL;
-    case ui::VKEY_LWIN:
-    case ui::VKEY_RWIN:
-      return ui::MODIFIER_COMMAND;
-    case ui::VKEY_SHIFT:
-    case ui::VKEY_LSHIFT:
-    case ui::VKEY_RSHIFT:
-      return ui::MODIFIER_SHIFT;
+ws::mojom::InjectedMouseButtonType EventFlagsToInjectedMouseButtonType(
+    ui::EventFlags flags) {
+  switch (flags) {
+    case ui::EF_LEFT_MOUSE_BUTTON:
+      return ws::mojom::InjectedMouseButtonType::kLeft;
+    case ui::EF_MIDDLE_MOUSE_BUTTON:
+      return ws::mojom::InjectedMouseButtonType::kMiddle;
+    case ui::EF_RIGHT_MOUSE_BUTTON:
+      return ws::mojom::InjectedMouseButtonType::kRight;
     default:
-      return ui::MODIFIER_NONE;
+      LOG(WARNING) << "Invalid flag: " << flags << " for the button parameter";
   }
+  return ws::mojom::InjectedMouseButtonType::kLeft;
 }
 
 }  // namespace
 
-SystemInputInjectorMus::SystemInputInjectorMus(WindowManagerClient* client)
-    : client_(client) {}
+SystemInputInjectorMus::SystemInputInjectorMus(
+    service_manager::Connector* connector) {
+  // Tests may use a null connector.
+  if (connector)
+    connector->BindInterface(ws::mojom::kServiceName,
+                             &remoting_event_injector_);
+}
 
 SystemInputInjectorMus::~SystemInputInjectorMus() {}
 
 void SystemInputInjectorMus::MoveCursorTo(const gfx::PointF& location) {
-  // TODO(erg): This appears to never be receiving the events from the remote
-  // side of the connection. I think this is because it doesn't send mouse
-  // events before the first paint.
-  NOTIMPLEMENTED();
+  if (remoting_event_injector_)
+    remoting_event_injector_->MoveCursorToLocationInPixels(location);
 }
 
 void SystemInputInjectorMus::InjectMouseButton(ui::EventFlags button,
                                                bool down) {
-  NOTIMPLEMENTED();
+  if (remoting_event_injector_) {
+    remoting_event_injector_->InjectMousePressOrRelease(
+        EventFlagsToInjectedMouseButtonType(button), down);
+  }
 }
 
 void SystemInputInjectorMus::InjectMouseWheel(int delta_x, int delta_y) {
-  NOTIMPLEMENTED();
+  if (remoting_event_injector_)
+    remoting_event_injector_->InjectMouseWheelInPixels(delta_x, delta_y);
 }
 
 void SystemInputInjectorMus::InjectKeyEvent(ui::DomCode dom_code,
                                             bool down,
                                             bool suppress_auto_repeat) {
-  // |suppress_auto_repeat| is always true, and can be ignored.
-  ui::KeyboardCode key_code = ui::DomCodeToUsLayoutKeyboardCode(dom_code);
-
-  int modifier = KeyboardCodeToModifier(key_code);
-  if (modifier)
-    UpdateModifier(modifier, down);
-
-  ui::KeyEvent e(down ? ui::ET_KEY_PRESSED : ui::ET_KEY_RELEASED, key_code,
-                 dom_code, modifiers_.GetModifierFlags());
-
-  // Even when we're dispatching a key event, we need to have a valid display
-  // for event targeting, so grab the display of where the cursor currently is.
-  display::Screen* screen = display::Screen::GetScreen();
-  display::Display display =
-      screen->GetDisplayNearestPoint(screen->GetCursorScreenPoint());
-  client_->InjectEvent(e, display.id());
-}
-
-void SystemInputInjectorMus::UpdateModifier(unsigned int modifier, bool down) {
-  if (modifier == ui::MODIFIER_NONE)
-    return;
-
-  if (modifier == ui::MODIFIER_CAPS_LOCK)
-    modifiers_.UpdateModifier(ui::MODIFIER_MOD3, down);
-  else
-    modifiers_.UpdateModifier(modifier, down);
+  if (remoting_event_injector_) {
+    remoting_event_injector_->InjectKeyEvent(
+        ui::KeycodeConverter::DomCodeToNativeKeycode(dom_code), down,
+        suppress_auto_repeat);
+  }
 }
 
 }  // namespace aura

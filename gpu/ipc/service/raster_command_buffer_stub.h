@@ -9,7 +9,8 @@
 
 namespace gpu {
 
-class GPU_EXPORT RasterCommandBufferStub : public CommandBufferStub {
+class GPU_IPC_SERVICE_EXPORT RasterCommandBufferStub
+    : public CommandBufferStub {
  public:
   RasterCommandBufferStub(GpuChannel* channel,
                           const GPUCreateCommandBufferConfig& init_params,
@@ -17,6 +18,7 @@ class GPU_EXPORT RasterCommandBufferStub : public CommandBufferStub {
                           SequenceId sequence_id,
                           int32_t stream_id,
                           int32_t route_id);
+  ~RasterCommandBufferStub() override;
 
   // This must leave the GL context associated with the newly-created
   // CommandBufferStub current, so the GpuChannel can initialize
@@ -24,7 +26,17 @@ class GPU_EXPORT RasterCommandBufferStub : public CommandBufferStub {
   gpu::ContextResult Initialize(
       CommandBufferStub* share_group,
       const GPUCreateCommandBufferConfig& init_params,
-      std::unique_ptr<base::SharedMemory> shared_state_shm) override;
+      base::UnsafeSharedMemoryRegion shared_state_shm) override;
+
+ private:
+  void OnTakeFrontBuffer(const Mailbox& mailbox) override;
+  void OnReturnFrontBuffer(const Mailbox& mailbox, bool is_lost) override;
+  void OnSwapBuffers(uint64_t swap_id, uint32_t flags) override;
+  void SetActiveURL(GURL url) override;
+  void ResetActiveURL() override;
+
+  GURL original_url_;
+  size_t original_url_hash_;
 
   DISALLOW_COPY_AND_ASSIGN(RasterCommandBufferStub);
 };

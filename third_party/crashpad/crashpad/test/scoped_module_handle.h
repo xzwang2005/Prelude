@@ -43,7 +43,7 @@ class ScopedModuleHandle {
     using ModuleHandle = HMODULE;
 
     static void* LookUpSymbol(ModuleHandle handle, const char* symbol_name) {
-      return GetProcAddress(handle, symbol_name);
+      return reinterpret_cast<void*>(GetProcAddress(handle, symbol_name));
     }
 #endif
 
@@ -57,6 +57,7 @@ class ScopedModuleHandle {
   using ModuleHandle = Impl::ModuleHandle;
 
   explicit ScopedModuleHandle(ModuleHandle handle);
+  ScopedModuleHandle(ScopedModuleHandle&& handle);
   ~ScopedModuleHandle();
 
   //! \return The module handle being managed.

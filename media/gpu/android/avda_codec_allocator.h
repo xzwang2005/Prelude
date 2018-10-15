@@ -14,17 +14,17 @@
 #include "base/logging.h"
 #include "base/message_loop/message_loop.h"
 #include "base/optional.h"
+#include "base/sequenced_task_runner.h"
 #include "base/synchronization/waitable_event.h"
 #include "base/sys_info.h"
-#include "base/task_scheduler/post_task.h"
+#include "base/task/post_task.h"
 #include "base/threading/thread.h"
 #include "base/time/tick_clock.h"
 #include "base/trace_event/trace_event.h"
 #include "media/base/android/android_overlay.h"
 #include "media/base/android/media_codec_bridge_impl.h"
-#include "media/base/android/media_drm_bridge_cdm_context.h"
+#include "media/base/android/media_crypto_context.h"
 #include "media/base/media.h"
-#include "media/base/surface_manager.h"
 #include "media/base/video_codecs.h"
 #include "media/gpu/android/avda_surface_bundle.h"
 #include "media/gpu/media_gpu_export.h"
@@ -77,6 +77,8 @@ class MEDIA_GPU_EXPORT CodecConfig
   // HDR10 meta data is embedded in the video stream
   VideoColorSpace container_color_space;
   base::Optional<HDRMetadata> hdr_metadata;
+
+  base::RepeatingClosure on_buffers_available_cb;
 
  protected:
   friend class base::RefCountedThreadSafe<CodecConfig>;
@@ -134,7 +136,8 @@ class MEDIA_GPU_EXPORT AVDACodecAllocator {
           const std::vector<uint8_t>& csd1,
           const VideoColorSpace& color_space,
           const base::Optional<HDRMetadata>& hdr_metadata,
-          bool allow_adaptive_playback)>;
+          bool allow_adaptive_playback,
+          base::RepeatingClosure on_buffers_available_cb)>;
 
   // Make sure the construction threads are started for |client|.  If the
   // threads fail to start, then codec allocation may fail.
@@ -176,7 +179,7 @@ class MEDIA_GPU_EXPORT AVDACodecAllocator {
   // |tick_clock| and |stop_event| are for tests only.
   AVDACodecAllocator(AVDACodecAllocator::CodecFactoryCB factory_cb,
                      scoped_refptr<base::SequencedTaskRunner> task_runner,
-                     base::TickClock* tick_clock = nullptr,
+                     const base::TickClock* tick_clock = nullptr,
                      base::WaitableEvent* stop_event = nullptr);
   virtual ~AVDACodecAllocator();
 
@@ -217,7 +220,7 @@ class MEDIA_GPU_EXPORT AVDACodecAllocator {
 
   class HangDetector : public base::MessageLoop::TaskObserver {
    public:
-    HangDetector(base::TickClock* tick_clock);
+    HangDetector(const base::TickClock* tick_clock);
     void WillProcessTask(const base::PendingTask& pending_task) override;
     void DidProcessTask(const base::PendingTask& pending_task) override;
     bool IsThreadLikelyHung();
@@ -228,14 +231,15 @@ class MEDIA_GPU_EXPORT AVDACodecAllocator {
     // Non-null when a task is currently running.
     base::TimeTicks task_start_time_;
 
-    base::TickClock* tick_clock_;
+    const base::TickClock* tick_clock_;
 
     DISALLOW_COPY_AND_ASSIGN(HangDetector);
   };
 
   // Handy combination of a thread and hang detector for it.
   struct ThreadAndHangDetector {
-    ThreadAndHangDetector(const std::string& name, base::TickClock* tick_clock)
+    ThreadAndHangDetector(const std::string& name,
+                          const base::TickClock* tick_clock)
         : thread(name), hang_detector(tick_clock) {}
     base::Thread thread;
     HangDetector hang_detector;

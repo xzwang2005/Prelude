@@ -45,10 +45,6 @@ TEST(NetworkQualityObservationBufferTest, BoundedBuffer) {
   }
 }
 
-// Test disabled on OS_WIN to avoid linking errors when calling
-// SetTickClockForTesting.
-// TODO(tbansal): crbug.com/651963. Pass the clock through NQE's constructor.
-#if !defined(OS_WIN)
 // Verify that the percentiles are monotonically non-decreasing when a weight is
 // applied.
 TEST(NetworkQualityObservationBufferTest, GetPercentileWithWeights) {
@@ -90,7 +86,6 @@ TEST(NetworkQualityObservationBufferTest, GetPercentileWithWeights) {
   }
   EXPECT_LT(result_lowest, result_highest);
 }
-#endif
 
 // Verifies that the percentiles are correctly computed. All observations have
 // the same timestamp.
@@ -226,10 +221,10 @@ TEST(NetworkQualityObservationBufferTest, PercentileDifferentRSSI) {
   NetworkQualityEstimatorParams params(variation_params);
   base::SimpleTestTickClock tick_clock;
   tick_clock.Advance(base::TimeDelta::FromMinutes(1));
-  ObservationBuffer buffer(&params, &tick_clock, 1.0, 0.5);
+  ObservationBuffer buffer(&params, &tick_clock, 1.0, 0.25);
   const base::TimeTicks now = tick_clock.NowTicks();
-  int32_t high_rssi = 0;
-  int32_t low_rssi = -100;
+  int32_t high_rssi = 4;
+  int32_t low_rssi = 0;
 
   // Network quality should be unavailable when no observations are available.
   EXPECT_FALSE(buffer.GetPercentile(base::TimeTicks(), INT32_MIN, 50, nullptr)
@@ -253,7 +248,7 @@ TEST(NetworkQualityObservationBufferTest, PercentileDifferentRSSI) {
     base::Optional<int32_t> result =
         buffer.GetPercentile(now, high_rssi, i, nullptr);
     EXPECT_TRUE(result.has_value());
-    EXPECT_NEAR(result.value(), 51 + 0.49 * i, 1);
+    EXPECT_NEAR(result.value(), 51 + 0.49 * i, 2);
   }
 
   // When the current RSSI is |low_rssi|, higher weight should be assigned
@@ -262,7 +257,7 @@ TEST(NetworkQualityObservationBufferTest, PercentileDifferentRSSI) {
     base::Optional<int32_t> result =
         buffer.GetPercentile(now, low_rssi, i, nullptr);
     EXPECT_TRUE(result.has_value());
-    EXPECT_NEAR(result.value(), i / 2, 1);
+    EXPECT_NEAR(result.value(), i / 2, 2);
   }
 }
 

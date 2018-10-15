@@ -9,6 +9,7 @@
 
 #include <iosfwd>
 #include <type_traits>
+#include <utility>
 
 #include "base/compiler_specific.h"
 #include "base/logging.h"
@@ -114,15 +115,15 @@ scoped_refptr<T> WrapRefCounted(T* t) {
 //   };
 //
 //   void some_function() {
-//     scoped_refptr<MyFoo> foo = new MyFoo();
+//     scoped_refptr<MyFoo> foo = MakeRefCounted<MyFoo>();
 //     foo->Method(param);
 //     // |foo| is released when this function returns
 //   }
 //
 //   void some_other_function() {
-//     scoped_refptr<MyFoo> foo = new MyFoo();
+//     scoped_refptr<MyFoo> foo = MakeRefCounted<MyFoo>();
 //     ...
-//     foo = nullptr;  // explicitly releases |foo|
+//     foo.reset();  // explicitly releases |foo|
 //     ...
 //     if (foo)
 //       foo->Method(param);
@@ -133,7 +134,7 @@ scoped_refptr<T> WrapRefCounted(T* t) {
 // references between the two objects, like so:
 //
 //   {
-//     scoped_refptr<MyFoo> a = new MyFoo();
+//     scoped_refptr<MyFoo> a = MakeRefCounted<MyFoo>();
 //     scoped_refptr<MyFoo> b;
 //
 //     b.swap(a);
@@ -144,49 +145,56 @@ scoped_refptr<T> WrapRefCounted(T* t) {
 // object, simply use the assignment operator:
 //
 //   {
-//     scoped_refptr<MyFoo> a = new MyFoo();
+//     scoped_refptr<MyFoo> a = MakeRefCounted<MyFoo>();
 //     scoped_refptr<MyFoo> b;
 //
 //     b = a;
 //     // now, |a| and |b| each own a reference to the same MyFoo object.
 //   }
 //
+// Also see Chromium's ownership and calling conventions:
+// https://chromium.googlesource.com/chromium/src/+/lkgr/styleguide/c++/c++.md#object-ownership-and-calling-conventions
+// Specifically:
+//   If the function (at least sometimes) takes a ref on a refcounted object,
+//   declare the param as scoped_refptr<T>. The caller can decide whether it
+//   wishes to transfer ownership (by calling std::move(t) when passing t) or
+//   retain its ref (by simply passing t directly).
+//   In other words, use scoped_refptr like you would a std::unique_ptr except
+//   in the odd case where it's required to hold on to a ref while handing one
+//   to another component (if a component merely needs to use t on the stack
+//   without keeping a ref: pass t as a raw T*).
 template <class T>
 class scoped_refptr {
  public:
   typedef T element_type;
 
-  scoped_refptr() {}
+  constexpr scoped_refptr() = default;
 
-  scoped_refptr(T* p) : ptr_(p) {
+  // Constructs from raw pointer. constexpr if |p| is null.
+  constexpr scoped_refptr(T* p) : ptr_(p) {
     if (ptr_)
       AddRef(ptr_);
   }
 
-  // Copy constructor.
-  scoped_refptr(const scoped_refptr<T>& r) : ptr_(r.ptr_) {
-    if (ptr_)
-      AddRef(ptr_);
-  }
+  // Copy constructor. This is required in addition to the copy conversion
+  // constructor below.
+  scoped_refptr(const scoped_refptr& r) : scoped_refptr(r.ptr_) {}
 
   // Copy conversion constructor.
   template <typename U,
             typename = typename std::enable_if<
                 std::is_convertible<U*, T*>::value>::type>
-  scoped_refptr(const scoped_refptr<U>& r) : ptr_(r.get()) {
-    if (ptr_)
-      AddRef(ptr_);
-  }
+  scoped_refptr(const scoped_refptr<U>& r) : scoped_refptr(r.ptr_) {}
 
-  // Move constructor. This is required in addition to the conversion
-  // constructor below in order for clang to warn about pessimizing moves.
-  scoped_refptr(scoped_refptr&& r) : ptr_(r.get()) { r.ptr_ = nullptr; }
+  // Move constructor. This is required in addition to the move conversion
+  // constructor below.
+  scoped_refptr(scoped_refptr&& r) noexcept : ptr_(r.ptr_) { r.ptr_ = nullptr; }
 
   // Move conversion constructor.
   template <typename U,
             typename = typename std::enable_if<
                 std::is_convertible<U*, T*>::value>::type>
-  scoped_refptr(scoped_refptr<U>&& r) : ptr_(r.get()) {
+  scoped_refptr(scoped_refptr<U>&& r) noexcept : ptr_(r.ptr_) {
     r.ptr_ = nullptr;
   }
 
@@ -212,48 +220,19 @@ class scoped_refptr {
     return ptr_;
   }
 
-  scoped_refptr<T>& operator=(T* p) {
-    // AddRef first so that self assignment should work
-    if (p)
-      AddRef(p);
-    T* old_ptr = ptr_;
-    ptr_ = p;
-    if (old_ptr)
-      Release(old_ptr);
+  scoped_refptr& operator=(T* p) { return *this = scoped_refptr(p); }
+
+  // Unified assignment operator.
+  scoped_refptr& operator=(scoped_refptr r) noexcept {
+    swap(r);
     return *this;
   }
 
-  scoped_refptr<T>& operator=(const scoped_refptr<T>& r) {
-    return *this = r.ptr_;
-  }
+  // Sets managed object to null and releases reference to the previous managed
+  // object, if it existed.
+  void reset() { scoped_refptr().swap(*this); }
 
-  template <typename U>
-  scoped_refptr<T>& operator=(const scoped_refptr<U>& r) {
-    return *this = r.get();
-  }
-
-  scoped_refptr<T>& operator=(scoped_refptr<T>&& r) {
-    scoped_refptr<T> tmp(std::move(r));
-    tmp.swap(*this);
-    return *this;
-  }
-
-  template <typename U>
-  scoped_refptr<T>& operator=(scoped_refptr<U>&& r) {
-    // We swap with a temporary variable to guarantee that |ptr_| is released
-    // immediately. A naive implementation which swaps |this| and |r| would
-    // unintentionally extend the lifetime of |ptr_| to at least the lifetime of
-    // |r|.
-    scoped_refptr<T> tmp(std::move(r));
-    tmp.swap(*this);
-    return *this;
-  }
-
-  void swap(scoped_refptr<T>& r) {
-    T* tmp = ptr_;
-    ptr_ = r.ptr_;
-    r.ptr_ = tmp;
-  }
+  void swap(scoped_refptr& r) noexcept { std::swap(ptr_, r.ptr_); }
 
   explicit operator bool() const { return ptr_ != nullptr; }
 
@@ -351,7 +330,7 @@ std::ostream& operator<<(std::ostream& out, const scoped_refptr<T>& p) {
 }
 
 template <typename T>
-void swap(scoped_refptr<T>& lhs, scoped_refptr<T>& rhs) {
+void swap(scoped_refptr<T>& lhs, scoped_refptr<T>& rhs) noexcept {
   lhs.swap(rhs);
 }
 

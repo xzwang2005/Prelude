@@ -10,27 +10,21 @@ all required functions are annotated.
 
 import os
 import argparse
-import subprocess
 import sys
 
+from annotation_tools import NetworkTrafficAnnotationTools
 
 # If this test starts failing, please set TEST_IS_ENABLED to "False" and file a
 # bug to get this reenabled, and cc the people listed in
 # //tools/traffic_annotation/OWNERS.
+TEST_IS_ENABLED = True
 
-# TODO(crbug.com/788035) - this test currently takes up to 20 minutes to
-# execute even on linux_chromium_rel_ng; we need to figure out how to make
-# it be much faster before enabling it anywhere in the CQ.
-# TEST_IS_ENABLED = sys.platform != 'win32'
-TEST_IS_ENABLED = False
+# Threshold for the change list size to trigger full test.
+CHANGELIST_SIZE_TO_TRIGGER_FULL_TEST = 100
 
 
 class NetworkTrafficAnnotationChecker():
   EXTENSIONS = ['.cc', '.mm',]
-  COULD_NOT_RUN_MESSAGE = \
-      'Network traffic annotation presubmit check was not performed. To run ' \
-      'it, a compiled build directory and traffic_annotation_auditor binary ' \
-      'are required.'
 
   def __init__(self, build_path=None):
     """Initializes a NetworkTrafficAnnotationChecker object.
@@ -40,106 +34,66 @@ class NetworkTrafficAnnotationChecker():
           directory. If not specified, the script tries to find it based on
           relative position of this file (src/tools/traffic_annotation).
     """
-    self.this_dir = os.path.dirname(os.path.abspath(__file__))
-
-    if not build_path:
-      build_path = self._FindPossibleBuildPath()
-    if build_path:
-      self.build_path = os.path.abspath(build_path)
-
-    self.auditor_path = None
-    platform = {
-      'linux2': 'linux64',
-      'darwin': 'mac',
-      'win32': 'win32',
-    }[sys.platform]
-    path = os.path.join(self.this_dir, '..', 'bin', platform,
-                        'traffic_annotation_auditor')
-    if sys.platform == 'win32':
-      path += '.exe'
-    if os.path.exists(path):
-      self.auditor_path = path
-
-  def _FindPossibleBuildPath(self):
-    """Returns the first folder in //out that looks like a build dir."""
-    out = os.path.abspath(os.path.join(self.this_dir, '..', '..', 'out'))
-    if os.path.exists(out):
-      for folder in os.listdir(out):
-        candidate = os.path.join(out, folder)
-        if (os.path.isdir(candidate) and
-            self._CheckIfDirectorySeemsAsBuild(candidate)):
-          return candidate
-    return None
-
-  def _CheckIfDirectorySeemsAsBuild(self, path):
-    """Checks to see if a directory seems to be a compiled build directory by
-    searching for 'gen' folder and 'build.ninja' file in it.
-    """
-    return all(os.path.exists(
-        os.path.join(path, item)) for item in ('gen', 'build.ninja'))
-
-  def _AllArgsValid(self):
-    return self.auditor_path and self.build_path
+    self.tools = NetworkTrafficAnnotationTools(build_path)
 
   def ShouldCheckFile(self, file_path):
     """Returns true if the input file has an extension relevant to network
     traffic annotations."""
     return os.path.splitext(file_path)[1] in self.EXTENSIONS
 
-  def CheckFiles(self, file_paths=None, limit=0):
+  def CheckFiles(self, complete_run, limit):
     """Passes all given files to traffic_annotation_auditor to be checked for
     possible violations of network traffic annotation rules.
 
     Args:
-      file_paths: list of str List of files to check. If empty, the whole
-          repository will be checked.
-      limit: int Sets the upper threshold for number of errors and warnings,
-          use 0 for unlimited.
+      complete_run: bool Flag requesting to run test on all relevant files.
+      limit: int The upper threshold for number of errors and warnings. Use 0
+          for unlimited.
 
     Returns:
       int Exit code of the network traffic annotation auditor.
     """
-
-    if not TEST_IS_ENABLED:
+    if not self.tools.CanRunAuditor():
+      print("Network traffic annotation presubmit check was not performed. A "
+            "compiled build directory and traffic_annotation_auditor binary "
+            "are required to do it.")
       return 0
 
-    if not self.build_path:
-      return [self.COULD_NOT_RUN_MESSAGE], []
-
-    if file_paths:
+    if complete_run:
+      file_paths = []
+    else:
+      # Get list of modified files. If failed, silently ignore as the test is
+      # run in error resilient mode.
+      file_paths = self.tools.GetModifiedFiles() or []
       file_paths = [
           file_path for file_path in file_paths if self.ShouldCheckFile(
               file_path)]
-
       if not file_paths:
         return 0
-    else:
-      file_paths = []
+      # If the number of changed files in the CL exceeds a threshold, trigger
+      # full test to avoid sending very long list of arguments and possible
+      # failure in argument buffers.
+      if len(file_paths) > CHANGELIST_SIZE_TO_TRIGGER_FULL_TEST:
+        file_paths = []
 
-    args = [self.auditor_path, "--test-only", "--limit=%i" % limit,
-            "--build-path=" + self.build_path ] + file_paths
+    args = ["--test-only", "--limit=%i" % limit, "--error-resilient"] + \
+           file_paths
 
-    if sys.platform.startswith("win"):
-      args.insert(0, sys.executable)
+    stdout_text, stderr_text, return_code = self.tools.RunAuditor(args)
 
-    command = subprocess.Popen(args, stdout=subprocess.PIPE,
-                               stderr=subprocess.PIPE)
-    stdout_text, stderr_text = command.communicate()
-
-    if stderr_text:
-      print("Could not run network traffic annotation presubmit check. "
-            "Returned error from traffic_annotation_auditor is: %s"
-            % stderr_text)
-      print("Exit code is: %i" % command.returncode)
-      return 1
     if stdout_text:
       print(stdout_text)
-    return command.returncode
+    if stderr_text:
+      print("\n[Runtime Messages]:\n%s" % stderr_text)
+    return return_code
 
 
 def main():
+  if not TEST_IS_ENABLED:
+    return 0
+
   parser = argparse.ArgumentParser(
-      description="Traffic Annotation Auditor Presubmit checker.")
+      description="Network Traffic Annotation Presubmit checker.")
   parser.add_argument(
       '--build-path',
       help='Specifies a compiled build directory, e.g. out/Debug. If not '
@@ -149,11 +103,14 @@ def main():
       '--limit', default=5,
       help='Limit for the maximum number of returned errors and warnings. '
            'Default value is 5, use 0 for unlimited.')
+  parser.add_argument(
+      '--complete', action='store_true',
+      help='Run the test on the complete repository. Otherwise only the '
+           'modified files are tested.')
 
   args = parser.parse_args()
-
   checker = NetworkTrafficAnnotationChecker(args.build_path)
-  return checker.CheckFiles(limit=args.limit)
+  return checker.CheckFiles(args.complete, args.limit)
 
 
 if '__main__' == __name__:

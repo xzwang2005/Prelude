@@ -9,7 +9,7 @@
 
 #include "WindowContextFactory_unix.h"
 
-#include "SkUtils.h"
+#include "SkUTF.h"
 #include "Timer.h"
 #include "../GLWindowContext.h"
 #include "Window_unix.h"
@@ -72,7 +72,7 @@ bool Window_unix::initWindow(Display* display) {
         None
     };
     SkASSERT(nullptr == fVisualInfo);
-    if (fRequestedDisplayParams.fMSAASampleCount > 0) {
+    if (fRequestedDisplayParams.fMSAASampleCount > 1) {
         static const GLint kChooseFBConifgAttCnt = SK_ARRAY_COUNT(kChooseFBConfigAtt);
         GLint msaaChooseFBConfigAtt[kChooseFBConifgAttCnt + 4];
         memcpy(msaaChooseFBConfigAtt, kChooseFBConfigAtt, sizeof(kChooseFBConfigAtt));

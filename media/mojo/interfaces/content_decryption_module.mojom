@@ -5,8 +5,8 @@
 module media.mojom;
 
 import "media/mojo/interfaces/decryptor.mojom";
-import "url/mojo/origin.mojom";
-import "url/mojo/url.mojom";
+import "url/mojom/origin.mojom";
+import "url/mojom/url.mojom";
 
 // See media::EmeInitDataType.
 [Native]
@@ -63,7 +63,9 @@ struct CdmKeyInformation {
 interface ContentDecryptionModule {
 
   // Sets ContentDecryptionModuleClient. Must be called before any other calls.
-  SetClient(ContentDecryptionModuleClient client);
+  // Use associated interface to ensure ordering, e.g. events on the client
+  // interface and promise fulfillment.
+  SetClient(associated ContentDecryptionModuleClient client);
 
   // Initializes the CDM. If initialization failed (e.g. |key_system| or
   // |cdm_config| is not supported), |result.success| will be false and |cdm_id|
@@ -129,4 +131,13 @@ interface ContentDecryptionModuleClient {
   // Provide session expiration update for |session_id|.
   // |new_expiry_time_sec| is the number of seconds since epoch (Jan 1, 1970).
   OnSessionExpirationUpdate(string session_id, double new_expiry_time_sec);
+};
+
+interface CdmFactory {
+  // Creates a CDM based on the |key_system| provided. A |key_system| is a
+  // generic term for a decryption mechanism and/or content protection provider.
+  // It should be a reverse domain name, e.g. "com.example.somesystem". However,
+  // this call may be initiated by an untrusted process (e.g. renderer), so the
+  // implementation must fully validate |key_system| before creating the CDM.
+  CreateCdm(string key_system, ContentDecryptionModule& cdm);
 };

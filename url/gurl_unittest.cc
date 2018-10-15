@@ -187,7 +187,7 @@ TEST(GURLTest, Assign) {
 TEST(GURLTest, SelfAssign) {
   GURL a("filesystem:http://example.com/temporary/");
   // This should not crash.
-  a = a;
+  a = *&a;  // The *& defeats Clang's -Wself-assign warning.
 }
 
 TEST(GURLTest, CopyFileSystem) {
@@ -197,7 +197,7 @@ TEST(GURLTest, CopyFileSystem) {
   GURL url2(url);
   EXPECT_TRUE(url2.is_valid());
 
-  EXPECT_EQ("filesystem:https://user:pass@google.com:99/t/foo;bar?q=a#ref", url2.spec());
+  EXPECT_EQ("filesystem:https://google.com:99/t/foo;bar?q=a#ref", url2.spec());
   EXPECT_EQ("filesystem", url2.scheme());
   EXPECT_EQ("", url2.username());
   EXPECT_EQ("", url2.password());
@@ -211,8 +211,8 @@ TEST(GURLTest, CopyFileSystem) {
   const GURL* inner = url2.inner_url();
   ASSERT_TRUE(inner);
   EXPECT_EQ("https", inner->scheme());
-  EXPECT_EQ("user", inner->username());
-  EXPECT_EQ("pass", inner->password());
+  EXPECT_EQ("", inner->username());
+  EXPECT_EQ("", inner->password());
   EXPECT_EQ("google.com", inner->host());
   EXPECT_EQ("99", inner->port());
   EXPECT_EQ(99, inner->IntPort());
@@ -329,14 +329,19 @@ TEST(GURLTest, GetOrigin) {
     const char* input;
     const char* expected;
   } cases[] = {
-    {"http://www.google.com", "http://www.google.com/"},
-    {"javascript:window.alert(\"hello,world\");", ""},
-    {"http://user:pass@www.google.com:21/blah#baz", "http://www.google.com:21/"},
-    {"http://user@www.google.com", "http://www.google.com/"},
-    {"http://:pass@www.google.com", "http://www.google.com/"},
-    {"http://:@www.google.com", "http://www.google.com/"},
-    {"filesystem:http://www.google.com/temp/foo?q#b", "http://www.google.com/"},
-    {"filesystem:http://user:pass@google.com:21/blah#baz", "http://google.com:21/"},
+      {"http://www.google.com", "http://www.google.com/"},
+      {"javascript:window.alert(\"hello,world\");", ""},
+      {"http://user:pass@www.google.com:21/blah#baz",
+       "http://www.google.com:21/"},
+      {"http://user@www.google.com", "http://www.google.com/"},
+      {"http://:pass@www.google.com", "http://www.google.com/"},
+      {"http://:@www.google.com", "http://www.google.com/"},
+      {"filesystem:http://www.google.com/temp/foo?q#b",
+       "http://www.google.com/"},
+      {"filesystem:http://user:pass@google.com:21/blah#baz",
+       "http://google.com:21/"},
+      {"blob:null/guid-goes-here", ""},
+      {"blob:http://origin/guid-goes-here", "" /* should be http://origin/ */},
   };
   for (size_t i = 0; i < arraysize(cases); i++) {
     GURL url(cases[i].input);
@@ -756,31 +761,14 @@ TEST(GURLTest, SchemeIsCryptographic) {
   EXPECT_TRUE(GURL("WSS://foo.bar.com/").SchemeIsCryptographic());
   EXPECT_TRUE(GURL("WsS://foo.bar.com/").SchemeIsCryptographic());
 
-  EXPECT_TRUE(GURL("https-so://foo.bar.com/").SchemeIsCryptographic());
-  EXPECT_TRUE(GURL("HTTPS-SO://foo.bar.com/").SchemeIsCryptographic());
-  EXPECT_TRUE(GURL("HtTpS-So://foo.bar.com/").SchemeIsCryptographic());
-
   EXPECT_FALSE(GURL("http://foo.bar.com/").SchemeIsCryptographic());
   EXPECT_FALSE(GURL("ws://foo.bar.com/").SchemeIsCryptographic());
-  EXPECT_FALSE(GURL("http-so://foo.bar.com/").SchemeIsCryptographic());
 }
 
 TEST(GURLTest, SchemeIsBlob) {
   EXPECT_TRUE(GURL("BLOB://BAR/").SchemeIsBlob());
   EXPECT_TRUE(GURL("blob://bar/").SchemeIsBlob());
   EXPECT_FALSE(GURL("http://bar/").SchemeIsBlob());
-}
-
-TEST(GURLTest, SchemeIsSuborigin) {
-  EXPECT_TRUE(GURL("http-so://foo.bar.com/").SchemeIsSuborigin());
-  EXPECT_TRUE(GURL("HTTP-SO://foo.bar.com/").SchemeIsSuborigin());
-  EXPECT_TRUE(GURL("HtTp-So://foo.bar.com/").SchemeIsSuborigin());
-  EXPECT_FALSE(GURL("http://foo.bar.com/").SchemeIsSuborigin());
-
-  EXPECT_TRUE(GURL("https-so://foo.bar.com/").SchemeIsSuborigin());
-  EXPECT_TRUE(GURL("HTTPS-SO://foo.bar.com/").SchemeIsSuborigin());
-  EXPECT_TRUE(GURL("HtTpS-So://foo.bar.com/").SchemeIsSuborigin());
-  EXPECT_FALSE(GURL("https://foo.bar.com/").SchemeIsSuborigin());
 }
 
 TEST(GURLTest, ContentAndPathForNonStandardURLs) {
@@ -865,6 +853,11 @@ TEST(GURLTest, EqualsIgnoringRef) {
       {"filesystem:http://a.com#foo", "filesystem:http://a.com#foo", true},
       {"filesystem:http://a.com#foo", "filesystem:http://a.com#bar", true},
       {"filesystem:http://a.com#foo", "filesystem:http://b.com#bar", false},
+
+      // Data URLs
+      {"data:text/html,a#foo", "data:text/html,a#bar", true},
+      {"data:text/html,a#foo", "data:text/html,a#foo", true},
+      {"data:text/html,a#foo", "data:text/html,b#foo", false},
   };
 
   for (const auto& test_case : kTestCases) {
@@ -879,6 +872,12 @@ TEST(GURLTest, EqualsIgnoringRef) {
     EXPECT_EQ(test_case.are_equals,
               GURL(test_case.url_b).EqualsIgnoringRef(GURL(test_case.url_a)));
   }
+}
+
+TEST(GURLTest, DebugAlias) {
+  GURL url("https://foo.com/bar");
+  DEBUG_ALIAS_FOR_GURL(url_debug_alias, url);
+  EXPECT_STREQ("https://foo.com/bar", url_debug_alias);
 }
 
 }  // namespace url

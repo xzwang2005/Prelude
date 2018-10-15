@@ -13,11 +13,12 @@
 namespace switches {
 
 // Keep sorted.
-DISPLAY_EXPORT extern const char kEnableMultiMirroring[];
+DISPLAY_EXPORT extern const char kDisableMultiMirroring[];
 DISPLAY_EXPORT extern const char kEnableSoftwareMirroring[];
 DISPLAY_EXPORT extern const char kEnsureForcedColorProfile[];
-DISPLAY_EXPORT extern const char kForceColorProfile[];
 DISPLAY_EXPORT extern const char kForceDeviceScaleFactor[];
+DISPLAY_EXPORT extern const char kForceDisplayColorProfile[];
+DISPLAY_EXPORT extern const char kForceRasterColorProfile[];
 // TODO(kylechar): This overlaps with --screen-config. Unify flags and remove.
 DISPLAY_EXPORT extern const char kHostWindowBounds[];
 DISPLAY_EXPORT extern const char kScreenConfig[];
@@ -26,7 +27,6 @@ DISPLAY_EXPORT extern const char kUseFirstDisplayAsInternal[];
 
 #if defined(OS_CHROMEOS)
 DISPLAY_EXPORT extern const char kEnableUnifiedDesktop[];
-DISPLAY_EXPORT extern const char kUseMonitorColorSpace[];
 #endif
 
 }  // namespace switches
@@ -34,6 +34,10 @@ DISPLAY_EXPORT extern const char kUseMonitorColorSpace[];
 namespace features {
 
 DISPLAY_EXPORT extern const base::Feature kHighDynamicRange;
+
+#if defined(OS_CHROMEOS)
+DISPLAY_EXPORT extern const base::Feature kUseMonitorColorSpace;
+#endif
 
 }  // namespace features
 

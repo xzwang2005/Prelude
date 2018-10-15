@@ -16,4 +16,8 @@
 
 LOCAL_PATH:= $(call my-dir)
 
-include $(call all-makefiles-under,$(LOCAL_PATH))
+ifeq ($(SWIFTSHADER_LLVM_VERSION),3)
+include $(LOCAL_PATH)/LLVM/Android.mk
+else
+include $(LOCAL_PATH)/llvm-7.0/Android.mk
+endif

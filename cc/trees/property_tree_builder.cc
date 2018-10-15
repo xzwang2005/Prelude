@@ -9,10 +9,10 @@
 #include <map>
 #include <set>
 
-#include "base/memory/ptr_util.h"
 #include "cc/base/math_util.h"
 #include "cc/layers/layer.h"
 #include "cc/layers/layer_impl.h"
+#include "cc/layers/picture_layer.h"
 #include "cc/trees/clip_node.h"
 #include "cc/trees/draw_property_utils.h"
 #include "cc/trees/effect_node.h"
@@ -56,19 +56,21 @@ class PropertyTreeBuilderContext {
                              const LayerType* page_scale_layer,
                              const LayerType* inner_viewport_scroll_layer,
                              const LayerType* outer_viewport_scroll_layer,
-                             const LayerType* overscroll_elasticity_layer,
+                             const ElementId overscroll_elasticity_element_id,
                              const gfx::Vector2dF& elastic_overscroll,
                              float page_scale_factor,
                              const gfx::Transform& device_transform,
+                             MutatorHost* mutator_host,
                              PropertyTrees* property_trees)
       : root_layer_(root_layer),
         page_scale_layer_(page_scale_layer),
         inner_viewport_scroll_layer_(inner_viewport_scroll_layer),
         outer_viewport_scroll_layer_(outer_viewport_scroll_layer),
-        overscroll_elasticity_layer_(overscroll_elasticity_layer),
+        overscroll_elasticity_element_id_(overscroll_elasticity_element_id),
         elastic_overscroll_(elastic_overscroll),
         page_scale_factor_(page_scale_factor),
         device_transform_(device_transform),
+        mutator_host_(*mutator_host),
         property_trees_(*property_trees),
         transform_tree_(property_trees->transform_tree),
         clip_tree_(property_trees->clip_tree),
@@ -114,10 +116,11 @@ class PropertyTreeBuilderContext {
   const LayerType* page_scale_layer_;
   const LayerType* inner_viewport_scroll_layer_;
   const LayerType* outer_viewport_scroll_layer_;
-  const LayerType* overscroll_elasticity_layer_;
+  const ElementId overscroll_elasticity_element_id_;
   const gfx::Vector2dF elastic_overscroll_;
   float page_scale_factor_;
   const gfx::Transform& device_transform_;
+  MutatorHost& mutator_host_;
   PropertyTrees& property_trees_;
   TransformTree& transform_tree_;
   ClipTree& clip_tree_;
@@ -151,12 +154,12 @@ static const LayerList& LayerChildren(Layer* layer) {
   return layer->children();
 }
 
-static LayerImpl* ChildAt(LayerImpl* layer, int index) {
+static LayerImpl* LayerChildAt(LayerImpl* layer, int index) {
   return layer->test_properties()->children[index];
 }
 
-static Layer* ChildAt(Layer* layer, int index) {
-  return layer->child_at(index);
+static Layer* LayerChildAt(Layer* layer, int index) {
+  return layer->children()[index].get();
 }
 
 static Layer* ScrollParent(Layer* layer) {
@@ -183,7 +186,7 @@ static inline const FilterOperations& Filters(LayerImpl* layer) {
   return layer->test_properties()->filters;
 }
 
-static Layer* MaskLayer(Layer* layer) {
+static PictureLayer* MaskLayer(Layer* layer) {
   return layer->mask_layer();
 }
 
@@ -201,58 +204,61 @@ static const gfx::Transform& Transform(LayerImpl* layer) {
 
 // Methods to query state from the AnimationHost ----------------------
 template <typename LayerType>
-bool OpacityIsAnimating(LayerType* layer) {
-  return layer->GetMutatorHost()->IsAnimatingOpacityProperty(
+bool OpacityIsAnimating(const MutatorHost& host, LayerType* layer) {
+  return host.IsAnimatingOpacityProperty(layer->element_id(),
+                                         layer->GetElementTypeForAnimation());
+}
+
+template <typename LayerType>
+bool HasPotentiallyRunningOpacityAnimation(const MutatorHost& host,
+                                           LayerType* layer) {
+  return host.HasPotentiallyRunningOpacityAnimation(
       layer->element_id(), layer->GetElementTypeForAnimation());
 }
 
 template <typename LayerType>
-bool HasPotentiallyRunningOpacityAnimation(LayerType* layer) {
-  return layer->GetMutatorHost()->HasPotentiallyRunningOpacityAnimation(
+bool FilterIsAnimating(const MutatorHost& host, LayerType* layer) {
+  return host.IsAnimatingFilterProperty(layer->element_id(),
+                                        layer->GetElementTypeForAnimation());
+}
+
+template <typename LayerType>
+bool HasPotentiallyRunningFilterAnimation(const MutatorHost& host,
+                                          LayerType* layer) {
+  return host.HasPotentiallyRunningFilterAnimation(
       layer->element_id(), layer->GetElementTypeForAnimation());
 }
 
 template <typename LayerType>
-bool FilterIsAnimating(LayerType* layer) {
-  return layer->GetMutatorHost()->IsAnimatingFilterProperty(
+bool TransformIsAnimating(const MutatorHost& host, LayerType* layer) {
+  return host.IsAnimatingTransformProperty(layer->element_id(),
+                                           layer->GetElementTypeForAnimation());
+}
+
+template <typename LayerType>
+bool HasPotentiallyRunningTransformAnimation(const MutatorHost& host,
+                                             LayerType* layer) {
+  return host.HasPotentiallyRunningTransformAnimation(
       layer->element_id(), layer->GetElementTypeForAnimation());
 }
 
 template <typename LayerType>
-bool HasPotentiallyRunningFilterAnimation(LayerType* layer) {
-  return layer->GetMutatorHost()->HasPotentiallyRunningFilterAnimation(
-      layer->element_id(), layer->GetElementTypeForAnimation());
+bool HasOnlyTranslationTransforms(const MutatorHost& host, LayerType* layer) {
+  return host.HasOnlyTranslationTransforms(layer->element_id(),
+                                           layer->GetElementTypeForAnimation());
 }
 
 template <typename LayerType>
-bool TransformIsAnimating(LayerType* layer) {
-  return layer->GetMutatorHost()->IsAnimatingTransformProperty(
-      layer->element_id(), layer->GetElementTypeForAnimation());
+bool AnimationsPreserveAxisAlignment(const MutatorHost& host,
+                                     LayerType* layer) {
+  return host.AnimationsPreserveAxisAlignment(layer->element_id());
 }
 
 template <typename LayerType>
-bool HasPotentiallyRunningTransformAnimation(LayerType* layer) {
-  return layer->GetMutatorHost()->HasPotentiallyRunningTransformAnimation(
-      layer->element_id(), layer->GetElementTypeForAnimation());
-}
-
-template <typename LayerType>
-bool HasOnlyTranslationTransforms(LayerType* layer) {
-  return layer->GetMutatorHost()->HasOnlyTranslationTransforms(
-      layer->element_id(), layer->GetElementTypeForAnimation());
-}
-
-template <typename LayerType>
-bool AnimationsPreserveAxisAlignment(LayerType* layer) {
-  return layer->GetMutatorHost()->AnimationsPreserveAxisAlignment(
-      layer->element_id());
-}
-
-template <typename LayerType>
-bool HasAnyAnimationTargetingProperty(LayerType* layer,
+bool HasAnyAnimationTargetingProperty(const MutatorHost& host,
+                                      LayerType* layer,
                                       TargetProperty::Type property) {
-  return layer->GetMutatorHost()->HasAnyAnimationTargetingProperty(
-      layer->element_id(), property);
+  return host.HasAnyAnimationTargetingProperty(layer->element_id(), property);
 }
 
 // -------------------------------------------------------------------
@@ -279,11 +285,11 @@ static int GetScrollParentId(const DataForRecursion<LayerType>& data,
   return id;
 }
 
-static Layer* Parent(Layer* layer) {
+static Layer* LayerParent(Layer* layer) {
   return layer->parent();
 }
 
-static LayerImpl* Parent(LayerImpl* layer) {
+static LayerImpl* LayerParent(LayerImpl* layer) {
   return layer->test_properties()->parent;
 }
 
@@ -296,7 +302,7 @@ static inline int SortingContextId(LayerImpl* layer) {
 }
 
 static inline bool Is3dSorted(Layer* layer) {
-  return layer->Is3dSorted();
+  return layer->sorting_context_id() != 0;
 }
 
 static inline bool Is3dSorted(LayerImpl* layer) {
@@ -352,8 +358,8 @@ void PropertyTreeBuilderContext<LayerType>::AddClipNodeIfNeeded(
 
 template <typename LayerType>
 static inline bool IsAtBoundaryOf3dRenderingContext(LayerType* layer) {
-  return Parent(layer)
-             ? SortingContextId(Parent(layer)) != SortingContextId(layer)
+  return LayerParent(layer)
+             ? SortingContextId(LayerParent(layer)) != SortingContextId(layer)
              : Is3dSorted(layer);
 }
 
@@ -387,27 +393,32 @@ bool PropertyTreeBuilderContext<LayerType>::AddTransformNodeIfNeeded(
     LayerType* layer,
     bool created_render_surface,
     DataForRecursion<LayerType>* data_for_children) const {
-  const bool is_root = !Parent(layer);
+  const bool is_root = !LayerParent(layer);
   const bool is_page_scale_layer = layer == page_scale_layer_;
   const bool is_overscroll_elasticity_layer =
-      layer == overscroll_elasticity_layer_;
+      overscroll_elasticity_element_id_ &&
+      layer->element_id() == overscroll_elasticity_element_id_;
   const bool is_scrollable = layer->scrollable();
   const bool is_fixed = PositionConstraint(layer).is_fixed_position();
   const bool is_sticky = StickyPositionConstraint(layer).is_sticky;
-  const bool is_snapped = layer->IsSnapped();
+  // Scrolling a layer should not move it from being pixel-aligned to moving off
+  // the pixel grid and becoming fuzzy. So always snap scrollable things to the
+  // pixel grid. Layers may also request to be snapped as such.
+  const bool is_snapped =
+      is_scrollable || layer->IsSnappedToPixelGridInTarget();
 
   const bool has_significant_transform =
       !Transform(layer).IsIdentityOr2DTranslation();
 
   const bool has_potentially_animated_transform =
-      HasPotentiallyRunningTransformAnimation(layer);
+      HasPotentiallyRunningTransformAnimation(mutator_host_, layer);
 
   // A transform node is needed even for a finished animation, since differences
   // in the timing of animation state updates can mean that an animation that's
   // in the Finished state at tree-building time on the main thread is still in
   // the Running state right after commit on the compositor thread.
-  const bool has_any_transform_animation =
-      HasAnyAnimationTargetingProperty(layer, TargetProperty::TRANSFORM);
+  const bool has_any_transform_animation = HasAnyAnimationTargetingProperty(
+      mutator_host_, layer, TargetProperty::TRANSFORM);
 
   const bool has_surface = created_render_surface;
 
@@ -430,10 +441,20 @@ bool PropertyTreeBuilderContext<LayerType>::AddTransformNodeIfNeeded(
     // we track both a parent TransformNode (which is the parent in the
     // TransformTree) and a 'source' TransformNode (which is the TransformNode
     // for the parent in the Layer tree).
-    source_index = Parent(layer)->transform_tree_index();
-    source_offset = Parent(layer)->offset_to_transform_parent();
+    source_index = LayerParent(layer)->transform_tree_index();
+    source_offset = LayerParent(layer)->offset_to_transform_parent();
   }
 
+  // For a container of fixed position descendants, define for them their
+  // fixed-position transform parent as being this layer's transform node, or
+  // its transform parent's node if this layer won't have a node of its own.
+  //
+  // But if this layer is scrollable, then we point fixed position descendants
+  // to not be affected by this layer as it changes its scroll offset during
+  // a compositor thread scroll. We do this by pointing them to the direct
+  // parent of this layer, which acts as a proxy for this layer, without
+  // including scrolling, based on the assumption this layer has no transform
+  // itself when scrollable.
   if (IsContainerForFixedPositionLayers(layer) || is_root) {
     data_for_children->affected_by_outer_viewport_bounds_delta =
         layer->IsResizedByBrowserControls();
@@ -441,7 +462,7 @@ bool PropertyTreeBuilderContext<LayerType>::AddTransformNodeIfNeeded(
       DCHECK(Transform(layer).IsIdentity());
       if (!is_root) {
         data_for_children->transform_tree_parent_fixed =
-            Parent(layer)->transform_tree_index();
+            LayerParent(layer)->transform_tree_index();
       }
     } else {
       data_for_children->transform_tree_parent_fixed =
@@ -460,9 +481,9 @@ bool PropertyTreeBuilderContext<LayerType>::AddTransformNodeIfNeeded(
                                          &to_parent);
       source_to_parent = to_parent.To2dTranslation();
     }
-    layer->set_offset_to_transform_parent(source_offset + source_to_parent +
-                                          local_offset);
-    layer->set_should_flatten_transform_from_property_tree(
+    layer->SetOffsetToTransformParent(source_offset + source_to_parent +
+                                      local_offset);
+    layer->SetShouldFlattenScreenSpaceTransformFromPropertyTree(
         data_from_ancestor.should_flatten);
     layer->SetTransformTreeIndex(parent_index);
     return false;
@@ -497,10 +518,10 @@ bool PropertyTreeBuilderContext<LayerType>::AddTransformNodeIfNeeded(
       ShouldFlattenTransform(layer) || has_surface;
 
   node->has_potential_animation = has_potentially_animated_transform;
-  node->is_currently_animating = TransformIsAnimating(layer);
+  node->is_currently_animating = TransformIsAnimating(mutator_host_, layer);
   if (has_potentially_animated_transform) {
     node->has_only_translation_animations =
-        HasOnlyTranslationTransforms(layer);
+        HasOnlyTranslationTransforms(mutator_host_, layer);
   }
 
   float post_local_scale_factor = 1.0f;
@@ -594,21 +615,23 @@ bool PropertyTreeBuilderContext<LayerType>::AddTransformNodeIfNeeded(
   node->needs_local_transform_update = true;
   transform_tree_.UpdateTransforms(node->id);
 
-  layer->set_offset_to_transform_parent(gfx::Vector2dF());
+  layer->SetOffsetToTransformParent(gfx::Vector2dF());
 
   // Flattening (if needed) will be handled by |node|.
-  layer->set_should_flatten_transform_from_property_tree(false);
+  layer->SetShouldFlattenScreenSpaceTransformFromPropertyTree(false);
 
   return true;
 }
 
-static inline bool HasPotentialOpacityAnimation(Layer* layer) {
-  return HasPotentiallyRunningOpacityAnimation(layer) ||
+static inline bool HasPotentialOpacityAnimation(const MutatorHost& host,
+                                                Layer* layer) {
+  return HasPotentiallyRunningOpacityAnimation(host, layer) ||
          layer->OpacityCanAnimateOnImplThread();
 }
 
-static inline bool HasPotentialOpacityAnimation(LayerImpl* layer) {
-  return HasPotentiallyRunningOpacityAnimation(layer) ||
+static inline bool HasPotentialOpacityAnimation(const MutatorHost& host,
+                                                LayerImpl* layer) {
+  return HasPotentiallyRunningOpacityAnimation(host, layer) ||
          layer->test_properties()->opacity_can_animate;
 }
 
@@ -646,8 +669,9 @@ static inline bool ForceRenderSurface(LayerImpl* layer) {
 
 template <typename LayerType>
 static inline bool LayerIsInExisting3DRenderingContext(LayerType* layer) {
-  return Is3dSorted(layer) && Parent(layer) && Is3dSorted(Parent(layer)) &&
-         (SortingContextId(Parent(layer)) == SortingContextId(layer));
+  return Is3dSorted(layer) && LayerParent(layer) &&
+         Is3dSorted(LayerParent(layer)) &&
+         (SortingContextId(LayerParent(layer)) == SortingContextId(layer));
 }
 
 static inline bool IsRootForIsolatedGroup(Layer* layer) {
@@ -749,12 +773,13 @@ static inline bool PropertyChanged(LayerImpl* layer) {
 }
 
 template <typename LayerType>
-bool ShouldCreateRenderSurface(LayerType* layer,
+bool ShouldCreateRenderSurface(const MutatorHost& mutator_host,
+                               LayerType* layer,
                                gfx::Transform current_transform,
                                bool animation_axis_aligned) {
   const bool preserves_2d_axis_alignment =
       current_transform.Preserves2dAxisAlignment() && animation_axis_aligned;
-  const bool is_root = !Parent(layer);
+  const bool is_root = !LayerParent(layer);
   if (is_root)
     return true;
 
@@ -775,7 +800,7 @@ bool ShouldCreateRenderSurface(LayerType* layer,
 
   // If the layer will use a CSS filter.  In this case, the animation
   // will start and add a filter to this layer, so it needs a surface.
-  if (HasPotentiallyRunningFilterAnimation(layer)) {
+  if (HasPotentiallyRunningFilterAnimation(mutator_host, layer)) {
     return true;
   }
 
@@ -821,8 +846,9 @@ bool ShouldCreateRenderSurface(LayerType* layer,
       num_descendants_that_draw_content > 0 &&
       (layer->DrawsContent() || num_descendants_that_draw_content > 1);
 
-  bool may_have_transparency = EffectiveOpacity(layer) != 1.f ||
-                               HasPotentiallyRunningOpacityAnimation(layer);
+  bool may_have_transparency =
+      EffectiveOpacity(layer) != 1.f ||
+      HasPotentiallyRunningOpacityAnimation(mutator_host, layer);
   if (may_have_transparency && ShouldFlattenTransform(layer) &&
       at_least_two_layers_in_subtree_draw_content) {
     TRACE_EVENT_INSTANT0(
@@ -896,7 +922,7 @@ bool UpdateSubtreeHasCopyRequestRecursive(LayerType* layer) {
   if (HasCopyRequest(layer))
     subtree_has_copy_request = true;
   for (size_t i = 0; i < LayerChildren(layer).size(); ++i) {
-    LayerType* current_child = ChildAt(layer, i);
+    LayerType* current_child = LayerChildAt(layer, i);
     subtree_has_copy_request |=
         UpdateSubtreeHasCopyRequestRecursive(current_child);
   }
@@ -909,24 +935,25 @@ bool PropertyTreeBuilderContext<LayerType>::AddEffectNodeIfNeeded(
     const DataForRecursion<LayerType>& data_from_ancestor,
     LayerType* layer,
     DataForRecursion<LayerType>* data_for_children) const {
-  const bool is_root = !Parent(layer);
+  const bool is_root = !LayerParent(layer);
   const bool has_transparency = EffectiveOpacity(layer) != 1.f;
   const bool has_potential_opacity_animation =
-      HasPotentialOpacityAnimation(layer);
+      HasPotentialOpacityAnimation(mutator_host_, layer);
   const bool has_potential_filter_animation =
-      HasPotentiallyRunningFilterAnimation(layer);
+      HasPotentiallyRunningFilterAnimation(mutator_host_, layer);
 
   data_for_children->animation_axis_aligned_since_render_target &=
-      AnimationsPreserveAxisAlignment(layer);
+      AnimationsPreserveAxisAlignment(mutator_host_, layer);
   data_for_children->compound_transform_since_render_target *= Transform(layer);
   const bool should_create_render_surface = ShouldCreateRenderSurface(
-      layer, data_for_children->compound_transform_since_render_target,
+      mutator_host_, layer,
+      data_for_children->compound_transform_since_render_target,
       data_for_children->animation_axis_aligned_since_render_target);
 
   bool not_axis_aligned_since_last_clip =
       data_from_ancestor.not_axis_aligned_since_last_clip
           ? true
-          : !AnimationsPreserveAxisAlignment(layer) ||
+          : !AnimationsPreserveAxisAlignment(mutator_host_, layer) ||
                 !Transform(layer).Preserves2dAxisAlignment();
   // A non-axis aligned clip may need a render surface. So, we create an effect
   // node.
@@ -963,8 +990,9 @@ bool PropertyTreeBuilderContext<LayerType>::AddEffectNodeIfNeeded(
   node->has_potential_filter_animation = has_potential_filter_animation;
   node->double_sided = DoubleSided(layer);
   node->subtree_hidden = HideLayerAndSubtree(layer);
-  node->is_currently_animating_opacity = OpacityIsAnimating(layer);
-  node->is_currently_animating_filter = FilterIsAnimating(layer);
+  node->is_currently_animating_opacity =
+      OpacityIsAnimating(mutator_host_, layer);
+  node->is_currently_animating_filter = FilterIsAnimating(mutator_host_, layer);
   node->effect_changed = PropertyChanged(layer);
   node->subtree_has_copy_request = SubtreeHasCopyRequest(layer);
   node->closest_ancestor_with_cached_render_surface_id =
@@ -1056,6 +1084,16 @@ static inline OverscrollBehavior GetOverscrollBehavior(LayerImpl* layer) {
   return layer->test_properties()->overscroll_behavior;
 }
 
+static inline const base::Optional<SnapContainerData>& GetSnapContainerData(
+    Layer* layer) {
+  return layer->snap_container_data();
+}
+
+static inline const base::Optional<SnapContainerData>& GetSnapContainerData(
+    LayerImpl* layer) {
+  return layer->test_properties()->snap_container_data;
+}
+
 template <typename LayerType>
 void SetHasTransformNode(LayerType* layer, bool val) {
   layer->SetHasTransformNode(val);
@@ -1068,7 +1106,7 @@ void PropertyTreeBuilderContext<LayerType>::AddScrollNodeIfNeeded(
     DataForRecursion<LayerType>* data_for_children) const {
   int parent_id = GetScrollParentId(data_from_ancestor, layer);
 
-  bool is_root = !Parent(layer);
+  bool is_root = !LayerParent(layer);
   bool scrollable = layer->scrollable();
   bool contains_non_fast_scrollable_region =
       !layer->non_fast_scrollable_region().IsEmpty();
@@ -1096,7 +1134,6 @@ void PropertyTreeBuilderContext<LayerType>::AddScrollNodeIfNeeded(
     ScrollNode node;
     node.scrollable = scrollable;
     node.main_thread_scrolling_reasons = main_thread_scrolling_reasons;
-    node.non_fast_scrollable_region = layer->non_fast_scrollable_region();
     node.scrolls_inner_viewport = layer == inner_viewport_scroll_layer_;
     node.scrolls_outer_viewport = layer == outer_viewport_scroll_layer_;
 
@@ -1108,12 +1145,14 @@ void PropertyTreeBuilderContext<LayerType>::AddScrollNodeIfNeeded(
     node.bounds = layer->bounds();
     node.container_bounds = layer->scroll_container_bounds();
     node.offset_to_transform_parent = layer->offset_to_transform_parent();
-    node.should_flatten = layer->should_flatten_transform_from_property_tree();
+    node.should_flatten =
+        layer->should_flatten_screen_space_transform_from_property_tree();
     node.user_scrollable_horizontal = UserScrollableHorizontal(layer);
     node.user_scrollable_vertical = UserScrollableVertical(layer);
     node.element_id = layer->element_id();
     node.transform_id = data_for_children->transform_tree_parent;
     node.overscroll_behavior = GetOverscrollBehavior(layer);
+    node.snap_container_data = GetSnapContainerData(layer);
 
     node_id = scroll_tree_.Insert(node, parent_id);
     data_for_children->scroll_tree_parent = node_id;
@@ -1141,18 +1180,18 @@ template <typename LayerType>
 void SetBackfaceVisibilityTransform(LayerType* layer,
                                     bool created_transform_node) {
   if (layer->use_parent_backface_visibility()) {
-    DCHECK(Parent(layer));
-    DCHECK(!Parent(layer)->use_parent_backface_visibility());
+    DCHECK(LayerParent(layer));
+    DCHECK(!LayerParent(layer)->use_parent_backface_visibility());
     layer->SetShouldCheckBackfaceVisibility(
-        Parent(layer)->should_check_backface_visibility());
+        LayerParent(layer)->should_check_backface_visibility());
   } else {
     // A double-sided layer's backface can been shown when its visible.
     // In addition, we need to check if (1) there might be a local 3D transform
     // on the layer that might turn it to the backface, or (2) it is not drawn
     // into a flattened space.
     layer->SetShouldCheckBackfaceVisibility(
-        !DoubleSided(layer) &&
-        (created_transform_node || !ShouldFlattenTransform(Parent(layer))));
+        !DoubleSided(layer) && (created_transform_node ||
+                                !ShouldFlattenTransform(LayerParent(layer))));
   }
 }
 
@@ -1189,7 +1228,6 @@ void PropertyTreeBuilderContext<LayerType>::BuildPropertyTreesInternal(
   bool created_render_surface =
       AddEffectNodeIfNeeded(data_from_parent, layer, &data_for_children);
 
-
   bool created_transform_node = AddTransformNodeIfNeeded(
       data_from_parent, layer, created_render_surface, &data_for_children);
   SetHasTransformNode(layer, created_transform_node);
@@ -1204,7 +1242,7 @@ void PropertyTreeBuilderContext<LayerType>::BuildPropertyTreesInternal(
   bool not_axis_aligned_since_last_clip =
       data_from_parent.not_axis_aligned_since_last_clip
           ? true
-          : !AnimationsPreserveAxisAlignment(layer) ||
+          : !AnimationsPreserveAxisAlignment(mutator_host_, layer) ||
                 !Transform(layer).Preserves2dAxisAlignment();
   bool has_non_axis_aligned_clip =
       not_axis_aligned_since_last_clip && LayerClipsSubtree(layer);
@@ -1212,7 +1250,7 @@ void PropertyTreeBuilderContext<LayerType>::BuildPropertyTreesInternal(
       !has_non_axis_aligned_clip;
 
   for (size_t i = 0; i < LayerChildren(layer).size(); ++i) {
-    LayerType* current_child = ChildAt(layer, i);
+    LayerType* current_child = LayerChildAt(layer, i);
     SetLayerPropertyChangedForChild(layer, current_child);
     if (!ScrollParent(current_child)) {
       BuildPropertyTreesInternal(current_child, data_for_children);
@@ -1224,16 +1262,16 @@ void PropertyTreeBuilderContext<LayerType>::BuildPropertyTreesInternal(
        it != scroll_children_range.second; ++it) {
     LayerType* scroll_child = it->second;
     DCHECK_EQ(ScrollParent(scroll_child), layer);
-    DCHECK(Parent(scroll_child));
+    DCHECK(LayerParent(scroll_child));
     data_for_children.effect_tree_parent =
-        Parent(scroll_child)->effect_tree_index();
+        LayerParent(scroll_child)->effect_tree_index();
     BuildPropertyTreesInternal(scroll_child, data_for_children);
   }
 
   if (MaskLayer(layer)) {
     MaskLayer(layer)->set_property_tree_sequence_number(
         property_trees_.sequence_number);
-    MaskLayer(layer)->set_offset_to_transform_parent(
+    MaskLayer(layer)->SetOffsetToTransformParent(
         layer->offset_to_transform_parent());
     MaskLayer(layer)->SetTransformTreeIndex(layer->transform_tree_index());
     MaskLayer(layer)->SetClipTreeIndex(layer->clip_tree_index());
@@ -1273,14 +1311,33 @@ void PropertyTreeBuilderContext<LayerType>::BuildPropertyTrees(
     const gfx::Rect& viewport,
     SkColor root_background_color) const {
   if (!property_trees_.needs_rebuild) {
-    draw_property_utils::UpdatePageScaleFactor(
-        &property_trees_, page_scale_layer_, page_scale_factor_,
-        device_scale_factor, device_transform_);
+    bool page_scale_is_root_layer = page_scale_layer_ == root_layer_;
+    if (page_scale_layer_) {
+      DCHECK_GE(page_scale_layer_->transform_tree_index(),
+                TransformTree::kRootNodeId);
+      TransformNode* node = property_trees_.transform_tree.Node(
+          page_scale_layer_->transform_tree_index());
+
+      // When the page scale layer is also the root layer, the node should also
+      // store the combined scale factor and not just the page scale factor.
+      float device_scale_factor_for_page_scale_node = 1.f;
+      gfx::Transform device_transform_for_page_scale_node;
+      if (page_scale_is_root_layer) {
+        device_transform_for_page_scale_node = device_transform_;
+        device_scale_factor_for_page_scale_node = device_scale_factor;
+      }
+
+      draw_property_utils::UpdatePageScaleFactor(
+          &property_trees_, node, page_scale_factor_,
+          device_scale_factor_for_page_scale_node,
+          device_transform_for_page_scale_node);
+    }
     draw_property_utils::UpdateElasticOverscroll(
-        &property_trees_, overscroll_elasticity_layer_, elastic_overscroll_);
+        &property_trees_, overscroll_elasticity_element_id_,
+        elastic_overscroll_);
     clip_tree_.SetViewportClip(gfx::RectF(viewport));
     float page_scale_factor_for_root =
-        page_scale_layer_ == root_layer_ ? page_scale_factor_ : 1.f;
+        page_scale_is_root_layer ? page_scale_factor_ : 1.f;
     transform_tree_.SetRootTransformsAndScales(
         device_scale_factor, page_scale_factor_for_root, device_transform_,
         root_layer_->position());
@@ -1371,7 +1428,7 @@ void PropertyTreeBuilder::BuildPropertyTrees(
     const Layer* page_scale_layer,
     const Layer* inner_viewport_scroll_layer,
     const Layer* outer_viewport_scroll_layer,
-    const Layer* overscroll_elasticity_layer,
+    const ElementId overscroll_elasticity_element_id,
     const gfx::Vector2dF& elastic_overscroll,
     float page_scale_factor,
     float device_scale_factor,
@@ -1387,8 +1444,9 @@ void PropertyTreeBuilder::BuildPropertyTrees(
     UpdateSubtreeHasCopyRequestRecursive(root_layer);
   PropertyTreeBuilderContext<Layer>(
       root_layer, page_scale_layer, inner_viewport_scroll_layer,
-      outer_viewport_scroll_layer, overscroll_elasticity_layer,
-      elastic_overscroll, page_scale_factor, device_transform, property_trees)
+      outer_viewport_scroll_layer, overscroll_elasticity_element_id,
+      elastic_overscroll, page_scale_factor, device_transform,
+      root_layer->layer_tree_host()->mutator_host(), property_trees)
       .BuildPropertyTrees(device_scale_factor, viewport, color);
 #if DCHECK_IS_ON()
   for (auto* layer : AllLayerRange(root_layer))
@@ -1407,7 +1465,7 @@ void PropertyTreeBuilder::BuildPropertyTrees(
     const LayerImpl* page_scale_layer,
     const LayerImpl* inner_viewport_scroll_layer,
     const LayerImpl* outer_viewport_scroll_layer,
-    const LayerImpl* overscroll_elasticity_layer,
+    const ElementId overscroll_elasticity_element_id,
     const gfx::Vector2dF& elastic_overscroll,
     float page_scale_factor,
     float device_scale_factor,
@@ -1426,8 +1484,9 @@ void PropertyTreeBuilder::BuildPropertyTrees(
 
   PropertyTreeBuilderContext<LayerImpl>(
       root_layer, page_scale_layer, inner_viewport_scroll_layer,
-      outer_viewport_scroll_layer, overscroll_elasticity_layer,
-      elastic_overscroll, page_scale_factor, device_transform, property_trees)
+      outer_viewport_scroll_layer, overscroll_elasticity_element_id,
+      elastic_overscroll, page_scale_factor, device_transform,
+      root_layer->layer_tree_impl()->mutator_host(), property_trees)
       .BuildPropertyTrees(device_scale_factor, viewport, color);
   property_trees->effect_tree.CreateOrReuseRenderSurfaces(
       &render_surfaces, root_layer->layer_tree_impl());

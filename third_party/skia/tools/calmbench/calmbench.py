@@ -150,6 +150,7 @@ def compile_modified(args):
     subprocess.check_call(['git', 'reset', 'HEAD^', '--soft'])
     subprocess.check_call(['git', 'stash'])
 
+  subprocess.check_call(['gclient', 'sync'], cwd=args.skiadir)
   subprocess.check_call(
       ['ninja', '-C', args.ninjadir, 'nanobench'], cwd=args.skiadir)
   subprocess.check_call(
@@ -179,7 +180,6 @@ def main():
   command = [
     'python',
     temp_ab_name,
-    args.skiadir,
     args.writedir,
     args.branch + ("_A" if args.branch == args.baseline else ""),
     args.baseline + ("_B" if args.branch == args.baseline else ""),

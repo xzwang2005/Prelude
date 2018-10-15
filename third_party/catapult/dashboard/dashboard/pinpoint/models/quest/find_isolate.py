@@ -2,6 +2,9 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
+import logging
+import time
+
 from dashboard.pinpoint.models import isolate
 from dashboard.pinpoint.models.quest import execution
 from dashboard.pinpoint.models.quest import quest
@@ -15,10 +18,17 @@ class BuildError(Exception):
   """Raised when the build fails."""
 
 
+class IsolateNotFoundError(StandardError):
+  """Raised when the build succeeds, but Pinpoint can't find the isolate.
+
+  This error is fatal to the Job.
+  """
+
+
 class FindIsolate(quest.Quest):
 
-  def __init__(self, configuration, target):
-    self._builder_name = _BuilderNameForConfiguration(configuration)
+  def __init__(self, builder, target):
+    self._builder_name = builder
     self._target = target
 
     self._previous_builds = {}
@@ -34,6 +44,18 @@ class FindIsolate(quest.Quest):
     return _FindIsolateExecution(self._builder_name, self._target, change,
                                  self._previous_builds)
 
+  @classmethod
+  def FromDict(cls, arguments):
+    builder = arguments.get('builder')
+    if not builder:
+      raise TypeError('Missing "builder" argument.')
+
+    target = arguments.get('target')
+    if not target:
+      raise TypeError('Missing "target" argument.')
+
+    return cls(builder, target)
+
 
 class _FindIsolateExecution(execution.Execution):
 
@@ -46,11 +68,32 @@ class _FindIsolateExecution(execution.Execution):
     self._previous_builds = previous_builds
 
     self._build = None
+    self._build_url = None
 
   def _AsDict(self):
-    return {
-        'build': self._build,
-    }
+    details = []
+    details.append({
+        'key': 'builder',
+        'value': self._builder_name,
+    })
+    if self._build:
+      details.append({
+          'key': 'build',
+          'value': self._build,
+          'url': self._build_url if hasattr(self, '_build_url') else None,
+      })
+    if self._result_arguments:
+      if not self._result_arguments.get('isolate_server'):
+        # TODO: Remove after data migration. crbug.com/822008
+        self._result_arguments['isolate_server'] = (
+            'https://isolateserver.appspot.com')
+      details.append({
+          'key': 'isolate',
+          'value': self._result_arguments['isolate_hash'],
+          'url': self._result_arguments['isolate_server'] + '/browse?digest=' +
+                 self._result_arguments['isolate_hash'],
+      })
+    return details
 
   def _Poll(self):
     if self._CheckCompleted():
@@ -69,10 +112,16 @@ class _FindIsolateExecution(execution.Execution):
       True iff the isolate was found, meaning the execution is completed.
     """
     try:
-      isolate_hash = isolate.Get(self._builder_name, self._change, self._target)
+      isolate_server, isolate_hash = isolate.Get(
+          self._builder_name, self._change, self._target)
     except KeyError:
       return False
-    self._Complete(result_arguments={'isolate_hash': isolate_hash})
+
+    result_arguments = {
+        'isolate_server': isolate_server,
+        'isolate_hash': isolate_hash,
+    }
+    self._Complete(result_arguments=result_arguments)
     return True
 
   def _CheckBuildStatus(self):
@@ -81,21 +130,39 @@ class _FindIsolateExecution(execution.Execution):
     Raises:
       BuildError: The build failed, was canceled, or didn't produce an isolate.
     """
-    status = buildbucket_service.GetJobStatus(self._build)
+    build = buildbucket_service.GetJobStatus(self._build)['build']
 
-    if status['build']['status'] != 'COMPLETED':
+    self._build_url = build.get('url')
+
+    if build['status'] != 'COMPLETED':
       return
 
-    if status['build']['result'] == 'FAILURE':
-      raise BuildError('Build failed: ' + status['build']['failure_reason'])
-    elif status['build']['result'] == 'CANCELED':
-      raise BuildError('Build was canceled: ' +
-                       status['build']['cancelation_reason'])
+    if build['result'] == 'FAILURE':
+      raise BuildError('Build failed: ' + build['failure_reason'])
+    elif build['result'] == 'CANCELED':
+      raise BuildError('Build was canceled: ' + build['cancelation_reason'])
     else:
       if self._CheckCompleted():
         return
-      raise BuildError('Buildbucket says the build completed successfully, '
-                       "but Pinpoint can't find the isolate hash.")
+      logging.debug('Debugging info for chromium:882573')
+      try:
+        logging.debug(isolate.Get(
+            self._builder_name, self._change, self._target))
+      except KeyError:
+        logging.debug('Isolate not found.')
+      logging.debug(build)
+      logging.debug(self._builder_name)
+      logging.debug(self._change.id_string)
+      logging.debug(self._target)
+      time.sleep(1)
+      try:
+        logging.debug(isolate.Get(
+            self._builder_name, self._change, self._target))
+      except KeyError:
+        logging.debug('Isolate not found.')
+      raise IsolateNotFoundError(
+          'Buildbucket says the build completed successfully, '
+          "but Pinpoint can't find the isolate hash.")
 
   def _RequestBuild(self):
     """Requests a build.
@@ -111,36 +178,6 @@ class _FindIsolateExecution(execution.Execution):
       buildbucket_info = _RequestBuild(self._builder_name, self._change)
       self._build = buildbucket_info['build']['id']
       self._previous_builds[self._change] = self._build
-
-
-def _BuilderNameForConfiguration(configuration):
-  # TODO: This is hacky. Ideally, the dashboard gives us more structured data
-  # that we can use to figure out the builder name.
-  configuration = configuration.lower()
-
-  if 'health-plan' in configuration:
-    return 'arm-builder-rel'
-
-  if 'android' in configuration:
-    # Default to 64-bit, because we expect 64-bit usage to increase over time.
-    devices = ('nexus5', 'nexus6', 'nexus7', 'one')
-    if (any(device in configuration for device in devices) and
-        'nexus5x' not in configuration):
-      return 'Android Builder'
-    else:
-      return 'Android arm64 Builder'
-  elif 'linux' in configuration:
-    return 'Linux Builder'
-  elif 'mac' in configuration:
-    return 'Mac Builder'
-  elif 'win' in configuration:
-    if configuration == 'chromium-rel-win7-dual':
-      return 'Win Builder'
-    else:
-      return 'Win x64 Builder'
-  else:
-    raise NotImplementedError('Could not figure out what OS this configuration '
-                              'is for: %s' % configuration)
 
 
 def _RequestBuild(builder_name, change):

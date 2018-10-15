@@ -45,23 +45,36 @@ class TestSetLifecycle(testcase.GsUtilIntegrationTestCase):
       '{"rule": [{"action": {"type": "Add"}, "condition": {"age": 365}}]}\n')
 
   lifecycle_doc = (
-      '{"rule": [{"action": {"type": "Delete"}, "condition": {"age": 365}}]}\n')
+      '{"rule": ['
+      '{"action": {"type": "Delete"}, "condition": {"age": 365}}, '
+      '{"action": {"type": "SetStorageClass", "storageClass": "NEARLINE"},'
+      ' "condition": {"matchesStorageClass": ["STANDARD"], "age": 366}}]}\n')
   lifecycle_json_obj = json.loads(lifecycle_doc)
 
   lifecycle_doc_bucket_style = (
-      '{"lifecycle": {"rule": [{"action": {"type": "Delete"}, "condition": '
-      '{"age": 365}}]}}\n')
+      '{"lifecycle": ' + lifecycle_doc.rstrip() + '}\n')
+
+  # TODO: Remove once Boto is updated to support new fields.
+  lifecycle_doc_without_storage_class_fields = (
+      '{"rule": [{"action": {"type": "Delete"}, "condition": {"age": 365}}]}\n')
 
   lifecycle_created_before_doc = (
       '{"rule": [{"action": {"type": "Delete"}, "condition": '
       '{"createdBefore": "2014-10-01"}}]}\n')
   lifecycle_created_before_json_obj = json.loads(lifecycle_created_before_doc)
 
+  lifecycle_with_falsy_condition_values = (
+      '{"rule": [{"action": {"type": "Delete"}, "condition": {'
+      '"age": 0, "isLive": false, "numNewerVersions": 0}}]}')
+
   no_lifecycle_config = 'has no lifecycle configuration.'
 
   def test_lifecycle_translation(self):
     """Tests lifecycle translation for various formats."""
-    json_text = self.lifecycle_doc
+    # TODO: Use lifecycle_doc again once Boto is updated to support new fields.
+    # json_text = self.lifecycle_doc
+    json_text = self.lifecycle_doc_without_storage_class_fields
+
     entries_list = LifecycleTranslation.JsonLifecycleToMessage(json_text)
     boto_lifecycle = LifecycleTranslation.BotoLifecycleFromMessage(entries_list)
     converted_entries_list = LifecycleTranslation.BotoLifecycleToMessage(
@@ -121,6 +134,21 @@ class TestSetLifecycle(testcase.GsUtilIntegrationTestCase):
     stderr = self.RunGsUtil(['lifecycle', 'set', fpath, suri(bucket_uri)],
                             expected_status=1, return_stderr=True)
     self.assertIn('XML lifecycle data provided', stderr)
+
+  def test_translation_for_falsy_values_works_correctly(self):
+    bucket_uri = self.CreateBucket()
+    fpath = self.CreateTempFile(
+        contents=self.lifecycle_with_falsy_condition_values)
+
+    self.RunGsUtil(['lifecycle', 'set', fpath, suri(bucket_uri)])
+    stdout = self.RunGsUtil(
+        ['lifecycle', 'get', suri(bucket_uri)], return_stdout=True)
+
+    # The lifecycle policy we fetch should include all the False- and 0-valued
+    # attributes that we just set.
+    self.assertRegexpMatches(stdout, r'"age":\s+0')
+    self.assertRegexpMatches(stdout, r'"isLive":\s+false')
+    self.assertRegexpMatches(stdout, r'"numNewerVersions":\s+0')
 
   def test_set_lifecycle_and_reset(self):
     """Tests setting and turning off lifecycle configuration."""

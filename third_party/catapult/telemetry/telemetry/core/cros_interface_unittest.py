@@ -61,17 +61,17 @@ class CrOSInterfaceTest(unittest.TestCase):
   @decorators.Enabled('chromeos')
   def testGetFileNonExistent(self):
     with self._GetCRI() as cri:
-      f = tempfile.NamedTemporaryFile()
-      cri.PushContents('testGetFileNonExistent', f.name)
-      cri.RmRF(f.name)
-      self.assertRaises(OSError, lambda: cri.GetFile(f.name))
+      f = '/tmp/testGetFile'  # A path that can be created on the device.
+      cri.PushContents('testGetFileNonExistent', f)
+      cri.RmRF(f)
+      self.assertRaises(OSError, lambda: cri.GetFile(f))
 
   @decorators.Enabled('chromeos')
   def testIsServiceRunning(self):
     with self._GetCRI() as cri:
       self.assertTrue(cri.IsServiceRunning('openssh-server'))
 
-  # TODO(#1977): Fix this test.
+  # TODO(crbug.com/799484): Fix this test.
   @decorators.Disabled('all')
   def testGetRemotePortAndIsHTTPServerRunningOnPort(self):
     with self._GetCRI() as cri:
@@ -166,7 +166,8 @@ class CrOSInterfaceTest(unittest.TestCase):
     cri = cros_interface.CrOSInterface(
         "testhostname", 22, options_for_unittests.GetCopy().cros_ssh_identity)
     cri.TryLogin()
-    mock_run_cmd.assert_called_once_with(['echo', '$USER'], quiet=True)
+    mock_run_cmd.assert_called_once_with(
+        ['echo', '$USER'], quiet=True, connect_timeout=60)
 
   @decorators.Enabled('chromeos')
   @mock.patch.object(cros_interface.CrOSInterface, 'RunCmdOnDevice')
@@ -226,12 +227,16 @@ class CrOSInterfaceTest(unittest.TestCase):
         if 'unmount' in args[2]:
           # For the user unmount@gmail.com, returns the unmounted state.
           source, target = '/dev/sda1', '/home'
+        elif 'ephemeral_mount' in args[2]:
+          # For ephemeral mount, returns no mount.
+          # TODO(poromov): Add test for ephemeral mount.
+          return ('df %s: No such file or directory\n' % (args[2]), '')
         elif 'mount' in args[2]:
           # For the user mount@gmail.com, returns the mounted state.
           source, target = '/dev/sda1', args[2]
         elif 'guest' in args[2]:
           # For the user $guest, returns the guest-mounted state.
-          source, target = '/dev/loop7', args[2]
+          source, target = 'guestfs', args[2]
         return ('Filesystem Mounted on\n%s %s\n' % (source, target), '')
     mock_run_cmd.side_effect = mockRunCmdOnDevice
 

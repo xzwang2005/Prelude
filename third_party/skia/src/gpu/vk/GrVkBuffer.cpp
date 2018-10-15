@@ -169,12 +169,11 @@ void GrVkBuffer::internalMap(GrVkGpu* gpu, size_t size, bool* createdNewBuffer) 
 
     if (fDesc.fDynamic) {
         const GrVkAlloc& alloc = this->alloc();
-        VkResult err = VK_CALL(gpu, MapMemory(gpu->device(), alloc.fMemory,
-                                              alloc.fOffset + fOffset,
-                                              size, 0, &fMapPtr));
-        if (err) {
-            fMapPtr = nullptr;
-        }
+        SkASSERT(alloc.fSize > 0);
+        SkASSERT(alloc.fSize >= size);
+        SkASSERT(0 == fOffset);
+
+        fMapPtr = GrVkMemory::MapAlloc(gpu, alloc);
     } else {
         if (!fMapPtr) {
             fMapPtr = new unsigned char[this->size()];
@@ -189,16 +188,24 @@ void GrVkBuffer::internalUnmap(GrVkGpu* gpu, size_t size) {
     SkASSERT(this->vkIsMapped());
 
     if (fDesc.fDynamic) {
-        GrVkMemory::FlushMappedAlloc(gpu, this->alloc());
-        VK_CALL(gpu, UnmapMemory(gpu->device(), this->alloc().fMemory));
+        const GrVkAlloc& alloc = this->alloc();
+        SkASSERT(alloc.fSize > 0);
+        SkASSERT(alloc.fSize >= size);
+        // We currently don't use fOffset
+        SkASSERT(0 == fOffset);
+
+        GrVkMemory::FlushMappedAlloc(gpu, alloc, 0, size);
+        GrVkMemory::UnmapAlloc(gpu, alloc);
         fMapPtr = nullptr;
     } else {
-        if (size <= 65536) {
+        // vkCmdUpdateBuffer requires size < 64k and 4-byte alignment.
+        // https://bugs.chromium.org/p/skia/issues/detail?id=7488
+        if (size <= 65536 && 0 == (size & 0x3)) {
             gpu->updateBuffer(this, fMapPtr, this->offset(), size);
         } else {
             GrVkTransferBuffer* transferBuffer =
                     GrVkTransferBuffer::Create(gpu, size, GrVkBuffer::kCopyRead_Type);
-            if(!transferBuffer) {
+            if (!transferBuffer) {
                 return;
             }
 

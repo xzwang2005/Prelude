@@ -34,6 +34,8 @@ DWORD GetProtectionFromMemoryPermission(OS::MemoryPermission access) {
   switch (access) {
     case OS::MemoryPermission::kNoAccess:
       return PAGE_NOACCESS;
+    case OS::MemoryPermission::kRead:
+      return PAGE_READONLY;
     case OS::MemoryPermission::kReadWrite:
       return PAGE_READWRITE;
     case OS::MemoryPermission::kReadWriteExecute:
@@ -66,7 +68,7 @@ uint8_t* RandomizedVirtualAlloc(size_t size, DWORD flags, DWORD protect,
 class CygwinTimezoneCache : public PosixTimezoneCache {
   const char* LocalTimezone(double time) override;
 
-  double LocalTimeOffset() override;
+  double LocalTimeOffset(double time_ms, bool is_utc) override;
 
   ~CygwinTimezoneCache() override {}
 };
@@ -80,7 +82,7 @@ const char* CygwinTimezoneCache::LocalTimezone(double time) {
   return tzname[0];  // The location of the timezone string on Cygwin.
 }
 
-double CygwinTimezoneCache::LocalTimeOffset() {
+double LocalTimeOffset(double time_ms, bool is_utc) {
   // On Cygwin, struct tm does not contain a tm_gmtoff field.
   time_t utc = time(nullptr);
   DCHECK_NE(utc, -1);
@@ -100,36 +102,46 @@ void* OS::Allocate(void* address, size_t size, size_t alignment,
   DCHECK_EQ(0, alignment % page_size);
   DCHECK_LE(page_size, alignment);
   address = AlignedAddress(address, alignment);
-  // Add the maximum misalignment so we are guaranteed an aligned base address.
+
+  DWORD flags = (access == OS::MemoryPermission::kNoAccess)
+                    ? MEM_RESERVE
+                    : MEM_RESERVE | MEM_COMMIT;
+  DWORD protect = GetProtectionFromMemoryPermission(access);
+
+  // First, try an exact size aligned allocation.
+  uint8_t* base = RandomizedVirtualAlloc(size, flags, protect, address);
+  if (base == nullptr) return nullptr;  // Can't allocate, we're OOM.
+
+  // If address is suitably aligned, we're done.
+  uint8_t* aligned_base = RoundUp(base, alignment);
+  if (base == aligned_base) return reinterpret_cast<void*>(base);
+
+  // Otherwise, free it and try a larger allocation.
+  CHECK(Free(base, size));
+
+  // Clear the hint. It's unlikely we can allocate at this address.
+  address = nullptr;
+
+  // Add the maximum misalignment so we are guaranteed an aligned base address
+  // in the allocated region.
   size_t padded_size = size + (alignment - page_size);
-
-  int flags = (access == OS::MemoryPermission::kNoAccess)
-                  ? MEM_RESERVE
-                  : MEM_RESERVE | MEM_COMMIT;
-  int protect = GetProtectionFromMemoryPermission(access);
-
   const int kMaxAttempts = 3;
-  uint8_t* base = nullptr;
-  uint8_t* aligned_base = nullptr;
+  aligned_base = nullptr;
   for (int i = 0; i < kMaxAttempts; ++i) {
     base = RandomizedVirtualAlloc(padded_size, flags, protect, address);
-    // If we can't allocate, we're OOM.
-    if (base == nullptr) break;
-    aligned_base = RoundUp(base, alignment);
-    // If address is suitably aligned, we're done.
-    if (base == aligned_base) break;
-    // Try to trim the unaligned prefix by freeing the entire padded allocation
-    // and then calling VirtualAlloc at the aligned_base.
+    if (base == nullptr) return nullptr;  // Can't allocate, we're OOM.
+
+    // Try to trim the allocation by freeing the padded allocation and then
+    // calling VirtualAlloc at the aligned base.
     CHECK(Free(base, padded_size));
+    aligned_base = RoundUp(base, alignment);
     base = reinterpret_cast<uint8_t*>(
         VirtualAlloc(aligned_base, size, flags, protect));
     // We might not get the reduced allocation due to a race. In that case,
     // base will be nullptr.
     if (base != nullptr) break;
-    // Clear the hint. It's unlikely we can allocate at this address.
-    address = nullptr;
   }
-  DCHECK_EQ(base, aligned_base);
+  DCHECK_IMPLIES(base, base == aligned_base);
   return reinterpret_cast<void*>(base);
 }
 

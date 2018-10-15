@@ -34,7 +34,7 @@ and report metrics about it.  The framework abstracts:
 **If you are a Chromium developer looking to add a new Telemetry benchmark to
 [`src/tools/perf/`](https://code.google.com/p/chromium/codesearch#chromium/src/tools/perf/),
 please make sure to read our
-[Benchmark Policy](https://docs.google.com/document/d/1bBKyYCW3VlUUPDpQE4xvrMFdA6tovQMZoqO9KCcmqqQ/preview)
+[Benchmark Policy](https://docs.google.com/document/d/1ni2MIeVnlH4bTj4yvEDMVNxgL73PqK_O9_NUm3NW3BA/preview)
 first.**
 
 ## Code Concepts
@@ -112,11 +112,9 @@ sets.
 *   [Run Telemetry benchmarks locally](/telemetry/docs/run_benchmarks_locally.md)
 *   [Record a story set](https://sites.google.com/a/chromium.org/dev/developers/telemetry/record_a_page_set)
     with Web Page Replay
-*   [Add a measurement](https://sites.google.com/a/chromium.org/dev/developers/telemetry/add_a_measurement)
 *   [Feature guidelines](https://sites.google.com/a/chromium.org/dev/developers/telemetry/telemetry-feature-guidelines)
-*   [Profiling with Telemetry](https://sites.google.com/a/chromium.org/dev/developers/telemetry/profiling)
 *   [Profile generation](https://sites.google.com/a/chromium.org/dev/developers/telemetry/telemetry-profile-generation)
-*   [Telemetry unittests](https://sites.google.com/a/chromium.org/dev/developers/telemetry/telemetry-unittests)
+*   [Telemetry unittests](/telemetry/docs/run_telemetry_tests.md)
 
 ## Contact Us or Follow Along
 

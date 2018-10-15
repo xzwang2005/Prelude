@@ -7,8 +7,8 @@
 
 #include "gm.h"
 #include "sk_tool_utils.h"
-#include "SkBlurMaskFilter.h"
 #include "SkCanvas.h"
+#include "SkMaskFilter.h"
 #include "SkPath.h"
 #include "SkShader.h"
 
@@ -82,7 +82,7 @@ protected:
         }
 
         const SkScalar sigma = 1;
-        fMaskFilter = SkBlurMaskFilter::Make(kNormal_SkBlurStyle, sigma);
+        fMaskFilter = SkMaskFilter::MakeBlur(kNormal_SkBlurStyle, sigma);
     }
 
     void onDraw(SkCanvas* canvas) override {
@@ -130,7 +130,7 @@ protected:
                          SkIntToScalar(100), SkIntToScalar(100),
                          paint2);
 
-        paint2.setColor(sk_tool_utils::color_to_565(SK_ColorGRAY));
+        paint2.setColor(SK_ColorGRAY);
 
         canvas->drawPath(path, paint2);
     }

@@ -16,14 +16,15 @@
 #include "mojo/public/cpp/bindings/binding_set.h"
 #include "mojo/public/cpp/bindings/interface_ptr_set.h"
 #include "services/catalog/catalog.h"
+#include "services/catalog/service_options.h"
 #include "services/service_manager/connect_params.h"
 #include "services/service_manager/public/cpp/identity.h"
 #include "services/service_manager/public/cpp/interface_provider_spec.h"
-#include "services/service_manager/public/interfaces/connector.mojom.h"
-#include "services/service_manager/public/interfaces/interface_provider.mojom.h"
-#include "services/service_manager/public/interfaces/service.mojom.h"
-#include "services/service_manager/public/interfaces/service_factory.mojom.h"
-#include "services/service_manager/public/interfaces/service_manager.mojom.h"
+#include "services/service_manager/public/mojom/connector.mojom.h"
+#include "services/service_manager/public/mojom/interface_provider.mojom.h"
+#include "services/service_manager/public/mojom/service.mojom.h"
+#include "services/service_manager/public/mojom/service_factory.mojom.h"
+#include "services/service_manager/public/mojom/service_manager.mojom.h"
 #include "services/service_manager/runner/host/service_process_launcher_factory.h"
 #include "services/service_manager/service_overrides.h"
 
@@ -131,14 +132,16 @@ class ServiceManager {
   Instance* CreateInstance(const Identity& source,
                            const Identity& target,
                            InstanceType instance_type,
-                           const InterfaceProviderSpecMap& specs);
+                           const InterfaceProviderSpecMap& specs,
+                           const catalog::ServiceOptions& options);
 
   // Called from the instance implementing mojom::ServiceManager.
   void AddListener(mojom::ServiceManagerListenerPtr listener);
 
   void CreateServiceWithFactory(const Identity& service_factory,
                                 const std::string& name,
-                                mojom::ServiceRequest request);
+                                mojom::ServiceRequest request,
+                                mojom::PIDReceiverPtr pid_receiver);
   // Returns a running ServiceFactory for |service_factory_identity|.
   // If there is not one running one is started for |source_identity|.
   mojom::ServiceFactory* GetServiceFactory(

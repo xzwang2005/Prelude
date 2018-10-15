@@ -4,8 +4,11 @@
 
 #include "net/http/http_auth_controller.h"
 
+#include <utility>
+
 #include "base/bind.h"
 #include "base/bind_helpers.h"
+#include "base/callback_helpers.h"
 #include "base/metrics/histogram_macros.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
@@ -143,7 +146,7 @@ HttpAuthController::~HttpAuthController() {
 
 int HttpAuthController::MaybeGenerateAuthToken(
     const HttpRequestInfo* request,
-    const CompletionCallback& callback,
+    CompletionOnceCallback callback,
     const NetLogWithSource& net_log) {
   DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
   DCHECK(!auth_info_);
@@ -157,12 +160,12 @@ int HttpAuthController::MaybeGenerateAuthToken(
   DCHECK(callback_.is_null());
   int rv = handler_->GenerateAuthToken(
       credentials, request,
-      base::Bind(&HttpAuthController::OnGenerateAuthTokenDone,
-                 base::Unretained(this)),
+      base::BindOnce(&HttpAuthController::OnGenerateAuthTokenDone,
+                     base::Unretained(this)),
       &auth_token_);
 
   if (rv == ERR_IO_PENDING) {
-    callback_ = callback;
+    callback_ = std::move(callback);
     return rv;
   }
 
@@ -531,9 +534,7 @@ void HttpAuthController::OnGenerateAuthTokenDone(int result) {
   DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
   result = HandleGenerateTokenResult(result);
   if (!callback_.is_null()) {
-    CompletionCallback c = callback_;
-    callback_.Reset();
-    c.Run(result);
+    base::ResetAndReturn(&callback_).Run(result);
   }
 }
 

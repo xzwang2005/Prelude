@@ -4,8 +4,8 @@
 
 **[Recipe Modules](#Recipe-Modules)**
   * [bot_update](#recipe_modules-bot_update) &mdash; Recipe module to ensure a checkout is consistent on a bot.
-  * [cipd](#recipe_modules-cipd)
-  * [depot_tools](#recipe_modules-depot_tools)
+  * [cipd](#recipe_modules-cipd) &mdash; API for interacting with CIPD.
+  * [depot_tools](#recipe_modules-depot_tools) &mdash; The `depot_tools` module provides safe functions to access paths within the depot_tools repo.
   * [gclient](#recipe_modules-gclient)
   * [gerrit](#recipe_modules-gerrit)
   * [git](#recipe_modules-git)
@@ -13,9 +13,10 @@
   * [gitiles](#recipe_modules-gitiles)
   * [gsutil](#recipe_modules-gsutil)
   * [infra_paths](#recipe_modules-infra_paths)
+  * [osx_sdk](#recipe_modules-osx_sdk) &mdash; The `osx_sdk` module provides safe functions to access a semi-hermetic XCode installation.
   * [presubmit](#recipe_modules-presubmit)
-  * [rietveld](#recipe_modules-rietveld)
   * [tryserver](#recipe_modules-tryserver)
+  * [windows_sdk](#recipe_modules-windows_sdk) &mdash; The `windows_sdk` module provides safe functions to access a hermetic Microsoft Visual Studio installation.
 
 **[Recipes](#Recipes)**
   * [bot_update:examples/full](#recipes-bot_update_examples_full)
@@ -29,52 +30,44 @@
   * [git:examples/full](#recipes-git_examples_full)
   * [git_cl:examples/full](#recipes-git_cl_examples_full)
   * [gitiles:examples/full](#recipes-gitiles_examples_full)
+  * [gitiles:tests/parse_repo_url](#recipes-gitiles_tests_parse_repo_url)
   * [gsutil:examples/full](#recipes-gsutil_examples_full)
   * [infra_paths:examples/full](#recipes-infra_paths_examples_full)
+  * [osx_sdk:examples/full](#recipes-osx_sdk_examples_full)
   * [presubmit:examples/full](#recipes-presubmit_examples_full)
-  * [rietveld:examples/full](#recipes-rietveld_examples_full)
   * [tryserver:examples/full](#recipes-tryserver_examples_full)
+  * [windows_sdk:examples/full](#recipes-windows_sdk_examples_full)
 ## Recipe Modules
 
 ### *recipe_modules* / [bot\_update](/recipes/recipe_modules/bot_update)
 
-[DEPS](/recipes/recipe_modules/bot_update/__init__.py#1): [depot\_tools](#recipe_modules-depot_tools), [gclient](#recipe_modules-gclient), [gerrit](#recipe_modules-gerrit), [rietveld](#recipe_modules-rietveld), [tryserver](#recipe_modules-tryserver), [recipe\_engine/context][recipe_engine/recipe_modules/context], [recipe\_engine/json][recipe_engine/recipe_modules/json], [recipe\_engine/path][recipe_engine/recipe_modules/path], [recipe\_engine/platform][recipe_engine/recipe_modules/platform], [recipe\_engine/properties][recipe_engine/recipe_modules/properties], [recipe\_engine/python][recipe_engine/recipe_modules/python], [recipe\_engine/raw\_io][recipe_engine/recipe_modules/raw_io], [recipe\_engine/source\_manifest][recipe_engine/recipe_modules/source_manifest], [recipe\_engine/step][recipe_engine/recipe_modules/step]
+[DEPS](/recipes/recipe_modules/bot_update/__init__.py#1): [depot\_tools](#recipe_modules-depot_tools), [gclient](#recipe_modules-gclient), [gerrit](#recipe_modules-gerrit), [gitiles](#recipe_modules-gitiles), [tryserver](#recipe_modules-tryserver), [recipe\_engine/buildbucket][recipe_engine/recipe_modules/buildbucket], [recipe\_engine/context][recipe_engine/recipe_modules/context], [recipe\_engine/json][recipe_engine/recipe_modules/json], [recipe\_engine/path][recipe_engine/recipe_modules/path], [recipe\_engine/platform][recipe_engine/recipe_modules/platform], [recipe\_engine/properties][recipe_engine/recipe_modules/properties], [recipe\_engine/python][recipe_engine/recipe_modules/python], [recipe\_engine/raw\_io][recipe_engine/recipe_modules/raw_io], [recipe\_engine/runtime][recipe_engine/recipe_modules/runtime], [recipe\_engine/source\_manifest][recipe_engine/recipe_modules/source_manifest], [recipe\_engine/step][recipe_engine/recipe_modules/step]
 
 Recipe module to ensure a checkout is consistent on a bot.
 
-#### **class [BotUpdateApi](/recipes/recipe_modules/bot_update/api.py#11)([RecipeApi][recipe_engine/wkt/RecipeApi]):**
+#### **class [BotUpdateApi](/recipes/recipe_modules/bot_update/api.py#10)([RecipeApi][recipe_engine/wkt/RecipeApi]):**
 
-&mdash; **def [\_\_call\_\_](/recipes/recipe_modules/bot_update/api.py#31)(self, name, cmd, \*\*kwargs):**
+&mdash; **def [\_\_call\_\_](/recipes/recipe_modules/bot_update/api.py#27)(self, name, cmd, \*\*kwargs):**
 
 Wrapper for easy calling of bot_update.
 
-&mdash; **def [apply\_gerrit\_ref](/recipes/recipe_modules/bot_update/api.py#49)(self, root, gerrit_no_reset=False, gerrit_no_rebase_patch_ref=False, gerrit_repo=None, gerrit_ref=None, step_name='apply_gerrit', \*\*kwargs):**
-
-&mdash; **def [deapply\_patch](/recipes/recipe_modules/bot_update/api.py#445)(self, bot_update_step):**
+&mdash; **def [deapply\_patch](/recipes/recipe_modules/bot_update/api.py#413)(self, bot_update_step):**
 
 Deapplies a patch, taking care of DEPS and solution revisions properly.
     
 
-&mdash; **def [ensure\_checkout](/recipes/recipe_modules/bot_update/api.py#71)(self, gclient_config=None, suffix=None, patch=True, update_presentation=True, patch_root=None, no_shallow=False, with_branch_heads=False, with_tags=False, refs=None, patch_oauth2=False, oauth2_json=False, use_site_config_creds=True, clobber=False, root_solution_revision=None, rietveld=None, issue=None, patchset=None, gerrit_no_reset=False, gerrit_no_rebase_patch_ref=False, disable_syntax_validation=False, manifest_name=None, \*\*kwargs):**
+&mdash; **def [ensure\_checkout](/recipes/recipe_modules/bot_update/api.py#68)(self, gclient_config=None, suffix=None, patch=True, update_presentation=True, patch_root=None, with_branch_heads=False, with_tags=False, refs=None, patch_oauth2=None, oauth2_json=None, use_site_config_creds=None, clobber=False, root_solution_revision=None, rietveld=None, issue=None, patchset=None, gerrit_no_reset=False, gerrit_no_rebase_patch_ref=False, disable_syntax_validation=False, manifest_name=None, patch_refs=None, ignore_input_commit=False, \*\*kwargs):**
 
 Args:
-  use_site_config_creds: If the oauth2 credentials are in the buildbot
-    site_config. See crbug.com/624212 for more information.
   gclient_config: The gclient configuration to use when running bot_update.
     If omitted, the current gclient configuration is used.
-  rietveld: The rietveld server to use. If omitted, will infer from
-    the 'rietveld' property.
-  issue: The rietveld issue number to use. If omitted, will infer from
-    the 'issue' property.
-  patchset: The rietveld issue patchset to use. If omitted, will infer from
-    the 'patchset' property.
   disable_syntax_validation: (legacy) Disables syntax validation for DEPS.
     Needed as migration paths for recipes dealing with older revisions,
     such as bisect.
   manifest_name: The name of the manifest to upload to LogDog.  This must
     be unique for the whole build.
 
-&mdash; **def [get\_project\_revision\_properties](/recipes/recipe_modules/bot_update/api.py#422)(self, project_name, gclient_config=None):**
+&mdash; **def [get\_project\_revision\_properties](/recipes/recipe_modules/bot_update/api.py#390)(self, project_name, gclient_config=None):**
 
 Returns all property names used for storing the checked-out revision of
 a given project.
@@ -88,12 +81,25 @@ Args:
 Returns (list of str): All properties that'll hold the checked-out revision
     of the given project. An empty list if no such properties exist.
 
-&emsp; **@property**<br>&mdash; **def [last\_returned\_properties](/recipes/recipe_modules/bot_update/api.py#43)(self):**
+&mdash; **def [initialize](/recipes/recipe_modules/bot_update/api.py#22)(self):**
+
+&emsp; **@property**<br>&mdash; **def [last\_returned\_properties](/recipes/recipe_modules/bot_update/api.py#36)(self):**
 ### *recipe_modules* / [cipd](/recipes/recipe_modules/cipd)
 
 [DEPS](/recipes/recipe_modules/cipd/__init__.py#1): [infra\_paths](#recipe_modules-infra_paths), [recipe\_engine/json][recipe_engine/recipe_modules/json], [recipe\_engine/path][recipe_engine/recipe_modules/path], [recipe\_engine/platform][recipe_engine/recipe_modules/platform], [recipe\_engine/properties][recipe_engine/recipe_modules/properties], [recipe\_engine/python][recipe_engine/recipe_modules/python], [recipe\_engine/raw\_io][recipe_engine/recipe_modules/raw_io], [recipe\_engine/step][recipe_engine/recipe_modules/step]
 
-#### **class [CIPDApi](/recipes/recipe_modules/cipd/api.py#148)([RecipeApi][recipe_engine/wkt/RecipeApi]):**
+API for interacting with CIPD.
+
+Depends on 'cipd' binary available in PATH:
+https://godoc.org/go.chromium.org/luci/cipd/client/cmd/cipd
+
+WARNING: There is an alternative cipd recipe_module in recipes-py.git:
+https://codesearch.chromium.org/chromium/infra/recipes-py/recipe_modules/cipd/
+
+Consider using that one instead.
+TODO(crbug.com/875523): Delete this module.
+
+#### **class [CIPDApi](/recipes/recipe_modules/cipd/api.py#160)([RecipeApi][recipe_engine/wkt/RecipeApi]):**
 
 CIPDApi provides basic support for CIPD.
 
@@ -102,7 +108,7 @@ installed somewhere in $PATH. This will be true if you use depot_tools, or if
 your recipe is running inside of chrome-infrastructure's systems (buildbot,
 swarming).
 
-&mdash; **def [build](/recipes/recipe_modules/cipd/api.py#221)(self, input_dir, output_package, package_name, install_mode=None):**
+&mdash; **def [build](/recipes/recipe_modules/cipd/api.py#233)(self, input_dir, output_package, package_name, install_mode=None):**
 
 Builds, but does not upload, a cipd package from a directory.
 
@@ -115,7 +121,7 @@ Args:
     should use when installing this package. If None, defaults to the
     platform default ('copy' on windows, 'symlink' on everything else).
 
-&mdash; **def [create\_from\_pkg](/recipes/recipe_modules/cipd/api.py#317)(self, pkg_def, refs=None, tags=None):**
+&mdash; **def [create\_from\_pkg](/recipes/recipe_modules/cipd/api.py#329)(self, pkg_def, refs=None, tags=None):**
 
 Builds and uploads a package based on a PackageDefinition object.
 
@@ -133,7 +139,7 @@ Returns the JSON 'result' section, e.g.: {
   "instance_id": "433bfdf86c0bb82d1eee2d1a0473d3709c25d2c4"
 }
 
-&mdash; **def [create\_from\_yaml](/recipes/recipe_modules/cipd/api.py#297)(self, pkg_def, refs=None, tags=None):**
+&mdash; **def [create\_from\_yaml](/recipes/recipe_modules/cipd/api.py#309)(self, pkg_def, refs=None, tags=None):**
 
 Builds and uploads a package based on on-disk YAML package definition
 file.
@@ -151,11 +157,11 @@ Returns the JSON 'result' section, e.g.: {
   "instance_id": "433bfdf86c0bb82d1eee2d1a0473d3709c25d2c4"
 }
 
-&emsp; **@property**<br>&mdash; **def [default\_bot\_service\_account\_credentials](/recipes/recipe_modules/cipd/api.py#185)(self):**
+&emsp; **@property**<br>&mdash; **def [default\_bot\_service\_account\_credentials](/recipes/recipe_modules/cipd/api.py#197)(self):**
 
-&mdash; **def [describe](/recipes/recipe_modules/cipd/api.py#424)(self, package_name, version, test_data_refs=None, test_data_tags=None):**
+&mdash; **def [describe](/recipes/recipe_modules/cipd/api.py#436)(self, package_name, version, test_data_refs=None, test_data_tags=None):**
 
-&mdash; **def [ensure](/recipes/recipe_modules/cipd/api.py#339)(self, root, packages):**
+&mdash; **def [ensure](/recipes/recipe_modules/cipd/api.py#351)(self, root, packages):**
 
 Ensures that packages are installed in a given root dir.
 
@@ -166,11 +172,11 @@ packages must be a mapping from package name to its version, where
 If installing a package requires credentials, call
 ``set_service_account_credentials`` before calling this function.
 
-&emsp; **@property**<br>&mdash; **def [executable](/recipes/recipe_modules/cipd/api.py#181)(self):**
+&emsp; **@property**<br>&mdash; **def [executable](/recipes/recipe_modules/cipd/api.py#193)(self):**
 
-&mdash; **def [initialize](/recipes/recipe_modules/cipd/api.py#175)(self):**
+&mdash; **def [initialize](/recipes/recipe_modules/cipd/api.py#187)(self):**
 
-&mdash; **def [platform\_suffix](/recipes/recipe_modules/cipd/api.py#194)(self, name=None, arch=None, bits=None):**
+&mdash; **def [platform\_suffix](/recipes/recipe_modules/cipd/api.py#206)(self, name=None, arch=None, bits=None):**
 
 Use to get full package name that is platform indepdent.
 
@@ -182,41 +188,53 @@ Optional platform bits and architecture may be supplied to generate CIPD
 suffixes for other platforms. If any are omitted, the current platform
 parameters will be used.
 
-&mdash; **def [register](/recipes/recipe_modules/cipd/api.py#249)(self, package_name, package_path, refs=None, tags=None):**
+&mdash; **def [register](/recipes/recipe_modules/cipd/api.py#261)(self, package_name, package_path, refs=None, tags=None):**
 
-&mdash; **def [search](/recipes/recipe_modules/cipd/api.py#406)(self, package_name, tag):**
+&mdash; **def [search](/recipes/recipe_modules/cipd/api.py#418)(self, package_name, tag):**
 
-&mdash; **def [set\_ref](/recipes/recipe_modules/cipd/api.py#386)(self, package_name, version, refs):**
+&mdash; **def [set\_ref](/recipes/recipe_modules/cipd/api.py#398)(self, package_name, version, refs):**
 
-&mdash; **def [set\_service\_account\_credentials](/recipes/recipe_modules/cipd/api.py#178)(self, path):**
+&mdash; **def [set\_service\_account\_credentials](/recipes/recipe_modules/cipd/api.py#190)(self, path):**
 
-&mdash; **def [set\_tag](/recipes/recipe_modules/cipd/api.py#366)(self, package_name, version, tags):**
+&mdash; **def [set\_tag](/recipes/recipe_modules/cipd/api.py#378)(self, package_name, version, tags):**
 ### *recipe_modules* / [depot\_tools](/recipes/recipe_modules/depot_tools)
 
-[DEPS](/recipes/recipe_modules/depot_tools/__init__.py#1): [recipe\_engine/platform][recipe_engine/recipe_modules/platform]
+[DEPS](/recipes/recipe_modules/depot_tools/__init__.py#5): [recipe\_engine/context][recipe_engine/recipe_modules/context], [recipe\_engine/platform][recipe_engine/recipe_modules/platform], [recipe\_engine/runtime][recipe_engine/recipe_modules/runtime]
 
-#### **class [DepotToolsApi](/recipes/recipe_modules/depot_tools/api.py#7)([RecipeApi][recipe_engine/wkt/RecipeApi]):**
+The `depot_tools` module provides safe functions to access paths within
+the depot_tools repo.
 
-&emsp; **@property**<br>&mdash; **def [cros\_path](/recipes/recipe_modules/depot_tools/api.py#21)(self):**
+#### **class [DepotToolsApi](/recipes/recipe_modules/depot_tools/api.py#12)([RecipeApi][recipe_engine/wkt/RecipeApi]):**
 
-&emsp; **@property**<br>&mdash; **def [download\_from\_google\_storage\_path](/recipes/recipe_modules/depot_tools/api.py#8)(self):**
+&emsp; **@property**<br>&mdash; **def [cros\_path](/recipes/recipe_modules/depot_tools/api.py#26)(self):**
 
-&emsp; **@property**<br>&mdash; **def [gn\_py\_path](/recipes/recipe_modules/depot_tools/api.py#25)(self):**
+&emsp; **@property**<br>&mdash; **def [download\_from\_google\_storage\_path](/recipes/recipe_modules/depot_tools/api.py#13)(self):**
 
-&emsp; **@property**<br>&mdash; **def [gsutil\_py\_path](/recipes/recipe_modules/depot_tools/api.py#31)(self):**
+&emsp; **@property**<br>&mdash; **def [gn\_py\_path](/recipes/recipe_modules/depot_tools/api.py#30)(self):**
 
-&emsp; **@property**<br>&mdash; **def [ninja\_path](/recipes/recipe_modules/depot_tools/api.py#35)(self):**
+&emsp; **@property**<br>&mdash; **def [gsutil\_py\_path](/recipes/recipe_modules/depot_tools/api.py#36)(self):**
 
-&emsp; **@property**<br>&mdash; **def [presubmit\_support\_py\_path](/recipes/recipe_modules/depot_tools/api.py#40)(self):**
+&emsp; **@property**<br>&mdash; **def [ninja\_path](/recipes/recipe_modules/depot_tools/api.py#40)(self):**
 
-&emsp; **@property**<br>&mdash; **def [root](/recipes/recipe_modules/depot_tools/api.py#16)(self):**
+&emsp; **@contextlib.contextmanager**<br>&mdash; **def [on\_path](/recipes/recipe_modules/depot_tools/api.py#49)(self):**
+
+Use this context manager to put depot_tools on $PATH.
+
+Example:
+
+  with api.depot_tools.on_path():
+    # run some steps
+
+&emsp; **@property**<br>&mdash; **def [presubmit\_support\_py\_path](/recipes/recipe_modules/depot_tools/api.py#45)(self):**
+
+&emsp; **@property**<br>&mdash; **def [root](/recipes/recipe_modules/depot_tools/api.py#21)(self):**
 
 Returns (Path): The "depot_tools" root directory.
 
-&emsp; **@property**<br>&mdash; **def [upload\_to\_google\_storage\_path](/recipes/recipe_modules/depot_tools/api.py#12)(self):**
+&emsp; **@property**<br>&mdash; **def [upload\_to\_google\_storage\_path](/recipes/recipe_modules/depot_tools/api.py#17)(self):**
 ### *recipe_modules* / [gclient](/recipes/recipe_modules/gclient)
 
-[DEPS](/recipes/recipe_modules/gclient/__init__.py#1): [infra\_paths](#recipe_modules-infra_paths), [tryserver](#recipe_modules-tryserver), [recipe\_engine/context][recipe_engine/recipe_modules/context], [recipe\_engine/json][recipe_engine/recipe_modules/json], [recipe\_engine/path][recipe_engine/recipe_modules/path], [recipe\_engine/platform][recipe_engine/recipe_modules/platform], [recipe\_engine/properties][recipe_engine/recipe_modules/properties], [recipe\_engine/python][recipe_engine/recipe_modules/python], [recipe\_engine/step][recipe_engine/recipe_modules/step]
+[DEPS](/recipes/recipe_modules/gclient/__init__.py#1): [gitiles](#recipe_modules-gitiles), [infra\_paths](#recipe_modules-infra_paths), [tryserver](#recipe_modules-tryserver), [recipe\_engine/context][recipe_engine/recipe_modules/context], [recipe\_engine/json][recipe_engine/recipe_modules/json], [recipe\_engine/path][recipe_engine/recipe_modules/path], [recipe\_engine/platform][recipe_engine/recipe_modules/platform], [recipe\_engine/properties][recipe_engine/recipe_modules/properties], [recipe\_engine/python][recipe_engine/recipe_modules/python], [recipe\_engine/step][recipe_engine/recipe_modules/step]
 
 #### **class [GclientApi](/recipes/recipe_modules/gclient/api.py#65)([RecipeApi][recipe_engine/wkt/RecipeApi]):**
 
@@ -224,39 +242,41 @@ Returns (Path): The "depot_tools" root directory.
 
 Wrapper for easy calling of gclient steps.
 
-&mdash; **def [break\_locks](/recipes/recipe_modules/gclient/api.py#288)(self):**
+&mdash; **def [break\_locks](/recipes/recipe_modules/gclient/api.py#270)(self):**
 
 Remove all index.lock files. If a previous run of git crashed, bot was
 reset, etc... we might end up with leftover index.lock files.
 
-&mdash; **def [calculate\_patch\_root](/recipes/recipe_modules/gclient/api.py#310)(self, patch_project, gclient_config=None, patch_repo=None):**
-
-Returns path where a patch should be applied to based patch_project.
-
-Maps the patch's repo to a path of directories relative to checkout's root,
-which describe where to place the patch. If no mapping is found for the
-repo url, falls back to trying to find a mapping for the old-style
-"patch_project".
-
-For now, considers only first solution (c.solutions[0]), but in theory can
-be extended to all of them.
-
-See patch_projects and repo_path_map solution config property.
-
-Returns:
-  Relative path, including solution's root.
-  If patch_project is not given or not recognized, it'll be just first
-  solution root.
-
-&mdash; **def [checkout](/recipes/recipe_modules/gclient/api.py#235)(self, gclient_config=None, revert=RevertOnTryserver, inject_parent_got_revision=True, extra_sync_flags=None, \*\*kwargs):**
+&mdash; **def [checkout](/recipes/recipe_modules/gclient/api.py#230)(self, gclient_config=None, revert=RevertOnTryserver, inject_parent_got_revision=True, extra_sync_flags=None, \*\*kwargs):**
 
 Return a step generator function for gclient checkouts.
 
-&emsp; **@staticmethod**<br>&mdash; **def [config\_to\_pythonish](/recipes/recipe_modules/gclient/api.py#125)(cfg):**
+&emsp; **@staticmethod**<br>&mdash; **def [config\_to\_pythonish](/recipes/recipe_modules/gclient/api.py#120)(cfg):**
 
-&mdash; **def [get\_config\_defaults](/recipes/recipe_modules/gclient/api.py#119)(self):**
+&mdash; **def [get\_config\_defaults](/recipes/recipe_modules/gclient/api.py#114)(self):**
 
-&emsp; **@staticmethod**<br>&mdash; **def [got\_revision\_reverse\_mapping](/recipes/recipe_modules/gclient/api.py#130)(cfg):**
+&mdash; **def [get\_gerrit\_patch\_root](/recipes/recipe_modules/gclient/api.py#292)(self, gclient_config=None):**
+
+Returns local path to the repo where gerrit patch will be applied.
+
+If there is no patch, returns None.
+If patch is specified, but such repo is not found among configured solutions
+or repo_path_map, returns name of the first solution. This is done solely
+for backward compatibility with existing tests.
+Please do not rely on this logic in new code.
+Instead, properly map a repository to a local path using repo_path_map.
+TODO(nodir): remove this. Update all recipe tests to specify a git_repo
+matching the recipe.
+
+&mdash; **def [get\_repo\_path](/recipes/recipe_modules/gclient/api.py#319)(self, repo_url, gclient_config=None):**
+
+Returns local path to the repo checkout given its url.
+
+Consults cfg.repo_path_map and fallbacks to urls in configured solutions.
+
+Returns None if not found.
+
+&emsp; **@staticmethod**<br>&mdash; **def [got\_revision\_reverse\_mapping](/recipes/recipe_modules/gclient/api.py#125)(cfg):**
 
 Returns the merged got_revision_reverse_mapping.
 
@@ -264,7 +284,7 @@ Returns (dict): A mapping from property name -> project name. It merges the
     values of the deprecated got_revision_mapping and the new
     got_revision_reverse_mapping.
 
-&mdash; **def [inject\_parent\_got\_revision](/recipes/recipe_modules/gclient/api.py#210)(self, gclient_config=None, override=False):**
+&mdash; **def [inject\_parent\_got\_revision](/recipes/recipe_modules/gclient/api.py#205)(self, gclient_config=None, override=False):**
 
 Match gclient config to build revisions obtained from build_properties.
 
@@ -274,31 +294,22 @@ Args:
   override (bool) - If True, will forcibly set revision and custom_vars
     even if the config already contains values for them.
 
-&emsp; **@property**<br>&mdash; **def [is\_blink\_mode](/recipes/recipe_modules/gclient/api.py#275)(self):**
+&mdash; **def [resolve\_revision](/recipes/recipe_modules/gclient/api.py#142)(self, revision):**
 
-Indicates wether the caller is to use the Blink config rather than the
-Chromium config. This may happen for one of two reasons:
-1. The builder is configured to always use TOT Blink. (factory property
-   top_of_tree_blink=True)
-2. A try job comes in that applies to the Blink tree. (patch_project is
-   blink)
+&mdash; **def [runhooks](/recipes/recipe_modules/gclient/api.py#264)(self, args=None, name='runhooks', \*\*kwargs):**
 
-&mdash; **def [resolve\_revision](/recipes/recipe_modules/gclient/api.py#147)(self, revision):**
-
-&mdash; **def [runhooks](/recipes/recipe_modules/gclient/api.py#269)(self, args=None, name='runhooks', \*\*kwargs):**
-
-&mdash; **def [set\_patch\_project\_revision](/recipes/recipe_modules/gclient/api.py#342)(self, patch_project, gclient_config=None):**
+&mdash; **def [set\_patch\_repo\_revision](/recipes/recipe_modules/gclient/api.py#349)(self, gclient_config=None):**
 
 Updates config revision corresponding to patch_project.
 
 Useful for bot_update only, as this is the only consumer of gclient's config
 revision map. This doesn't overwrite the revision if it was already set.
 
-&emsp; **@spec_alias.deleter**<br>&mdash; **def [spec\_alias](/recipes/recipe_modules/gclient/api.py#115)(self):**
+&emsp; **@spec_alias.deleter**<br>&mdash; **def [spec\_alias](/recipes/recipe_modules/gclient/api.py#110)(self):**
 
-&mdash; **def [sync](/recipes/recipe_modules/gclient/api.py#152)(self, cfg, extra_sync_flags=None, \*\*kwargs):**
+&mdash; **def [sync](/recipes/recipe_modules/gclient/api.py#147)(self, cfg, extra_sync_flags=None, \*\*kwargs):**
 
-&emsp; **@use_mirror.setter**<br>&mdash; **def [use\_mirror](/recipes/recipe_modules/gclient/api.py#102)(self, val):**
+&emsp; **@use_mirror.setter**<br>&mdash; **def [use\_mirror](/recipes/recipe_modules/gclient/api.py#97)(self, val):**
 ### *recipe_modules* / [gerrit](/recipes/recipe_modules/gerrit)
 
 [DEPS](/recipes/recipe_modules/gerrit/__init__.py#1): [recipe\_engine/context][recipe_engine/recipe_modules/context], [recipe\_engine/json][recipe_engine/recipe_modules/json], [recipe\_engine/path][recipe_engine/recipe_modules/path], [recipe\_engine/python][recipe_engine/recipe_modules/python], [recipe\_engine/raw\_io][recipe_engine/recipe_modules/raw_io], [recipe\_engine/step][recipe_engine/recipe_modules/step]
@@ -307,46 +318,48 @@ revision map. This doesn't overwrite the revision if it was already set.
 
 Module for interact with gerrit endpoints
 
-&mdash; **def [\_\_call\_\_](/recipes/recipe_modules/gerrit/api.py#10)(self, name, cmd, infra_step=True, \*\*kwargs):**
+&mdash; **def [\_\_call\_\_](/recipes/recipe_modules/gerrit/api.py#14)(self, name, cmd, infra_step=True, \*\*kwargs):**
 
 Wrapper for easy calling of gerrit_utils steps.
 
-&mdash; **def [create\_gerrit\_branch](/recipes/recipe_modules/gerrit/api.py#27)(self, host, project, branch, commit, \*\*kwargs):**
+&mdash; **def [create\_gerrit\_branch](/recipes/recipe_modules/gerrit/api.py#31)(self, host, project, branch, commit, \*\*kwargs):**
 
 Create a new branch from given project and commit
 
 Returns:
   the ref of the branch created
 
-&mdash; **def [get\_change\_description](/recipes/recipe_modules/gerrit/api.py#93)(self, host, change, patchset):**
+&mdash; **def [get\_change\_description](/recipes/recipe_modules/gerrit/api.py#106)(self, host, change, patchset):**
 
 Get the description for a given CL and patchset.
 
 Args:
-  host: Gerrit host to query.
+  host: URL of Gerrit host to query.
   change: The change number.
   patchset: The patchset number.
 
 Returns:
   The description corresponding to given CL and patchset.
 
-&mdash; **def [get\_change\_destination\_branch](/recipes/recipe_modules/gerrit/api.py#68)(self, host, change, \*\*kwargs):**
+&mdash; **def [get\_change\_destination\_branch](/recipes/recipe_modules/gerrit/api.py#72)(self, host, change, name=None, step_test_data=None):**
 
 Get the upstream branch for a given CL.
 
+Result is cached.
+
 Args:
-  host: Gerrit host to query.
+  host: URL of Gerrit host to query.
   change: The change number.
 
 Returns:
   the name of the branch
 
-&mdash; **def [get\_changes](/recipes/recipe_modules/gerrit/api.py#122)(self, host, query_params, start=None, limit=None, o_params=None, \*\*kwargs):**
+&mdash; **def [get\_changes](/recipes/recipe_modules/gerrit/api.py#151)(self, host, query_params, start=None, limit=None, o_params=None, step_test_data=None, \*\*kwargs):**
 
 Query changes for the given host.
 
 Args:
-  host: Gerrit host to query.
+  host: URL of Gerrit host to query.
   query_params: Query parameters as list of (key, value) tuples to form a
       query as documented here:
       https://gerrit-review.googlesource.com/Documentation/user-search.html#search-operators
@@ -354,16 +367,30 @@ Args:
   limit: Maximum number of results to return.
   o_params: A list of additional output specifiers, as documented here:
       https://gerrit-review.googlesource.com/Documentation/rest-api-changes.html#list-changes
+  step_test_data: Optional mock test data for the underlying gerrit client.
 Returns:
   A list of change dicts as documented here:
       https://gerrit-review.googlesource.com/Documentation/rest-api-changes.html#list-changes
 
-&mdash; **def [get\_gerrit\_branch](/recipes/recipe_modules/gerrit/api.py#49)(self, host, project, branch, \*\*kwargs):**
+&mdash; **def [get\_gerrit\_branch](/recipes/recipe_modules/gerrit/api.py#53)(self, host, project, branch, \*\*kwargs):**
 
 Get a branch from given project and commit
 
 Returns:
   the revision of the branch
+
+&mdash; **def [get\_revision\_info](/recipes/recipe_modules/gerrit/api.py#121)(self, host, change, patchset):**
+
+Returns the info for a given patchset of a given change.
+
+Args:
+  host: Gerrit host to query.
+  change: The change number.
+  patchset: The patchset number.
+
+Returns:
+  A dict for the target revision as documented here:
+      https://gerrit-review.googlesource.com/Documentation/rest-api-changes.html#list-changes
 ### *recipe_modules* / [git](/recipes/recipe_modules/git)
 
 [DEPS](/recipes/recipe_modules/git/__init__.py#1): [infra\_paths](#recipe_modules-infra_paths), [recipe\_engine/context][recipe_engine/recipe_modules/context], [recipe\_engine/path][recipe_engine/recipe_modules/path], [recipe\_engine/platform][recipe_engine/recipe_modules/platform], [recipe\_engine/properties][recipe_engine/recipe_modules/properties], [recipe\_engine/python][recipe_engine/recipe_modules/python], [recipe\_engine/raw\_io][recipe_engine/recipe_modules/raw_io], [recipe\_engine/step][recipe_engine/recipe_modules/step]
@@ -498,13 +525,18 @@ DEPRECATED. Consider using gerrit.get_change_description instead.
 &mdash; **def [upload](/recipes/recipe_modules/git_cl/api.py#47)(self, message, upload_args=None, \*\*kwargs):**
 ### *recipe_modules* / [gitiles](/recipes/recipe_modules/gitiles)
 
-[DEPS](/recipes/recipe_modules/gitiles/__init__.py#1): [recipe\_engine/json][recipe_engine/recipe_modules/json], [recipe\_engine/path][recipe_engine/recipe_modules/path], [recipe\_engine/python][recipe_engine/recipe_modules/python], [recipe\_engine/raw\_io][recipe_engine/recipe_modules/raw_io], [recipe\_engine/url][recipe_engine/recipe_modules/url]
+[DEPS](/recipes/recipe_modules/gitiles/__init__.py#5): [recipe\_engine/json][recipe_engine/recipe_modules/json], [recipe\_engine/path][recipe_engine/recipe_modules/path], [recipe\_engine/python][recipe_engine/recipe_modules/python], [recipe\_engine/raw\_io][recipe_engine/recipe_modules/raw_io], [recipe\_engine/step][recipe_engine/recipe_modules/step], [recipe\_engine/url][recipe_engine/recipe_modules/url]
 
-#### **class [Gitiles](/recipes/recipe_modules/gitiles/api.py#10)([RecipeApi][recipe_engine/wkt/RecipeApi]):**
+#### **class [Gitiles](/recipes/recipe_modules/gitiles/api.py#11)([RecipeApi][recipe_engine/wkt/RecipeApi]):**
 
 Module for polling a git repository using the Gitiles web interface.
 
-&mdash; **def [commit\_log](/recipes/recipe_modules/gitiles/api.py#102)(self, url, commit, step_name=None, attempts=None):**
+&mdash; **def [canonicalize\_repo\_url](/recipes/recipe_modules/gitiles/api.py#216)(self, repo_url):**
+
+Returns a canonical form of repo_url. If not recognized, returns as is.
+    
+
+&mdash; **def [commit\_log](/recipes/recipe_modules/gitiles/api.py#114)(self, url, commit, step_name=None, attempts=None):**
 
 Returns: (dict) the Gitiles commit log structure for a given commit.
 
@@ -514,7 +546,23 @@ Args:
   step_name (str): If not None, override the step name.
   attempts (int): Number of times to try the request before failing.
 
-&mdash; **def [download\_file](/recipes/recipe_modules/gitiles/api.py#118)(self, repository_url, file_path, branch='master', step_name=None, attempts=None, \*\*kwargs):**
+&mdash; **def [download\_archive](/recipes/recipe_modules/gitiles/api.py#156)(self, repository_url, destination, revision='refs/heads/master'):**
+
+Downloads an archive of the repo and extracts it to `destination`.
+
+If the gitiles server attempts to provide a tarball with paths which escape
+`destination`, this function will extract all valid files and then
+raise StepFailure with an attribute `StepFailure.gitiles_skipped_files`
+containing the names of the files that were skipped.
+
+Args:
+  repository_url (str): Full URL to the repository
+  destination (Path): Local path to extract the archive to. Must not exist
+    prior to this call.
+  revision (str): The ref or revision in the repo to download. Defaults to
+    'refs/heads/master'.
+
+&mdash; **def [download\_file](/recipes/recipe_modules/gitiles/api.py#130)(self, repository_url, file_path, branch='master', step_name=None, attempts=None, \*\*kwargs):**
 
 Downloads raw file content from a Gitiles repository.
 
@@ -528,7 +576,7 @@ Args:
 Returns:
   Raw file content.
 
-&mdash; **def [log](/recipes/recipe_modules/gitiles/api.py#56)(self, url, ref, limit=0, cursor=None, step_name=None, attempts=None, \*\*kwargs):**
+&mdash; **def [log](/recipes/recipe_modules/gitiles/api.py#68)(self, url, ref, limit=0, cursor=None, step_name=None, attempts=None, \*\*kwargs):**
 
 Returns the most recent commits under the given ref with properties.
 
@@ -551,9 +599,19 @@ Returns:
   Cursor can be used for subsequent calls to log for paging. If None,
   signals that there are no more commits to fetch.
 
-&mdash; **def [refs](/recipes/recipe_modules/gitiles/api.py#44)(self, url, step_name='refs', attempts=None):**
+&mdash; **def [parse\_repo\_url](/recipes/recipe_modules/gitiles/api.py#205)(self, repo_url):**
+
+Returns (host, project) pair.
+
+Returns (None, None) if repo_url is not recognized.
+
+&mdash; **def [refs](/recipes/recipe_modules/gitiles/api.py#56)(self, url, step_name='refs', attempts=None):**
 
 Returns a list of refs in the remote repository.
+
+&mdash; **def [unparse\_repo\_url](/recipes/recipe_modules/gitiles/api.py#212)(self, host, project):**
+
+Generates a Gitiles repo URL. See also parse_repo_url.
 ### *recipe_modules* / [gsutil](/recipes/recipe_modules/gsutil)
 
 [DEPS](/recipes/recipe_modules/gsutil/__init__.py#1): [recipe\_engine/path][recipe_engine/recipe_modules/path], [recipe\_engine/python][recipe_engine/recipe_modules/python]
@@ -587,11 +645,11 @@ Arguments:
 
 &emsp; **@property**<br>&mdash; **def [gsutil\_py\_path](/recipes/recipe_modules/gsutil/api.py#10)(self):**
 
-&mdash; **def [list](/recipes/recipe_modules/gsutil/api.py#121)(self, url, args=None, \*\*kwargs):**
+&mdash; **def [list](/recipes/recipe_modules/gsutil/api.py#122)(self, url, args=None, \*\*kwargs):**
 
-&mdash; **def [remove\_url](/recipes/recipe_modules/gsutil/api.py#135)(self, url, args=None, \*\*kwargs):**
+&mdash; **def [remove\_url](/recipes/recipe_modules/gsutil/api.py#136)(self, url, args=None, \*\*kwargs):**
 
-&mdash; **def [signurl](/recipes/recipe_modules/gsutil/api.py#128)(self, private_key_file, bucket, dest, args=None, \*\*kwargs):**
+&mdash; **def [signurl](/recipes/recipe_modules/gsutil/api.py#129)(self, private_key_file, bucket, dest, args=None, \*\*kwargs):**
 
 &mdash; **def [upload](/recipes/recipe_modules/gsutil/api.py#68)(self, source, bucket, dest, args=None, link_name='gsutil.upload', metadata=None, unauthenticated_url=False, \*\*kwargs):**
 ### *recipe_modules* / [infra\_paths](/recipes/recipe_modules/infra_paths)
@@ -612,6 +670,66 @@ It returns git_cache path if it is defined (Buildbot world), otherwise
 uses the more generic [CACHE]/git path (LUCI world).
 
 &mdash; **def [initialize](/recipes/recipe_modules/infra_paths/api.py#11)(self):**
+### *recipe_modules* / [osx\_sdk](/recipes/recipe_modules/osx_sdk)
+
+[DEPS](/recipes/recipe_modules/osx_sdk/__init__.py#5): [recipe\_engine/cipd][recipe_engine/recipe_modules/cipd], [recipe\_engine/context][recipe_engine/recipe_modules/context], [recipe\_engine/json][recipe_engine/recipe_modules/json], [recipe\_engine/path][recipe_engine/recipe_modules/path], [recipe\_engine/platform][recipe_engine/recipe_modules/platform], [recipe\_engine/step][recipe_engine/recipe_modules/step]
+
+The `osx_sdk` module provides safe functions to access a semi-hermetic
+XCode installation.
+
+Available only to Google-run bots.
+
+#### **class [OSXSDKApi](/recipes/recipe_modules/osx_sdk/api.py#15)([RecipeApi][recipe_engine/wkt/RecipeApi]):**
+
+API for using OS X SDK distributed via CIPD.
+
+&emsp; **@contextmanager**<br>&mdash; **def [\_\_call\_\_](/recipes/recipe_modules/osx_sdk/api.py#25)(self, kind):**
+
+Sets up the XCode SDK environment.
+
+Is a no-op on non-mac platforms.
+
+This will deploy the helper tool and the XCode.app bundle at
+`[START_DIR]/cache/osx_sdk`.
+
+To avoid machines rebuilding these on every run, set up a named cache in
+your cr-buildbucket.cfg file like:
+
+    caches: {
+      # Cache for mac_toolchain tool and XCode.app
+      name: "osx_sdk"
+      path: "osx_sdk"
+    }
+
+If you have builders which e.g. use a non-current SDK, you can give them
+a uniqely named cache:
+
+    caches: {
+      # Cache for N-1 version mac_toolchain tool and XCode.app
+      name: "osx_sdk_old"
+      path: "osx_sdk"
+    }
+
+Similarly, if you have mac and iOS builders you may want to distinguish the
+cache name by adding '_ios' to it. However, if you're sharing the same bots
+for both mac and iOS, consider having a single cache and just always
+fetching the iOS version. This will lead to lower overall disk utilization
+and should help to reduce cache thrashing.
+
+Usage:
+  with api.osx_sdk('mac'):
+    # sdk with mac build bits
+
+  with api.osx_sdk('ios'):
+    # sdk with mac+iOS build bits
+
+Args:
+  kind ('mac'|'ios'): How the SDK should be configured. iOS includes the
+    base XCode distribution, as well as the iOS simulators (which can be
+    quite large).
+
+Raises:
+    StepFailure or InfraFailure.
 ### *recipe_modules* / [presubmit](/recipes/recipe_modules/presubmit)
 
 [DEPS](/recipes/recipe_modules/presubmit/__init__.py#1): [recipe\_engine/context][recipe_engine/recipe_modules/context], [recipe\_engine/path][recipe_engine/recipe_modules/path], [recipe\_engine/python][recipe_engine/recipe_modules/python], [recipe\_engine/step][recipe_engine/recipe_modules/step]
@@ -623,98 +741,82 @@ uses the more generic [CACHE]/git path (LUCI world).
 Return a presubmit step.
 
 &emsp; **@property**<br>&mdash; **def [presubmit\_support\_path](/recipes/recipe_modules/presubmit/api.py#8)(self):**
-### *recipe_modules* / [rietveld](/recipes/recipe_modules/rietveld)
-
-[DEPS](/recipes/recipe_modules/rietveld/__init__.py#1): [recipe\_engine/path][recipe_engine/recipe_modules/path], [recipe\_engine/properties][recipe_engine/recipe_modules/properties], [recipe\_engine/python][recipe_engine/recipe_modules/python], [recipe\_engine/step][recipe_engine/recipe_modules/step]
-
-#### **class [RietveldApi](/recipes/recipe_modules/rietveld/api.py#10)([RecipeApi][recipe_engine/wkt/RecipeApi]):**
-
-&mdash; **def [apply\_issue](/recipes/recipe_modules/rietveld/api.py#53)(self, \*root_pieces, \*\*kwargs):**
-
-Call apply_issue from depot_tools.
-
-Args:
-  root_pieces (strings): location where to run apply_issue, relative to the
-    checkout root.
-  authentication (string or None): authentication scheme to use. Can be None
-    or 'oauth2'. See also apply_issue.py --help (-E and --no-auth options.)
-
-&mdash; **def [calculate\_issue\_root](/recipes/recipe_modules/rietveld/api.py#11)(self, extra_patch_project_roots=None):**
-
-Returns path where a patch should be applied to based on "patch_project".
-
-YOU SHOULD NOT USE THIS METHOD. Put this into gclient's config as
-patch_projects instead, and with luck you won't need to use
-calculate_patch_root from gclient api.
-TODO(tandrii): remove this method completely. See http://crbug.com/605563.
-
-Maps Rietveld's "patch_project" to a path of directories relative to
-api.gclient.c.solutions[0].name which describe where to place the patch.
-
-Args:
-  extra_patch_project_roots: Dict mapping project names to relative roots.
-
-Returns:
-  Relative path or empty string if patch_project is not set or path for a
-  given is unknown.
 ### *recipe_modules* / [tryserver](/recipes/recipe_modules/tryserver)
 
-[DEPS](/recipes/recipe_modules/tryserver/__init__.py#5): [gerrit](#recipe_modules-gerrit), [git](#recipe_modules-git), [git\_cl](#recipe_modules-git_cl), [rietveld](#recipe_modules-rietveld), [recipe\_engine/context][recipe_engine/recipe_modules/context], [recipe\_engine/json][recipe_engine/recipe_modules/json], [recipe\_engine/path][recipe_engine/recipe_modules/path], [recipe\_engine/platform][recipe_engine/recipe_modules/platform], [recipe\_engine/properties][recipe_engine/recipe_modules/properties], [recipe\_engine/python][recipe_engine/recipe_modules/python], [recipe\_engine/raw\_io][recipe_engine/recipe_modules/raw_io], [recipe\_engine/step][recipe_engine/recipe_modules/step]
+[DEPS](/recipes/recipe_modules/tryserver/__init__.py#5): [gerrit](#recipe_modules-gerrit), [git](#recipe_modules-git), [git\_cl](#recipe_modules-git_cl), [recipe\_engine/buildbucket][recipe_engine/recipe_modules/buildbucket], [recipe\_engine/context][recipe_engine/recipe_modules/context], [recipe\_engine/json][recipe_engine/recipe_modules/json], [recipe\_engine/path][recipe_engine/recipe_modules/path], [recipe\_engine/platform][recipe_engine/recipe_modules/platform], [recipe\_engine/properties][recipe_engine/recipe_modules/properties], [recipe\_engine/python][recipe_engine/recipe_modules/python], [recipe\_engine/raw\_io][recipe_engine/recipe_modules/raw_io], [recipe\_engine/step][recipe_engine/recipe_modules/step]
 
-#### **class [TryserverApi](/recipes/recipe_modules/tryserver/api.py#12)([RecipeApi][recipe_engine/wkt/RecipeApi]):**
+#### **class [TryserverApi](/recipes/recipe_modules/tryserver/api.py#11)([RecipeApi][recipe_engine/wkt/RecipeApi]):**
 
-&mdash; **def [add\_failure\_reason](/recipes/recipe_modules/tryserver/api.py#146)(self, reason):**
+&mdash; **def [add\_failure\_reason](/recipes/recipe_modules/tryserver/api.py#206)(self, reason):**
 
 Records a more detailed reason why build is failing.
 
 The reason can be any JSON-serializable object.
 
-&emsp; **@property**<br>&mdash; **def [can\_apply\_issue](/recipes/recipe_modules/tryserver/api.py#23)(self):**
+&emsp; **@property**<br>&mdash; **def [gerrit\_change](/recipes/recipe_modules/tryserver/api.py#34)(self):**
 
-Returns true iff the properties exist to apply_issue from rietveld.
+Returns current gerrit change, if there is exactly one.
 
-&mdash; **def [get\_files\_affected\_by\_patch](/recipes/recipe_modules/tryserver/api.py#46)(self, patch_root=None, \*\*kwargs):**
+Returns a self.m.buildbucket.common_pb2.GerritChange or None.
+
+&emsp; **@property**<br>&mdash; **def [gerrit\_change\_fetch\_ref](/recipes/recipe_modules/tryserver/api.py#97)(self):**
+
+Returns gerrit patch ref, e.g. "refs/heads/45/12345/6, or None.
+
+Populated iff gerrit_change is populated.
+
+&emsp; **@property**<br>&mdash; **def [gerrit\_change\_repo\_url](/recipes/recipe_modules/tryserver/api.py#42)(self):**
+
+Returns canonical URL of the gitiles repo of the current Gerrit CL.
+
+Populated iff gerrit_change is populated.
+
+&emsp; **@property**<br>&mdash; **def [gerrit\_change\_target\_ref](/recipes/recipe_modules/tryserver/api.py#106)(self):**
+
+Returns gerrit change destination ref, e.g. "refs/heads/master".
+
+Populated iff gerrit_change is populated.
+
+&mdash; **def [get\_files\_affected\_by\_patch](/recipes/recipe_modules/tryserver/api.py#136)(self, patch_root, \*\*kwargs):**
 
 Returns list of paths to files affected by the patch.
 
 Argument:
   patch_root: path relative to api.path['root'], usually obtained from
-    api.gclient.calculate_patch_root(patch_project)
+    api.gclient.get_gerrit_patch_root().
 
 Returned paths will be relative to to patch_root.
 
-TODO(tandrii): remove this doc.
-Unless you use patch_root=None, in which case old behavior is used
-which returns paths relative to checkout aka solution[0].name.
-
-&mdash; **def [get\_footer](/recipes/recipe_modules/tryserver/api.py#209)(self, tag, patch_text=None):**
+&mdash; **def [get\_footer](/recipes/recipe_modules/tryserver/api.py#262)(self, tag, patch_text=None):**
 
 Gets a specific tag from a CL description
 
-&mdash; **def [get\_footers](/recipes/recipe_modules/tryserver/api.py#182)(self, patch_text=None):**
+&mdash; **def [get\_footers](/recipes/recipe_modules/tryserver/api.py#242)(self, patch_text=None):**
 
 Retrieves footers from the patch description.
 
 footers are machine readable tags embedded in commit messages. See
 git-footers documentation for more information.
 
-&emsp; **@property**<br>&mdash; **def [is\_gerrit\_issue](/recipes/recipe_modules/tryserver/api.py#30)(self):**
+&mdash; **def [initialize](/recipes/recipe_modules/tryserver/api.py#23)(self):**
+
+&emsp; **@property**<br>&mdash; **def [is\_gerrit\_issue](/recipes/recipe_modules/tryserver/api.py#120)(self):**
 
 Returns true iff the properties exist to match a Gerrit issue.
 
-&emsp; **@property**<br>&mdash; **def [is\_patch\_in\_git](/recipes/recipe_modules/tryserver/api.py#40)(self):**
+&emsp; **@property**<br>&mdash; **def [is\_patch\_in\_git](/recipes/recipe_modules/tryserver/api.py#130)(self):**
 
-&emsp; **@property**<br>&mdash; **def [is\_tryserver](/recipes/recipe_modules/tryserver/api.py#17)(self):**
+&emsp; **@property**<br>&mdash; **def [is\_tryserver](/recipes/recipe_modules/tryserver/api.py#115)(self):**
 
-Returns true iff we can apply_issue or patch.
+Returns true iff we have a change to check out.
 
-&mdash; **def [normalize\_footer\_name](/recipes/recipe_modules/tryserver/api.py#213)(self, footer):**
+&mdash; **def [normalize\_footer\_name](/recipes/recipe_modules/tryserver/api.py#266)(self, footer):**
 
-&mdash; **def [set\_compile\_failure\_tryjob\_result](/recipes/recipe_modules/tryserver/api.py#125)(self):**
+&mdash; **def [set\_compile\_failure\_tryjob\_result](/recipes/recipe_modules/tryserver/api.py#185)(self):**
 
 Mark the tryjob result as a compile failure.
 
-&emsp; **@contextlib.contextmanager**<br>&mdash; **def [set\_failure\_hash](/recipes/recipe_modules/tryserver/api.py#155)(self):**
+&emsp; **@contextlib.contextmanager**<br>&mdash; **def [set\_failure\_hash](/recipes/recipe_modules/tryserver/api.py#215)(self):**
 
 Context manager that sets a failure_hash build property on StepFailure.
 
@@ -723,7 +825,7 @@ for the same reason. For example, if a patch is bad (breaks something),
 we'd expect it to always break in the same way. Different failures
 for the same patch are usually a sign of flakiness.
 
-&mdash; **def [set\_invalid\_test\_results\_tryjob\_result](/recipes/recipe_modules/tryserver/api.py#137)(self):**
+&mdash; **def [set\_invalid\_test\_results\_tryjob\_result](/recipes/recipe_modules/tryserver/api.py#197)(self):**
 
 Mark the tryjob result as having invalid test results.
 
@@ -731,30 +833,56 @@ This means we run some tests, but the results were not valid
 (e.g. no list of specific test cases that failed, or too many
 tests failing, etc).
 
-&mdash; **def [set\_patch\_failure\_tryjob\_result](/recipes/recipe_modules/tryserver/api.py#121)(self):**
+&mdash; **def [set\_patch\_failure\_tryjob\_result](/recipes/recipe_modules/tryserver/api.py#181)(self):**
 
 Mark the tryjob result as failure to apply the patch.
 
-&mdash; **def [set\_subproject\_tag](/recipes/recipe_modules/tryserver/api.py#103)(self, subproject_tag):**
+&mdash; **def [set\_subproject\_tag](/recipes/recipe_modules/tryserver/api.py#163)(self, subproject_tag):**
 
 Adds a subproject tag to the build.
 
 This can be used to distinguish between builds that execute different steps
 depending on what was patched, e.g. blink vs. pure chromium patches.
 
-&mdash; **def [set\_test\_failure\_tryjob\_result](/recipes/recipe_modules/tryserver/api.py#129)(self):**
+&mdash; **def [set\_test\_failure\_tryjob\_result](/recipes/recipe_modules/tryserver/api.py#189)(self):**
 
 Mark the tryjob result as a test failure.
 
 This means we started running actual tests (not prerequisite steps
 like checkout or compile), and some of these tests have failed.
+### *recipe_modules* / [windows\_sdk](/recipes/recipe_modules/windows_sdk)
+
+[DEPS](/recipes/recipe_modules/windows_sdk/__init__.py#5): [recipe\_engine/cipd][recipe_engine/recipe_modules/cipd], [recipe\_engine/context][recipe_engine/recipe_modules/context], [recipe\_engine/json][recipe_engine/recipe_modules/json], [recipe\_engine/path][recipe_engine/recipe_modules/path], [recipe\_engine/platform][recipe_engine/recipe_modules/platform], [recipe\_engine/step][recipe_engine/recipe_modules/step]
+
+The `windows_sdk` module provides safe functions to access a hermetic
+Microsoft Visual Studio installation.
+
+Available only to Google-run bots.
+
+#### **class [WindowsSDKApi](/recipes/recipe_modules/windows_sdk/api.py#15)([RecipeApi][recipe_engine/wkt/RecipeApi]):**
+
+API for using Windows SDK distributed via CIPD.
+
+&emsp; **@contextmanager**<br>&mdash; **def [\_\_call\_\_](/recipes/recipe_modules/windows_sdk/api.py#23)(self, path=None, version=None, enabled=True):**
+
+Setups the SDK environment when enabled.
+
+Args:
+  path (path): Path to a directory where to install the SDK
+    (default is '[start_dir]/windows_sdk')
+  version (str): CIPD version of the SDK
+    (default is set via $infra/windows_sdk.version property)
+  enabled (bool): Whether the SDK should be used or not.
+
+Raises:
+    StepFailure or InfraFailure.
 ## Recipes
 
 ### *recipes* / [bot\_update:examples/full](/recipes/recipe_modules/bot_update/examples/full.py)
 
-[DEPS](/recipes/recipe_modules/bot_update/examples/full.py#5): [bot\_update](#recipe_modules-bot_update), [gclient](#recipe_modules-gclient), [gerrit](#recipe_modules-gerrit), [recipe\_engine/json][recipe_engine/recipe_modules/json], [recipe\_engine/path][recipe_engine/recipe_modules/path], [recipe\_engine/platform][recipe_engine/recipe_modules/platform], [recipe\_engine/properties][recipe_engine/recipe_modules/properties]
+[DEPS](/recipes/recipe_modules/bot_update/examples/full.py#5): [bot\_update](#recipe_modules-bot_update), [gclient](#recipe_modules-gclient), [gerrit](#recipe_modules-gerrit), [tryserver](#recipe_modules-tryserver), [recipe\_engine/buildbucket][recipe_engine/recipe_modules/buildbucket], [recipe\_engine/json][recipe_engine/recipe_modules/json], [recipe\_engine/path][recipe_engine/recipe_modules/path], [recipe\_engine/platform][recipe_engine/recipe_modules/platform], [recipe\_engine/properties][recipe_engine/recipe_modules/properties], [recipe\_engine/runtime][recipe_engine/recipe_modules/runtime]
 
-&mdash; **def [RunSteps](/recipes/recipe_modules/bot_update/examples/full.py#15)(api):**
+&mdash; **def [RunSteps](/recipes/recipe_modules/bot_update/examples/full.py#18)(api):**
 ### *recipes* / [cipd:examples/full](/recipes/recipe_modules/cipd/examples/full.py)
 
 [DEPS](/recipes/recipe_modules/cipd/examples/full.py#8): [cipd](#recipe_modules-cipd), [recipe\_engine/path][recipe_engine/recipe_modules/path], [recipe\_engine/platform][recipe_engine/recipe_modules/platform], [recipe\_engine/properties][recipe_engine/recipe_modules/properties], [recipe\_engine/step][recipe_engine/recipe_modules/step]
@@ -767,9 +895,9 @@ like checkout or compile), and some of these tests have failed.
 &mdash; **def [RunSteps](/recipes/recipe_modules/cipd/examples/platform_suffix.py#22)(api, arch_override, bits_override, expect_error):**
 ### *recipes* / [depot\_tools:examples/full](/recipes/recipe_modules/depot_tools/examples/full.py)
 
-[DEPS](/recipes/recipe_modules/depot_tools/examples/full.py#5): [depot\_tools](#recipe_modules-depot_tools), [recipe\_engine/path][recipe_engine/recipe_modules/path], [recipe\_engine/platform][recipe_engine/recipe_modules/platform], [recipe\_engine/step][recipe_engine/recipe_modules/step]
+[DEPS](/recipes/recipe_modules/depot_tools/examples/full.py#5): [depot\_tools](#recipe_modules-depot_tools), [recipe\_engine/path][recipe_engine/recipe_modules/path], [recipe\_engine/platform][recipe_engine/recipe_modules/platform], [recipe\_engine/runtime][recipe_engine/recipe_modules/runtime], [recipe\_engine/step][recipe_engine/recipe_modules/step]
 
-&mdash; **def [RunSteps](/recipes/recipe_modules/depot_tools/examples/full.py#13)(api):**
+&mdash; **def [RunSteps](/recipes/recipe_modules/depot_tools/examples/full.py#14)(api):**
 ### *recipes* / [fetch\_end\_to\_end\_test](/recipes/recipes/fetch_end_to_end_test.py)
 
 [DEPS](/recipes/recipes/fetch_end_to_end_test.py#5): [bot\_update](#recipe_modules-bot_update), [gclient](#recipe_modules-gclient), [recipe\_engine/context][recipe_engine/recipe_modules/context], [recipe\_engine/file][recipe_engine/recipe_modules/file], [recipe\_engine/path][recipe_engine/recipe_modules/path], [recipe\_engine/python][recipe_engine/recipe_modules/python], [recipe\_engine/step][recipe_engine/recipe_modules/step]
@@ -779,12 +907,12 @@ like checkout or compile), and some of these tests have failed.
 
 [DEPS](/recipes/recipe_modules/gclient/examples/full.py#5): [gclient](#recipe_modules-gclient), [recipe\_engine/context][recipe_engine/recipe_modules/context], [recipe\_engine/path][recipe_engine/recipe_modules/path], [recipe\_engine/properties][recipe_engine/recipe_modules/properties], [recipe\_engine/step][recipe_engine/recipe_modules/step]
 
-&mdash; **def [RunSteps](/recipes/recipe_modules/gclient/examples/full.py#45)(api):**
+&mdash; **def [RunSteps](/recipes/recipe_modules/gclient/examples/full.py#50)(api):**
 ### *recipes* / [gclient:tests/patch\_project](/recipes/recipe_modules/gclient/tests/patch_project.py)
 
-[DEPS](/recipes/recipe_modules/gclient/tests/patch_project.py#9): [gclient](#recipe_modules-gclient), [recipe\_engine/properties][recipe_engine/recipe_modules/properties]
+[DEPS](/recipes/recipe_modules/gclient/tests/patch_project.py#9): [gclient](#recipe_modules-gclient), [recipe\_engine/buildbucket][recipe_engine/recipe_modules/buildbucket], [recipe\_engine/properties][recipe_engine/recipe_modules/properties]
 
-&mdash; **def [RunSteps](/recipes/recipe_modules/gclient/tests/patch_project.py#21)(api, patch_project, patch_repository_url):**
+&mdash; **def [RunSteps](/recipes/recipe_modules/gclient/tests/patch_project.py#22)(api, patch_project, patch_repository_url):**
 ### *recipes* / [gerrit:examples/full](/recipes/recipe_modules/gerrit/examples/full.py)
 
 [DEPS](/recipes/recipe_modules/gerrit/examples/full.py#5): [gerrit](#recipe_modules-gerrit), [recipe\_engine/step][recipe_engine/recipe_modules/step]
@@ -802,9 +930,14 @@ like checkout or compile), and some of these tests have failed.
 &mdash; **def [RunSteps](/recipes/recipe_modules/git_cl/examples/full.py#17)(api):**
 ### *recipes* / [gitiles:examples/full](/recipes/recipe_modules/gitiles/examples/full.py)
 
-[DEPS](/recipes/recipe_modules/gitiles/examples/full.py#5): [gitiles](#recipe_modules-gitiles), [recipe\_engine/json][recipe_engine/recipe_modules/json], [recipe\_engine/properties][recipe_engine/recipe_modules/properties]
+[DEPS](/recipes/recipe_modules/gitiles/examples/full.py#5): [gitiles](#recipe_modules-gitiles), [recipe\_engine/json][recipe_engine/recipe_modules/json], [recipe\_engine/path][recipe_engine/recipe_modules/path], [recipe\_engine/properties][recipe_engine/recipe_modules/properties], [recipe\_engine/step][recipe_engine/recipe_modules/step]
 
-&mdash; **def [RunSteps](/recipes/recipe_modules/gitiles/examples/full.py#12)(api):**
+&mdash; **def [RunSteps](/recipes/recipe_modules/gitiles/examples/full.py#14)(api):**
+### *recipes* / [gitiles:tests/parse\_repo\_url](/recipes/recipe_modules/gitiles/tests/parse_repo_url.py)
+
+[DEPS](/recipes/recipe_modules/gitiles/tests/parse_repo_url.py#5): [gitiles](#recipe_modules-gitiles), [recipe\_engine/properties][recipe_engine/recipe_modules/properties], [recipe\_engine/step][recipe_engine/recipe_modules/step]
+
+&mdash; **def [RunSteps](/recipes/recipe_modules/gitiles/tests/parse_repo_url.py#12)(api):**
 ### *recipes* / [gsutil:examples/full](/recipes/recipe_modules/gsutil/examples/full.py)
 
 [DEPS](/recipes/recipe_modules/gsutil/examples/full.py#5): [gsutil](#recipe_modules-gsutil), [recipe\_engine/path][recipe_engine/recipe_modules/path]
@@ -817,31 +950,39 @@ Move things around in a loop!
 [DEPS](/recipes/recipe_modules/infra_paths/examples/full.py#7): [infra\_paths](#recipe_modules-infra_paths), [recipe\_engine/path][recipe_engine/recipe_modules/path], [recipe\_engine/platform][recipe_engine/recipe_modules/platform], [recipe\_engine/properties][recipe_engine/recipe_modules/properties], [recipe\_engine/step][recipe_engine/recipe_modules/step]
 
 &mdash; **def [RunSteps](/recipes/recipe_modules/infra_paths/examples/full.py#16)(api):**
+### *recipes* / [osx\_sdk:examples/full](/recipes/recipe_modules/osx_sdk/examples/full.py)
+
+[DEPS](/recipes/recipe_modules/osx_sdk/examples/full.py#5): [osx\_sdk](#recipe_modules-osx_sdk), [recipe\_engine/platform][recipe_engine/recipe_modules/platform], [recipe\_engine/properties][recipe_engine/recipe_modules/properties], [recipe\_engine/step][recipe_engine/recipe_modules/step]
+
+&mdash; **def [RunSteps](/recipes/recipe_modules/osx_sdk/examples/full.py#13)(api):**
 ### *recipes* / [presubmit:examples/full](/recipes/recipe_modules/presubmit/examples/full.py)
 
 [DEPS](/recipes/recipe_modules/presubmit/examples/full.py#5): [presubmit](#recipe_modules-presubmit)
 
 &mdash; **def [RunSteps](/recipes/recipe_modules/presubmit/examples/full.py#10)(api):**
-### *recipes* / [rietveld:examples/full](/recipes/recipe_modules/rietveld/examples/full.py)
-
-[DEPS](/recipes/recipe_modules/rietveld/examples/full.py#5): [infra\_paths](#recipe_modules-infra_paths), [rietveld](#recipe_modules-rietveld), [recipe\_engine/path][recipe_engine/recipe_modules/path], [recipe\_engine/properties][recipe_engine/recipe_modules/properties], [recipe\_engine/step][recipe_engine/recipe_modules/step]
-
-&mdash; **def [RunSteps](/recipes/recipe_modules/rietveld/examples/full.py#13)(api):**
 ### *recipes* / [tryserver:examples/full](/recipes/recipe_modules/tryserver/examples/full.py)
 
-[DEPS](/recipes/recipe_modules/tryserver/examples/full.py#5): [tryserver](#recipe_modules-tryserver), [recipe\_engine/json][recipe_engine/recipe_modules/json], [recipe\_engine/path][recipe_engine/recipe_modules/path], [recipe\_engine/platform][recipe_engine/recipe_modules/platform], [recipe\_engine/properties][recipe_engine/recipe_modules/properties], [recipe\_engine/python][recipe_engine/recipe_modules/python], [recipe\_engine/raw\_io][recipe_engine/recipe_modules/raw_io], [recipe\_engine/step][recipe_engine/recipe_modules/step]
+[DEPS](/recipes/recipe_modules/tryserver/examples/full.py#5): [gerrit](#recipe_modules-gerrit), [tryserver](#recipe_modules-tryserver), [recipe\_engine/buildbucket][recipe_engine/recipe_modules/buildbucket], [recipe\_engine/json][recipe_engine/recipe_modules/json], [recipe\_engine/path][recipe_engine/recipe_modules/path], [recipe\_engine/platform][recipe_engine/recipe_modules/platform], [recipe\_engine/properties][recipe_engine/recipe_modules/properties], [recipe\_engine/python][recipe_engine/recipe_modules/python], [recipe\_engine/raw\_io][recipe_engine/recipe_modules/raw_io], [recipe\_engine/step][recipe_engine/recipe_modules/step]
 
-&mdash; **def [RunSteps](/recipes/recipe_modules/tryserver/examples/full.py#17)(api):**
+&mdash; **def [RunSteps](/recipes/recipe_modules/tryserver/examples/full.py#19)(api):**
+### *recipes* / [windows\_sdk:examples/full](/recipes/recipe_modules/windows_sdk/examples/full.py)
 
-[recipe_engine/recipe_modules/context]: https://chromium.googlesource.com/infra/luci/recipes-py.git/+/0f093b369402a86363de15a3fae0c98eab4c8e00/README.recipes.md#recipe_modules-context
-[recipe_engine/recipe_modules/file]: https://chromium.googlesource.com/infra/luci/recipes-py.git/+/0f093b369402a86363de15a3fae0c98eab4c8e00/README.recipes.md#recipe_modules-file
-[recipe_engine/recipe_modules/json]: https://chromium.googlesource.com/infra/luci/recipes-py.git/+/0f093b369402a86363de15a3fae0c98eab4c8e00/README.recipes.md#recipe_modules-json
-[recipe_engine/recipe_modules/path]: https://chromium.googlesource.com/infra/luci/recipes-py.git/+/0f093b369402a86363de15a3fae0c98eab4c8e00/README.recipes.md#recipe_modules-path
-[recipe_engine/recipe_modules/platform]: https://chromium.googlesource.com/infra/luci/recipes-py.git/+/0f093b369402a86363de15a3fae0c98eab4c8e00/README.recipes.md#recipe_modules-platform
-[recipe_engine/recipe_modules/properties]: https://chromium.googlesource.com/infra/luci/recipes-py.git/+/0f093b369402a86363de15a3fae0c98eab4c8e00/README.recipes.md#recipe_modules-properties
-[recipe_engine/recipe_modules/python]: https://chromium.googlesource.com/infra/luci/recipes-py.git/+/0f093b369402a86363de15a3fae0c98eab4c8e00/README.recipes.md#recipe_modules-python
-[recipe_engine/recipe_modules/raw_io]: https://chromium.googlesource.com/infra/luci/recipes-py.git/+/0f093b369402a86363de15a3fae0c98eab4c8e00/README.recipes.md#recipe_modules-raw_io
-[recipe_engine/recipe_modules/source_manifest]: https://chromium.googlesource.com/infra/luci/recipes-py.git/+/0f093b369402a86363de15a3fae0c98eab4c8e00/README.recipes.md#recipe_modules-source_manifest
-[recipe_engine/recipe_modules/step]: https://chromium.googlesource.com/infra/luci/recipes-py.git/+/0f093b369402a86363de15a3fae0c98eab4c8e00/README.recipes.md#recipe_modules-step
-[recipe_engine/recipe_modules/url]: https://chromium.googlesource.com/infra/luci/recipes-py.git/+/0f093b369402a86363de15a3fae0c98eab4c8e00/README.recipes.md#recipe_modules-url
-[recipe_engine/wkt/RecipeApi]: https://chromium.googlesource.com/infra/luci/recipes-py.git/+/0f093b369402a86363de15a3fae0c98eab4c8e00/recipe_engine/recipe_api.py#992
+[DEPS](/recipes/recipe_modules/windows_sdk/examples/full.py#5): [windows\_sdk](#recipe_modules-windows_sdk), [recipe\_engine/platform][recipe_engine/recipe_modules/platform], [recipe\_engine/properties][recipe_engine/recipe_modules/properties], [recipe\_engine/step][recipe_engine/recipe_modules/step]
+
+&mdash; **def [RunSteps](/recipes/recipe_modules/windows_sdk/examples/full.py#13)(api):**
+
+[recipe_engine/recipe_modules/buildbucket]: https://chromium.googlesource.com/infra/luci/recipes-py.git/+/d5fd7cc14d7f0a82d1358617f1ec94c4417ec85e/README.recipes.md#recipe_modules-buildbucket
+[recipe_engine/recipe_modules/cipd]: https://chromium.googlesource.com/infra/luci/recipes-py.git/+/d5fd7cc14d7f0a82d1358617f1ec94c4417ec85e/README.recipes.md#recipe_modules-cipd
+[recipe_engine/recipe_modules/context]: https://chromium.googlesource.com/infra/luci/recipes-py.git/+/d5fd7cc14d7f0a82d1358617f1ec94c4417ec85e/README.recipes.md#recipe_modules-context
+[recipe_engine/recipe_modules/file]: https://chromium.googlesource.com/infra/luci/recipes-py.git/+/d5fd7cc14d7f0a82d1358617f1ec94c4417ec85e/README.recipes.md#recipe_modules-file
+[recipe_engine/recipe_modules/json]: https://chromium.googlesource.com/infra/luci/recipes-py.git/+/d5fd7cc14d7f0a82d1358617f1ec94c4417ec85e/README.recipes.md#recipe_modules-json
+[recipe_engine/recipe_modules/path]: https://chromium.googlesource.com/infra/luci/recipes-py.git/+/d5fd7cc14d7f0a82d1358617f1ec94c4417ec85e/README.recipes.md#recipe_modules-path
+[recipe_engine/recipe_modules/platform]: https://chromium.googlesource.com/infra/luci/recipes-py.git/+/d5fd7cc14d7f0a82d1358617f1ec94c4417ec85e/README.recipes.md#recipe_modules-platform
+[recipe_engine/recipe_modules/properties]: https://chromium.googlesource.com/infra/luci/recipes-py.git/+/d5fd7cc14d7f0a82d1358617f1ec94c4417ec85e/README.recipes.md#recipe_modules-properties
+[recipe_engine/recipe_modules/python]: https://chromium.googlesource.com/infra/luci/recipes-py.git/+/d5fd7cc14d7f0a82d1358617f1ec94c4417ec85e/README.recipes.md#recipe_modules-python
+[recipe_engine/recipe_modules/raw_io]: https://chromium.googlesource.com/infra/luci/recipes-py.git/+/d5fd7cc14d7f0a82d1358617f1ec94c4417ec85e/README.recipes.md#recipe_modules-raw_io
+[recipe_engine/recipe_modules/runtime]: https://chromium.googlesource.com/infra/luci/recipes-py.git/+/d5fd7cc14d7f0a82d1358617f1ec94c4417ec85e/README.recipes.md#recipe_modules-runtime
+[recipe_engine/recipe_modules/source_manifest]: https://chromium.googlesource.com/infra/luci/recipes-py.git/+/d5fd7cc14d7f0a82d1358617f1ec94c4417ec85e/README.recipes.md#recipe_modules-source_manifest
+[recipe_engine/recipe_modules/step]: https://chromium.googlesource.com/infra/luci/recipes-py.git/+/d5fd7cc14d7f0a82d1358617f1ec94c4417ec85e/README.recipes.md#recipe_modules-step
+[recipe_engine/recipe_modules/url]: https://chromium.googlesource.com/infra/luci/recipes-py.git/+/d5fd7cc14d7f0a82d1358617f1ec94c4417ec85e/README.recipes.md#recipe_modules-url
+[recipe_engine/wkt/RecipeApi]: https://chromium.googlesource.com/infra/luci/recipes-py.git/+/d5fd7cc14d7f0a82d1358617f1ec94c4417ec85e/recipe_engine/recipe_api.py#1012

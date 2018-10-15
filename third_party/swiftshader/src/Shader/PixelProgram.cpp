@@ -27,7 +27,7 @@ namespace sw
 
 	void PixelProgram::setBuiltins(Int &x, Int &y, Float4(&z)[4], Float4 &w)
 	{
-		if(shader->getVersion() >= 0x0300)
+		if(shader->getShaderModel() >= 0x0300)
 		{
 			if(shader->isVPosDeclared())
 			{
@@ -51,8 +51,12 @@ namespace sw
 
 			if(shader->isVFaceDeclared())
 			{
-				Float4 area = *Pointer<Float>(primitive + OFFSET(Primitive, area));
-				Float4 face = booleanFaceRegister ? Float4(As<Float4>(CmpNLT(area, Float4(0.0f)))) : area;
+				Float4 face = *Pointer<Float>(primitive + OFFSET(Primitive, area));
+
+				if(booleanFaceRegister)
+				{
+					face = As<Float4>(state.frontFaceCCW ? CmpNLT(face, Float4(0.0f)) : CmpLT(face, Float4(0.0f)));
+				}
 
 				vFace.x = face;
 				vFace.y = face;
@@ -366,14 +370,23 @@ namespace sw
 							if(dst.z) pDst.z = r[dst.index].z;
 							if(dst.w) pDst.w = r[dst.index].w;
 						}
+						else if(!dst.rel.dynamic)
+						{
+							Int a = dst.index + relativeAddress(dst.rel);
+
+							if(dst.x) pDst.x = r[a].x;
+							if(dst.y) pDst.y = r[a].y;
+							if(dst.z) pDst.z = r[a].z;
+							if(dst.w) pDst.w = r[a].w;
+						}
 						else
 						{
-							Int a = relativeAddress(dst);
+							Int4 a = dst.index + dynamicAddress(dst.rel);
 
-							if(dst.x) pDst.x = r[dst.index + a].x;
-							if(dst.y) pDst.y = r[dst.index + a].y;
-							if(dst.z) pDst.z = r[dst.index + a].z;
-							if(dst.w) pDst.w = r[dst.index + a].w;
+							if(dst.x) pDst.x = r[a].x;
+							if(dst.y) pDst.y = r[a].y;
+							if(dst.z) pDst.z = r[a].z;
+							if(dst.w) pDst.w = r[a].w;
 						}
 						break;
 					case Shader::PARAMETER_COLOROUT:
@@ -384,9 +397,18 @@ namespace sw
 							if(dst.z) pDst.z = oC[dst.index].z;
 							if(dst.w) pDst.w = oC[dst.index].w;
 						}
+						else if(!dst.rel.dynamic)
+						{
+							Int a = dst.index + relativeAddress(dst.rel);
+
+							if(dst.x) pDst.x = oC[a].x;
+							if(dst.y) pDst.y = oC[a].y;
+							if(dst.z) pDst.z = oC[a].z;
+							if(dst.w) pDst.w = oC[a].w;
+						}
 						else
 						{
-							Int a = relativeAddress(dst) + dst.index;
+							Int4 a = dst.index + dynamicAddress(dst.rel);
 
 							if(dst.x) pDst.x = oC[a].x;
 							if(dst.y) pDst.y = oC[a].y;
@@ -460,14 +482,23 @@ namespace sw
 						if(dst.z) r[dst.index].z = d.z;
 						if(dst.w) r[dst.index].w = d.w;
 					}
+					else if(!dst.rel.dynamic)
+					{
+						Int a = dst.index + relativeAddress(dst.rel);
+
+						if(dst.x) r[a].x = d.x;
+						if(dst.y) r[a].y = d.y;
+						if(dst.z) r[a].z = d.z;
+						if(dst.w) r[a].w = d.w;
+					}
 					else
 					{
-						Int a = relativeAddress(dst);
+						Int4 a = dst.index + dynamicAddress(dst.rel);
 
-						if(dst.x) r[dst.index + a].x = d.x;
-						if(dst.y) r[dst.index + a].y = d.y;
-						if(dst.z) r[dst.index + a].z = d.z;
-						if(dst.w) r[dst.index + a].w = d.w;
+						if(dst.x) r.scatter_x(a, d.x);
+						if(dst.y) r.scatter_y(a, d.y);
+						if(dst.z) r.scatter_z(a, d.z);
+						if(dst.w) r.scatter_w(a, d.w);
 					}
 					break;
 				case Shader::PARAMETER_COLOROUT:
@@ -475,20 +506,30 @@ namespace sw
 					{
 						broadcastColor0 = (dst.index == 0) && broadcastColor0;
 
-						if(dst.x) { oC[dst.index].x = d.x; }
-						if(dst.y) { oC[dst.index].y = d.y; }
-						if(dst.z) { oC[dst.index].z = d.z; }
-						if(dst.w) { oC[dst.index].w = d.w; }
+						if(dst.x) oC[dst.index].x = d.x;
+						if(dst.y) oC[dst.index].y = d.y;
+						if(dst.z) oC[dst.index].z = d.z;
+						if(dst.w) oC[dst.index].w = d.w;
+					}
+					else if(!dst.rel.dynamic)
+					{
+						broadcastColor0 = false;
+						Int a = dst.index + relativeAddress(dst.rel);
+
+						if(dst.x) oC[a].x = d.x;
+						if(dst.y) oC[a].y = d.y;
+						if(dst.z) oC[a].z = d.z;
+						if(dst.w) oC[a].w = d.w;
 					}
 					else
 					{
 						broadcastColor0 = false;
-						Int a = relativeAddress(dst) + dst.index;
+						Int4 a = dst.index + dynamicAddress(dst.rel);
 
-						if(dst.x) { oC[a].x = d.x; }
-						if(dst.y) { oC[a].y = d.y; }
-						if(dst.z) { oC[a].z = d.z; }
-						if(dst.w) { oC[a].w = d.w; }
+						if(dst.x) oC.scatter_x(a, d.x);
+						if(dst.y) oC.scatter_y(a, d.y);
+						if(dst.z) oC.scatter_z(a, d.z);
+						if(dst.w) oC.scatter_w(a, d.w);
 					}
 					break;
 				case Shader::PARAMETER_PREDICATE:
@@ -525,12 +566,17 @@ namespace sw
 				c[i] = oC[i];
 			}
 		}
+
+		clampColor(c);
+
+		if(state.depthOverride)
+		{
+			oDepth = Min(Max(oDepth, Float4(0.0f)), Float4(1.0f));
+		}
 	}
 
 	Bool PixelProgram::alphaTest(Int cMask[4])
 	{
-		clampColor(c);
-
 		if(!state.alphaTestActive())
 		{
 			return true;
@@ -632,6 +678,7 @@ namespace sw
 			case FORMAT_G32R32F:
 			case FORMAT_X32B32G32R32F:
 			case FORMAT_A32B32G32R32F:
+			case FORMAT_X32B32G32R32F_UNSIGNED:
 			case FORMAT_R32I:
 			case FORMAT_G32R32I:
 			case FORMAT_A32B32G32R32I:
@@ -771,6 +818,12 @@ namespace sw
 			case FORMAT_G8R8UI:
 			case FORMAT_A8B8G8R8UI:
 				break;
+			case FORMAT_X32B32G32R32F_UNSIGNED:
+				oC[index].x = Max(oC[index].x, Float4(0.0f));
+				oC[index].y = Max(oC[index].y, Float4(0.0f));
+				oC[index].z = Max(oC[index].z, Float4(0.0f));
+				oC[index].w = Max(oC[index].w, Float4(0.0f));
+				break;
 			default:
 				ASSERT(false);
 			}
@@ -814,25 +867,27 @@ namespace sw
 			{
 				reg = r[i];
 			}
+			else if(!src.rel.dynamic)
+			{
+				reg = r[i + relativeAddress(src.rel, src.bufferIndex)];
+			}
 			else
 			{
-				Int a = relativeAddress(src, src.bufferIndex);
-
-				reg = r[i + a];
+				reg = r[i + dynamicAddress(src.rel)];
 			}
 			break;
 		case Shader::PARAMETER_INPUT:
+			if(src.rel.type == Shader::PARAMETER_VOID)   // Not relative
 			{
-				if(src.rel.type == Shader::PARAMETER_VOID)   // Not relative
-				{
-					reg = v[i];
-				}
-				else
-				{
-					Int a = relativeAddress(src, src.bufferIndex);
-
-					reg = v[i + a];
-				}
+				reg = v[i];
+			}
+			else if(!src.rel.dynamic)
+			{
+				reg = v[i + relativeAddress(src.rel, src.bufferIndex)];
+			}
+			else
+			{
+				reg = v[i + dynamicAddress(src.rel)];
 			}
 			break;
 		case Shader::PARAMETER_CONST:
@@ -871,11 +926,13 @@ namespace sw
 			{
 				reg = oC[i];
 			}
+			else if(!src.rel.dynamic)
+			{
+				reg = oC[i + relativeAddress(src.rel, src.bufferIndex)];
+			}
 			else
 			{
-				Int a = relativeAddress(src, src.bufferIndex);
-
-				reg = oC[i + a];
+				reg = oC[i + dynamicAddress(src.rel)];
 			}
 			break;
 		case Shader::PARAMETER_DEPTHOUT:
@@ -983,20 +1040,9 @@ namespace sw
 				}
 			}
 		}
-		else if(src.rel.type == Shader::PARAMETER_LOOP)
+		else if(!src.rel.dynamic || src.rel.type == Shader::PARAMETER_LOOP)
 		{
-			Int loopCounter = aL[loopDepth];
-
-			c.x = c.y = c.z = c.w = *Pointer<Float4>(uniformAddress(src.bufferIndex, i, loopCounter));
-
-			c.x = c.x.xxxx;
-			c.y = c.y.yyyy;
-			c.z = c.z.zzzz;
-			c.w = c.w.wwww;
-		}
-		else
-		{
-			Int a = relativeAddress(src, src.bufferIndex);
+			Int a = relativeAddress(src.rel, src.bufferIndex);
 
 			c.x = c.y = c.z = c.w = *Pointer<Float4>(uniformAddress(src.bufferIndex, i, a));
 
@@ -1005,37 +1051,99 @@ namespace sw
 			c.z = c.z.zzzz;
 			c.w = c.w.wwww;
 		}
+		else
+		{
+			int component = src.rel.swizzle & 0x03;
+			Float4 a;
+
+			switch(src.rel.type)
+			{
+			case Shader::PARAMETER_TEMP:     a = r[src.rel.index][component]; break;
+			case Shader::PARAMETER_INPUT:    a = v[src.rel.index][component]; break;
+			case Shader::PARAMETER_OUTPUT:   a = oC[src.rel.index][component]; break;
+			case Shader::PARAMETER_CONST:    a = *Pointer<Float>(uniformAddress(src.bufferIndex, src.rel.index) + component * sizeof(float)); break;
+			case Shader::PARAMETER_MISCTYPE:
+				switch(src.rel.index)
+				{
+				case Shader::VPosIndex:  a = vPos.x;  break;
+				case Shader::VFaceIndex: a = vFace.x; break;
+				default: ASSERT(false);
+				}
+				break;
+			default: ASSERT(false);
+			}
+
+			Int4 index = Int4(i) + As<Int4>(a) * Int4(src.rel.scale);
+
+			index = Min(As<UInt4>(index), UInt4(VERTEX_UNIFORM_VECTORS));   // Clamp to constant register range, c[VERTEX_UNIFORM_VECTORS] = {0, 0, 0, 0}
+
+			Int index0 = Extract(index, 0);
+			Int index1 = Extract(index, 1);
+			Int index2 = Extract(index, 2);
+			Int index3 = Extract(index, 3);
+
+			c.x = *Pointer<Float4>(uniformAddress(src.bufferIndex, 0, index0), 16);
+			c.y = *Pointer<Float4>(uniformAddress(src.bufferIndex, 0, index1), 16);
+			c.z = *Pointer<Float4>(uniformAddress(src.bufferIndex, 0, index2), 16);
+			c.w = *Pointer<Float4>(uniformAddress(src.bufferIndex, 0, index3), 16);
+
+			transpose4x4(c.x, c.y, c.z, c.w);
+		}
 
 		return c;
 	}
 
-	Int PixelProgram::relativeAddress(const Shader::Parameter &var, int bufferIndex)
+	Int PixelProgram::relativeAddress(const Shader::Relative &rel, int bufferIndex)
 	{
-		ASSERT(var.rel.deterministic);
+		ASSERT(!rel.dynamic);
 
-		if(var.rel.type == Shader::PARAMETER_TEMP)
+		if(rel.type == Shader::PARAMETER_TEMP)
 		{
-			return As<Int>(Extract(r[var.rel.index].x, 0)) * var.rel.scale;
+			return As<Int>(Extract(r[rel.index].x, 0)) * rel.scale;
 		}
-		else if(var.rel.type == Shader::PARAMETER_INPUT)
+		else if(rel.type == Shader::PARAMETER_INPUT)
 		{
-			return As<Int>(Extract(v[var.rel.index].x, 0)) * var.rel.scale;
+			return As<Int>(Extract(v[rel.index].x, 0)) * rel.scale;
 		}
-		else if(var.rel.type == Shader::PARAMETER_OUTPUT)
+		else if(rel.type == Shader::PARAMETER_OUTPUT)
 		{
-			return As<Int>(Extract(oC[var.rel.index].x, 0)) * var.rel.scale;
+			return As<Int>(Extract(oC[rel.index].x, 0)) * rel.scale;
 		}
-		else if(var.rel.type == Shader::PARAMETER_CONST)
+		else if(rel.type == Shader::PARAMETER_CONST)
 		{
-			return *Pointer<Int>(uniformAddress(bufferIndex, var.rel.index)) * var.rel.scale;
+			return *Pointer<Int>(uniformAddress(bufferIndex, rel.index)) * rel.scale;
 		}
-		else if(var.rel.type == Shader::PARAMETER_LOOP)
+		else if(rel.type == Shader::PARAMETER_LOOP)
 		{
 			return aL[loopDepth];
 		}
 		else ASSERT(false);
 
 		return 0;
+	}
+
+	Int4 PixelProgram::dynamicAddress(const Shader::Relative &rel)
+	{
+		int component = rel.swizzle & 0x03;
+		Float4 a;
+
+		switch(rel.type)
+		{
+		case Shader::PARAMETER_TEMP:     a = r[rel.index][component]; break;
+		case Shader::PARAMETER_INPUT:    a = v[rel.index][component]; break;
+		case Shader::PARAMETER_OUTPUT:   a = oC[rel.index][component]; break;
+		case Shader::PARAMETER_MISCTYPE:
+			switch(rel.index)
+			{
+			case Shader::VPosIndex:  a = vPos.x;  break;
+			case Shader::VFaceIndex: a = vFace.x; break;
+			default: ASSERT(false);
+			}
+			break;
+		default: ASSERT(false);
+		}
+
+		return As<Int4>(a) * Int4(rel.scale);
 	}
 
 	Float4 PixelProgram::linearToSRGB(const Float4 &x)   // Approximates x^(1.0/2.2)
@@ -1135,7 +1243,7 @@ namespace sw
 	{
 		dst = sampleTexture(src1, src0, bias, (src0), (src0), (src0), Bias);
 	}
-	
+
 	void PixelProgram::TEXOFFSETBIAS(Vector4f &dst, Vector4f &src0, const Src &src1, Vector4f &offset, Float4 &bias)
 	{
 		dst = sampleTexture(src1, src0, bias, (src0), (src0), offset, {Bias, Offset});
@@ -1239,25 +1347,7 @@ namespace sw
 
 	void PixelProgram::BREAK()
 	{
-		BasicBlock *deadBlock = Nucleus::createBasicBlock();
-		BasicBlock *endBlock = loopRepEndBlock[loopRepDepth - 1];
-
-		if(breakDepth == 0)
-		{
-			enableIndex = enableIndex - breakDepth;
-			Nucleus::createBr(endBlock);
-		}
-		else
-		{
-			enableBreak = enableBreak & ~enableStack[enableIndex];
-			Bool allBreak = SignMask(enableBreak) == 0x0;
-
-			enableIndex = enableIndex - breakDepth;
-			branch(allBreak, endBlock, deadBlock);
-		}
-
-		Nucleus::setInsertBlock(deadBlock);
-		enableIndex = enableIndex + breakDepth;
+		enableBreak = enableBreak & ~enableStack[enableIndex];
 	}
 
 	void PixelProgram::BREAKC(Vector4f &src0, Vector4f &src1, Control control)
@@ -1295,17 +1385,7 @@ namespace sw
 	{
 		condition &= enableStack[enableIndex];
 
-		BasicBlock *continueBlock = Nucleus::createBasicBlock();
-		BasicBlock *endBlock = loopRepEndBlock[loopRepDepth - 1];
-
 		enableBreak = enableBreak & ~condition;
-		Bool allBreak = SignMask(enableBreak) == 0x0;
-
-		enableIndex = enableIndex - breakDepth;
-		branch(allBreak, endBlock, continueBlock);
-
-		Nucleus::setInsertBlock(continueBlock);
-		enableIndex = enableIndex + breakDepth;
 	}
 
 	void PixelProgram::CONTINUE()
@@ -1449,7 +1529,6 @@ namespace sw
 
 		if(isConditionalIf[ifDepth])
 		{
-			breakDepth--;
 			enableIndex--;
 		}
 	}
@@ -1495,7 +1574,6 @@ namespace sw
 		Nucleus::setInsertBlock(endBlock);
 
 		enableIndex--;
-		enableBreak = Int4(0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF);
 		whileTest = false;
 	}
 
@@ -1505,11 +1583,8 @@ namespace sw
 
 		BasicBlock *endBlock = loopRepEndBlock[loopRepDepth];
 
-		Nucleus::createBr(loopRepEndBlock[loopRepDepth]);
+		Nucleus::createBr(endBlock);
 		Nucleus::setInsertBlock(endBlock);
-
-		enableIndex--;
-		enableBreak = Int4(0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF);
 	}
 
 	void PixelProgram::IF(const Src &src)
@@ -1600,7 +1675,6 @@ namespace sw
 		ifFalseBlock[ifDepth] = falseBlock;
 
 		ifDepth++;
-		breakDepth++;
 	}
 
 	void PixelProgram::LABEL(int labelIndex)
@@ -1644,7 +1718,6 @@ namespace sw
 		iteration[loopDepth] = iteration[loopDepth] - 1;   // FIXME: --
 
 		loopRepDepth++;
-		breakDepth = 0;
 	}
 
 	void PixelProgram::REP(const Src &integerRegister)
@@ -1671,7 +1744,6 @@ namespace sw
 		iteration[loopDepth] = iteration[loopDepth] - 1;   // FIXME: --
 
 		loopRepDepth++;
-		breakDepth = 0;
 	}
 
 	void PixelProgram::WHILE(const Src &temporaryRegister)
@@ -1688,7 +1760,7 @@ namespace sw
 		Int4 restoreBreak = enableBreak;
 		Int4 restoreContinue = enableContinue;
 
-		// FIXME: jump(testBlock)
+		// TODO: jump(testBlock)
 		Nucleus::createBr(testBlock);
 		Nucleus::setInsertBlock(testBlock);
 		enableContinue = restoreContinue;
@@ -1697,6 +1769,7 @@ namespace sw
 		Int4 condition = As<Int4>(src.x);
 		condition &= enableStack[enableIndex - 1];
 		if(shader->containsLeaveInstruction()) condition &= enableLeave;
+		if(shader->containsBreakInstruction()) condition &= enableBreak;
 		enableStack[enableIndex] = condition;
 
 		Bool notAllFalse = SignMask(condition) != 0;
@@ -1708,21 +1781,25 @@ namespace sw
 		Nucleus::setInsertBlock(loopBlock);
 
 		loopRepDepth++;
-		breakDepth = 0;
 	}
 
 	void PixelProgram::SWITCH()
 	{
-		enableIndex++;
-		enableStack[enableIndex] = Int4(0xFFFFFFFF);
-
 		BasicBlock *endBlock = Nucleus::createBasicBlock();
 
 		loopRepTestBlock[loopRepDepth] = nullptr;
 		loopRepEndBlock[loopRepDepth] = endBlock;
 
+		Int4 restoreBreak = enableBreak;
+
+		BasicBlock *currentBlock = Nucleus::getInsertBlock();
+
+		Nucleus::setInsertBlock(endBlock);
+		enableBreak = restoreBreak;
+
+		Nucleus::setInsertBlock(currentBlock);
+
 		loopRepDepth++;
-		breakDepth = 0;
 	}
 
 	void PixelProgram::RET()

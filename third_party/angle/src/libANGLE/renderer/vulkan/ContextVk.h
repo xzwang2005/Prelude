@@ -13,13 +13,14 @@
 #include <vulkan/vulkan.h>
 
 #include "libANGLE/renderer/ContextImpl.h"
-#include "libANGLE/renderer/vulkan/renderervk_utils.h"
+#include "libANGLE/renderer/vulkan/vk_helpers.h"
 
 namespace rx
 {
+struct FeaturesVk;
 class RendererVk;
 
-class ContextVk : public ContextImpl, public ResourceVk
+class ContextVk : public ContextImpl, public vk::Context
 {
   public:
     ContextVk(const gl::ContextState &state, RendererVk *renderer);
@@ -35,38 +36,38 @@ class ContextVk : public ContextImpl, public ResourceVk
 
     // Drawing methods.
     gl::Error drawArrays(const gl::Context *context,
-                         GLenum mode,
+                         gl::PrimitiveMode mode,
                          GLint first,
                          GLsizei count) override;
     gl::Error drawArraysInstanced(const gl::Context *context,
-                                  GLenum mode,
+                                  gl::PrimitiveMode mode,
                                   GLint first,
                                   GLsizei count,
                                   GLsizei instanceCount) override;
 
     gl::Error drawElements(const gl::Context *context,
-                           GLenum mode,
+                           gl::PrimitiveMode mode,
                            GLsizei count,
                            GLenum type,
                            const void *indices) override;
     gl::Error drawElementsInstanced(const gl::Context *context,
-                                    GLenum mode,
+                                    gl::PrimitiveMode mode,
                                     GLsizei count,
                                     GLenum type,
                                     const void *indices,
                                     GLsizei instances) override;
     gl::Error drawRangeElements(const gl::Context *context,
-                                GLenum mode,
+                                gl::PrimitiveMode mode,
                                 GLuint start,
                                 GLuint end,
                                 GLsizei count,
                                 GLenum type,
                                 const void *indices) override;
     gl::Error drawArraysIndirect(const gl::Context *context,
-                                 GLenum mode,
+                                 gl::PrimitiveMode mode,
                                  const void *indirect) override;
     gl::Error drawElementsIndirect(const gl::Context *context,
-                                   GLenum mode,
+                                   gl::PrimitiveMode mode,
                                    GLenum type,
                                    const void *indirect) override;
 
@@ -86,18 +87,21 @@ class ContextVk : public ContextImpl, public ResourceVk
     void pushDebugGroup(GLenum source, GLuint id, GLsizei length, const char *message) override;
     void popDebugGroup() override;
 
+    bool isViewportFlipEnabledForDrawFBO() const;
+    bool isViewportFlipEnabledForReadFBO() const;
+
     // State sync with dirty bits.
-    void syncState(const gl::Context *context, const gl::State::DirtyBits &dirtyBits) override;
+    gl::Error syncState(const gl::Context *context, const gl::State::DirtyBits &dirtyBits) override;
 
     // Disjoint timer queries
     GLint getGPUDisjoint() override;
     GLint64 getTimestamp() override;
 
     // Context switching
-    void onMakeCurrent(const gl::Context *context) override;
+    gl::Error onMakeCurrent(const gl::Context *context) override;
 
     // Native capabilities, unmodified by gl::Context.
-    const gl::Caps &getNativeCaps() const override;
+    gl::Caps getNativeCaps() const override;
     const gl::TextureCapsMap &getNativeTextureCaps() const override;
     const gl::Extensions &getNativeExtensions() const override;
     const gl::Limitations &getNativeLimitations() const override;
@@ -114,7 +118,7 @@ class ContextVk : public ContextImpl, public ResourceVk
     TextureImpl *createTexture(const gl::TextureState &state) override;
 
     // Renderbuffer creation
-    RenderbufferImpl *createRenderbuffer() override;
+    RenderbufferImpl *createRenderbuffer(const gl::RenderbufferState &state) override;
 
     // Buffer creation
     BufferImpl *createBuffer(const gl::BufferState &state) override;
@@ -123,7 +127,7 @@ class ContextVk : public ContextImpl, public ResourceVk
     VertexArrayImpl *createVertexArray(const gl::VertexArrayState &state) override;
 
     // Query and Fence creation
-    QueryImpl *createQuery(GLenum type) override;
+    QueryImpl *createQuery(gl::QueryType type) override;
     FenceNVImpl *createFenceNV() override;
     SyncImpl *createSync() override;
 
@@ -140,51 +144,168 @@ class ContextVk : public ContextImpl, public ResourceVk
     // Path object creation
     std::vector<PathImpl *> createPaths(GLsizei) override;
 
-    VkDevice getDevice() const;
-    vk::Error getStartedCommandBuffer(vk::CommandBufferAndState **commandBufferOut);
-    vk::Error submitCommands(vk::CommandBufferAndState *commandBuffer);
-
-    RendererVk *getRenderer() { return mRenderer; }
-
-    // TODO(jmadill): Use pipeline cache.
-    void invalidateCurrentPipeline();
-
     gl::Error dispatchCompute(const gl::Context *context,
                               GLuint numGroupsX,
                               GLuint numGroupsY,
                               GLuint numGroupsZ) override;
+    gl::Error dispatchComputeIndirect(const gl::Context *context, GLintptr indirect) override;
 
-    vk::DescriptorPool *getDescriptorPool();
+    gl::Error memoryBarrier(const gl::Context *context, GLbitfield barriers) override;
+    gl::Error memoryBarrierByRegion(const gl::Context *context, GLbitfield barriers) override;
+
+    VkDevice getDevice() const;
+    const FeaturesVk &getFeatures() const;
+
+    void invalidateCurrentPipeline();
+    void invalidateDefaultAttribute(size_t attribIndex);
+    void invalidateDefaultAttributes(const gl::AttributesMask &dirtyMask);
+
+    vk::DynamicDescriptorPool *getDynamicDescriptorPool(uint32_t descriptorSetIndex);
+
+    const VkClearValue &getClearColorValue() const;
+    const VkClearValue &getClearDepthStencilValue() const;
+    VkColorComponentFlags getClearColorMask() const;
+    const VkRect2D &getScissor() const { return mPipelineDesc->getScissor(); }
+    gl::Error getIncompleteTexture(const gl::Context *context,
+                                   gl::TextureType type,
+                                   gl::Texture **textureOut);
+    void updateColorMask(const gl::BlendState &blendState);
+
+    void handleError(VkResult errorCode, const char *file, unsigned int line) override;
+    const gl::ActiveTextureArray<TextureVk *> &getActiveTextures() const;
+
+    void setIndexBufferDirty() { mDirtyBits.set(DIRTY_BIT_INDEX_BUFFER); }
 
   private:
-    gl::Error initPipeline(const gl::Context *context);
-    gl::Error setupDraw(const gl::Context *context, GLenum mode, DrawType drawType);
+    // Dirty bits.
+    enum DirtyBitType : size_t
+    {
+        DIRTY_BIT_DEFAULT_ATTRIBS,
+        DIRTY_BIT_PIPELINE,
+        DIRTY_BIT_TEXTURES,
+        DIRTY_BIT_VERTEX_BUFFERS,
+        DIRTY_BIT_INDEX_BUFFER,
+        DIRTY_BIT_DRIVER_UNIFORMS,
+        DIRTY_BIT_DESCRIPTOR_SETS,
+        DIRTY_BIT_MAX,
+    };
 
-    RendererVk *mRenderer;
-    vk::Pipeline mCurrentPipeline;
-    GLenum mCurrentDrawMode;
+    using DirtyBits = angle::BitSet<DIRTY_BIT_MAX>;
 
-    // Keep CreateInfo structures cached so that we can quickly update them when creating
-    // updated pipelines. When we move to a pipeline cache, we will want to use a more compact
-    // structure that we can use to query the pipeline cache in the Renderer.
-    // TODO(jmadill): Update this when we move to a pipeline cache.
-    VkPipelineShaderStageCreateInfo mCurrentShaderStages[2];
-    VkPipelineVertexInputStateCreateInfo mCurrentVertexInputState;
-    VkPipelineInputAssemblyStateCreateInfo mCurrentInputAssemblyState;
-    VkViewport mCurrentViewportVk;
-    VkRect2D mCurrentScissorVk;
-    VkPipelineViewportStateCreateInfo mCurrentViewportState;
-    VkPipelineRasterizationStateCreateInfo mCurrentRasterState;
-    VkPipelineMultisampleStateCreateInfo mCurrentMultisampleState;
-    VkPipelineColorBlendAttachmentState mCurrentBlendAttachmentState;
-    VkPipelineColorBlendStateCreateInfo mCurrentBlendState;
-    VkGraphicsPipelineCreateInfo mCurrentPipelineInfo;
+    using DirtyBitHandler = angle::Result (ContextVk::*)(const gl::Context *,
+                                                         const gl::DrawCallParams &,
+                                                         vk::CommandBuffer *commandBuffer);
 
-    // The descriptor pool is externally sychronized, so cannot be accessed from different threads
-    // simulataneously. Hence, we keep it in the ContextVk instead of the RendererVk.
-    vk::DescriptorPool mDescriptorPool;
+    std::array<DirtyBitHandler, DIRTY_BIT_MAX> mDirtyBitHandlers;
+
+    angle::Result initPipeline(const gl::DrawCallParams &drawCallParams);
+    angle::Result setupDraw(const gl::Context *context,
+                            const gl::DrawCallParams &drawCallParams,
+                            DirtyBits dirtyBitMask,
+                            vk::CommandBuffer **commandBufferOut);
+    angle::Result setupIndexedDraw(const gl::Context *context,
+                                   const gl::DrawCallParams &drawCallParams,
+                                   vk::CommandBuffer **commandBufferOut);
+    angle::Result setupLineLoopDraw(const gl::Context *context,
+                                    const gl::DrawCallParams &drawCallParams,
+                                    vk::CommandBuffer **commandBufferOut);
+
+    void updateScissor(const gl::State &glState) const;
+    void updateFlipViewportDrawFramebuffer(const gl::State &glState);
+    void updateFlipViewportReadFramebuffer(const gl::State &glState);
+
+    angle::Result updateActiveTextures(const gl::Context *context);
+    angle::Result updateDefaultAttribute(size_t attribIndex);
+
+    void invalidateCurrentTextures();
+
+    angle::Result handleDirtyDefaultAttribs(const gl::Context *context,
+                                            const gl::DrawCallParams &drawCallParams,
+                                            vk::CommandBuffer *commandBuffer);
+    angle::Result handleDirtyPipeline(const gl::Context *context,
+                                      const gl::DrawCallParams &drawCallParams,
+                                      vk::CommandBuffer *commandBuffer);
+    angle::Result handleDirtyTextures(const gl::Context *context,
+                                      const gl::DrawCallParams &drawCallParams,
+                                      vk::CommandBuffer *commandBuffer);
+    angle::Result handleDirtyVertexBuffers(const gl::Context *context,
+                                           const gl::DrawCallParams &drawCallParams,
+                                           vk::CommandBuffer *commandBuffer);
+    angle::Result handleDirtyIndexBuffer(const gl::Context *context,
+                                         const gl::DrawCallParams &drawCallParams,
+                                         vk::CommandBuffer *commandBuffer);
+    angle::Result handleDirtyDriverUniforms(const gl::Context *context,
+                                            const gl::DrawCallParams &drawCallParams,
+                                            vk::CommandBuffer *commandBuffer);
+    angle::Result handleDirtyDescriptorSets(const gl::Context *context,
+                                            const gl::DrawCallParams &drawCallParams,
+                                            vk::CommandBuffer *commandBuffer);
+
+    vk::PipelineAndSerial *mCurrentPipeline;
+    gl::PrimitiveMode mCurrentDrawMode;
+
+    // Keep a cached pipeline description structure that can be used to query the pipeline cache.
+    // Kept in a pointer so allocations can be aligned, and structs can be portably packed.
+    std::unique_ptr<vk::PipelineDesc> mPipelineDesc;
+
+    // The descriptor pools are externally sychronized, so cannot be accessed from different
+    // threads simultaneously. Hence, we keep them in the ContextVk instead of the RendererVk.
+    vk::DescriptorSetLayoutArray<vk::DynamicDescriptorPool> mDynamicDescriptorPools;
+
+    // Dirty bits.
+    DirtyBits mDirtyBits;
+    DirtyBits mNonIndexedDirtyBitsMask;
+    DirtyBits mIndexedDirtyBitsMask;
+    DirtyBits mNewCommandBufferDirtyBits;
+
+    // Cached back-end objects.
+    VertexArrayVk *mVertexArray;
+    FramebufferVk *mDrawFramebuffer;
+    ProgramVk *mProgram;
+
+    // The offset we had the last time we bound the index buffer.
+    const GLvoid *mLastIndexBufferOffset;
+    GLenum mCurrentDrawElementsType;
+
+    // Cached clear value/mask for color and depth/stencil.
+    VkClearValue mClearColorValue;
+    VkClearValue mClearDepthStencilValue;
+    VkColorComponentFlags mClearColorMask;
+
+    IncompleteTextureSet mIncompleteTextures;
+
+    // If the current surface bound to this context wants to have all rendering flipped vertically.
+    // Updated on calls to onMakeCurrent.
+    bool mFlipYForCurrentSurface;
+    bool mFlipViewportForDrawFramebuffer;
+    bool mFlipViewportForReadFramebuffer;
+
+    // For shader uniforms such as gl_DepthRange and the viewport size.
+    struct DriverUniforms
+    {
+        std::array<float, 4> viewport;
+
+        float halfRenderAreaHeight;
+        float viewportYScale;
+        float invViewportYScale;
+        float padding;
+
+        // We'll use x, y, z for near / far / diff respectively.
+        std::array<float, 4> depthRange;
+    };
+
+    vk::DynamicBuffer mDriverUniformsBuffer;
+    VkDescriptorSet mDriverUniformsDescriptorSet;
+    vk::BindingPointer<vk::DescriptorSetLayout> mDriverUniformsSetLayout;
+
+    // This cache should also probably include the texture index (shader location) and array
+    // index (also in the shader). This info is used in the descriptor update step.
+    gl::ActiveTextureArray<TextureVk *> mActiveTextures;
+
+    // "Current Value" aka default vertex attribute state.
+    gl::AttributesMask mDirtyDefaultAttribsMask;
+    gl::AttribArray<vk::DynamicBuffer> mDefaultAttribBuffers;
 };
-
 }  // namespace rx
 
 #endif  // LIBANGLE_RENDERER_VULKAN_CONTEXTVK_H_

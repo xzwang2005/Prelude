@@ -14,7 +14,7 @@
 #include "base/compiler_specific.h"
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
-#include "base/message_loop/message_loop.h"
+#include "base/memory/weak_ptr.h"
 #include "base/observer_list.h"
 #include "cc/base/region.h"
 #include "cc/layers/content_layer_client.h"
@@ -22,7 +22,6 @@
 #include "cc/layers/surface_layer.h"
 #include "cc/layers/texture_layer_client.h"
 #include "components/viz/common/resources/transferable_resource.h"
-#include "components/viz/common/surfaces/sequence_surface_reference_factory.h"
 #include "third_party/skia/include/core/SkColor.h"
 #include "ui/compositor/compositor.h"
 #include "ui/compositor/layer_animation_delegate.h"
@@ -187,11 +186,6 @@ class COMPOSITOR_EXPORT Layer : public LayerAnimationDelegate,
   // the combined opacity of the parent.
   float GetCombinedOpacity() const;
 
-  // The layer temperature value between 0.0f and 1.0f, where a value of 0.0f
-  // is least warm (which is the default), and a value of 1.0f is most warm.
-  float layer_temperature() const { return layer_temperature_; }
-  void SetLayerTemperature(float value);
-
   // Returns the target color temperature if animator is running, or the current
   // temperature otherwise.
   float GetTargetTemperature() const;
@@ -298,8 +292,8 @@ class COMPOSITOR_EXPORT Layer : public LayerAnimationDelegate,
   const std::string& name() const { return name_; }
   void set_name(const std::string& name) { name_ = name; }
 
-  // Set new TransferableResource for this layer. Note that |resource| may hold
-  // a handle for a shared memory resource or a gpu texture.
+  // Set new TransferableResource for this layer. This method only supports
+  // a gpu-backed |resource|.
   void SetTransferableResource(
       const viz::TransferableResource& resource,
       std::unique_ptr<viz::SingleReleaseCallback> release_callback,
@@ -308,11 +302,13 @@ class COMPOSITOR_EXPORT Layer : public LayerAnimationDelegate,
   void SetTextureFlipped(bool flipped);
   bool TextureFlipped() const;
 
+  // TODO(fsamuel): Update this comment.
   // Begins showing content from a surface with a particular ID.
-  void SetShowPrimarySurface(
-      const viz::SurfaceId& surface_id,
-      const gfx::Size& frame_size_in_dip,
-      scoped_refptr<viz::SurfaceReferenceFactory> surface_ref);
+  void SetShowPrimarySurface(const viz::SurfaceId& surface_id,
+                             const gfx::Size& frame_size_in_dip,
+                             SkColor default_background_color,
+                             const cc::DeadlinePolicy& deadline_policy,
+                             bool stretch_content_to_fill_bounds);
 
   // In the event that the primary surface is not yet available in the
   // display compositor, the fallback surface will be used.
@@ -324,7 +320,7 @@ class COMPOSITOR_EXPORT Layer : public LayerAnimationDelegate,
   // Returns the fallback SurfaceId set by SetFallbackSurfaceId.
   const viz::SurfaceId* GetFallbackSurfaceId() const;
 
-  bool has_external_content() {
+  bool has_external_content() const {
     return texture_layer_.get() || surface_layer_.get();
   }
 
@@ -399,16 +395,16 @@ class COMPOSITOR_EXPORT Layer : public LayerAnimationDelegate,
 
   // TextureLayerClient implementation.
   bool PrepareTransferableResource(
+      cc::SharedBitmapIdRegistrar* bitmap_registar,
       viz::TransferableResource* resource,
       std::unique_ptr<viz::SingleReleaseCallback>* release_callback) override;
 
   float device_scale_factor() const { return device_scale_factor_; }
 
   // LayerClient implementation.
-  std::unique_ptr<base::trace_event::ConvertableToTraceFormat> TakeDebugInfo(
+  std::unique_ptr<base::trace_event::TracedValue> TakeDebugInfo(
       cc::Layer* layer) override;
-  void didUpdateMainThreadScrollingReasons() override;
-  void didChangeScrollbarsHidden(bool) override;
+  void DidChangeScrollbarsHiddenIfOverlay(bool) override;
 
   // Triggers a call to SwitchToLayer.
   void SwitchCCLayerForTest();
@@ -443,6 +439,15 @@ class COMPOSITOR_EXPORT Layer : public LayerAnimationDelegate,
   // while attached to the main layer before the main layer is deleted.
   const Layer* layer_mask_back_link() const { return layer_mask_back_link_; }
 
+  // If |surface_layer_| exists, return whether the contents should stretch to
+  // fill the bounds of |this|. Defaults to false.
+  bool StretchContentToFillBounds() const;
+
+  // If |surface_layer_| exists, update the size. The updated size is necessary
+  // for proper scaling if the embedder is resized and the |surface_layer_| is
+  // set to stretch to fill bounds.
+  void SetSurfaceSize(gfx::Size surface_size_in_dip);
+
  private:
   friend class LayerOwner;
   class LayerMirror;
@@ -472,8 +477,6 @@ class COMPOSITOR_EXPORT Layer : public LayerAnimationDelegate,
                                  PropertyChangeReason reason) override;
   void SetColorFromAnimation(SkColor color,
                              PropertyChangeReason reason) override;
-  void SetTemperatureFromAnimation(float temperature,
-                                   PropertyChangeReason reason) override;
   void ScheduleDrawForAnimation() override;
   const gfx::Rect& GetBoundsForAnimation() const override;
   gfx::Transform GetTransformForAnimation() const override;
@@ -482,7 +485,6 @@ class COMPOSITOR_EXPORT Layer : public LayerAnimationDelegate,
   float GetBrightnessForAnimation() const override;
   float GetGrayscaleForAnimation() const override;
   SkColor GetColorForAnimation() const override;
-  float GetTemperatureFromAnimation() const override;
   float GetDeviceScaleFactor() const override;
   ui::Layer* GetLayer() override;
   cc::Layer* GetCcLayer() const override;
@@ -555,14 +557,6 @@ class COMPOSITOR_EXPORT Layer : public LayerAnimationDelegate,
   bool layer_inverted_;
   float layer_blur_sigma_;
 
-  // The global color temperature value (0.0f ~ 1.0f). Used to calculate the
-  // layer blue and green colors scales. 0.0f is least warm (default), and 1.0f
-  // is most warm.
-  float layer_temperature_;
-  // The calculated layer blue and green color scales (0.0f ~ 1.0f).
-  float layer_blue_scale_;
-  float layer_green_scale_;
-
   // The associated mask layer with this layer.
   Layer* layer_mask_;
   // The back link from the mask layer to it's associated masked layer.
@@ -584,7 +578,7 @@ class COMPOSITOR_EXPORT Layer : public LayerAnimationDelegate,
 
   LayerDelegate* delegate_;
 
-  base::ObserverList<LayerObserver> observer_list_;
+  base::ObserverList<LayerObserver>::Unchecked observer_list_;
 
   LayerOwner* owner_;
 
@@ -592,7 +586,7 @@ class COMPOSITOR_EXPORT Layer : public LayerAnimationDelegate,
 
   // Ownership of the layer is held through one of the strongly typed layer
   // pointers, depending on which sort of layer this is.
-  scoped_refptr<cc::Layer> content_layer_;
+  scoped_refptr<cc::PictureLayer> content_layer_;
   scoped_refptr<cc::NinePatchLayer> nine_patch_layer_;
   scoped_refptr<cc::TextureLayer> texture_layer_;
   scoped_refptr<cc::SolidColorLayer> solid_color_layer_;
@@ -633,6 +627,8 @@ class COMPOSITOR_EXPORT Layer : public LayerAnimationDelegate,
   // If the value == 0, means we should not perform trilinear filtering on the
   // layer.
   unsigned trilinear_filtering_request_;
+
+  base::WeakPtrFactory<Layer> weak_ptr_factory_;
 
   DISALLOW_COPY_AND_ASSIGN(Layer);
 };

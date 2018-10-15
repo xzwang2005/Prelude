@@ -32,7 +32,7 @@ class SaveCountingCanvas : public SkNoDrawCanvas {
 class MockCanvas : public SkNoDrawCanvas {
  public:
   MockCanvas();
-  ~MockCanvas();
+  ~MockCanvas() override;
 
   SaveLayerStrategy getSaveLayerStrategy(const SaveLayerRec& rec) override {
     OnSaveLayer();
@@ -64,6 +64,8 @@ class MockCanvas : public SkNoDrawCanvas {
                void(const SkRect&, SkScalar, SkScalar, bool, const SkPaint&));
   MOCK_METHOD1(didConcat, void(const SkMatrix&));
   MOCK_METHOD2(onDrawOval, void(const SkRect&, const SkPaint&));
+  MOCK_METHOD2(onCustomCallback, void(SkCanvas*, uint32_t));
+  MOCK_METHOD0(getGrContext, GrContext*());
 };
 
 }  // namespace cc

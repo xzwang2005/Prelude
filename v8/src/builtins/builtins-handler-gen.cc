@@ -23,23 +23,12 @@ TF_BUILTIN(LoadIC_StringWrapperLength, CodeStubAssembler) {
   Return(LoadStringLengthAsSmi(string));
 }
 
-TF_BUILTIN(KeyedLoadIC_Miss, CodeStubAssembler) {
-  Node* receiver = Parameter(Descriptor::kReceiver);
-  Node* name = Parameter(Descriptor::kName);
-  Node* slot = Parameter(Descriptor::kSlot);
-  Node* vector = Parameter(Descriptor::kVector);
-  Node* context = Parameter(Descriptor::kContext);
-
-  TailCallRuntime(Runtime::kKeyedLoadIC_Miss, context, receiver, name, slot,
-                  vector);
-}
-
 TF_BUILTIN(KeyedLoadIC_Slow, CodeStubAssembler) {
   Node* receiver = Parameter(Descriptor::kReceiver);
   Node* name = Parameter(Descriptor::kName);
   Node* context = Parameter(Descriptor::kContext);
 
-  TailCallRuntime(Runtime::kKeyedGetProperty, context, receiver, name);
+  TailCallRuntime(Runtime::kGetProperty, context, receiver, name);
 }
 
 void Builtins::Generate_KeyedStoreIC_Megamorphic(
@@ -50,18 +39,6 @@ void Builtins::Generate_KeyedStoreIC_Megamorphic(
 void Builtins::Generate_StoreIC_Uninitialized(
     compiler::CodeAssemblerState* state) {
   StoreICUninitializedGenerator::Generate(state);
-}
-
-TF_BUILTIN(KeyedStoreIC_Miss, CodeStubAssembler) {
-  Node* receiver = Parameter(Descriptor::kReceiver);
-  Node* name = Parameter(Descriptor::kName);
-  Node* value = Parameter(Descriptor::kValue);
-  Node* slot = Parameter(Descriptor::kSlot);
-  Node* vector = Parameter(Descriptor::kVector);
-  Node* context = Parameter(Descriptor::kContext);
-
-  TailCallRuntime(Runtime::kKeyedStoreIC_Miss, context, value, slot, vector,
-                  receiver, name);
 }
 
 TF_BUILTIN(KeyedStoreIC_Slow, CodeStubAssembler) {
@@ -78,13 +55,13 @@ TF_BUILTIN(KeyedStoreIC_Slow, CodeStubAssembler) {
                   receiver, name);
 }
 
-TF_BUILTIN(LoadGlobalIC_Miss, CodeStubAssembler) {
-  Node* name = Parameter(Descriptor::kName);
-  Node* slot = Parameter(Descriptor::kSlot);
-  Node* vector = Parameter(Descriptor::kVector);
+TF_BUILTIN(StoreInArrayLiteralIC_Slow, CodeStubAssembler) {
+  Node* array = Parameter(Descriptor::kReceiver);
+  Node* index = Parameter(Descriptor::kName);
+  Node* value = Parameter(Descriptor::kValue);
   Node* context = Parameter(Descriptor::kContext);
-
-  TailCallRuntime(Runtime::kLoadGlobalIC_Miss, context, name, slot, vector);
+  TailCallRuntime(Runtime::kStoreInArrayLiteralIC_Slow, context, value, array,
+                  index);
 }
 
 TF_BUILTIN(LoadGlobalIC_Slow, CodeStubAssembler) {
@@ -110,34 +87,12 @@ TF_BUILTIN(LoadIC_FunctionPrototype, CodeStubAssembler) {
   TailCallRuntime(Runtime::kLoadIC_Miss, context, receiver, name, slot, vector);
 }
 
-TF_BUILTIN(LoadIC_Miss, CodeStubAssembler) {
-  Node* receiver = Parameter(Descriptor::kReceiver);
-  Node* name = Parameter(Descriptor::kName);
-  Node* slot = Parameter(Descriptor::kSlot);
-  Node* vector = Parameter(Descriptor::kVector);
-  Node* context = Parameter(Descriptor::kContext);
-
-  TailCallRuntime(Runtime::kLoadIC_Miss, context, receiver, name, slot, vector);
-}
-
 TF_BUILTIN(LoadIC_Slow, CodeStubAssembler) {
   Node* receiver = Parameter(Descriptor::kReceiver);
   Node* name = Parameter(Descriptor::kName);
   Node* context = Parameter(Descriptor::kContext);
 
   TailCallRuntime(Runtime::kGetProperty, context, receiver, name);
-}
-
-TF_BUILTIN(StoreIC_Miss, CodeStubAssembler) {
-  Node* receiver = Parameter(Descriptor::kReceiver);
-  Node* name = Parameter(Descriptor::kName);
-  Node* value = Parameter(Descriptor::kValue);
-  Node* slot = Parameter(Descriptor::kSlot);
-  Node* vector = Parameter(Descriptor::kVector);
-  Node* context = Parameter(Descriptor::kContext);
-
-  TailCallRuntime(Runtime::kStoreIC_Miss, context, value, slot, vector,
-                  receiver, name);
 }
 
 TF_BUILTIN(StoreGlobalIC_Slow, CodeStubAssembler) {

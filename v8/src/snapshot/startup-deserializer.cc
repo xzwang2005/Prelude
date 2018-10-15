@@ -6,6 +6,8 @@
 
 #include "src/api.h"
 #include "src/assembler-inl.h"
+#include "src/code-stubs.h"
+#include "src/code-tracer.h"
 #include "src/heap/heap-inl.h"
 #include "src/snapshot/builtin-deserializer.h"
 #include "src/snapshot/snapshot.h"
@@ -20,7 +22,7 @@ void StartupDeserializer::DeserializeInto(Isolate* isolate) {
 
   if (!DefaultDeserializerAllocator::ReserveSpace(this,
                                                   &builtin_deserializer)) {
-    V8::FatalProcessOutOfMemory("StartupDeserializer");
+    V8::FatalProcessOutOfMemory(isolate, "StartupDeserializer");
   }
 
   // No active threads.
@@ -37,31 +39,31 @@ void StartupDeserializer::DeserializeInto(Isolate* isolate) {
     isolate->heap()->IterateSmiRoots(this);
     isolate->heap()->IterateStrongRoots(this, VISIT_ONLY_STRONG);
     isolate->heap()->RepairFreeListsAfterDeserialization();
-    isolate->heap()->IterateWeakRoots(this, VISIT_ALL);
+    isolate->heap()->IterateWeakRoots(this, VISIT_FOR_SERIALIZATION);
     DeserializeDeferredObjects();
     RestoreExternalReferenceRedirectors(accessor_infos());
     RestoreExternalReferenceRedirectors(call_handler_infos());
 
     // Deserialize eager builtins from the builtin snapshot. Note that deferred
     // objects must have been deserialized prior to this.
-    builtin_deserializer.DeserializeEagerBuiltinsAndHandlers();
+    builtin_deserializer.DeserializeEagerBuiltins();
 
     // Flush the instruction cache for the entire code-space. Must happen after
     // builtins deserialization.
     FlushICacheForNewIsolate();
   }
 
-  isolate->heap()->set_native_contexts_list(isolate->heap()->undefined_value());
+  isolate->heap()->set_native_contexts_list(
+      ReadOnlyRoots(isolate).undefined_value());
   // The allocation site list is build during root iteration, but if no sites
   // were encountered then it needs to be initialized to undefined.
   if (isolate->heap()->allocation_sites_list() == Smi::kZero) {
     isolate->heap()->set_allocation_sites_list(
-        isolate->heap()->undefined_value());
+        ReadOnlyRoots(isolate).undefined_value());
   }
 
   // Issue code events for newly deserialized code objects.
   LOG_CODE_EVENT(isolate, LogCodeObjects());
-  LOG_CODE_EVENT(isolate, LogBytecodeHandlers());
   LOG_CODE_EVENT(isolate, LogCompiledFunctions());
 
   isolate->builtins()->MarkInitialized();
@@ -78,8 +80,7 @@ void StartupDeserializer::FlushICacheForNewIsolate() {
   DCHECK(!deserializing_user_code());
   // The entire isolate is newly deserialized. Simply flush all code pages.
   for (Page* p : *isolate()->heap()->code_space()) {
-    Assembler::FlushICache(isolate(), p->area_start(),
-                           p->area_end() - p->area_start());
+    Assembler::FlushICache(p->area_start(), p->area_end() - p->area_start());
   }
 }
 
@@ -96,7 +97,13 @@ void StartupDeserializer::PrintDisassembledCodeObjects() {
     for (HeapObject* obj = iterator.next(); obj != nullptr;
          obj = iterator.next()) {
       if (obj->IsCode()) {
-        Code::cast(obj)->Disassemble(nullptr, os);
+        Code* code = Code::cast(obj);
+        // Printing of builtins and bytecode handlers is handled during their
+        // deserialization.
+        if (code->kind() != Code::BUILTIN &&
+            code->kind() != Code::BYTECODE_HANDLER) {
+          code->PrintBuiltinCode(isolate(), nullptr);
+        }
       }
     }
   }

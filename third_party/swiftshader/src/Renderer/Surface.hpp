@@ -23,30 +23,42 @@ namespace sw
 {
 	class Resource;
 
-	struct Rect
+	template <typename T> struct RectT
 	{
-		Rect() {}
-		Rect(int x0i, int y0i, int x1i, int y1i) : x0(x0i), y0(y0i), x1(x1i), y1(y1i) {}
+		RectT() {}
+		RectT(T x0i, T y0i, T x1i, T y1i) : x0(x0i), y0(y0i), x1(x1i), y1(y1i) {}
 
-		void clip(int minX, int minY, int maxX, int maxY);
+		void clip(T minX, T minY, T maxX, T maxY)
+		{
+			x0 = clamp(x0, minX, maxX);
+			y0 = clamp(y0, minY, maxY);
+			x1 = clamp(x1, minX, maxX);
+			y1 = clamp(y1, minY, maxY);
+		}
 
-		int width() const  { return x1 - x0; }
-		int height() const { return y1 - y0; }
+		T width() const  { return x1 - x0; }
+		T height() const { return y1 - y0; }
 
-		int x0;   // Inclusive
-		int y0;   // Inclusive
-		int x1;   // Exclusive
-		int y1;   // Exclusive
+		T x0;   // Inclusive
+		T y0;   // Inclusive
+		T x1;   // Exclusive
+		T y1;   // Exclusive
 	};
 
-	struct SliceRect : public Rect
+	typedef RectT<int> Rect;
+	typedef RectT<float> RectF;
+
+	template<typename T> struct SliceRectT : public RectT<T>
 	{
-		SliceRect() : slice(0) {}
-		SliceRect(const Rect& rect) : Rect(rect), slice(0) {}
-		SliceRect(const Rect& rect, int s) : Rect(rect), slice(s) {}
-		SliceRect(int x0, int y0, int x1, int y1, int s) : Rect(x0, y0, x1, y1), slice(s) {}
+		SliceRectT() : slice(0) {}
+		SliceRectT(const RectT<T>& rect) : RectT<T>(rect), slice(0) {}
+		SliceRectT(const RectT<T>& rect, int s) : RectT<T>(rect), slice(s) {}
+		SliceRectT(T x0, T y0, T x1, T y1, int s) : RectT<T>(x0, y0, x1, y1), slice(s) {}
 		int slice;
 	};
+
+	typedef SliceRectT<int> SliceRect;
+	typedef SliceRectT<float> SliceRectF;
 
 	enum Format : unsigned char
 	{
@@ -55,8 +67,8 @@ namespace sw
 		FORMAT_A8,
 		FORMAT_R8I,
 		FORMAT_R8UI,
-		FORMAT_R8I_SNORM,
-		FORMAT_R8, // UI_SNORM
+		FORMAT_R8_SNORM,
+		FORMAT_R8,
 		FORMAT_R16I,
 		FORMAT_R16UI,
 		FORMAT_R32I,
@@ -73,12 +85,12 @@ namespace sw
 		FORMAT_A8R8G8B8,
 		FORMAT_X8B8G8R8I,
 		FORMAT_X8B8G8R8UI,
-		FORMAT_X8B8G8R8I_SNORM,
-		FORMAT_X8B8G8R8, // UI_SNORM
+		FORMAT_X8B8G8R8_SNORM,
+		FORMAT_X8B8G8R8,
 		FORMAT_A8B8G8R8I,
 		FORMAT_A8B8G8R8UI,
-		FORMAT_A8B8G8R8I_SNORM,
-		FORMAT_A8B8G8R8, // UI_SNORM
+		FORMAT_A8B8G8R8_SNORM,
+		FORMAT_A8B8G8R8,
 		FORMAT_SRGB8_X8,
 		FORMAT_SRGB8_A8,
 		FORMAT_X1R5G5B5,
@@ -86,16 +98,17 @@ namespace sw
 		FORMAT_R5G5B5A1,
 		FORMAT_G8R8I,
 		FORMAT_G8R8UI,
-		FORMAT_G8R8I_SNORM,
-		FORMAT_G8R8, // UI_SNORM
-		FORMAT_G16R16, // D3D format
+		FORMAT_G8R8_SNORM,
+		FORMAT_G8R8,
+		FORMAT_G16R16,
 		FORMAT_G16R16I,
 		FORMAT_G16R16UI,
 		FORMAT_G32R32I,
 		FORMAT_G32R32UI,
 		FORMAT_A2R10G10B10,
 		FORMAT_A2B10G10R10,
-		FORMAT_A16B16G16R16, // D3D format
+		FORMAT_A2B10G10R10UI,
+		FORMAT_A16B16G16R16,
 		FORMAT_X16B16G16R16I,
 		FORMAT_X16B16G16R16UI,
 		FORMAT_A16B16G16R16I,
@@ -157,13 +170,16 @@ namespace sw
 		FORMAT_R16F,
 		FORMAT_G16R16F,
 		FORMAT_B16G16R16F,
+		FORMAT_X16B16G16R16F,
 		FORMAT_A16B16G16R16F,
+		FORMAT_X16B16G16R16F_UNSIGNED,
 		FORMAT_A32F,
 		FORMAT_R32F,
 		FORMAT_G32R32F,
 		FORMAT_B32G32R32F,
 		FORMAT_X32B32G32R32F,
 		FORMAT_A32B32G32R32F,
+		FORMAT_X32B32G32R32F_UNSIGNED,
 		// Bump map formats
 		FORMAT_V8U8,
 		FORMAT_L6V5U5,
@@ -189,9 +205,12 @@ namespace sw
 		FORMAT_D24S8,
 		FORMAT_D24FS8,
 		FORMAT_D32F,                 // Quad layout
+		FORMAT_D32FS8,               // Quad layout
 		FORMAT_D32F_COMPLEMENTARY,   // Quad layout, 1 - z
+		FORMAT_D32FS8_COMPLEMENTARY, // Quad layout, 1 - z
 		FORMAT_D32F_LOCKABLE,        // Linear layout
 		FORMAT_D32FS8_TEXTURE,       // Linear layout, no PCF
+		FORMAT_D32F_SHADOW,          // Linear layout, PCF
 		FORMAT_D32FS8_SHADOW,        // Linear layout, PCF
 		FORMAT_DF24S8,
 		FORMAT_DF16S8,
@@ -214,7 +233,8 @@ namespace sw
 		LOCK_READONLY,
 		LOCK_WRITEONLY,
 		LOCK_READWRITE,
-		LOCK_DISCARD
+		LOCK_DISCARD,
+		LOCK_UPDATE   // Write access which doesn't dirty the buffer, because it's being updated with the sibling's data.
 	};
 
 	class [[clang::lto_visibility_public]] Surface
@@ -222,7 +242,9 @@ namespace sw
 	private:
 		struct Buffer
 		{
-		public:
+			friend Surface;
+
+		private:
 			void write(int x, int y, int z, const Color<float> &color);
 			void write(int x, int y, const Color<float> &color);
 			void write(void *element, const Color<float> &color);
@@ -230,7 +252,7 @@ namespace sw
 			Color<float> read(int x, int y) const;
 			Color<float> read(void *element) const;
 			Color<float> sample(float x, float y, float z) const;
-			Color<float> sample(float x, float y) const;
+			Color<float> sample(float x, float y, int layer) const;
 
 			void *lockRect(int x, int y, int z, Lock lock);
 			void unlockRect();
@@ -239,12 +261,15 @@ namespace sw
 			int width;
 			int height;
 			int depth;
+			short border;
+			short samples;
+
 			int bytes;
 			int pitchB;
 			int pitchP;
 			int sliceB;
 			int sliceP;
-			int border;
+
 			Format format;
 			AtomicInt lock;
 
@@ -253,11 +278,11 @@ namespace sw
 
 	protected:
 		Surface(int width, int height, int depth, Format format, void *pixels, int pitch, int slice);
-		Surface(Resource *texture, int width, int height, int depth, int border, Format format, bool lockable, bool renderTarget, int pitchP = 0);
+		Surface(Resource *texture, int width, int height, int depth, int border, int samples, Format format, bool lockable, bool renderTarget, int pitchP = 0);
 
 	public:
 		static Surface *create(int width, int height, int depth, Format format, void *pixels, int pitch, int slice);
-		static Surface *create(Resource *texture, int width, int height, int depth, int border, Format format, bool lockable, bool renderTarget, int pitchP = 0);
+		static Surface *create(Resource *texture, int width, int height, int depth, int border, int samples, Format format, bool lockable, bool renderTarget, int pitchP = 0);
 
 		virtual ~Surface() = 0;
 
@@ -296,8 +321,10 @@ namespace sw
 		inline int getStencilSliceB() const;
 
 		void sync();                      // Wait for lock(s) to be released.
+		virtual bool requiresSync() const { return false; }
 		inline bool isUnlocked() const;   // Only reliable after sync().
 
+		inline int getSamples() const;
 		inline int getMultiSampleCount() const;
 		inline int getSuperSampleCount() const;
 
@@ -336,7 +363,7 @@ namespace sw
 		static int pitchP(int width, int border, Format format, bool target);
 		static int sliceB(int width, int height, int border, Format format, bool target);
 		static int sliceP(int width, int height, int border, Format format, bool target);
-		static unsigned int size(int width, int height, int depth, int border, Format format);   // FIXME: slice * depth
+		static size_t size(int width, int height, int depth, int border, int samples, Format format);
 
 		static bool isStencil(Format format);
 		static bool isDepth(Format format);
@@ -347,6 +374,7 @@ namespace sw
 		static bool isUnsignedComponent(Format format, int component);
 		static bool isSRGBreadable(Format format);
 		static bool isSRGBwritable(Format format);
+		static bool isSRGBformat(Format format);
 		static bool isCompressed(Format format);
 		static bool isSignedNonNormalizedInteger(Format format);
 		static bool isUnsignedNonNormalizedInteger(Format format);
@@ -364,7 +392,6 @@ namespace sw
 		typedef unsigned int dword;
 		typedef uint64_t qword;
 
-		#if S3TC_SUPPORT
 		struct DXT1
 		{
 			word c0;
@@ -398,7 +425,6 @@ namespace sw
 			word c1;
 			dword clut;
 		};
-		#endif
 
 		struct ATI2
 		{
@@ -446,11 +472,9 @@ namespace sw
 		static void decodeA4R4G4B4(Buffer &destination, Buffer &source);
 		static void decodeP8(Buffer &destination, Buffer &source);
 
-		#if S3TC_SUPPORT
 		static void decodeDXT1(Buffer &internal, Buffer &external);
 		static void decodeDXT3(Buffer &internal, Buffer &external);
 		static void decodeDXT5(Buffer &internal, Buffer &external);
-		#endif
 		static void decodeATI1(Buffer &internal, Buffer &external);
 		static void decodeATI2(Buffer &internal, Buffer &external);
 		static void decodeEAC(Buffer &internal, Buffer &external, int nbChannels, bool isSigned);
@@ -459,10 +483,10 @@ namespace sw
 
 		static void update(Buffer &destination, Buffer &source);
 		static void genericUpdate(Buffer &destination, Buffer &source);
-		static void *allocateBuffer(int width, int height, int depth, int border, Format format);
+		static void *allocateBuffer(int width, int height, int depth, int border, int samples, Format format);
 		static void memfill4(void *buffer, int pattern, int bytes);
 
-		bool identicalFormats() const;
+		bool identicalBuffers() const;
 		Format selectInternalFormat(Format format) const;
 
 		void resolve();
@@ -610,14 +634,19 @@ namespace sw
 		return stencil.sliceB;
 	}
 
+	int Surface::getSamples() const
+	{
+		return internal.samples;
+	}
+
 	int Surface::getMultiSampleCount() const
 	{
-		return sw::min(internal.depth, 4);
+		return sw::min((int)internal.samples, 4);
 	}
 
 	int Surface::getSuperSampleCount() const
 	{
-		return internal.depth > 4 ? internal.depth / 4 : 1;
+		return internal.samples > 4 ? internal.samples / 4 : 1;
 	}
 
 	bool Surface::isUnlocked() const

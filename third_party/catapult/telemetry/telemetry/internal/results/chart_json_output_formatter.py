@@ -9,8 +9,7 @@ import json
 from telemetry.internal.results import output_formatter
 from telemetry.value import trace
 
-def ResultsAsChartDict(benchmark_metadata, page_specific_values,
-                       summary_values):
+def ResultsAsChartDict(benchmark_metadata, results):
   """Produces a dict for serialization to Chart JSON format from raw values.
 
   Chart JSON is a transformation of the basic Telemetry JSON format that
@@ -23,16 +22,15 @@ def ResultsAsChartDict(benchmark_metadata, page_specific_values,
   Design doc for schema: http://goo.gl/kOtf1Y
 
   Args:
-    page_specific_values: list of page-specific values
-    summary_values: list of summary values
     benchmark_metadata: a benchmark.BenchmarkMetadata object
+    results: an instance of PageTestResults
 
   Returns:
     A Chart JSON dict corresponding to the given data.
   """
   values = itertools.chain(
-      output_formatter.SummarizePageSpecificValues(page_specific_values),
-      summary_values)
+      output_formatter.SummarizePageSpecificValues(results),
+      results.all_summary_values)
   charts = collections.defaultdict(dict)
 
   for value in values:
@@ -56,6 +54,8 @@ def ResultsAsChartDict(benchmark_metadata, page_specific_values,
     # is expected of output from the buildbots currently.
     # See: crbug.com/413393
     charts[chart_name][trace_name] = value.AsDict()
+    if value.page:
+      charts[chart_name][trace_name]['story_tags'] = list(value.page.tags)
 
   result_dict = {
       'format_version': '0.1',
@@ -103,10 +103,7 @@ class ChartJsonOutputFormatter(output_formatter.OutputFormatter):
     self._Dump(DisabledResultsDict(self._benchmark_metadata.name))
 
   def Format(self, page_test_results):
-    self._Dump(ResultsAsChartDict(
-        self._benchmark_metadata,
-        page_test_results.all_page_specific_values,
-        page_test_results.all_summary_values))
+    self._Dump(ResultsAsChartDict(self._benchmark_metadata, page_test_results))
 
   def _Dump(self, results):
     json.dump(results, self.output_stream, indent=2,

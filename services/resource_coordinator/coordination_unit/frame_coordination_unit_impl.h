@@ -25,6 +25,7 @@ class FrameCoordinationUnitImpl
 
   FrameCoordinationUnitImpl(
       const CoordinationUnitID& id,
+      CoordinationUnitGraph* graph,
       std::unique_ptr<service_manager::ServiceContextRef> service_ref);
   ~FrameCoordinationUnitImpl() override;
 
@@ -33,6 +34,7 @@ class FrameCoordinationUnitImpl
   void RemoveChildFrame(const CoordinationUnitID& cu_id) override;
   void SetAudibility(bool audible) override;
   void SetNetworkAlmostIdle(bool idle) override;
+  void SetLifecycleState(mojom::LifecycleState state) override;
   void OnAlertFired() override;
   void OnNonPersistentNotificationCreated() override;
 
@@ -41,6 +43,7 @@ class FrameCoordinationUnitImpl
   ProcessCoordinationUnitImpl* GetProcessCoordinationUnit() const;
   bool IsMainFrame() const;
 
+  mojom::LifecycleState lifecycle_state() const { return lifecycle_state_; }
   base::TimeTicks last_audible_time() const { return last_audible_time_; }
 
   const std::set<FrameCoordinationUnitImpl*>&
@@ -79,6 +82,7 @@ class FrameCoordinationUnitImpl
   ProcessCoordinationUnitImpl* process_coordination_unit_;
   std::set<FrameCoordinationUnitImpl*> child_frame_coordination_units_;
 
+  mojom::LifecycleState lifecycle_state_ = mojom::LifecycleState::kRunning;
   base::TimeTicks last_audible_time_;
 
   DISALLOW_COPY_AND_ASSIGN(FrameCoordinationUnitImpl);

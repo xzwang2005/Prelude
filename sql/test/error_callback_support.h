@@ -6,14 +6,15 @@
 #define SQL_TEST_ERROR_CALLBACK_SUPPORT_H_
 
 #include "base/macros.h"
-#include "sql/connection.h"
+#include "sql/database.h"
 
 namespace sql {
 
 // Helper to capture any errors into a local variable for testing.
 // For instance:
 //   int error = SQLITE_OK;
-//   ScopedErrorCallback sec(db, base::Bind(&CaptureErrorCallback, &error));
+//   ScopedErrorCallback sec(db, base::BindRepeating(&CaptureErrorCallback,
+//                                                   &error));
 //   // Provoke SQLITE_CONSTRAINT on db.
 //   EXPECT_EQ(SQLITE_CONSTRAINT, error);
 void CaptureErrorCallback(int* error_pointer, int error, sql::Statement* stmt);
@@ -22,12 +23,12 @@ void CaptureErrorCallback(int* error_pointer, int error, sql::Statement* stmt);
 // out of scope.
 class ScopedErrorCallback {
  public:
-  ScopedErrorCallback(sql::Connection* db,
-                      const sql::Connection::ErrorCallback& cb);
+  ScopedErrorCallback(sql::Database* db,
+                      const sql::Database::ErrorCallback& cb);
   ~ScopedErrorCallback();
 
  private:
-  sql::Connection* db_;
+  sql::Database* db_;
 
   DISALLOW_COPY_AND_ASSIGN(ScopedErrorCallback);
 };

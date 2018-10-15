@@ -5,6 +5,7 @@
 #ifndef V8_OBJECTS_CODE_H_
 #define V8_OBJECTS_CODE_H_
 
+#include "src/handler-table.h"
 #include "src/objects.h"
 #include "src/objects/fixed-array.h"
 
@@ -17,95 +18,14 @@ namespace internal {
 class ByteArray;
 class BytecodeArray;
 class CodeDataContainer;
+class MaybeObject;
 
-// HandlerTable is a fixed array containing entries for exception handlers in
-// the code object it is associated with. The tables comes in two flavors:
-// 1) Based on ranges: Used for unoptimized code. Contains one entry per
-//    exception handler and a range representing the try-block covered by that
-//    handler. Layout looks as follows:
-//      [ range-start , range-end , handler-offset , handler-data ]
-// 2) Based on return addresses: Used for turbofanned code. Contains one entry
-//    per call-site that could throw an exception. Layout looks as follows:
-//      [ return-address-offset , handler-offset ]
-class HandlerTable : public FixedArray {
- public:
-  // Conservative prediction whether a given handler will locally catch an
-  // exception or cause a re-throw to outside the code boundary. Since this is
-  // undecidable it is merely an approximation (e.g. useful for debugger).
-  enum CatchPrediction {
-    UNCAUGHT,    // The handler will (likely) rethrow the exception.
-    CAUGHT,      // The exception will be caught by the handler.
-    PROMISE,     // The exception will be caught and cause a promise rejection.
-    DESUGARING,  // The exception will be caught, but both the exception and the
-                 // catching are part of a desugaring and should therefore not
-                 // be visible to the user (we won't notify the debugger of such
-                 // exceptions).
-    ASYNC_AWAIT,  // The exception will be caught and cause a promise rejection
-                  // in the desugaring of an async function, so special
-                  // async/await handling in the debugger can take place.
-  };
-
-  // Getters for handler table based on ranges.
-  inline int GetRangeStart(int index) const;
-  inline int GetRangeEnd(int index) const;
-  inline int GetRangeHandler(int index) const;
-  inline int GetRangeData(int index) const;
-
-  // Setters for handler table based on ranges.
-  inline void SetRangeStart(int index, int value);
-  inline void SetRangeEnd(int index, int value);
-  inline void SetRangeHandler(int index, int offset, CatchPrediction pred);
-  inline void SetRangeData(int index, int value);
-
-  // Setters for handler table based on return addresses.
-  inline void SetReturnOffset(int index, int value);
-  inline void SetReturnHandler(int index, int offset);
-
-  // Lookup handler in a table based on ranges. The {pc_offset} is an offset to
-  // the start of the potentially throwing instruction (using return addresses
-  // for this value would be invalid).
-  int LookupRange(int pc_offset, int* data, CatchPrediction* prediction);
-
-  // Lookup handler in a table based on return addresses.
-  int LookupReturn(int pc_offset);
-
-  // Returns the number of entries in the table.
-  inline int NumberOfRangeEntries() const;
-
-  // Returns the required length of the underlying fixed array.
-  static int LengthForRange(int entries) { return entries * kRangeEntrySize; }
-  static int LengthForReturn(int entries) { return entries * kReturnEntrySize; }
-
-  // Returns an empty handler table.
-  static Handle<HandlerTable> Empty(Isolate* isolate);
-
-  DECL_CAST(HandlerTable)
-
-#ifdef ENABLE_DISASSEMBLER
-  void HandlerTableRangePrint(std::ostream& os);   // NOLINT
-  void HandlerTableReturnPrint(std::ostream& os);  // NOLINT
-#endif
-
- private:
-  // Layout description for handler table based on ranges.
-  static const int kRangeStartIndex = 0;
-  static const int kRangeEndIndex = 1;
-  static const int kRangeHandlerIndex = 2;
-  static const int kRangeDataIndex = 3;
-  static const int kRangeEntrySize = 4;
-
-  // Layout description for handler table based on return addresses.
-  static const int kReturnOffsetIndex = 0;
-  static const int kReturnHandlerIndex = 1;
-  static const int kReturnEntrySize = 2;
-
-  // Encoding of the {handler} field.
-  class HandlerPredictionField : public BitField<CatchPrediction, 0, 3> {};
-  class HandlerOffsetField : public BitField<int, 3, 29> {};
-};
+namespace interpreter {
+class Register;
+}
 
 // Code describes objects with on-the-fly generated machine code.
-class Code : public HeapObject {
+class Code : public HeapObject, public NeverReadOnlySpaceObject {
  public:
   // Opaque data type for encapsulating code flags like kind, inline
   // cache state, and arguments count.
@@ -119,7 +39,6 @@ class Code : public HeapObject {
   V(REGEXP)                 \
   V(WASM_FUNCTION)          \
   V(WASM_TO_JS_FUNCTION)    \
-  V(WASM_TO_WASM_FUNCTION)  \
   V(JS_TO_WASM_FUNCTION)    \
   V(WASM_INTERPRETER_ENTRY) \
   V(C_WASM_ENTRY)
@@ -133,25 +52,29 @@ class Code : public HeapObject {
 
   static const char* Kind2String(Kind kind);
 
-#if defined(OBJECT_PRINT) || defined(ENABLE_DISASSEMBLER)
-  // Printing
-  static const char* ICState2String(InlineCacheState state);
-#endif  // defined(OBJECT_PRINT) || defined(ENABLE_DISASSEMBLER)
-
 #ifdef ENABLE_DISASSEMBLER
-  void Disassemble(const char* name, std::ostream& os);  // NOLINT
+  const char* GetName(Isolate* isolate) const;
+  void PrintBuiltinCode(Isolate* isolate, const char* name);
+  void Disassemble(const char* name, std::ostream& os,
+                   Address current_pc = kNullAddress);
 #endif
 
-  // [instruction_size]: Size of the native instructions
-  inline int instruction_size() const;
-  inline void set_instruction_size(int value);
+  // [instruction_size]: Size of the native instructions, including embedded
+  // data such as the safepoints table.
+  inline int raw_instruction_size() const;
+  inline void set_raw_instruction_size(int value);
+
+  // Returns the size of the native instructions, including embedded
+  // data such as the safepoints table. For off-heap code objects
+  // this may from instruction_size in that this will return the size of the
+  // off-heap instruction stream rather than the on-heap trampoline located
+  // at instruction_start.
+  inline int InstructionSize() const;
+  int OffHeapInstructionSize() const;
 
   // [relocation_info]: Code relocation information
   DECL_ACCESSORS(relocation_info, ByteArray)
-  void InvalidateEmbeddedObjects();
-
-  // [handler_table]: Fixed array containing offsets of exception handlers.
-  DECL_ACCESSORS(handler_table, FixedArray)
+  void InvalidateEmbeddedObjects(Heap* heap);
 
   // [deoptimization_data]: Array containing data for deopt.
   DECL_ACCESSORS(deoptimization_data, FixedArray)
@@ -161,17 +84,8 @@ class Code : public HeapObject {
   DECL_ACCESSORS(source_position_table, Object)
   inline ByteArray* SourcePositionTable() const;
 
-  // TODO(mtrofin): remove when we don't need FLAG_wasm_jit_to_native
-  // [protected instructions]: Array containing list of protected
-  // instructions and corresponding landing pad offset.
-  DECL_ACCESSORS(protected_instructions, FixedArray)
-
   // [code_data_container]: A container indirection for all mutable fields.
   DECL_ACCESSORS(code_data_container, CodeDataContainer)
-
-  // [trap_handler_index]: An index into the trap handler's master list of code
-  // objects.
-  DECL_ACCESSORS(trap_handler_index, Smi)
 
   // [stub_key]: The major/minor key of a code stub.
   inline uint32_t stub_key() const;
@@ -206,10 +120,8 @@ class Code : public HeapObject {
   // feedback vector.
   inline bool checks_optimization_marker() const;
 
-  // [has_tagged_params]: For compiled code or builtins: Tells whether the
-  // outgoing parameters of this code are tagged pointers. True for other kinds.
+  // Tells whether the outgoing parameters of this code are tagged pointers.
   inline bool has_tagged_params() const;
-  inline void set_has_tagged_params(bool value);
 
   // [is_turbofanned]: For kind STUB or OPTIMIZED_FUNCTION, tells whether the
   // code object was generated by the TurboFan optimizing compiler.
@@ -244,6 +156,11 @@ class Code : public HeapObject {
   inline int safepoint_table_offset() const;
   inline void set_safepoint_table_offset(int offset);
 
+  // [handler_table_offset]: The offset in the instruction stream where the
+  // exception handler table starts.
+  inline int handler_table_offset() const;
+  inline void set_handler_table_offset(int offset);
+
   // [marked_for_deoptimization]: For kind OPTIMIZED_FUNCTION tells whether
   // the code is going to be deoptimized because of dead embedded maps.
   inline bool marked_for_deoptimization() const;
@@ -266,8 +183,12 @@ class Code : public HeapObject {
   // Use GetBuiltinCatchPrediction to access this.
   inline void set_is_exception_caught(bool flag);
 
+  // [is_off_heap_trampoline]: For kind BUILTIN tells whether
+  // this is a trampoline to an off-heap builtin.
+  inline bool is_off_heap_trampoline() const;
+
   // [constant_pool]: The constant pool for this function.
-  inline Address constant_pool();
+  inline Address constant_pool() const;
 
   // Get the safepoint entry for the given pc.
   SafepointEntry GetSafepointEntry(Address pc);
@@ -287,7 +208,8 @@ class Code : public HeapObject {
   // Initialize the flags field. Similar to clear_padding above this ensure that
   // the snapshot content is deterministic.
   inline void initialize_flags(Kind kind, bool has_unwinding_info,
-                               bool is_turbofanned, int stack_slots);
+                               bool is_turbofanned, int stack_slots,
+                               bool is_off_heap_trampoline);
 
   // Convert a target address into a code object.
   static inline Code* GetCodeFromTargetAddress(Address address);
@@ -299,10 +221,22 @@ class Code : public HeapObject {
   static inline Object* GetObjectFromCodeEntry(Address code_entry);
 
   // Returns the address of the first instruction.
-  inline byte* instruction_start() const;
+  inline Address raw_instruction_start() const;
+
+  // Returns the address of the first instruction. For off-heap code objects
+  // this differs from instruction_start (which would point to the off-heap
+  // trampoline instead).
+  inline Address InstructionStart() const;
+  Address OffHeapInstructionStart() const;
 
   // Returns the address right after the last instruction.
-  inline byte* instruction_end() const;
+  inline Address raw_instruction_end() const;
+
+  // Returns the address right after the last instruction. For off-heap code
+  // objects this differs from instruction_end (which would point to the
+  // off-heap trampoline instead).
+  inline Address InstructionEnd() const;
+  Address OffHeapInstructionEnd() const;
 
   // Returns the size of the instructions, padding, relocation and unwinding
   // information.
@@ -315,27 +249,30 @@ class Code : public HeapObject {
   // Returns the address of the first relocation info (read backwards!).
   inline byte* relocation_start() const;
 
+  // Returns the address right after the relocation info (read backwards!).
+  inline byte* relocation_end() const;
+
   // [has_unwinding_info]: Whether this code object has unwinding information.
   // If it doesn't, unwinding_information_start() will point to invalid data.
   //
   // The body of all code objects has the following layout.
   //
-  //  +--------------------------+  <-- instruction_start()
+  //  +--------------------------+  <-- raw_instruction_start()
   //  |       instructions       |
   //  |           ...            |
   //  +--------------------------+
   //  |      relocation info     |
   //  |           ...            |
-  //  +--------------------------+  <-- instruction_end()
+  //  +--------------------------+  <-- raw_instruction_end()
   //
-  // If has_unwinding_info() is false, instruction_end() points to the first
+  // If has_unwinding_info() is false, raw_instruction_end() points to the first
   // memory location after the end of the code object. Otherwise, the body
   // continues as follows:
   //
   //  +--------------------------+
   //  |    padding to the next   |
   //  |  8-byte aligned address  |
-  //  +--------------------------+  <-- instruction_end()
+  //  +--------------------------+  <-- raw_instruction_end()
   //  |   [unwinding_info_size]  |
   //  |        as uint64_t       |
   //  +--------------------------+  <-- unwinding_info_start()
@@ -353,23 +290,27 @@ class Code : public HeapObject {
   inline void set_unwinding_info_size(int value);
 
   // Returns the address of the unwinding information, if any.
-  inline byte* unwinding_info_start() const;
+  inline Address unwinding_info_start() const;
 
   // Returns the address right after the end of the unwinding information.
-  inline byte* unwinding_info_end() const;
+  inline Address unwinding_info_end() const;
 
   // Code entry point.
-  inline byte* entry() const;
+  inline Address entry() const;
 
   // Returns true if pc is inside this object's instructions.
-  inline bool contains(byte* pc);
+  inline bool contains(Address pc);
 
   // Relocate the code by delta bytes. Called to signal that this code
   // object has been moved by delta bytes.
   void Relocate(intptr_t delta);
 
-  // Migrate code described by desc.
-  void CopyFrom(const CodeDesc& desc);
+  // Migrate code from desc without flushing the instruction cache.
+  void CopyFromNoFlush(Heap* heap, const CodeDesc& desc);
+
+  // Flushes the instruction cache for the executable instructions of this code
+  // object.
+  void FlushICache() const;
 
   // Returns the object size for a given body (used for allocation).
   static int SizeFor(int body_size) {
@@ -389,27 +330,26 @@ class Code : public HeapObject {
   DECL_PRINTER(Code)
   DECL_VERIFIER(Code)
 
-  void PrintDeoptLocation(FILE* out, Address pc);
+  void PrintDeoptLocation(FILE* out, const char* str, Address pc);
   bool CanDeoptAt(Address pc);
 
+  void SetMarkedForDeoptimization(const char* reason);
+
   inline HandlerTable::CatchPrediction GetBuiltinCatchPrediction();
-#ifdef VERIFY_HEAP
-  void VerifyEmbeddedObjectsDependency();
-#endif
 
 #ifdef DEBUG
   enum VerifyMode { kNoContextSpecificPointers, kNoContextRetainingPointers };
-  void VerifyEmbeddedObjects(VerifyMode mode = kNoContextRetainingPointers);
+  void VerifyEmbeddedObjects(Isolate* isolate,
+                             VerifyMode mode = kNoContextRetainingPointers);
 #endif  // DEBUG
+
+  bool IsIsolateIndependent(Isolate* isolate);
 
   inline bool CanContainWeakObjects();
 
   inline bool IsWeakObject(Object* object);
 
   static inline bool IsWeakObjectInOptimizedCode(Object* object);
-
-  static Handle<WeakCell> WeakCellFor(Handle<Code> code);
-  WeakCell* CachedWeakCell();
 
   // Return true if the function is inlined in the code.
   bool Inlines(SharedFunctionInfo* sfi);
@@ -433,25 +373,23 @@ class Code : public HeapObject {
 
   // Layout description.
   static const int kRelocationInfoOffset = HeapObject::kHeaderSize;
-  static const int kHandlerTableOffset = kRelocationInfoOffset + kPointerSize;
   static const int kDeoptimizationDataOffset =
-      kHandlerTableOffset + kPointerSize;
+      kRelocationInfoOffset + kPointerSize;
   static const int kSourcePositionTableOffset =
       kDeoptimizationDataOffset + kPointerSize;
-  static const int kProtectedInstructionsOffset =
-      kSourcePositionTableOffset + kPointerSize;
   static const int kCodeDataContainerOffset =
-      kProtectedInstructionsOffset + kPointerSize;
+      kSourcePositionTableOffset + kPointerSize;
   static const int kInstructionSizeOffset =
       kCodeDataContainerOffset + kPointerSize;
   static const int kFlagsOffset = kInstructionSizeOffset + kIntSize;
   static const int kSafepointTableOffsetOffset = kFlagsOffset + kIntSize;
-  static const int kStubKeyOffset = kSafepointTableOffsetOffset + kIntSize;
+  static const int kHandlerTableOffsetOffset =
+      kSafepointTableOffsetOffset + kIntSize;
+  static const int kStubKeyOffset = kHandlerTableOffsetOffset + kIntSize;
   static const int kConstantPoolOffset = kStubKeyOffset + kIntSize;
   static const int kBuiltinIndexOffset =
       kConstantPoolOffset + kConstantPoolSize;
-  static const int kTrapHandlerIndex = kBuiltinIndexOffset + kIntSize;
-  static const int kHeaderPaddingStart = kTrapHandlerIndex + kPointerSize;
+  static const int kHeaderPaddingStart = kBuiltinIndexOffset + kIntSize;
 
   // Add padding to align the instruction start following right after
   // the Code object header.
@@ -463,8 +401,6 @@ class Code : public HeapObject {
   // Objects embedded into code is visited via reloc info.
   static const int kDataStart = kInstructionSizeOffset;
 
-  enum TrapFields { kTrapCodeOffset, kTrapLandingOffset, kTrapDataSize };
-
   inline int GetUnwindingInfoSizeOffset() const;
 
   class BodyDescriptor;
@@ -473,13 +409,14 @@ class Code : public HeapObject {
 #define CODE_FLAGS_BIT_FIELDS(V, _)    \
   V(HasUnwindingInfoField, bool, 1, _) \
   V(KindField, Kind, 5, _)             \
-  V(HasTaggedStackField, bool, 1, _)   \
   V(IsTurbofannedField, bool, 1, _)    \
-  V(StackSlotsField, int, 24, _)
+  V(StackSlotsField, int, 24, _)       \
+  V(IsOffHeapTrampoline, bool, 1, _)
   DEFINE_BIT_FIELDS(CODE_FLAGS_BIT_FIELDS)
 #undef CODE_FLAGS_BIT_FIELDS
   static_assert(NUMBER_OF_KINDS <= KindField::kMax, "Code::KindField size");
-  static_assert(StackSlotsField::kNext <= 32, "Code::flags field exhausted");
+  static_assert(IsOffHeapTrampoline::kNext <= 32,
+                "Code::flags field exhausted");
 
   // KindSpecificFlags layout (STUB, BUILTIN and OPTIMIZED_FUNCTION)
 #define CODE_KIND_SPECIFIC_FLAGS_BIT_FIELDS(V, _) \
@@ -498,7 +435,8 @@ class Code : public HeapObject {
       MarkedForDeoptimizationField::kShift;
 
   static const int kArgumentsBits = 16;
-  static const int kMaxArguments = (1 << kArgumentsBits) - 1;
+  // Reserve one argument count value as the "don't adapt arguments" sentinel.
+  static const int kMaxArguments = (1 << kArgumentsBits) - 2;
 
  private:
   friend class RelocIterator;
@@ -514,7 +452,7 @@ class Code : public HeapObject {
 // pages within the heap, its header fields need to be immutable. There always
 // is a 1-to-1 relation between {Code} and {CodeDataContainer}, the referencing
 // field {Code::code_data_container} itself is immutable.
-class CodeDataContainer : public HeapObject {
+class CodeDataContainer : public HeapObject, public NeverReadOnlySpaceObject {
  public:
   DECL_ACCESSORS(next_code_link, Object)
   DECL_INT_ACCESSORS(kind_specific_flags)
@@ -539,21 +477,13 @@ class CodeDataContainer : public HeapObject {
   static const int kPointerFieldsStrongEndOffset = kNextCodeLinkOffset;
   static const int kPointerFieldsWeakEndOffset = kKindSpecificFlagsOffset;
 
-  // Ignores weakness.
-  typedef FixedBodyDescriptor<HeapObject::kHeaderSize,
-                              kPointerFieldsWeakEndOffset, kSize>
-      BodyDescriptor;
-
-  // Respects weakness.
-  typedef FixedBodyDescriptor<HeapObject::kHeaderSize,
-                              kPointerFieldsStrongEndOffset, kSize>
-      BodyDescriptorWeak;
+  class BodyDescriptor;
 
  private:
   DISALLOW_IMPLICIT_CONSTRUCTORS(CodeDataContainer);
 };
 
-class AbstractCode : public HeapObject {
+class AbstractCode : public HeapObject, public NeverReadOnlySpaceObject {
  public:
   // All code kinds and INTERPRETED_FUNCTION.
   enum Kind {
@@ -570,27 +500,44 @@ class AbstractCode : public HeapObject {
   int SourceStatementPosition(int offset);
 
   // Returns the address of the first instruction.
-  inline Address instruction_start();
+  inline Address raw_instruction_start();
+
+  // Returns the address of the first instruction. For off-heap code objects
+  // this differs from instruction_start (which would point to the off-heap
+  // trampoline instead).
+  inline Address InstructionStart();
 
   // Returns the address right after the last instruction.
-  inline Address instruction_end();
+  inline Address raw_instruction_end();
+
+  // Returns the address right after the last instruction. For off-heap code
+  // objects this differs from instruction_end (which would point to the
+  // off-heap trampoline instead).
+  inline Address InstructionEnd();
 
   // Returns the size of the code instructions.
-  inline int instruction_size();
+  inline int raw_instruction_size();
+
+  // Returns the size of the native instructions, including embedded
+  // data such as the safepoints table. For off-heap code objects
+  // this may from instruction_size in that this will return the size of the
+  // off-heap instruction stream rather than the on-heap trampoline located
+  // at instruction_start.
+  inline int InstructionSize();
 
   // Return the source position table.
   inline ByteArray* source_position_table();
 
   inline Object* stack_frame_cache();
   static void SetStackFrameCache(Handle<AbstractCode> abstract_code,
-                                 Handle<NumberDictionary> cache);
+                                 Handle<SimpleNumberDictionary> cache);
   void DropStackFrameCache();
 
   // Returns the size of instructions and the metadata.
   inline int SizeIncludingMetadata();
 
   // Returns true if pc is inside this object's instructions.
-  inline bool contains(byte* pc);
+  inline bool contains(Address pc);
 
   // Returns the AbstractCode::Kind of the code.
   inline Kind kind();
@@ -608,10 +555,10 @@ class AbstractCode : public HeapObject {
   static const int kMaxLoopNestingMarker = 6;
 };
 
-// Dependent code is a singly linked list of fixed arrays. Each array contains
-// code objects in weak cells for one dependent group. The suffix of the array
-// can be filled with the undefined value if the number of codes is less than
-// the length of the array.
+// Dependent code is a singly linked list of weak fixed arrays. Each array
+// contains weak pointers to code objects for one dependent group. The suffix of
+// the array can be filled with the undefined value if the number of codes is
+// less than the length of the array.
 //
 // +------+-----------------+--------+--------+-----+--------+-----------+-----+
 // | next | count & group 1 | code 1 | code 2 | ... | code n | undefined | ... |
@@ -623,16 +570,15 @@ class AbstractCode : public HeapObject {
 // +------+-----------------+--------+--------+-----+--------+-----------+-----+
 //    |
 //    V
-// empty_fixed_array()
+// empty_weak_fixed_array()
 //
-// The list of fixed arrays is ordered by dependency groups.
+// The list of weak fixed arrays is ordered by dependency groups.
 
-class DependentCode : public FixedArray {
+class DependentCode : public WeakFixedArray {
  public:
+  DECL_CAST(DependentCode)
+
   enum DependencyGroup {
-    // Group of code that weakly embed this map and depend on being
-    // deoptimized when the map is garbage collected.
-    kWeakCodeGroup,
     // Group of code that embed a transition to this map, and depend on being
     // deoptimized when the transition is replaced by a new version.
     kTransitionGroup,
@@ -658,65 +604,59 @@ class DependentCode : public FixedArray {
     kAllocationSiteTransitionChangedGroup
   };
 
+  // Register a code dependency of {cell} on {object}.
+  static void InstallDependency(Isolate* isolate, const MaybeObjectHandle& code,
+                                Handle<HeapObject> object,
+                                DependencyGroup group);
+
+  void DeoptimizeDependentCodeGroup(Isolate* isolate, DependencyGroup group);
+
+  bool MarkCodeForDeoptimization(Isolate* isolate, DependencyGroup group);
+
+  // The following low-level accessors are exposed only for tests.
+  inline DependencyGroup group();
+  inline MaybeObject* object_at(int i);
+  inline int count();
+  inline DependentCode* next_link();
+
+ private:
+  static const char* DependencyGroupName(DependencyGroup group);
+
+  // Get/Set {object}'s {DependentCode}.
+  static DependentCode* GetDependentCode(Handle<HeapObject> object);
+  static void SetDependentCode(Handle<HeapObject> object,
+                               Handle<DependentCode> dep);
+
+  static Handle<DependentCode> New(Isolate* isolate, DependencyGroup group,
+                                   const MaybeObjectHandle& object,
+                                   Handle<DependentCode> next);
+  static Handle<DependentCode> EnsureSpace(Isolate* isolate,
+                                           Handle<DependentCode> entries);
+  static Handle<DependentCode> InsertWeakCode(Isolate* isolate,
+                                              Handle<DependentCode> entries,
+                                              DependencyGroup group,
+                                              const MaybeObjectHandle& code);
+
+  // Compact by removing cleared weak cells and return true if there was
+  // any cleared weak cell.
+  bool Compact();
+
+  static int Grow(int number_of_entries) {
+    if (number_of_entries < 5) return number_of_entries + 1;
+    return number_of_entries * 5 / 4;
+  }
+
   static const int kGroupCount = kAllocationSiteTransitionChangedGroup + 1;
   static const int kNextLinkIndex = 0;
   static const int kFlagsIndex = 1;
   static const int kCodesStartIndex = 2;
 
-  bool Contains(DependencyGroup group, WeakCell* code_cell);
-  bool IsEmpty(DependencyGroup group);
-
-  static Handle<DependentCode> InsertCompilationDependencies(
-      Handle<DependentCode> entries, DependencyGroup group,
-      Handle<Foreign> info);
-
-  static Handle<DependentCode> InsertWeakCode(Handle<DependentCode> entries,
-                                              DependencyGroup group,
-                                              Handle<WeakCell> code_cell);
-
-  void UpdateToFinishedCode(DependencyGroup group, Foreign* info,
-                            WeakCell* code_cell);
-
-  void RemoveCompilationDependencies(DependentCode::DependencyGroup group,
-                                     Foreign* info);
-
-  void DeoptimizeDependentCodeGroup(Isolate* isolate,
-                                    DependentCode::DependencyGroup group);
-
-  bool MarkCodeForDeoptimization(Isolate* isolate,
-                                 DependentCode::DependencyGroup group);
-
-  // The following low-level accessors should only be used by this class
-  // and the mark compact collector.
-  inline DependentCode* next_link();
   inline void set_next_link(DependentCode* next);
-  inline int count();
   inline void set_count(int value);
-  inline DependencyGroup group();
-  inline void set_group(DependencyGroup group);
-  inline Object* object_at(int i);
-  inline void set_object_at(int i, Object* object);
+  inline void set_object_at(int i, MaybeObject* object);
   inline void clear_at(int i);
   inline void copy(int from, int to);
-  DECL_CAST(DependentCode)
 
-  static const char* DependencyGroupName(DependencyGroup group);
-  static void SetMarkedForDeoptimization(Code* code, DependencyGroup group);
-
- private:
-  static Handle<DependentCode> Insert(Handle<DependentCode> entries,
-                                      DependencyGroup group,
-                                      Handle<Object> object);
-  static Handle<DependentCode> New(DependencyGroup group, Handle<Object> object,
-                                   Handle<DependentCode> next);
-  static Handle<DependentCode> EnsureSpace(Handle<DependentCode> entries);
-  // Compact by removing cleared weak cells and return true if there was
-  // any cleared weak cell.
-  bool Compact();
-  static int Grow(int number_of_entries) {
-    if (number_of_entries < 5) return number_of_entries + 1;
-    return number_of_entries * 5 / 4;
-  }
   inline int flags();
   inline void set_flags(int flags);
   class GroupField : public BitField<int, 0, 3> {};
@@ -786,7 +726,7 @@ class BytecodeArray : public FixedArrayBase {
   DECL_ACCESSORS(constant_pool, FixedArray)
 
   // Accessors for handler table containing offsets of exception handlers.
-  DECL_ACCESSORS(handler_table, FixedArray)
+  DECL_ACCESSORS(handler_table, ByteArray)
 
   // Accessors for source position table containing mappings between byte code
   // offset and source position or SourcePositionTableWithFrameCache.
@@ -800,7 +740,7 @@ class BytecodeArray : public FixedArrayBase {
   // Dispatched behavior.
   inline int BytecodeArraySize();
 
-  inline int instruction_size();
+  inline int raw_instruction_size();
 
   // Returns the size of bytecode and its metadata. This includes the size of
   // bytecode, constant pool, source position table, and handler table.
@@ -849,8 +789,6 @@ class BytecodeArray : public FixedArrayBase {
   static const int kMaxLength = kMaxSize - kHeaderSize;
 
   class BodyDescriptor;
-  // No weak fields.
-  typedef BodyDescriptor BodyDescriptorWeak;
 
  private:
   DISALLOW_IMPLICIT_CONSTRUCTORS(BytecodeArray);
@@ -872,9 +810,8 @@ class DeoptimizationData : public FixedArray {
   static const int kOsrPcOffsetIndex = 4;
   static const int kOptimizationIdIndex = 5;
   static const int kSharedFunctionInfoIndex = 6;
-  static const int kWeakCellCacheIndex = 7;
-  static const int kInliningPositionsIndex = 8;
-  static const int kFirstDeoptEntryIndex = 9;
+  static const int kInliningPositionsIndex = 7;
+  static const int kFirstDeoptEntryIndex = 8;
 
   // Offsets of deopt entry elements relative to the start of the entry.
   static const int kBytecodeOffsetRawOffset = 0;
@@ -894,7 +831,6 @@ class DeoptimizationData : public FixedArray {
   DECL_ELEMENT_ACCESSORS(OsrPcOffset, Smi)
   DECL_ELEMENT_ACCESSORS(OptimizationId, Smi)
   DECL_ELEMENT_ACCESSORS(SharedFunctionInfo, Object)
-  DECL_ELEMENT_ACCESSORS(WeakCellCache, Object)
   DECL_ELEMENT_ACCESSORS(InliningPositions, PodArray<InliningPosition>)
 
 #undef DECL_ELEMENT_ACCESSORS

@@ -7,62 +7,13 @@
 
 module arc.mojom;
 
-import "video_common.mojom";
+import "components/arc/common/video_common.mojom";
 
 [Extensible]
 enum VideoPixelFormat {
   // The values must match to the values in media::VideoPixelFormat
   PIXEL_FORMAT_UNKNOWN = 0,
   PIXEL_FORMAT_I420 = 1,
-};
-
-[Extensible]
-enum VideoCodecProfile {
-  // The values must match to the values in media::VideoCodecProfile.
-  VIDEO_CODEC_PROFILE_UNKNOWN = -1,
-  VIDEO_CODEC_PROFILE_MIN = VIDEO_CODEC_PROFILE_UNKNOWN,
-  H264PROFILE_MIN = 0,
-
-  // Including profile Constrained Baseline (CBP).
-  H264PROFILE_BASELINE = H264PROFILE_MIN,
-  H264PROFILE_MAIN = 1,
-  H264PROFILE_EXTENDED = 2,
-  H264PROFILE_HIGH = 3,
-  H264PROFILE_HIGH10PROFILE = 4,
-  H264PROFILE_HIGH422PROFILE = 5,
-  H264PROFILE_HIGH444PREDICTIVEPROFILE = 6,
-  H264PROFILE_SCALABLEBASELINE = 7,
-  H264PROFILE_SCALABLEHIGH = 8,
-  H264PROFILE_STEREOHIGH = 9,
-  H264PROFILE_MULTIVIEWHIGH = 10,
-  H264PROFILE_MAX = H264PROFILE_MULTIVIEWHIGH,
-  VP8PROFILE_MIN = 11,
-  VP8PROFILE_ANY = VP8PROFILE_MIN,
-  VP8PROFILE_MAX = VP8PROFILE_ANY,
-  VP9PROFILE_MIN = 12,
-  VP9PROFILE_PROFILE0 = VP9PROFILE_MIN,
-  VP9PROFILE_PROFILE1 = 13,
-  VP9PROFILE_PROFILE2 = 14,
-  VP9PROFILE_PROFILE3 = 15,
-  VP9PROFILE_MAX = VP9PROFILE_PROFILE3,
-  HEVCPROFILE_MIN = 16,
-  HEVCPROFILE_MAIN = HEVCPROFILE_MIN,
-  HEVCPROFILE_MAIN10 = 17,
-  HEVCPROFILE_MAIN_STILL_PICTURE = 18,
-  HEVCPROFILE_MAX = HEVCPROFILE_MAIN_STILL_PICTURE,
-  DOLBYVISION_MIN = 19,
-  DOLBYVISION_PROFILE0 = DOLBYVISION_MIN,
-  DOLBYVISION_PROFILE4 = 20,
-  DOLBYVISION_PROFILE5 = 21,
-  DOLBYVISION_PROFILE7 = 22,
-  DOLBYVISION_MAX = DOLBYVISION_PROFILE7,
-  THEORAPROFILE_MIN = 23,
-  THEORAPROFILE_ANY = THEORAPROFILE_MIN,
-  THEORAPROFILE_MAX = THEORAPROFILE_ANY,
-  AV1PROFILE_MIN = 24,
-  AV1PROFILE_PROFILE0 = AV1PROFILE_MIN,
-  AV1PROFILE_MAX = AV1PROFILE_PROFILE0,
-  VIDEO_CODEC_PROFILE_MAX = AV1PROFILE_PROFILE0,
 };
 
 // Specification of an encoding profile supported by an encoder.
@@ -73,9 +24,31 @@ struct VideoEncodeProfile {
   uint32 max_framerate_denominator;
 };
 
+// The encoder parameter set which matches to
+// media::VideoEncodeAccelerator::Config.
+//  |input_format| is the pixel format of the input frames.
+//  |input_visible_size| is the resolution of the input frames.
+//  |output_profile| is the codec profile of the encoded output stream.
+//  |initial_bitrate| is the initial bitrate of the encoded output stream,
+//  in bits per second.
+//  |initial_framerate| is the initial requested framerate. It is optional, only
+//  valid when |has_initial_framerate| is true.
+//  |h264_output_level| is H264 level of encoded output stream. It is optional,
+//  only valid when |has_h264_output_level| is true.
+struct VideoEncodeAcceleratorConfig {
+  VideoPixelFormat input_format;
+  Size input_visible_size;
+  VideoCodecProfile output_profile;
+  uint32 initial_bitrate;
+  uint32 initial_framerate;
+  bool has_initial_framerate;
+  uint8 h264_output_level;
+  bool has_h264_output_level;
+};
+
 // Video encoder IPC interface.
 // Next MinVersion: 1
-// Next Method ID: 6
+// Next Method ID: 7
 interface VideoEncodeAccelerator {
 
   // The input buffer storage type.
@@ -118,11 +91,25 @@ interface VideoEncodeAccelerator {
   // Callback:
   //  Called with true iff initialization is successful. The client should not
   //  invoke any other methods before the callback.
-  Initialize@1(VideoPixelFormat input_format,
-               Size visible_size,
+  InitializeDeprecated@1(VideoPixelFormat input_format,
+                         Size visible_size,
+                         StorageType input_storage,
+                         VideoCodecProfile output_profile,
+                         uint32 initial_bitrate,
+                         VideoEncodeClient client) => (bool success);
+
+  // Initializes the video encoder with specific configuration.  Called once per
+  // encoder construction.
+  // Parameters:
+  //  |config| is the parameter set for encoder initialization.
+  //  |input_storage| the type of the input buffer.
+  //  |client| is the client of this video encoder. The client must be valid
+  //  during the lifetime of this accelerator.
+  // Callback:
+  //  Called with true iff initialization is successful. The client should not
+  //  invoke any other methods before the callback.
+  Initialize@6(VideoEncodeAcceleratorConfig config,
                StorageType input_storage,
-               VideoCodecProfile output_profile,
-               uint32 initial_bitrate,
                VideoEncodeClient client) => (bool success);
 
   // Encodes the given frame.

@@ -7,8 +7,11 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <stdlib.h>  // For abort.
 #include <memory>
 #include <string>
+
+#include "v8config.h"  // NOLINT(build/include)
 
 namespace v8 {
 
@@ -119,11 +122,11 @@ class TracingController {
   }
 
   /**
-   * Adds a trace event to the platform tracing system. This function call is
+   * Adds a trace event to the platform tracing system. These function calls are
    * usually the result of a TRACE_* macro from trace_event_common.h when
    * tracing and the category of the particular trace are enabled. It is not
-   * advisable to call this function on its own; it is really only meant to be
-   * used by the trace macros. The returned handle can be used by
+   * advisable to call these functions on their own; they are really only meant
+   * to be used by the trace macros. The returned handle can be used by
    * UpdateTraceEventDuration to update the duration of COMPLETE events.
    */
   virtual uint64_t AddTraceEvent(
@@ -133,6 +136,15 @@ class TracingController {
       const uint64_t* arg_values,
       std::unique_ptr<ConvertableToTraceFormat>* arg_convertables,
       unsigned int flags) {
+    return 0;
+  }
+  virtual uint64_t AddTraceEventWithTimestamp(
+      char phase, const uint8_t* category_enabled_flag, const char* name,
+      const char* scope, uint64_t id, uint64_t bind_id, int32_t num_args,
+      const char** arg_names, const uint8_t* arg_types,
+      const uint64_t* arg_values,
+      std::unique_ptr<ConvertableToTraceFormat>* arg_convertables,
+      unsigned int flags, int64_t timestamp) {
     return 0;
   }
 
@@ -158,6 +170,75 @@ class TracingController {
 };
 
 /**
+ * A V8 memory page allocator.
+ *
+ * Can be implemented by an embedder to manage large host OS allocations.
+ */
+class PageAllocator {
+ public:
+  virtual ~PageAllocator() = default;
+
+  /**
+   * Gets the page granularity for AllocatePages and FreePages. Addresses and
+   * lengths for those calls should be multiples of AllocatePageSize().
+   */
+  virtual size_t AllocatePageSize() = 0;
+
+  /**
+   * Gets the page granularity for SetPermissions and ReleasePages. Addresses
+   * and lengths for those calls should be multiples of CommitPageSize().
+   */
+  virtual size_t CommitPageSize() = 0;
+
+  /**
+   * Sets the random seed so that GetRandomMmapAddr() will generate repeatable
+   * sequences of random mmap addresses.
+   */
+  virtual void SetRandomMmapSeed(int64_t seed) = 0;
+
+  /**
+   * Returns a randomized address, suitable for memory allocation under ASLR.
+   * The address will be aligned to AllocatePageSize.
+   */
+  virtual void* GetRandomMmapAddr() = 0;
+
+  /**
+   * Memory permissions.
+   */
+  enum Permission {
+    kNoAccess,
+    kRead,
+    kReadWrite,
+    // TODO(hpayer): Remove this flag. Memory should never be rwx.
+    kReadWriteExecute,
+    kReadExecute
+  };
+
+  /**
+   * Allocates memory in range with the given alignment and permission.
+   */
+  virtual void* AllocatePages(void* address, size_t length, size_t alignment,
+                              Permission permissions) = 0;
+
+  /**
+   * Frees memory in a range that was allocated by a call to AllocatePages.
+   */
+  virtual bool FreePages(void* address, size_t length) = 0;
+
+  /**
+   * Releases memory in a range that was allocated by a call to AllocatePages.
+   */
+  virtual bool ReleasePages(void* address, size_t length,
+                            size_t new_length) = 0;
+
+  /**
+   * Sets permissions on pages in an allocated range.
+   */
+  virtual bool SetPermissions(void* address, size_t length,
+                              Permission permissions) = 0;
+};
+
+/**
  * V8 Platform abstraction layer.
  *
  * The embedder has to provide an implementation of this interface before
@@ -165,17 +246,15 @@ class TracingController {
  */
 class Platform {
  public:
-  /**
-   * This enum is used to indicate whether a task is potentially long running,
-   * or causes a long wait. The embedder might want to use this hint to decide
-   * whether to execute the task on a dedicated thread.
-   */
-  enum ExpectedRuntime {
-    kShortRunningTask,
-    kLongRunningTask
-  };
-
   virtual ~Platform() = default;
+
+  /**
+   * Allows the embedder to manage memory page allocations.
+   */
+  virtual PageAllocator* GetPageAllocator() {
+    // TODO(bbudge) Make this abstract after all embedders implement this.
+    return nullptr;
+  }
 
   /**
    * Enables the embedder to respond in cases where V8 can't allocate large
@@ -184,48 +263,59 @@ class Platform {
    * error.
    * Embedder overrides of this function must NOT call back into V8.
    */
-  virtual void OnCriticalMemoryPressure() {}
+  virtual void OnCriticalMemoryPressure() {
+    // TODO(bbudge) Remove this when embedders override the following method.
+    // See crbug.com/634547.
+  }
 
   /**
-   * Gets the number of threads that are used to execute background tasks. Is
-   * used to estimate the number of tasks a work package should be split into.
-   * A return value of 0 means that there are no background threads available.
-   * Note that a value of 0 won't prohibit V8 from posting tasks using
-   * |CallOnBackgroundThread|.
+   * Enables the embedder to respond in cases where V8 can't allocate large
+   * memory regions. The |length| parameter is the amount of memory needed.
+   * Returns true if memory is now available. Returns false if no memory could
+   * be made available. V8 will retry allocations until this method returns
+   * false.
+   *
+   * Embedder overrides of this function must NOT call back into V8.
    */
-  virtual size_t NumberOfAvailableBackgroundThreads() { return 0; }
+  virtual bool OnCriticalMemoryPressure(size_t length) { return false; }
+
+  /**
+   * Gets the number of worker threads used by
+   * Call(BlockingTask)OnWorkerThread(). This can be used to estimate the number
+   * of tasks a work package should be split into. A return value of 0 means
+   * that there are no worker threads available. Note that a value of 0 won't
+   * prohibit V8 from posting tasks using |CallOnWorkerThread|.
+   */
+  virtual int NumberOfWorkerThreads() = 0;
 
   /**
    * Returns a TaskRunner which can be used to post a task on the foreground.
    * This function should only be called from a foreground thread.
    */
   virtual std::shared_ptr<v8::TaskRunner> GetForegroundTaskRunner(
-      Isolate* isolate) {
-    // TODO(ahaas): Make this function abstract after it got implemented on all
-    // platforms.
-    return {};
+      Isolate* isolate) = 0;
+
+  /**
+   * Schedules a task to be invoked on a worker thread.
+   */
+  virtual void CallOnWorkerThread(std::unique_ptr<Task> task) = 0;
+
+  /**
+   * Schedules a task that blocks the main thread to be invoked with
+   * high-priority on a worker thread.
+   */
+  virtual void CallBlockingTaskOnWorkerThread(std::unique_ptr<Task> task) {
+    // Embedders may optionally override this to process these tasks in a high
+    // priority pool.
+    CallOnWorkerThread(std::move(task));
   }
 
   /**
-   * Returns a TaskRunner which can be used to post a task on a background.
-   * This function should only be called from a foreground thread.
+   * Schedules a task to be invoked on a worker thread after |delay_in_seconds|
+   * expires.
    */
-  virtual std::shared_ptr<v8::TaskRunner> GetBackgroundTaskRunner(
-      Isolate* isolate) {
-    // TODO(ahaas): Make this function abstract after it got implemented on all
-    // platforms.
-    return {};
-  }
-
-  /**
-   * Schedules a task to be invoked on a background thread. |expected_runtime|
-   * indicates that the task will run a long time. The Platform implementation
-   * takes ownership of |task|. There is no guarantee about order of execution
-   * of tasks wrt order of scheduling, nor is there a guarantee about the
-   * thread the task will be run on.
-   */
-  virtual void CallOnBackgroundThread(Task* task,
-                                      ExpectedRuntime expected_runtime) = 0;
+  virtual void CallDelayedOnWorkerThread(std::unique_ptr<Task> task,
+                                         double delay_in_seconds) = 0;
 
   /**
    * Schedules a task to be invoked on a foreground thread wrt a specific
@@ -252,14 +342,14 @@ class Platform {
    * The definition of "foreground" is opaque to V8.
    */
   virtual void CallIdleOnForegroundThread(Isolate* isolate, IdleTask* task) {
-    // TODO(ulan): Make this function abstract after V8 roll in Chromium.
+    // This must be overriden if |IdleTasksEnabled()|.
+    abort();
   }
 
   /**
    * Returns true if idle tasks are enabled for the given |isolate|.
    */
   virtual bool IdleTasksEnabled(Isolate* isolate) {
-    // TODO(ulan): Make this function abstract after V8 roll in Chromium.
     return false;
   }
 

@@ -13,9 +13,13 @@ from telemetry.internal.util import command_line
 from telemetry.page import legacy_page_test
 from telemetry.story import expectations as expectations_module
 from telemetry.web_perf import timeline_based_measurement
-from tracing.value import histogram
+from tracing.value.diagnostics import generic_set
 
-Owner = decorators.Owner # pylint: disable=invalid-name
+Info = decorators.Info
+
+# TODO(crbug.com/859524): remove this once we update all the benchmarks in
+# tools/perf to use Info decorator.
+Owner = decorators.Info # pylint: disable=invalid-name
 
 
 class InvalidOptionsError(Exception):
@@ -74,7 +78,7 @@ class Benchmark(command_line.Command):
       max_failures: The number of story run's failures before bailing
           from executing subsequent page runs. If None, we never bail.
     """
-    self._expectations = self.GetExpectations()
+    self._expectations = expectations_module.StoryExpectations()
     self._max_failures = max_failures
     # TODO: There should be an assertion here that checks that only one of
     # the following is true:
@@ -162,21 +166,20 @@ class Benchmark(command_line.Command):
 
   # pylint: disable=unused-argument
   @classmethod
-  def ValueCanBeAddedPredicate(cls, value, is_first_result):
-    """Returns whether |value| can be added to the test results.
+  def ShouldAddValue(cls, name, from_first_story_run):
+    """Returns whether the named value should be added to PageTestResults.
 
     Override this method to customize the logic of adding values to test
-    results.
+    results. SkipValues and TraceValues will be added regardless
+    of logic here.
 
     Args:
-      value: a value.Value instance (except failure.FailureValue,
-        skip.SkipValue or trace.TraceValue which will always be added).
-      is_first_result: True if |value| is the first result for its
-          corresponding story.
+      name: The string name of a value being added.
+      from_first_story_run: True if the named value was produced during the
+          first run of the corresponding story.
 
     Returns:
-      True if |value| should be added to the test results.
-      Otherwise, it returns False.
+      True if the value should be added to the test results, False otherwise.
     """
     return True
 
@@ -197,7 +200,7 @@ class Benchmark(command_line.Command):
     benchmark_component = decorators.GetComponent(self)
     component_diagnostic_value = (
         [benchmark_component] if benchmark_component else [])
-    return histogram.GenericSet(component_diagnostic_value)
+    return generic_set.GenericSet(component_diagnostic_value)
 
   def GetOwners(self):
     """Returns a Generic Diagnostic containing the benchmark's owners' emails
@@ -206,7 +209,18 @@ class Benchmark(command_line.Command):
     Returns:
       Diagnostic with a list of the benchmark's owners' emails
     """
-    return histogram.GenericSet(decorators.GetEmails(self) or [])
+    return generic_set.GenericSet(decorators.GetEmails(self) or [])
+
+  def GetDocumentationLink(self):
+    """Returns a Generic Diagnostic containing the benchmark's documentation
+       link in a string.
+
+    Returns:
+      Diagnostic with the link (string) to the benchmark documentation.
+    """
+    pair = ['Benchmark documentation link',
+            decorators.GetDocumentationLink(self)]
+    return generic_set.GenericSet([pair])
 
   @decorators.Deprecated(
       2017, 7, 29, 'Use CreateCoreTimelineBasedMeasurementOptions instead.')
@@ -258,9 +272,8 @@ class Benchmark(command_line.Command):
       tbm_options = self.CreateTimelineBasedMeasurementOptions()
     if options and options.extra_chrome_categories:
       # If Chrome tracing categories for this benchmark are not already
-      # enabled, there is probably a good reason why (for example, maybe
-      # it is the benchmark that runs a BattOr without Chrome to get an energy
-      # baseline). Don't change whether Chrome tracing is enabled.
+      # enabled, there is probably a good reason why. Don't change whether
+      # Chrome tracing is enabled.
       assert tbm_options.config.enable_chrome_trace, (
           'This benchmark does not support Chrome tracing.')
       tbm_options.config.chrome_trace_config.category_filter.AddFilterString(
@@ -272,7 +285,7 @@ class Benchmark(command_line.Command):
       tbm_options.config.enable_atrace_trace = True
 
       categories = tbm_options.config.atrace_config.categories
-      if type(categories) != list:
+      if isinstance(categories, basestring):
         # Categories can either be a list or comma-separated string.
         # https://github.com/catapult-project/catapult/issues/3712
         categories = categories.split(',')
@@ -280,6 +293,8 @@ class Benchmark(command_line.Command):
         if category not in categories:
           categories.append(category)
       tbm_options.config.atrace_config.categories = categories
+    if options and options.enable_systrace:
+      tbm_options.config.chrome_trace_config.SetEnableSystrace()
     return tbm_options
 
 
@@ -297,7 +312,8 @@ class Benchmark(command_line.Command):
       Otherwise, a TimelineBasedMeasurement instance.
     """
     is_page_test = issubclass(self.test, legacy_page_test.LegacyPageTest)
-    is_tbm = self.test == timeline_based_measurement.TimelineBasedMeasurement
+    is_tbm = issubclass(
+        self.test, timeline_based_measurement.TimelineBasedMeasurement)
     if not is_page_test and not is_tbm:
       raise TypeError('"%s" is not a PageTest or a TimelineBasedMeasurement.' %
                       self.test.__name__)
@@ -309,7 +325,7 @@ class Benchmark(command_line.Command):
 
     opts = self._GetTimelineBasedMeasurementOptions(options)
     self.SetupTraceRerunOptions(options, opts)
-    return timeline_based_measurement.TimelineBasedMeasurement(opts)
+    return self.test(opts)
 
   def CreateStorySet(self, options):
     """Creates the instance of StorySet used to run the benchmark.
@@ -332,15 +348,6 @@ class Benchmark(command_line.Command):
     parser = expectations_parser.TestExpectationParser(data)
     self._expectations.GetBenchmarkExpectationsFromParser(
         parser.expectations, self.Name())
-
-  # TODO(rnephew): Rename GetExpectations to CreateExpectations
-  def GetExpectations(self):
-    """Returns a StoryExpectation object.
-
-    This object is used to determine what stories are disabled. This needs to be
-    overridden by the subclass. It defaults to an empty expectations object.
-    """
-    return expectations_module.StoryExpectations()
 
   @property
   def expectations(self):

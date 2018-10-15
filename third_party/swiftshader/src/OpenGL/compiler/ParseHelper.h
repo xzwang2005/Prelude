@@ -56,7 +56,7 @@ public:
 			mDefaultBlockStorage(EbsShared),
 			mDiagnostics(is),
 			mDirectiveHandler(ext, mDiagnostics, mShaderVersion),
-			mPreprocessor(&mDiagnostics, &mDirectiveHandler),
+			mPreprocessor(&mDiagnostics, &mDirectiveHandler, pp::PreprocessorSettings()),
 			mScanner(nullptr),
 			mUsesFragData(false),
 			mUsesFragColor(false) {  }
@@ -80,6 +80,8 @@ public:
 	           const char* extraInfo="");
 	void warning(const TSourceLoc &loc, const char* reason, const char* token,
 	             const char* extraInfo="");
+	void info(const TSourceLoc &loc, const char* reason, const char* token,
+	          const char* extraInfo="");
 	void trace(const char* str);
 	void recover();
 	TIntermNode *getTreeRoot() const { return mTreeRoot; }
@@ -148,7 +150,7 @@ public:
 	void handleExtensionDirective(const TSourceLoc &line, const char* extName, const char* behavior);
 
 	const TPragma& pragma() const { return mDirectiveHandler.pragma(); }
-	void handlePragmaDirective(const TSourceLoc &line, const char* name, const char* value);
+	void handlePragmaDirective(const TSourceLoc &line, const char* name, const char* value, bool stdgl);
 
 	bool containsSampler(TType& type);
 	const TFunction* findFunction(const TSourceLoc &line, TFunction* pfnCall, bool *builtIn = 0);

@@ -93,6 +93,7 @@ std::unique_ptr<SkSL::Program> GrSkSLtoGLSL(const GrGLContext& context, GrGLenum
         case GR_GL_VERTEX_SHADER:   programKind = SkSL::Program::kVertex_Kind;   break;
         case GR_GL_FRAGMENT_SHADER: programKind = SkSL::Program::kFragment_Kind; break;
         case GR_GL_GEOMETRY_SHADER: programKind = SkSL::Program::kGeometry_Kind; break;
+        default: SK_ABORT("unsupported shader kind");
     }
     program = compiler->convertProgram(programKind, sksl, settings);
     if (!program || !compiler->toGLSL(*program, glsl)) {
@@ -151,7 +152,11 @@ GrGLuint GrGLCompileAndAttachShader(const GrGLContext& glCtx,
                 GR_GL_CALL(gli, GetShaderInfoLog(shaderId, infoLen+1, &length, (char*)log.get()));
                 SkDebugf("Errors:\n%s\n", (const char*) log.get());
             }
-            SkDEBUGFAIL("GLSL compilation failed!");
+            // In Chrome we may have failed due to context-loss. So we should just continue along
+            // wihthout asserting until the GrContext gets abandoned.
+            if (kChromium_GrGLDriver != glCtx.driver()) {
+                SkDEBUGFAIL("GLSL compilation failed!");
+            }
             GR_GL_CALL(gli, DeleteShader(shaderId));
             return 0;
         }

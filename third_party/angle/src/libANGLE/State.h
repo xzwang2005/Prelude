@@ -16,6 +16,7 @@
 #include "common/angleutils.h"
 #include "common/bitset_utils.h"
 #include "libANGLE/Debug.h"
+#include "libANGLE/GLES1State.h"
 #include "libANGLE/Program.h"
 #include "libANGLE/ProgramPipeline.h"
 #include "libANGLE/RefCountObject.h"
@@ -34,18 +35,17 @@ class VertexArray;
 class Context;
 struct Caps;
 
-class State : public OnAttachmentDirtyReceiver, angle::NonCopyable
+class State : angle::NonCopyable
 {
   public:
-    State();
-    ~State() override;
+    State(bool debug,
+          bool bindGeneratesResource,
+          bool clientArraysEnabled,
+          bool robustResourceInit,
+          bool programBinaryCacheEnabled);
+    ~State();
 
-    void initialize(const Context *context,
-                    bool debug,
-                    bool bindGeneratesResource,
-                    bool clientArraysEnabled,
-                    bool robustResourceInit,
-                    bool programBinaryCacheEnabled);
+    void initialize(Context *context);
     void reset(const Context *context);
 
     // State chunk getters
@@ -162,7 +162,7 @@ class State : public OnAttachmentDirtyReceiver, angle::NonCopyable
     void setFragmentShaderDerivativeHint(GLenum hint);
 
     // GL_CHROMIUM_bind_generates_resource
-    bool isBindGeneratesResourceEnabled() const;
+    bool isBindGeneratesResourceEnabled() const { return mBindGeneratesResource; }
 
     // GL_ANGLE_client_arrays
     bool areClientArraysEnabled() const;
@@ -174,17 +174,28 @@ class State : public OnAttachmentDirtyReceiver, angle::NonCopyable
     // Texture binding & active texture unit manipulation
     void setActiveSampler(unsigned int active);
     unsigned int getActiveSampler() const;
-    void setSamplerTexture(const Context *context, GLenum type, Texture *texture);
-    Texture *getTargetTexture(GLenum target) const;
-    Texture *getSamplerTexture(unsigned int sampler, GLenum type) const;
-    GLuint getSamplerTextureId(unsigned int sampler, GLenum type) const;
+    void setSamplerTexture(const Context *context, TextureType type, Texture *texture);
+    Texture *getTargetTexture(TextureType type) const;
+
+    Texture *getSamplerTexture(unsigned int sampler, TextureType type) const
+    {
+        ASSERT(sampler < mSamplerTextures[type].size());
+        return mSamplerTextures[type][sampler].get();
+    }
+
+    GLuint getSamplerTextureId(unsigned int sampler, TextureType type) const;
     void detachTexture(const Context *context, const TextureMap &zeroTextures, GLuint texture);
     void initializeZeroTextures(const Context *context, const TextureMap &zeroTextures);
 
     // Sampler object binding manipulation
     void setSamplerBinding(const Context *context, GLuint textureUnit, Sampler *sampler);
     GLuint getSamplerId(GLuint textureUnit) const;
-    Sampler *getSampler(GLuint textureUnit) const;
+
+    Sampler *getSampler(GLuint textureUnit) const { return mSamplers[textureUnit].get(); }
+
+    using SamplerBindingVector = std::vector<BindingPointer<Sampler>>;
+    const SamplerBindingVector &getSamplers() const { return mSamplers; }
+
     void detachSampler(const Context *context, GLuint sampler);
 
     // Renderbuffer binding manipulation
@@ -198,32 +209,39 @@ class State : public OnAttachmentDirtyReceiver, angle::NonCopyable
     void setDrawFramebufferBinding(Framebuffer *framebuffer);
     Framebuffer *getTargetFramebuffer(GLenum target) const;
     Framebuffer *getReadFramebuffer() const;
-    Framebuffer *getDrawFramebuffer() const;
+    Framebuffer *getDrawFramebuffer() const { return mDrawFramebuffer; }
+
     bool removeReadFramebufferBinding(GLuint framebuffer);
     bool removeDrawFramebufferBinding(GLuint framebuffer);
 
     // Vertex array object binding manipulation
-    void setVertexArrayBinding(VertexArray *vertexArray);
+    void setVertexArrayBinding(const Context *context, VertexArray *vertexArray);
     GLuint getVertexArrayId() const;
-    VertexArray *getVertexArray() const;
-    bool removeVertexArrayBinding(GLuint vertexArray);
+    VertexArray *getVertexArray() const
+    {
+        ASSERT(mVertexArray != nullptr);
+        return mVertexArray;
+    }
+
+    bool removeVertexArrayBinding(const Context *context, GLuint vertexArray);
 
     // Program binding manipulation
     void setProgram(const Context *context, Program *newProgram);
-    Program *getProgram() const;
+    Program *getProgram() const { return mProgram; }
 
     // Transform feedback object (not buffer) binding manipulation
     void setTransformFeedbackBinding(const Context *context, TransformFeedback *transformFeedback);
-    TransformFeedback *getCurrentTransformFeedback() const;
+    TransformFeedback *getCurrentTransformFeedback() const { return mTransformFeedback.get(); }
+
     bool isTransformFeedbackActiveUnpaused() const;
     bool removeTransformFeedbackBinding(const Context *context, GLuint transformFeedback);
 
     // Query binding manipulation
-    bool isQueryActive(const GLenum type) const;
+    bool isQueryActive(QueryType type) const;
     bool isQueryActive(Query *query) const;
-    void setActiveQuery(const Context *context, GLenum target, Query *query);
-    GLuint getActiveQueryId(GLenum target) const;
-    Query *getActiveQuery(GLenum target) const;
+    void setActiveQuery(const Context *context, QueryType type, Query *query);
+    GLuint getActiveQueryId(QueryType type) const;
+    Query *getActiveQuery(QueryType type) const;
 
     // Program Pipeline binding manipulation
     void setProgramPipelineBinding(const Context *context, ProgramPipeline *pipeline);
@@ -244,11 +262,10 @@ class State : public OnAttachmentDirtyReceiver, angle::NonCopyable
     const OffsetBindingPointer<Buffer> &getIndexedShaderStorageBuffer(size_t index) const;
 
     // Detach a buffer from all bindings
-    void detachBuffer(const Context *context, GLuint bufferName);
+    void detachBuffer(const Context *context, const Buffer *buffer);
 
     // Vertex attrib manipulation
     void setEnableVertexAttribArray(unsigned int attribNum, bool enabled);
-    void setElementArrayBuffer(const Context *context, Buffer *buffer);
     void setVertexAttribf(GLuint index, const GLfloat values[4]);
     void setVertexAttribu(GLuint index, const GLuint values[4]);
     void setVertexAttribi(GLuint index, const GLint values[4]);
@@ -330,16 +347,19 @@ class State : public OnAttachmentDirtyReceiver, angle::NonCopyable
     void setFramebufferSRGB(bool sRGB);
     bool getFramebufferSRGB() const;
 
+    // GL_KHR_parallel_shader_compile
+    void setMaxShaderCompilerThreads(GLuint count);
+    GLuint getMaxShaderCompilerThreads() const;
+
     // State query functions
     void getBooleanv(GLenum pname, GLboolean *params);
     void getFloatv(GLenum pname, GLfloat *params);
-    void getIntegerv(const Context *context, GLenum pname, GLint *params);
-    void getPointerv(GLenum pname, void **params) const;
+    Error getIntegerv(const Context *context, GLenum pname, GLint *params);
+    void getPointerv(const Context *context, GLenum pname, void **params) const;
     void getIntegeri_v(GLenum target, GLuint index, GLint *data);
     void getInteger64i_v(GLenum target, GLuint index, GLint64 *data);
     void getBooleani_v(GLenum target, GLuint index, GLboolean *data);
 
-    bool hasMappedBuffer(BufferBinding target) const;
     bool isRobustResourceInitEnabled() const { return mRobustResourceInit; }
 
     // Sets the dirty bit for the program executable.
@@ -394,19 +414,22 @@ class State : public OnAttachmentDirtyReceiver, angle::NonCopyable
         DIRTY_BIT_RENDERBUFFER_BINDING,
         DIRTY_BIT_VERTEX_ARRAY_BINDING,
         DIRTY_BIT_DRAW_INDIRECT_BUFFER_BINDING,
+        DIRTY_BIT_DISPATCH_INDIRECT_BUFFER_BINDING,
         DIRTY_BIT_SHADER_STORAGE_BUFFER_BINDING,
+        DIRTY_BIT_ATOMIC_COUNTER_BUFFER_BINDING,
+        // TODO(jmadill): Fine-grained dirty bits for each index.
+        DIRTY_BIT_UNIFORM_BUFFER_BINDINGS,
         DIRTY_BIT_PROGRAM_BINDING,
         DIRTY_BIT_PROGRAM_EXECUTABLE,
         // TODO(jmadill): Fine-grained dirty bits for each texture/sampler.
         DIRTY_BIT_TEXTURE_BINDINGS,
         DIRTY_BIT_SAMPLER_BINDINGS,
+        DIRTY_BIT_IMAGE_BINDINGS,
         DIRTY_BIT_TRANSFORM_FEEDBACK_BINDING,
         DIRTY_BIT_MULTISAMPLING,
         DIRTY_BIT_SAMPLE_ALPHA_TO_ONE,
-        DIRTY_BIT_COVERAGE_MODULATION,         // CHROMIUM_framebuffer_mixed_samples
-        DIRTY_BIT_PATH_RENDERING_MATRIX_MV,    // CHROMIUM_path_rendering path model view matrix
-        DIRTY_BIT_PATH_RENDERING_MATRIX_PROJ,  // CHROMIUM_path_rendering path projection matrix
-        DIRTY_BIT_PATH_RENDERING_STENCIL_STATE,
+        DIRTY_BIT_COVERAGE_MODULATION,  // CHROMIUM_framebuffer_mixed_samples
+        DIRTY_BIT_PATH_RENDERING,
         DIRTY_BIT_FRAMEBUFFER_SRGB,  // GL_EXT_sRGB_write_control
         DIRTY_BIT_CURRENT_VALUES,
         DIRTY_BIT_INVALID,
@@ -421,9 +444,11 @@ class State : public OnAttachmentDirtyReceiver, angle::NonCopyable
         DIRTY_OBJECT_READ_FRAMEBUFFER,
         DIRTY_OBJECT_DRAW_FRAMEBUFFER,
         DIRTY_OBJECT_VERTEX_ARRAY,
+        DIRTY_OBJECT_SAMPLERS,
         // Use a very coarse bit for any program or texture change.
         // TODO(jmadill): Fine-grained dirty bits for each texture/sampler.
         DIRTY_OBJECT_PROGRAM_TEXTURES,
+        DIRTY_OBJECT_PROGRAM,
         DIRTY_OBJECT_UNKNOWN,
         DIRTY_OBJECT_MAX = DIRTY_OBJECT_UNKNOWN,
     };
@@ -437,17 +462,17 @@ class State : public OnAttachmentDirtyReceiver, angle::NonCopyable
     using DirtyObjects = angle::BitSet<DIRTY_OBJECT_MAX>;
     void clearDirtyObjects() { mDirtyObjects.reset(); }
     void setAllDirtyObjects() { mDirtyObjects.set(); }
-    void syncDirtyObjects(const Context *context);
-    void syncDirtyObjects(const Context *context, const DirtyObjects &bitset);
-    void syncDirtyObject(const Context *context, GLenum target);
+    Error syncDirtyObjects(const Context *context, const DirtyObjects &bitset);
+    Error syncDirtyObject(const Context *context, GLenum target);
     void setObjectDirty(GLenum target);
+    void setSamplerDirty(size_t samplerIndex);
 
     // This actually clears the current value dirty bits.
     // TODO(jmadill): Pass mutable dirty bits into Impl.
     AttributesMask getAndResetDirtyCurrentValues() const;
 
     void setImageUnit(const Context *context,
-                      GLuint unit,
+                      size_t unit,
                       Texture *texture,
                       GLint level,
                       GLboolean layered,
@@ -455,16 +480,25 @@ class State : public OnAttachmentDirtyReceiver, angle::NonCopyable
                       GLenum access,
                       GLenum format);
 
-    const ImageUnit &getImageUnit(GLuint unit) const;
-    const std::vector<Texture *> &getCompleteTextureCache() const { return mCompleteTextureCache; }
+    const ImageUnit &getImageUnit(size_t unit) const;
+    const ActiveTexturePointerArray &getActiveTexturesCache() const { return mActiveTexturesCache; }
+    ComponentTypeMask getCurrentValuesTypeMask() const { return mCurrentValuesTypeMask; }
 
-    // Handle a dirty texture event.
-    void signal(size_t textureIndex, InitState initState) override;
+    void onActiveTextureStateChange(size_t textureIndex);
+    void onUniformBufferStateChange(size_t uniformBufferIndex);
 
     Error clearUnclearedActiveTextures(const Context *context);
 
+    bool isCurrentTransformFeedback(const TransformFeedback *tf) const;
+
+    bool isCurrentVertexArray(const VertexArray *va) const { return va == mVertexArray; }
+
+    GLES1State &gles1() { return mGLES1State; }
+    const GLES1State &gles1() const { return mGLES1State; }
+
   private:
-    void syncProgramTextures(const Context *context);
+    void syncSamplers(const Context *context);
+    Error syncProgramTextures(const Context *context);
 
     // Cached values from Context's caps
     GLuint mMaxDrawBuffers;
@@ -496,8 +530,8 @@ class State : public OnAttachmentDirtyReceiver, angle::NonCopyable
     GLenum mGenerateMipmapHint;
     GLenum mFragmentShaderDerivativeHint;
 
-    bool mBindGeneratesResource;
-    bool mClientArraysEnabled;
+    const bool mBindGeneratesResource;
+    const bool mClientArraysEnabled;
 
     Rectangle mViewport;
     float mNearZ;
@@ -509,51 +543,49 @@ class State : public OnAttachmentDirtyReceiver, angle::NonCopyable
     Program *mProgram;
     BindingPointer<ProgramPipeline> mProgramPipeline;
 
-    typedef std::vector<VertexAttribCurrentValueData> VertexAttribVector;
+    using VertexAttribVector = std::vector<VertexAttribCurrentValueData>;
     VertexAttribVector mVertexAttribCurrentValues;  // From glVertexAttrib
     VertexArray *mVertexArray;
+    ComponentTypeMask mCurrentValuesTypeMask;
 
     // Texture and sampler bindings
     size_t mActiveSampler;  // Active texture unit selector - GL_TEXTURE0
 
-    typedef std::vector<BindingPointer<Texture>> TextureBindingVector;
-    typedef std::map<GLenum, TextureBindingVector> TextureBindingMap;
+    using TextureBindingVector = std::vector<BindingPointer<Texture>>;
+    using TextureBindingMap    = angle::PackedEnumMap<TextureType, TextureBindingVector>;
     TextureBindingMap mSamplerTextures;
 
     // Texture Completeness Caching
     // ----------------------------
-    // The texture completeness cache uses dirty bits to avoid having to scan the list
-    // of textures each draw call. This gl::State class implements OnAttachmentDirtyReceiver,
-    // and keeps an array of bindings to the Texture class. When the Textures are marked dirty,
-    // they send messages to the State class (and any Framebuffers they're attached to) via the
-    // State::signal method (see above). Internally this then invalidates the completeness cache.
+    // The texture completeness cache uses dirty bits to avoid having to scan the list of textures
+    // each draw call. This gl::State class implements angle::Observer interface. When subject
+    // Textures have state changes, messages reach 'State' (also any observing Framebuffers) via the
+    // onSubjectStateChange method (above). This then invalidates the completeness cache.
     //
     // Note this requires that we also invalidate the completeness cache manually on events like
     // re-binding textures/samplers or a change in the program. For more information see the
-    // signal_utils.h header and the design doc linked there.
+    // Observer.h header and the design doc linked there.
 
     // A cache of complete textures. nullptr indicates unbound or incomplete.
     // Don't use BindingPointer because this cache is only valid within a draw call.
     // Also stores a notification channel to the texture itself to handle texture change events.
-    std::vector<Texture *> mCompleteTextureCache;
-    std::vector<OnAttachmentDirtyBinding> mCompleteTextureBindings;
+    ActiveTexturePointerArray mActiveTexturesCache;
+    std::vector<angle::ObserverBinding> mCompleteTextureBindings;
     InitState mCachedTexturesInitState;
-    using ActiveTextureMask = angle::BitSet<IMPLEMENTATION_MAX_ACTIVE_TEXTURES>;
-    ActiveTextureMask mActiveTexturesMask;
 
-    typedef std::vector<BindingPointer<Sampler>> SamplerBindingVector;
+    InitState mCachedImageTexturesInitState;
+
     SamplerBindingVector mSamplers;
 
-    typedef std::vector<ImageUnit> ImageUnitVector;
+    using ImageUnitVector = std::vector<ImageUnit>;
     ImageUnitVector mImageUnits;
 
-    typedef std::map<GLenum, BindingPointer<Query>> ActiveQueryMap;
+    using ActiveQueryMap = angle::PackedEnumMap<QueryType, BindingPointer<Query>>;
     ActiveQueryMap mActiveQueries;
 
-    // Stores the currently bound buffer for each binding point. It has entries for the element
-    // array buffer and the transform feedback buffer but these should not be used. Instead these
-    // bind points are respectively owned by current the vertex array object and the current
-    // transform feedback object.
+    // Stores the currently bound buffer for each binding point. It has an entry for the element
+    // array buffer but it should not be used. Instead this bind point is owned by the current
+    // vertex array object.
     using BoundBufferMap = angle::PackedEnumMap<BufferBinding, BindingPointer<Buffer>>;
     BoundBufferMap mBoundBuffers;
 
@@ -564,9 +596,7 @@ class State : public OnAttachmentDirtyReceiver, angle::NonCopyable
 
     BindingPointer<TransformFeedback> mTransformFeedback;
 
-    BindingPointer<Buffer> mPixelUnpackBuffer;
     PixelUnpackState mUnpack;
-    BindingPointer<Buffer> mPixelPackBuffer;
     PixelPackState mPack;
 
     bool mPrimitiveRestart;
@@ -589,14 +619,21 @@ class State : public OnAttachmentDirtyReceiver, angle::NonCopyable
     bool mFramebufferSRGB;
 
     // GL_ANGLE_robust_resource_intialization
-    bool mRobustResourceInit;
+    const bool mRobustResourceInit;
 
     // GL_ANGLE_program_cache_control
-    bool mProgramBinaryCacheEnabled;
+    const bool mProgramBinaryCacheEnabled;
+
+    // GL_KHR_parallel_shader_compile
+    GLuint mMaxShaderCompilerThreads;
+
+    // GLES1 emulation: state specific to GLES1
+    GLES1State mGLES1State;
 
     DirtyBits mDirtyBits;
     DirtyObjects mDirtyObjects;
     mutable AttributesMask mDirtyCurrentValues;
+    ActiveTextureMask mDirtySamplers;
 };
 
 }  // namespace gl

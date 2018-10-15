@@ -70,8 +70,13 @@ if (enable_nocompile_tests) {
     nocompile_target = target_name + "_run_nocompile"
 
     action_foreach(nocompile_target) {
+      testonly = true
       script = "//tools/nocompile_driver.py"
       sources = invoker.sources
+      deps = invoker.deps
+      if (defined(invoker.public_deps)) {
+        public_deps = invoker.public_deps
+      }
 
       result_path = "$target_gen_dir/{{source_name_part}}_nc.cc"
       depfile = "${result_path}.d"
@@ -86,12 +91,13 @@ if (enable_nocompile_tests) {
         "-nostdinc++",
         "-isystem" + rebase_path("$libcxx_prefix/include", root_build_dir),
         "-isystem" + rebase_path("$libcxxabi_prefix/include", root_build_dir),
-        "-isystem" + rebase_path("$libunwind_prefix/include", root_build_dir),
         "-std=c++14",
         "-Wall",
         "-Werror",
         "-Wfatal-errors",
+        "-Wthread-safety",
         "-I" + rebase_path("//", root_build_dir),
+        "-I" + rebase_path(root_gen_dir, root_build_dir),
       ]
       if (sysroot != "") {
         args += [

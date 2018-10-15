@@ -274,6 +274,7 @@ namespace sw
 		blendOperationStateAlpha = BLENDOP_ADD;
 
 		cullMode = CULL_CLOCKWISE;
+		frontFacingCCW = true;
 		alphaReference = 0.0f;
 
 		depthBias = 0.0f;
@@ -484,7 +485,7 @@ namespace sw
 	{
 		if(!colorUsed()) return false;
 
-		if(pixelShaderVersion() >= 0x0300) return false;
+		if(pixelShaderModel() >= 0x0300) return false;
 
 		return fogEnable;
 	}
@@ -616,7 +617,7 @@ namespace sw
 
 	bool Context::isProjectionComponent(unsigned int coordinate, int component)
 	{
-		if(pixelShaderVersion() <= 0x0103 && coordinate < 8 && textureTransformProject[coordinate])
+		if(pixelShaderModel() <= 0x0103 && coordinate < 8 && textureTransformProject[coordinate])
 		{
 			if(textureTransformCount[coordinate] == 2)
 			{
@@ -1382,7 +1383,7 @@ namespace sw
 			return false;
 		}
 
-		if(textureTransformProject[coordinate] && pixelShaderVersion() <= 0x0103)
+		if(textureTransformProject[coordinate] && pixelShaderModel() <= 0x0103)
 		{
 			if(textureTransformCount[coordinate] == 2)
 			{
@@ -1435,14 +1436,14 @@ namespace sw
 		return false;
 	}
 
-	unsigned short Context::pixelShaderVersion() const
+	unsigned short Context::pixelShaderModel() const
 	{
-		return pixelShader ? pixelShader->getVersion() : 0x0000;
+		return pixelShader ? pixelShader->getShaderModel() : 0x0000;
 	}
 
-	unsigned short Context::vertexShaderVersion() const
+	unsigned short Context::vertexShaderModel() const
 	{
-		return vertexShader ? vertexShader->getVersion() : 0x0000;
+		return vertexShader ? vertexShader->getShaderModel() : 0x0000;
 	}
 
 	int Context::getMultiSampleCount() const

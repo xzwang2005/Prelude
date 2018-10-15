@@ -19,12 +19,13 @@
 #include "ui/events/devices/touch_device_transform.h"
 #include "ui/events/devices/touchscreen_device.h"
 
+namespace ws {
+class InputDeviceClientTestApi;
+}  // namespace ws
+
 namespace ui {
 
-namespace test {
-class DeviceDataManagerTestAPI;
-}  // namespace test
-
+class DeviceDataManagerTest;
 class InputDeviceEventObserver;
 
 // Keeps track of device mappings and event transformations.
@@ -64,10 +65,6 @@ class EVENTS_DEVICES_EXPORT DeviceDataManager
   bool AreTouchscreenTargetDisplaysValid() const override;
   void AddObserver(InputDeviceEventObserver* observer) override;
   void RemoveObserver(InputDeviceEventObserver* observer) override;
-  void SetKeyboardDevicesForTesting(
-      const std::vector<InputDevice>& devices) override;
-  void SetTouchscreenDevicesForTesting(
-      const std::vector<TouchscreenDevice>& devices) override;
 
  protected:
   DeviceDataManager();
@@ -87,7 +84,8 @@ class EVENTS_DEVICES_EXPORT DeviceDataManager
   void OnStylusStateChanged(StylusState state) override;
 
  private:
-  friend class test::DeviceDataManagerTestAPI;
+  friend class DeviceDataManagerTest;
+  friend class ws::InputDeviceClientTestApi;
 
   void ClearTouchDeviceAssociations();
   void UpdateTouchInfoFromTransform(
@@ -109,7 +107,7 @@ class EVENTS_DEVICES_EXPORT DeviceDataManager
   std::vector<InputDevice> touchpad_devices_;
   bool device_lists_complete_ = false;
 
-  base::ObserverList<InputDeviceEventObserver> observers_;
+  base::ObserverList<InputDeviceEventObserver>::Unchecked observers_;
 
   bool touch_screens_enabled_ = true;
 

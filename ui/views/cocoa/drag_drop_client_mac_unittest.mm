@@ -12,7 +12,9 @@
 #include "base/strings/utf_string_conversions.h"
 #include "base/threading/thread_task_runner_handle.h"
 #import "ui/base/clipboard/clipboard_util_mac.h"
+#include "ui/gfx/image/image_unittest_util.h"
 #import "ui/views/cocoa/bridged_native_widget.h"
+#import "ui/views/cocoa/bridged_native_widget_host_impl.h"
 #include "ui/views/test/widget_test.h"
 #include "ui/views/view.h"
 #include "ui/views/widget/native_widget_mac.h"
@@ -184,8 +186,10 @@ class DragDropClientMacTest : public WidgetTest {
     gfx::Rect bounds(0, 0, 100, 100);
     widget_->SetBounds(bounds);
 
-    bridge_ =
-        NativeWidgetMac::GetBridgeForNativeWindow(widget_->GetNativeWindow());
+    bridge_ = BridgedNativeWidgetImpl::GetFromNativeWindow(
+        widget_->GetNativeWindow());
+    bridge_host_ = BridgedNativeWidgetHostImpl::GetFromNativeWindow(
+        widget_->GetNativeWindow());
     widget_->Show();
 
     target_ = new DragDropView();
@@ -203,7 +207,8 @@ class DragDropClientMacTest : public WidgetTest {
 
  protected:
   Widget* widget_ = nullptr;
-  BridgedNativeWidget* bridge_ = nullptr;
+  BridgedNativeWidgetImpl* bridge_ = nullptr;
+  BridgedNativeWidgetHostImpl* bridge_host_ = nullptr;
   DragDropView* target_ = nullptr;
   base::scoped_nsobject<MockDraggingInfo> dragging_info_;
 
@@ -235,12 +240,14 @@ TEST_F(DragDropClientMacTest, ReleaseCapture) {
   // since the runloop will exit before the system has any opportunity to
   // capture anything.
   bridge_->AcquireCapture();
-  EXPECT_TRUE(bridge_->HasCapture());
+  EXPECT_TRUE(bridge_host_->IsMouseCaptureActive());
 
   // Create the drop data
   OSExchangeData data;
   const base::string16& text = ASCIIToUTF16("text");
   data.SetString(text);
+  data.provider().SetDragImage(gfx::test::CreateImageSkia(100, 100),
+                               gfx::Vector2d());
   SetData(data);
 
   // There's no way to cleanly stop NSDraggingSession inside unit tests, so just
@@ -259,7 +266,7 @@ TEST_F(DragDropClientMacTest, ReleaseCapture) {
       target_, data, 0, ui::DragDropTypes::DRAG_EVENT_SOURCE_MOUSE);
 
   // The capture should be released.
-  EXPECT_FALSE(bridge_->HasCapture());
+  EXPECT_FALSE(bridge_host_->IsMouseCaptureActive());
 }
 
 // Tests if the drag and drop target rejects the dropped data with the

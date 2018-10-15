@@ -49,9 +49,9 @@ class GpuControlListTest : public testing::Test {
   void SetUp() override {
     gpu_info_.gpu.vendor_id = kNvidiaVendorId;
     gpu_info_.gpu.device_id = 0x0640;
-    gpu_info_.driver_vendor = "NVIDIA";
-    gpu_info_.driver_version = "1.6.18";
-    gpu_info_.driver_date = "7-14-2009";
+    gpu_info_.gpu.driver_vendor = "NVIDIA";
+    gpu_info_.gpu.driver_version = "1.6.18";
+    gpu_info_.gpu.driver_date = "7-14-2009";
     gpu_info_.machine_model_name = "MacBookPro";
     gpu_info_.machine_model_version = "7.1";
     gpu_info_.gl_vendor = "NVIDIA Corporation";
@@ -79,7 +79,7 @@ TEST_F(GpuControlListTest, NeedsMoreInfo) {
   std::vector<uint32_t> decision_entries = control_list->GetActiveEntries();
   EXPECT_EQ(0u, decision_entries.size());
 
-  gpu_info.driver_version = "11";
+  gpu_info.gpu.driver_version = "11";
   features = control_list->MakeDecision(
       GpuControlList::kOsWin, kOsVersion, gpu_info);
   EXPECT_SINGLE_FEATURE(features, TEST_FEATURE_0);
@@ -184,6 +184,35 @@ TEST_F(GpuControlListTest, LinuxKernelVersion) {
   features = control_list->MakeDecision(GpuControlList::kOsLinux,
                                         "3.19.2-1-generic", gpu_info);
   EXPECT_EMPTY_SET(features);
+}
+
+TEST_F(GpuControlListTest, TestGroup) {
+  const Entry kEntries[3] = {
+      kGpuControlListTestingEntries[kGpuControlListTest_LinuxKernelVersion],
+      kGpuControlListTestingEntries[kGpuControlListTest_TestGroup_0],
+      kGpuControlListTestingEntries[kGpuControlListTest_TestGroup_1]};
+  std::unique_ptr<GpuControlList> control_list = Create(3, kEntries);
+  GPUInfo gpu_info;
+
+  // Default test group.
+  std::set<int> features = control_list->MakeDecision(
+      GpuControlList::kOsLinux, "3.13.2-1-generic", gpu_info);
+  EXPECT_EMPTY_SET(features);
+
+  // Test group 0, the default test group
+  features = control_list->MakeDecision(GpuControlList::kOsLinux,
+                                        "3.13.2-1-generic", gpu_info, 0);
+  EXPECT_EMPTY_SET(features);
+
+  // Test group 1.
+  features = control_list->MakeDecision(GpuControlList::kOsLinux,
+                                        "3.13.2-1-generic", gpu_info, 1);
+  EXPECT_SINGLE_FEATURE(features, TEST_FEATURE_0);
+
+  // Test group 2.
+  features = control_list->MakeDecision(GpuControlList::kOsLinux,
+                                        "3.13.2-1-generic", gpu_info, 2);
+  EXPECT_SINGLE_FEATURE(features, TEST_FEATURE_1);
 }
 
 }  // namespace gpu

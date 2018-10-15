@@ -4,11 +4,13 @@
 
 #include "media/remoting/courier_renderer_factory.h"
 
+#include <memory>
+
 #include "base/logging.h"
-#include "base/memory/ptr_util.h"
+#include "build/build_config.h"
 #include "build/buildflag.h"
 #include "media/base/overlay_info.h"
-#include "media/media_features.h"
+#include "media/media_buildflags.h"
 
 #if BUILDFLAG(ENABLE_MEDIA_REMOTING_RPC)
 #include "media/remoting/courier_renderer.h"  // nogncheck
@@ -32,7 +34,7 @@ std::unique_ptr<Renderer> CourierRendererFactory::CreateRenderer(
     const gfx::ColorSpace& target_color_space) {
   DCHECK(IsRemotingActive());
 #if BUILDFLAG(ENABLE_MEDIA_REMOTING_RPC)
-  return base::MakeUnique<CourierRenderer>(
+  return std::make_unique<CourierRenderer>(
       media_task_runner, controller_->GetWeakPtr(), video_renderer_sink);
 #else
   return nullptr;
@@ -40,7 +42,11 @@ std::unique_ptr<Renderer> CourierRendererFactory::CreateRenderer(
 }
 
 bool CourierRendererFactory::IsRemotingActive() {
+#if defined(OS_ANDROID)
+  return false;  // Media Remoting is not supported on Android for now.
+#else
   return controller_ && controller_->remote_rendering_started();
+#endif
 }
 
 }  // namespace remoting

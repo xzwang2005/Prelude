@@ -7,10 +7,19 @@
 #import <Cocoa/Cocoa.h>
 
 #include "base/mac/foundation_util.h"
-#import "ui/views/cocoa/bridged_native_widget.h"
+#import "ui/accessibility/platform/ax_platform_node_mac.h"
+#import "ui/base/cocoa/accessibility_hostable.h"
+#import "ui/views/cocoa/bridged_native_widget_host_impl.h"
 #include "ui/views/controls/native/native_view_host.h"
 #include "ui/views/widget/native_widget_mac.h"
 #include "ui/views/widget/widget.h"
+
+// NSViews that can be drawn as a ui::Layer directly will implement this
+// interface. Calling cr_setParentLayer will embed the ui::Layer of the NSView
+// under |parentUiLayer|.
+@interface NSView (UICompositor)
+- (void)cr_setParentUiLayer:(ui::Layer*)parentUiLayer;
+@end
 
 namespace views {
 namespace {
@@ -29,9 +38,22 @@ void EnsureNativeViewHasNoChildWidgets(NSView* native_view) {
   }
 }
 
+AXPlatformNodeCocoa* ClosestPlatformAncestorNode(views::View* view) {
+  do {
+    gfx::NativeViewAccessible accessible = view->GetNativeViewAccessible();
+    if ([accessible isKindOfClass:[AXPlatformNodeCocoa class]]) {
+      return NSAccessibilityUnignoredAncestor(accessible);
+    }
+    view = view->parent();
+  } while (view);
+  return nil;
+}
+
 }  // namespace
 
 NativeViewHostMac::NativeViewHostMac(NativeViewHost* host) : host_(host) {
+  // Ensure that |host_| have its own ui::Layer and that it draw nothing.
+  host_->SetPaintToLayer(ui::LAYER_NOT_DRAWN);
 }
 
 NativeViewHostMac::~NativeViewHostMac() {
@@ -45,12 +67,37 @@ void NativeViewHostMac::AttachNativeView() {
   DCHECK(!native_view_);
   native_view_.reset([host_->native_view() retain]);
 
+  if ([native_view_ respondsToSelector:@selector(cr_setParentUiLayer:)])
+    [native_view_ cr_setParentUiLayer:host_->layer()];
+  if ([native_view_ conformsToProtocol:@protocol(AccessibilityHostable)]) {
+    // Find the closest ancestor view that participates in the views toolkit
+    // accessibility hierarchy and set its element as the native view's parent.
+    // This is necessary because a closer ancestor might already be attaching
+    // to the NSView/content hierarchy.
+    // For example, web content is currently embedded into the views hierarchy
+    // roughly like this:
+    // BrowserView (views)
+    // |_  WebView (views)
+    //   |_  NativeViewHost (views)
+    //     |_  WebContentView (Cocoa, is |native_view_| in this scenario,
+    //         |               accessibility ignored).
+    //         |_ RenderWidgetHostView (Cocoa)
+    // WebView specifies either the RenderWidgetHostView or the native view as
+    // its accessibility element. That means that if we were to set it as
+    // |native_view_|'s parent, the RenderWidgetHostView would be its own
+    // accessibility parent! Instead, we want to find the browser view and
+    // attach to its node.
+    id hostable = native_view_;
+    [hostable setAccessibilityParentElement:ClosestPlatformAncestorNode(
+                                                host_->parent())];
+  }
+
   EnsureNativeViewHasNoChildWidgets(native_view_);
-  BridgedNativeWidget* bridge = NativeWidgetMac::GetBridgeForNativeWindow(
-      host_->GetWidget()->GetNativeWindow());
-  DCHECK(bridge);
-  [bridge->ns_view() addSubview:native_view_];
-  bridge->SetAssociationForView(host_, native_view_);
+  BridgedNativeWidgetHostImpl* bridge_host =
+      BridgedNativeWidgetHostImpl::GetFromNativeWindow(
+          host_->GetWidget()->GetNativeWindow());
+  DCHECK(bridge_host);
+  bridge_host->SetAssociationForView(host_, native_view_);
 }
 
 void NativeViewHostMac::NativeViewDetaching(bool destroyed) {
@@ -71,12 +118,20 @@ void NativeViewHostMac::NativeViewDetaching(bool destroyed) {
   [host_->native_view() setHidden:YES];
   [host_->native_view() removeFromSuperview];
 
+  if ([native_view_ respondsToSelector:@selector(cr_setParentUiLayer:)])
+    [native_view_ cr_setParentUiLayer:nullptr];
+  if ([native_view_ conformsToProtocol:@protocol(AccessibilityHostable)]) {
+    id hostable = native_view_;
+    [hostable setAccessibilityParentElement:nil];
+  }
+
   EnsureNativeViewHasNoChildWidgets(host_->native_view());
-  BridgedNativeWidget* bridge = NativeWidgetMac::GetBridgeForNativeWindow(
-      host_->GetWidget()->GetNativeWindow());
-  // BridgedNativeWidget can be null when Widget is closing.
-  if (bridge)
-    bridge->ClearAssociationForView(host_);
+  BridgedNativeWidgetHostImpl* bridge_host =
+      BridgedNativeWidgetHostImpl::GetFromNativeWindow(
+          host_->GetWidget()->GetNativeWindow());
+  // BridgedNativeWidgetImpl can be null when Widget is closing.
+  if (bridge_host)
+    bridge_host->ClearAssociationForView(host_);
 
   native_view_.reset();
 }
@@ -96,7 +151,7 @@ void NativeViewHostMac::RemovedFromWidget() {
   NativeViewDetaching(false);
 }
 
-bool NativeViewHostMac::SetCornerRadius(int corner_radius) {
+bool NativeViewHostMac::SetCustomMask(std::unique_ptr<ui::LayerOwner> mask) {
   NOTIMPLEMENTED();
   return false;
 }
@@ -148,8 +203,13 @@ void NativeViewHostMac::SetFocus() {
     [[host_->native_view() window] makeFirstResponder:host_->native_view()];
 }
 
+gfx::NativeView NativeViewHostMac::GetNativeViewContainer() const {
+  NOTIMPLEMENTED();
+  return nullptr;
+}
+
 gfx::NativeViewAccessible NativeViewHostMac::GetNativeViewAccessible() {
-  return NULL;
+  return nullptr;
 }
 
 gfx::NativeCursor NativeViewHostMac::GetCursor(int x, int y) {

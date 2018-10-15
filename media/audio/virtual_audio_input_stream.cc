@@ -122,7 +122,7 @@ void VirtualAudioInputStream::Close() {
   // If a non-null AfterCloseCallback was provided to the constructor, invoke it
   // here.  The callback is moved to a stack-local first since |this| could be
   // destroyed during Run().
-  if (!after_close_cb_.is_null()) {
+  if (after_close_cb_) {
     const AfterCloseCallback cb = after_close_cb_;
     after_close_cb_.Reset();
     cb.Run(this);
@@ -149,6 +149,11 @@ bool VirtualAudioInputStream::GetAutomaticGainControl() {
 
 bool VirtualAudioInputStream::IsMuted() {
   return false;
+}
+
+void VirtualAudioInputStream::SetOutputDeviceForAec(
+    const std::string& output_device_id) {
+  // Not supported. Do nothing.
 }
 
 }  // namespace media

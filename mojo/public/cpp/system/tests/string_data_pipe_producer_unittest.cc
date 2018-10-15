@@ -4,12 +4,12 @@
 
 #include <algorithm>
 #include <list>
+#include <memory>
 #include <string>
 
 #include "base/bind.h"
 #include "base/callback.h"
 #include "base/macros.h"
-#include "base/memory/ptr_util.h"
 #include "base/run_loop.h"
 #include "base/strings/string_piece.h"
 #include "base/test/scoped_task_environment.h"
@@ -30,7 +30,9 @@ class DataPipeReader {
                           base::OnceClosure on_read_done)
       : consumer_handle_(std::move(consumer_handle)),
         on_read_done_(std::move(on_read_done)),
-        watcher_(FROM_HERE, SimpleWatcher::ArmingPolicy::AUTOMATIC) {
+        watcher_(FROM_HERE,
+                 SimpleWatcher::ArmingPolicy::AUTOMATIC,
+                 base::SequencedTaskRunnerHandle::Get()) {
     watcher_.Watch(
         consumer_handle_.get(), MOJO_HANDLE_SIGNAL_READABLE,
         MOJO_WATCH_CONDITION_SATISFIED,
@@ -81,29 +83,35 @@ class StringDataPipeProducerTest : public testing::Test {
  protected:
   static void WriteStringThenCloseProducer(
       std::unique_ptr<StringDataPipeProducer> producer,
-      const base::StringPiece& str) {
+      const base::StringPiece& str,
+      StringDataPipeProducer::AsyncWritingMode mode) {
     StringDataPipeProducer* raw_producer = producer.get();
     raw_producer->Write(
-        str, base::BindOnce([](std::unique_ptr<StringDataPipeProducer> producer,
-                               MojoResult result) {},
-                            std::move(producer)));
+        str, mode,
+        base::BindOnce([](std::unique_ptr<StringDataPipeProducer> producer,
+                          MojoResult result) {},
+                       std::move(producer)));
   }
 
   static void WriteStringsThenCloseProducer(
       std::unique_ptr<StringDataPipeProducer> producer,
-      std::list<base::StringPiece> strings) {
+      std::list<base::StringPiece> strings,
+      StringDataPipeProducer::AsyncWritingMode mode) {
     StringDataPipeProducer* raw_producer = producer.get();
     base::StringPiece str = strings.front();
     strings.pop_front();
-    raw_producer->Write(
-        str, base::BindOnce(
-                 [](std::unique_ptr<StringDataPipeProducer> producer,
-                    std::list<base::StringPiece> strings, MojoResult result) {
-                   if (!strings.empty())
-                     WriteStringsThenCloseProducer(std::move(producer),
-                                                   std::move(strings));
-                 },
-                 std::move(producer), std::move(strings)));
+    raw_producer->Write(str, mode,
+                        base::BindOnce(
+                            [](std::unique_ptr<StringDataPipeProducer> producer,
+                               std::list<base::StringPiece> strings,
+                               StringDataPipeProducer::AsyncWritingMode mode,
+                               MojoResult result) {
+                              if (!strings.empty())
+                                WriteStringsThenCloseProducer(
+                                    std::move(producer), std::move(strings),
+                                    mode);
+                            },
+                            std::move(producer), std::move(strings), mode));
   }
 
  private:
@@ -119,8 +127,10 @@ TEST_F(StringDataPipeProducerTest, EqualCapacity) {
   mojo::DataPipe pipe(static_cast<uint32_t>(kTestString.size()));
   DataPipeReader reader(std::move(pipe.consumer_handle), loop.QuitClosure());
   WriteStringThenCloseProducer(
-      base::MakeUnique<StringDataPipeProducer>(std::move(pipe.producer_handle)),
-      kTestString);
+      std::make_unique<StringDataPipeProducer>(std::move(pipe.producer_handle)),
+      kTestString,
+      StringDataPipeProducer::AsyncWritingMode::
+          STRING_MAY_BE_INVALIDATED_BEFORE_COMPLETION);
   loop.Run();
 
   EXPECT_EQ(kTestString, reader.data());
@@ -133,8 +143,10 @@ TEST_F(StringDataPipeProducerTest, UnderCapacity) {
   mojo::DataPipe pipe(static_cast<uint32_t>(kTestString.size() * 2));
   DataPipeReader reader(std::move(pipe.consumer_handle), loop.QuitClosure());
   WriteStringThenCloseProducer(
-      base::MakeUnique<StringDataPipeProducer>(std::move(pipe.producer_handle)),
-      kTestString);
+      std::make_unique<StringDataPipeProducer>(std::move(pipe.producer_handle)),
+      kTestString,
+      StringDataPipeProducer::AsyncWritingMode::
+          STRING_MAY_BE_INVALIDATED_BEFORE_COMPLETION);
   loop.Run();
 
   EXPECT_EQ(kTestString, reader.data());
@@ -147,8 +159,10 @@ TEST_F(StringDataPipeProducerTest, OverCapacity) {
   mojo::DataPipe pipe(static_cast<uint32_t>(kTestString.size() / 2));
   DataPipeReader reader(std::move(pipe.consumer_handle), loop.QuitClosure());
   WriteStringThenCloseProducer(
-      base::MakeUnique<StringDataPipeProducer>(std::move(pipe.producer_handle)),
-      kTestString);
+      std::make_unique<StringDataPipeProducer>(std::move(pipe.producer_handle)),
+      kTestString,
+      StringDataPipeProducer::AsyncWritingMode::
+          STRING_STAYS_VALID_UNTIL_COMPLETION);
   loop.Run();
 
   EXPECT_EQ(kTestString, reader.data());
@@ -161,8 +175,10 @@ TEST_F(StringDataPipeProducerTest, TinyPipe) {
   mojo::DataPipe pipe(1);
   DataPipeReader reader(std::move(pipe.consumer_handle), loop.QuitClosure());
   WriteStringThenCloseProducer(
-      base::MakeUnique<StringDataPipeProducer>(std::move(pipe.producer_handle)),
-      kTestString);
+      std::make_unique<StringDataPipeProducer>(std::move(pipe.producer_handle)),
+      kTestString,
+      StringDataPipeProducer::AsyncWritingMode::
+          STRING_MAY_BE_INVALIDATED_BEFORE_COMPLETION);
   loop.Run();
 
   EXPECT_EQ(kTestString, reader.data());
@@ -178,8 +194,10 @@ TEST_F(StringDataPipeProducerTest, MultipleWrites) {
   mojo::DataPipe pipe(4);
   DataPipeReader reader(std::move(pipe.consumer_handle), loop.QuitClosure());
   WriteStringsThenCloseProducer(
-      base::MakeUnique<StringDataPipeProducer>(std::move(pipe.producer_handle)),
-      {kTestString1, kTestString2, kTestString3, kTestString4});
+      std::make_unique<StringDataPipeProducer>(std::move(pipe.producer_handle)),
+      {kTestString1, kTestString2, kTestString3, kTestString4},
+      StringDataPipeProducer::AsyncWritingMode::
+          STRING_MAY_BE_INVALIDATED_BEFORE_COMPLETION);
   loop.Run();
 
   EXPECT_EQ(kTestString1 + kTestString2 + kTestString3 + kTestString4,

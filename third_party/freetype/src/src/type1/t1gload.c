@@ -1,19 +1,19 @@
-/***************************************************************************/
-/*                                                                         */
-/*  t1gload.c                                                              */
-/*                                                                         */
-/*    Type 1 Glyph Loader (body).                                          */
-/*                                                                         */
-/*  Copyright 1996-2017 by                                                 */
-/*  David Turner, Robert Wilhelm, and Werner Lemberg.                      */
-/*                                                                         */
-/*  This file is part of the FreeType project, and may only be used,       */
-/*  modified, and distributed under the terms of the FreeType project      */
-/*  license, LICENSE.TXT.  By continuing to use, modify, or distribute     */
-/*  this file you indicate that you have read the license and              */
-/*  understand and accept it fully.                                        */
-/*                                                                         */
-/***************************************************************************/
+/****************************************************************************
+ *
+ * t1gload.c
+ *
+ *   Type 1 Glyph Loader (body).
+ *
+ * Copyright 1996-2018 by
+ * David Turner, Robert Wilhelm, and Werner Lemberg.
+ *
+ * This file is part of the FreeType project, and may only be used,
+ * modified, and distributed under the terms of the FreeType project
+ * license, LICENSE.TXT.  By continuing to use, modify, or distribute
+ * this file you indicate that you have read the license and
+ * understand and accept it fully.
+ *
+ */
 
 
 #include <ft2build.h>
@@ -24,19 +24,19 @@
 #include FT_OUTLINE_H
 #include FT_INTERNAL_POSTSCRIPT_AUX_H
 #include FT_INTERNAL_CFF_TYPES_H
-#include FT_TYPE1_DRIVER_H
+#include FT_DRIVER_H
 
 #include "t1errors.h"
 
 
-  /*************************************************************************/
-  /*                                                                       */
-  /* The macro FT_COMPONENT is used in trace mode.  It is an implicit      */
-  /* parameter of the FT_TRACE() and FT_ERROR() macros, used to print/log  */
-  /* messages during execution.                                            */
-  /*                                                                       */
+  /**************************************************************************
+   *
+   * The macro FT_COMPONENT is used in trace mode.  It is an implicit
+   * parameter of the FT_TRACE() and FT_ERROR() macros, used to print/log
+   * messages during execution.
+   */
 #undef  FT_COMPONENT
-#define FT_COMPONENT  trace_t1gload
+#define FT_COMPONENT  t1gload
 
 
   static FT_Error
@@ -62,6 +62,7 @@
     PS_Driver  driver = (PS_Driver)FT_FACE_DRIVER( face );
 #endif
 
+
     decoder->font_matrix = type1->font_matrix;
     decoder->font_offset = type1->font_offset;
 
@@ -86,8 +87,8 @@
     {
       /* choose which renderer to use */
 #ifdef T1_CONFIG_OPTION_OLD_ENGINE
-      if ( driver->hinting_engine == FT_T1_HINTING_FREETYPE ||
-           decoder->builder.metrics_only                    )
+      if ( driver->hinting_engine == FT_HINTING_FREETYPE ||
+           decoder->builder.metrics_only                 )
         error = decoder_funcs->parse_charstrings_old(
                   decoder,
                   (FT_Byte*)char_string->pointer,
@@ -249,6 +250,8 @@
 
     *max_advance = 0;
 
+    FT_TRACE6(( "T1_Compute_Max_Advance:\n" ));
+
     /* for each glyph, parse the glyph charstring and extract */
     /* the advance width                                      */
     for ( glyph_index = 0; glyph_index < type1->num_glyphs; glyph_index++ )
@@ -260,6 +263,9 @@
 
       /* ignore the error if one occurred - skip to next glyph */
     }
+
+    FT_TRACE6(( "T1_Compute_Max_Advance: max advance: %f\n",
+                *max_advance / 65536.0 ));
 
     psaux->t1_decoder_funcs->done( &decoder );
 
@@ -282,10 +288,17 @@
     FT_Error       error;
 
 
+    FT_TRACE5(( "T1_Get_Advances:\n" ));
+
     if ( load_flags & FT_LOAD_VERTICAL_LAYOUT )
     {
       for ( nn = 0; nn < count; nn++ )
+      {
         advances[nn] = 0;
+
+        FT_TRACE5(( "  idx %d: advance height 0 font units\n",
+                    first + nn ));
+      }
 
       return FT_Err_Ok;
     }
@@ -320,6 +333,11 @@
         advances[nn] = FIXED_TO_INT( decoder.builder.advance.x );
       else
         advances[nn] = 0;
+
+      FT_TRACE5(( "  idx %d: advance width %d font unit%s\n",
+                  first + nn,
+                  advances[nn],
+                  advances[nn] == 1 ? "" : "s" ));
     }
 
     return FT_Err_Ok;

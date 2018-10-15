@@ -11,7 +11,6 @@ from telemetry.internal.actions.drag import DragAction
 from telemetry.internal.actions.javascript_click import ClickElementAction
 from telemetry.internal.actions.key_event import KeyPressAction
 from telemetry.internal.actions.load_media import LoadMediaAction
-from telemetry.internal.actions.loop import LoopAction
 from telemetry.internal.actions.mouse_click import MouseClickAction
 from telemetry.internal.actions.navigate import NavigateAction
 from telemetry.internal.actions.page_action import GESTURE_SOURCE_DEFAULT
@@ -42,7 +41,7 @@ _MEMORY_DUMP_WAIT_TIME = 3
 # Time to wait in seconds after forcing garbage collection to allow its
 # effects to propagate. Experimentally determined on an Android One device
 # that Java Heap garbage collection can take ~5 seconds to complete.
-_GARBAGE_COLLECTION_WAIT_TIME = 6
+_GARBAGE_COLLECTION_PROPAGATION_TIME = 6
 
 
 class ActionRunner(object):
@@ -745,26 +744,6 @@ class ActionRunner(object):
         timeout_in_seconds=timeout_in_seconds,
         log_time=log_time, label=label))
 
-  def LoopMedia(self, loop_count, selector=None, timeout_in_seconds=None):
-    """Loops a media playback.
-
-    Args:
-      loop_count: The number of times to loop the playback.
-      selector: A CSS selector describing the element. If none is
-          specified, loop the first media element on the page. If the
-          selector matches more than 1 media element, all of them will
-          be looped.
-      timeout_in_seconds: Maximum waiting time for the looped playback to
-          complete. 0 means do not wait. None (the default) means to
-          wait loop_count * 60 seconds.
-
-    Raises:
-      TimeoutException: If the maximum waiting time is exceeded.
-    """
-    self._RunAction(LoopAction(
-        loop_count=loop_count, selector=selector,
-        timeout_in_seconds=timeout_in_seconds))
-
   def ForceGarbageCollection(self):
     """Forces garbage collection on all relevant systems.
 
@@ -773,13 +752,22 @@ class ActionRunner(object):
     - JavaScript on the current renderer.
     - System caches (on supported platforms).
     """
+    # 1) Perform V8 and Blink garbage collection. This may free java wrappers.
+    self._tab.CollectGarbage()
+    # 2) Perform Java garbage collection
     if self._tab.browser.supports_java_heap_garbage_collection:
       self._tab.browser.ForceJavaHeapGarbageCollection()
-    self._tab.CollectGarbage()
+    # 3) Flush system caches. This affects GPU memory.
     if self._tab.browser.platform.SupportFlushEntireSystemCache():
       self._tab.browser.platform.FlushEntireSystemCache()
-    self.Wait(_GARBAGE_COLLECTION_WAIT_TIME)
-
+    # 4) Wait until the effect of Java GC and system cache flushing propagates.
+    self.Wait(_GARBAGE_COLLECTION_PROPAGATION_TIME)
+    # 5) Re-do V8 and Blink garbage collection to free garbage allocated
+    # while waiting.
+    self._tab.CollectGarbage()
+    # 6) Finally, finish with V8 and Blink garbage collection because some
+    # objects require V8 GC => Blink GC => V8 GC roundtrip.
+    self._tab.CollectGarbage()
 
   def SimulateMemoryPressureNotification(self, pressure_level):
     """Simulate memory pressure notification.

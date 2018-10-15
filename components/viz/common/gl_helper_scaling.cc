@@ -6,7 +6,9 @@
 
 #include <stddef.h>
 
+#include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "base/bind.h"
@@ -14,9 +16,7 @@
 #include "base/lazy_instance.h"
 #include "base/logging.h"
 #include "base/macros.h"
-#include "base/memory/ptr_util.h"
 #include "base/memory/ref_counted.h"
-#include "base/message_loop/message_loop.h"
 #include "base/optional.h"
 #include "base/time/time.h"
 #include "base/trace_event/trace_event.h"
@@ -191,6 +191,15 @@ class ScalerImpl : public GLHelper::ScalerInterface {
     if (output_rect.IsEmpty())
       return;  // No work to do.
     gfx::RectF src_rect = ToSourceRect(output_rect);
+
+    // Ensure conflicting GL capabilities are disabled. The following explicity
+    // disables those known to possibly be enabled in GL compositing code, while
+    // the helper method call will DCHECK a wider set.
+    gl_->Disable(GL_SCISSOR_TEST);
+    gl_->Disable(GL_STENCIL_TEST);
+    gl_->Disable(GL_BLEND);
+    DCheckNoConflictingCapabilitiesAreEnabled();
+
     if (subscaler_) {
       gfx::RectF overscan_rect = src_rect;
       PadForOverscan(&overscan_rect);
@@ -300,6 +309,20 @@ class ScalerImpl : public GLHelper::ScalerInterface {
   }
 
  private:
+  // In DCHECK-enabled builds, this checks that no conflicting GL capability is
+  // currently enabled in the GL context. Any of these might cause problems when
+  // the shader draw operations are executed.
+  void DCheckNoConflictingCapabilitiesAreEnabled() const {
+    DCHECK_NE(gl_->IsEnabled(GL_BLEND), GL_TRUE);
+    DCHECK_NE(gl_->IsEnabled(GL_CULL_FACE), GL_TRUE);
+    DCHECK_NE(gl_->IsEnabled(GL_DEPTH_TEST), GL_TRUE);
+    DCHECK_NE(gl_->IsEnabled(GL_POLYGON_OFFSET_FILL), GL_TRUE);
+    DCHECK_NE(gl_->IsEnabled(GL_SAMPLE_ALPHA_TO_COVERAGE), GL_TRUE);
+    DCHECK_NE(gl_->IsEnabled(GL_SAMPLE_COVERAGE), GL_TRUE);
+    DCHECK_NE(gl_->IsEnabled(GL_SCISSOR_TEST), GL_TRUE);
+    DCHECK_NE(gl_->IsEnabled(GL_STENCIL_TEST), GL_TRUE);
+  }
+
   // Expands the given |sampling_rect| to account for the extra pixels bordering
   // it that will be sampled by the shaders.
   void PadForOverscan(gfx::RectF* sampling_rect) const {
@@ -630,6 +653,7 @@ void GLHelperScaling::ConvertScalerOpsToScalerStages(
           switch (x_ops->size()) {
             case 0:
               NOTREACHED();
+              break;
             case 1:
               if (x_ops->front().scale_factor == 3) {
                 current_shader = SHADER_BILINEAR3;
@@ -729,7 +753,7 @@ std::unique_ptr<GLHelper::ScalerInterface> GLHelperScaling::CreateScaler(
 
   std::unique_ptr<ScalerImpl> ret;
   for (unsigned int i = 0; i < scaler_stages.size(); i++) {
-    ret = base::MakeUnique<ScalerImpl>(gl_, this, scaler_stages[i],
+    ret = std::make_unique<ScalerImpl>(gl_, this, scaler_stages[i],
                                        std::move(ret));
   }
   ret->SetChainProperties(scale_from, scale_to, swizzle);
@@ -744,7 +768,7 @@ GLHelperScaling::CreateGrayscalePlanerizer(bool flipped_source,
       SHADER_PLANAR, gfx::Vector2d(4, 1), gfx::Vector2d(1, 1),
       true,          flipped_source,      flip_output,
       swizzle};
-  auto result = base::MakeUnique<ScalerImpl>(gl_, this, stage, nullptr);
+  auto result = std::make_unique<ScalerImpl>(gl_, this, stage, nullptr);
   result->SetColorWeights(0, kRGBtoGrayscaleColorWeights);
   result->SetChainProperties(stage.scale_from, stage.scale_to, swizzle);
   return result;
@@ -763,7 +787,7 @@ GLHelperScaling::CreateI420Planerizer(int plane,
       flipped_source,
       flip_output,
       swizzle};
-  auto result = base::MakeUnique<ScalerImpl>(gl_, this, stage, nullptr);
+  auto result = std::make_unique<ScalerImpl>(gl_, this, stage, nullptr);
   switch (plane) {
     case 0:
       result->SetColorWeights(0, kRGBtoYColorWeights);
@@ -792,7 +816,7 @@ GLHelperScaling::CreateI420MrtPass1Planerizer(bool flipped_source,
                              flipped_source,
                              flip_output,
                              swizzle};
-  auto result = base::MakeUnique<ScalerImpl>(gl_, this, stage, nullptr);
+  auto result = std::make_unique<ScalerImpl>(gl_, this, stage, nullptr);
   result->SetColorWeights(0, kRGBtoYColorWeights);
   result->SetColorWeights(1, kRGBtoUColorWeights);
   result->SetColorWeights(2, kRGBtoVColorWeights);
@@ -809,7 +833,7 @@ GLHelperScaling::CreateI420MrtPass2Planerizer(bool swizzle) {
                              false,
                              false,
                              swizzle};
-  auto result = base::MakeUnique<ScalerImpl>(gl_, this, stage, nullptr);
+  auto result = std::make_unique<ScalerImpl>(gl_, this, stage, nullptr);
   result->SetChainProperties(stage.scale_from, stage.scale_to, swizzle);
   return result;
 }
@@ -838,7 +862,7 @@ scoped_refptr<ShaderProgram> GLHelperScaling::GetShaderProgram(ShaderType type,
                                                                bool swizzle) {
   ShaderProgramKeyType key(type, swizzle);
   scoped_refptr<ShaderProgram>& cache_entry(shader_programs_[key]);
-  if (!cache_entry.get()) {
+  if (!cache_entry) {
     cache_entry = new ShaderProgram(gl_, helper_, type);
     std::basic_string<GLchar> vertex_program;
     std::basic_string<GLchar> fragment_program;
@@ -1141,19 +1165,45 @@ scoped_refptr<ShaderProgram> GLHelperScaling::GetShaderProgram(ShaderType type,
   return cache_entry;
 }
 
+namespace {
+GLuint CompileShaderFromSource(GLES2Interface* gl,
+                               const GLchar* source,
+                               GLenum type) {
+  GLuint shader = gl->CreateShader(type);
+  GLint length = base::checked_cast<GLint>(strlen(source));
+  gl->ShaderSource(shader, 1, &source, &length);
+  gl->CompileShader(shader);
+  GLint compile_status = 0;
+  gl->GetShaderiv(shader, GL_COMPILE_STATUS, &compile_status);
+  if (!compile_status) {
+    GLint log_length = 0;
+    gl->GetShaderiv(shader, GL_INFO_LOG_LENGTH, &log_length);
+    if (log_length) {
+      std::unique_ptr<GLchar[]> log(new GLchar[log_length]);
+      GLsizei returned_log_length = 0;
+      gl->GetShaderInfoLog(shader, log_length, &returned_log_length, log.get());
+      LOG(ERROR) << std::string(log.get(), returned_log_length);
+    }
+    gl->DeleteShader(shader);
+    return 0;
+  }
+  return shader;
+}
+}  // namespace
+
 void ShaderProgram::Setup(const GLchar* vertex_shader_text,
                           const GLchar* fragment_shader_text) {
   // Shaders to map the source texture to |dst_texture_|.
-  GLuint vertex_shader =
-      helper_->CompileShaderFromSource(vertex_shader_text, GL_VERTEX_SHADER);
+  const GLuint vertex_shader =
+      CompileShaderFromSource(gl_, vertex_shader_text, GL_VERTEX_SHADER);
   if (vertex_shader == 0)
     return;
 
   gl_->AttachShader(program_, vertex_shader);
   gl_->DeleteShader(vertex_shader);
 
-  GLuint fragment_shader = helper_->CompileShaderFromSource(
-      fragment_shader_text, GL_FRAGMENT_SHADER);
+  const GLuint fragment_shader =
+      CompileShaderFromSource(gl_, fragment_shader_text, GL_FRAGMENT_SHADER);
   if (fragment_shader == 0)
     return;
   gl_->AttachShader(program_, fragment_shader);

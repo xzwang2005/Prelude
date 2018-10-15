@@ -62,7 +62,8 @@ SOCKSClientSocket::SOCKSClientSocket(
     std::unique_ptr<ClientSocketHandle> transport_socket,
     const HostResolver::RequestInfo& req_info,
     RequestPriority priority,
-    HostResolver* host_resolver)
+    HostResolver* host_resolver,
+    const NetworkTrafficAnnotationTag& traffic_annotation)
     : transport_(std::move(transport_socket)),
       next_state_(STATE_NONE),
       completed_handshake_(false),
@@ -72,13 +73,14 @@ SOCKSClientSocket::SOCKSClientSocket(
       host_resolver_(host_resolver),
       host_request_info_(req_info),
       priority_(priority),
-      net_log_(transport_->socket()->NetLog()) {}
+      net_log_(transport_->socket()->NetLog()),
+      traffic_annotation_(traffic_annotation) {}
 
 SOCKSClientSocket::~SOCKSClientSocket() {
   Disconnect();
 }
 
-int SOCKSClientSocket::Connect(const CompletionCallback& callback) {
+int SOCKSClientSocket::Connect(CompletionOnceCallback callback) {
   DCHECK(transport_.get());
   DCHECK(transport_->socket());
   DCHECK_EQ(STATE_NONE, next_state_);
@@ -94,7 +96,7 @@ int SOCKSClientSocket::Connect(const CompletionCallback& callback) {
 
   int rv = DoLoop(OK);
   if (rv == ERR_IO_PENDING) {
-    user_callback_ = callback;
+    user_callback_ = std::move(callback);
   } else {
     net_log_.EndEventWithNetErrorCode(NetLogEventType::SOCKS_CONNECT, rv);
   }
@@ -122,22 +124,6 @@ bool SOCKSClientSocket::IsConnectedAndIdle() const {
 
 const NetLogWithSource& SOCKSClientSocket::NetLog() const {
   return net_log_;
-}
-
-void SOCKSClientSocket::SetSubresourceSpeculation() {
-  if (transport_.get() && transport_->socket()) {
-    transport_->socket()->SetSubresourceSpeculation();
-  } else {
-    NOTREACHED();
-  }
-}
-
-void SOCKSClientSocket::SetOmniboxSpeculation() {
-  if (transport_.get() && transport_->socket()) {
-    transport_->socket()->SetOmniboxSpeculation();
-  } else {
-    NOTREACHED();
-  }
 }
 
 bool SOCKSClientSocket::WasEverUsed() const {
@@ -176,10 +162,15 @@ int64_t SOCKSClientSocket::GetTotalReceivedBytes() const {
   return transport_->socket()->GetTotalReceivedBytes();
 }
 
+void SOCKSClientSocket::ApplySocketTag(const SocketTag& tag) {
+  return transport_->socket()->ApplySocketTag(tag);
+}
+
 // Read is called by the transport layer above to read. This can only be done
 // if the SOCKS handshake is complete.
-int SOCKSClientSocket::Read(IOBuffer* buf, int buf_len,
-                            const CompletionCallback& callback) {
+int SOCKSClientSocket::Read(IOBuffer* buf,
+                            int buf_len,
+                            CompletionOnceCallback callback) {
   DCHECK(completed_handshake_);
   DCHECK_EQ(STATE_NONE, next_state_);
   DCHECK(user_callback_.is_null());
@@ -187,11 +178,31 @@ int SOCKSClientSocket::Read(IOBuffer* buf, int buf_len,
 
   int rv = transport_->socket()->Read(
       buf, buf_len,
-      base::Bind(&SOCKSClientSocket::OnReadWriteComplete,
-                 base::Unretained(this), callback));
+      base::BindOnce(&SOCKSClientSocket::OnReadWriteComplete,
+                     base::Unretained(this), std::move(callback)));
   if (rv > 0)
     was_ever_used_ = true;
   return rv;
+}
+
+int SOCKSClientSocket::ReadIfReady(IOBuffer* buf,
+                                   int buf_len,
+                                   CompletionOnceCallback callback) {
+  DCHECK(completed_handshake_);
+  DCHECK_EQ(STATE_NONE, next_state_);
+  DCHECK(user_callback_.is_null());
+  DCHECK(!callback.is_null());
+
+  // Pass |callback| directly instead of wrapping it with OnReadWriteComplete.
+  // This is to avoid setting |was_ever_used_| unless data is actually read.
+  int rv = transport_->socket()->ReadIfReady(buf, buf_len, std::move(callback));
+  if (rv > 0)
+    was_ever_used_ = true;
+  return rv;
+}
+
+int SOCKSClientSocket::CancelReadIfReady() {
+  return transport_->socket()->CancelReadIfReady();
 }
 
 // Write is called by the transport layer. This can only be done if the
@@ -199,7 +210,7 @@ int SOCKSClientSocket::Read(IOBuffer* buf, int buf_len,
 int SOCKSClientSocket::Write(
     IOBuffer* buf,
     int buf_len,
-    const CompletionCallback& callback,
+    CompletionOnceCallback callback,
     const NetworkTrafficAnnotationTag& traffic_annotation) {
   DCHECK(completed_handshake_);
   DCHECK_EQ(STATE_NONE, next_state_);
@@ -208,8 +219,8 @@ int SOCKSClientSocket::Write(
 
   int rv = transport_->socket()->Write(
       buf, buf_len,
-      base::Bind(&SOCKSClientSocket::OnReadWriteComplete,
-                 base::Unretained(this), callback),
+      base::BindOnce(&SOCKSClientSocket::OnReadWriteComplete,
+                     base::Unretained(this), std::move(callback)),
       traffic_annotation);
   if (rv > 0)
     was_ever_used_ = true;
@@ -231,7 +242,7 @@ void SOCKSClientSocket::DoCallback(int result) {
   // Since Run() may result in Read being called,
   // clear user_callback_ up front.
   DVLOG(1) << "Finished setting up SOCKS handshake";
-  base::ResetAndReturn(&user_callback_).Run(result);
+  std::move(user_callback_).Run(result);
 }
 
 void SOCKSClientSocket::OnIOComplete(int result) {
@@ -243,14 +254,14 @@ void SOCKSClientSocket::OnIOComplete(int result) {
   }
 }
 
-void SOCKSClientSocket::OnReadWriteComplete(const CompletionCallback& callback,
+void SOCKSClientSocket::OnReadWriteComplete(CompletionOnceCallback callback,
                                             int result) {
   DCHECK_NE(ERR_IO_PENDING, result);
   DCHECK(!callback.is_null());
 
   if (result > 0)
     was_ever_used_ = true;
-  callback.Run(result);
+  std::move(callback).Run(result);
 }
 
 int SOCKSClientSocket::DoLoop(int last_io_result) {
@@ -353,12 +364,13 @@ int SOCKSClientSocket::DoHandshakeWrite() {
 
   int handshake_buf_len = buffer_.size() - bytes_sent_;
   DCHECK_GT(handshake_buf_len, 0);
-  handshake_buf_ = new IOBuffer(handshake_buf_len);
+  handshake_buf_ = base::MakeRefCounted<IOBuffer>(handshake_buf_len);
   memcpy(handshake_buf_->data(), &buffer_[bytes_sent_],
          handshake_buf_len);
   return transport_->socket()->Write(
       handshake_buf_.get(), handshake_buf_len,
-      base::Bind(&SOCKSClientSocket::OnIOComplete, base::Unretained(this)));
+      base::Bind(&SOCKSClientSocket::OnIOComplete, base::Unretained(this)),
+      traffic_annotation_);
 }
 
 int SOCKSClientSocket::DoHandshakeWriteComplete(int result) {
@@ -389,7 +401,7 @@ int SOCKSClientSocket::DoHandshakeRead() {
   }
 
   int handshake_buf_len = kReadHeaderSize - bytes_received_;
-  handshake_buf_ = new IOBuffer(handshake_buf_len);
+  handshake_buf_ = base::MakeRefCounted<IOBuffer>(handshake_buf_len);
   return transport_->socket()->Read(
       handshake_buf_.get(),
       handshake_buf_len,

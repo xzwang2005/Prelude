@@ -11,6 +11,7 @@
 #include <GLES2/gl2ext.h>
 #include <GLES2/gl2extchromium.h>
 #include <GLES3/gl3.h>
+#include <GLES3/gl31.h>
 
 #include <sstream>
 
@@ -281,6 +282,26 @@ int GLES2Util::GLGetNumValuesReturned(int id) const {
     case GL_UNIFORM_BUFFER_OFFSET_ALIGNMENT:
       return 1;
 
+    // ES31
+    case GL_ATOMIC_COUNTER_BUFFER_BINDING:
+      return 1;
+    case GL_ATOMIC_COUNTER_BUFFER_SIZE:
+      return 1;
+    case GL_ATOMIC_COUNTER_BUFFER_START:
+      return 1;
+    case GL_MAX_ATOMIC_COUNTER_BUFFER_BINDINGS:
+      return 1;
+    case GL_MAX_SHADER_STORAGE_BUFFER_BINDINGS:
+      return 1;
+    case GL_SHADER_STORAGE_BUFFER_BINDING:
+      return 1;
+    case GL_SHADER_STORAGE_BUFFER_SIZE:
+      return 1;
+    case GL_SHADER_STORAGE_BUFFER_START:
+      return 1;
+    case GL_SHADER_STORAGE_BUFFER_OFFSET_ALIGNMENT:
+      return 1;
+
     // -- glGetBooleanv, glGetFloatv, glGetIntergerv with
     //    GL_CHROMIUM_framebuffer_multisample
     case GL_MAX_SAMPLES_EXT:
@@ -534,25 +555,25 @@ int GLES2Util::ElementsPerGroup(int format, int type) {
     case GL_UNSIGNED_INT_10F_11F_11F_REV:
     case GL_UNSIGNED_INT_5_9_9_9_REV:
     case GL_FLOAT_32_UNSIGNED_INT_24_8_REV:
-       return 1;
+      return 1;
     default:
-       break;
-    }
+      break;
+  }
 
-    switch (format) {
+  switch (format) {
     case GL_RGB:
     case GL_RGB_INTEGER:
     case GL_SRGB_EXT:
-       return 3;
+      return 3;
     case GL_LUMINANCE_ALPHA:
     case GL_RG_EXT:
     case GL_RG_INTEGER:
-       return 2;
+      return 2;
     case GL_RGBA:
     case GL_RGBA_INTEGER:
     case GL_BGRA_EXT:
     case GL_SRGB_ALPHA_EXT:
-       return 4;
+      return 4;
     case GL_ALPHA:
     case GL_LUMINANCE:
     case GL_DEPTH_COMPONENT:
@@ -563,9 +584,9 @@ int GLES2Util::ElementsPerGroup(int format, int type) {
     case GL_DEPTH_STENCIL_OES:
     case GL_RED_EXT:
     case GL_RED_INTEGER:
-       return 1;
+      return 1;
     default:
-       return 0;
+      return 0;
   }
 }
 
@@ -738,6 +759,16 @@ size_t GLES2Util::RenderbufferBytesPerPixel(int format) {
     case GL_RGBA8_OES:
     case GL_DEPTH_COMPONENT24_OES:
       return 4;
+    default:
+      return 0;
+  }
+}
+
+uint8_t GLES2Util::StencilBitsPerPixel(int format) {
+  switch (format) {
+    case GL_STENCIL_INDEX8:
+    case GL_DEPTH24_STENCIL8_OES:
+      return 8;
     default:
       return 0;
   }
@@ -1383,10 +1414,13 @@ void GLES2Util::GetColorFormatComponentSizes(
   switch (internal_format) {
     case GL_ALPHA8_EXT:
       *a = 8;
+      break;
     case GL_ALPHA16F_EXT:
       *a = 16;
+      break;
     case GL_ALPHA32F_EXT:
       *a = 32;
+      break;
     case GL_RGB8_OES:
     case GL_SRGB8:
     case GL_RGB8_SNORM:
@@ -1633,6 +1667,8 @@ uint32_t GLES2Util::MapBufferTargetToBindingEnum(uint32_t target) {
   switch (target) {
     case GL_ARRAY_BUFFER:
       return GL_ARRAY_BUFFER_BINDING;
+    case GL_ATOMIC_COUNTER_BUFFER:
+      return GL_ATOMIC_COUNTER_BUFFER_BINDING;
     case GL_COPY_READ_BUFFER:
       return GL_COPY_READ_BUFFER_BINDING;
     case GL_COPY_WRITE_BUFFER:
@@ -1643,6 +1679,8 @@ uint32_t GLES2Util::MapBufferTargetToBindingEnum(uint32_t target) {
       return GL_PIXEL_PACK_BUFFER_BINDING;
     case GL_PIXEL_UNPACK_BUFFER:
       return GL_PIXEL_UNPACK_BUFFER_BINDING;
+    case GL_SHADER_STORAGE_BUFFER:
+      return GL_SHADER_STORAGE_BUFFER_BINDING;
     case GL_TRANSFORM_FEEDBACK_BUFFER:
       return GL_TRANSFORM_FEEDBACK_BUFFER_BINDING;
     case GL_UNIFORM_BUFFER:
@@ -1827,159 +1865,6 @@ uint32_t GLES2Util::ConvertToSizedFormat(uint32_t format, uint32_t type) {
   }
 
   return format;
-}
-
-namespace {
-
-// GL context configuration attributes. Those in the 16-bit range are the same
-// as used by EGL. Those outside the 16-bit range are unique to Chromium.
-// Attributes are matched using a closest fit algorithm.
-
-// From <EGL/egl.h>.
-#include <stddef.h>
-#include <stdint.h>
-const int32_t kAlphaSize = 0x3021;        // EGL_ALPHA_SIZE
-const int32_t kBlueSize = 0x3022;         // EGL_BLUE_SIZE
-const int32_t kGreenSize = 0x3023;        // EGL_GREEN_SIZE
-const int32_t kRedSize = 0x3024;          // EGL_RED_SIZE
-const int32_t kDepthSize = 0x3025;        // EGL_DEPTH_SIZE
-const int32_t kStencilSize = 0x3026;      // EGL_STENCIL_SIZE
-const int32_t kSamples = 0x3031;          // EGL_SAMPLES
-const int32_t kSampleBuffers = 0x3032;    // EGL_SAMPLE_BUFFERS
-const int32_t kNone = 0x3038;             // EGL_NONE
-const int32_t kSwapBehavior = 0x3093;     // EGL_SWAP_BEHAVIOR
-const int32_t kBufferPreserved = 0x3094;  // EGL_BUFFER_PRESERVED
-const int32_t kSingleBuffer = 0x3085;     // EGL_SINGLE_BUFFER
-
-// Chromium only.
-const int32_t kBindGeneratesResource = 0x10000;
-const int32_t kFailIfMajorPerfCaveat = 0x10001;
-const int32_t kLoseContextWhenOutOfMemory = 0x10002;
-const int32_t kShouldUseNativeGMBForBackbuffer = 0x10003;
-const int32_t kContextType = 0x10004;
-
-}  // namespace
-
-bool IsWebGLContextType(ContextType context_type) {
-  // Switch statement to cause a compile-time error if we miss a case.
-  switch (context_type) {
-    case CONTEXT_TYPE_WEBGL1:
-    case CONTEXT_TYPE_WEBGL2:
-      return true;
-    case CONTEXT_TYPE_OPENGLES2:
-    case CONTEXT_TYPE_OPENGLES3:
-      return false;
-  }
-
-  NOTREACHED();
-  return false;
-}
-
-bool IsWebGL1OrES2ContextType(ContextType context_type) {
-  // Switch statement to cause a compile-time error if we miss a case.
-  switch (context_type) {
-    case CONTEXT_TYPE_WEBGL1:
-    case CONTEXT_TYPE_OPENGLES2:
-      return true;
-    case CONTEXT_TYPE_WEBGL2:
-    case CONTEXT_TYPE_OPENGLES3:
-      return false;
-  }
-
-  NOTREACHED();
-  return false;
-}
-
-bool IsWebGL2OrES3ContextType(ContextType context_type) {
-  // Switch statement to cause a compile-time error if we miss a case.
-  switch (context_type) {
-    case CONTEXT_TYPE_OPENGLES3:
-    case CONTEXT_TYPE_WEBGL2:
-      return true;
-    case CONTEXT_TYPE_WEBGL1:
-    case CONTEXT_TYPE_OPENGLES2:
-      return false;
-  }
-
-  NOTREACHED();
-  return false;
-}
-
-ContextCreationAttribHelper::ContextCreationAttribHelper() = default;
-
-ContextCreationAttribHelper::ContextCreationAttribHelper(
-    const ContextCreationAttribHelper& other) = default;
-
-bool ContextCreationAttribHelper::Parse(const std::vector<int32_t>& attribs) {
-  for (size_t i = 0; i < attribs.size(); i += 2) {
-    const int32_t attrib = attribs[i];
-    if (i + 1 >= attribs.size()) {
-      if (attrib == kNone) {
-        return true;
-      }
-
-      DLOG(ERROR) << "Missing value after context creation attribute: "
-                  << attrib;
-      return false;
-    }
-
-    const int32_t value = attribs[i + 1];
-    switch (attrib) {
-      case kAlphaSize:
-        alpha_size = value;
-        break;
-      case kBlueSize:
-        blue_size = value;
-        break;
-      case kGreenSize:
-        green_size = value;
-        break;
-      case kRedSize:
-        red_size = value;
-        break;
-      case kDepthSize:
-        depth_size = value;
-        break;
-      case kStencilSize:
-        stencil_size = value;
-        break;
-      case kSamples:
-        samples = value;
-        break;
-      case kSampleBuffers:
-        sample_buffers = value;
-        break;
-      case kSwapBehavior:
-        buffer_preserved = value == kBufferPreserved;
-        break;
-      case kBindGeneratesResource:
-        bind_generates_resource = value != 0;
-        break;
-      case kFailIfMajorPerfCaveat:
-        fail_if_major_perf_caveat = value != 0;
-        break;
-      case kLoseContextWhenOutOfMemory:
-        lose_context_when_out_of_memory = value != 0;
-        break;
-      case kShouldUseNativeGMBForBackbuffer:
-        should_use_native_gmb_for_backbuffer = value != 0;
-        break;
-      case kSingleBuffer:
-        single_buffer = value != 0;
-        break;
-      case kContextType:
-        context_type = static_cast<ContextType>(value);
-        break;
-      case kNone:
-        // Terminate list, even if more attributes.
-        return true;
-      default:
-        DLOG(ERROR) << "Invalid context creation attribute: " << attrib;
-        return false;
-    }
-  }
-
-  return true;
 }
 
 #include "gpu/command_buffer/common/gles2_cmd_utils_implementation_autogen.h"

@@ -66,6 +66,8 @@ function toString(obj)
 }
 
 /**
+ * TODO(luoe): remove type-check suppression once bigint is supported by closure.
+ * @suppress {checkTypes}
  * @param {*} obj
  * @return {string}
  */
@@ -73,6 +75,8 @@ function toStringDescription(obj)
 {
     if (typeof obj === "number" && obj === 0 && 1 / obj < 0)
         return "-0"; // Negative zero.
+    if (typeof obj === "bigint")
+        return toString(obj) + "n";
     return toString(obj);
 }
 
@@ -167,6 +171,7 @@ InjectedScript.primitiveTypes = {
     "boolean": true,
     "number": true,
     "string": true,
+    "bigint": true,
     __proto__: null
 }
 
@@ -396,9 +401,12 @@ InjectedScript.prototype = {
                     var isAccessorProperty = descriptor && ("get" in descriptor || "set" in descriptor);
                     if (accessorPropertiesOnly && !isAccessorProperty)
                         continue;
-                    if (descriptor && "get" in descriptor && "set" in descriptor && name !== "__proto__" &&
+                    // Special case for Symbol.prototype.description where the receiver of the getter is not an actual object.
+                    // Should only occur for nested previews.
+                    var isSymbolDescription = isSymbol(object) && name === 'description';
+                    if (isSymbolDescription || (descriptor && "get" in descriptor && "set" in descriptor && name !== "__proto__" &&
                             InjectedScriptHost.formatAccessorsAsProperties(object, descriptor.get) &&
-                            !doesAttributeHaveObservableSideEffectOnGet(object, name)) {
+                            !doesAttributeHaveObservableSideEffectOnGet(object, name))) {
                         descriptor.value = object[property];
                         descriptor.isOwn = true;
                         delete descriptor.get;
@@ -459,6 +467,10 @@ InjectedScript.prototype = {
             o = /** @type {!Object} */ (o);
             if (InjectedScriptHost.subtype(o) === "proxy")
                 continue;
+
+            var typedArrays = subtype === "arraybuffer" ? InjectedScriptHost.typedArrayProperties(o) || [] : [];
+            for (var i = 0; i < typedArrays.length; i += 2)
+                addPropertyIfNeeded(descriptors, { name: typedArrays[i], value: typedArrays[i + 1], isOwn: true, enumerable: false, configurable: false, __proto__: null });
 
             try {
                 if (skipGetOwnPropertyNames && o === object) {
@@ -585,16 +597,25 @@ InjectedScript.prototype = {
             return toString(obj);
 
         if (subtype === "node") {
+            // We should warmup blink dom binding before calling anything,
+            // see (crbug.com/827585) for details.
+            InjectedScriptHost.getOwnPropertyDescriptor(/** @type {!Object} */(obj), "nodeName");
             var description = "";
-            if (obj.nodeName)
-                description = obj.nodeName.toLowerCase();
-            else if (obj.constructor)
-                description = obj.constructor.name.toLowerCase();
+            var nodeName = InjectedScriptHost.getProperty(obj, "nodeName");
+            if (nodeName) {
+                description = nodeName.toLowerCase();
+            } else {
+                var constructor = InjectedScriptHost.getProperty(obj, "constructor");
+                if (constructor)
+                    description = (InjectedScriptHost.getProperty(constructor, "name") || "").toLowerCase();
+            }
 
-            switch (obj.nodeType) {
+            var nodeType = InjectedScriptHost.getProperty(obj, "nodeType");
+            switch (nodeType) {
             case 1 /* Node.ELEMENT_NODE */:
-                description += obj.id ? "#" + obj.id : "";
-                var className = obj.className;
+                var id = InjectedScriptHost.getProperty(obj, "id");
+                description += id ? "#" + id : "";
+                var className = InjectedScriptHost.getProperty(obj, "className");
                 description += (className && typeof className === "string") ? "." + className.trim().replace(/\s+/g, ".") : "";
                 break;
             case 10 /*Node.DOCUMENT_TYPE_NODE */:
@@ -737,6 +758,13 @@ InjectedScript.RemoteObject = function(object, objectGroupName, doNotBind, force
             }
         }
 
+        // The "n" suffix of bigint primitives are not JSON serializable.
+        if (this.type === "bigint") {
+            delete this.value;
+            this.description = toStringDescription(object);
+            this.unserializableValue = this.description;
+        }
+
         return;
     }
 
@@ -762,7 +790,7 @@ InjectedScript.RemoteObject = function(object, objectGroupName, doNotBind, force
     if (generatePreview && this.type === "object") {
         if (this.subtype === "proxy")
             this.preview = this._generatePreview(InjectedScriptHost.proxyTargetValue(object), undefined, columnNames, isTable, skipEntriesPreview);
-        else if (this.subtype !== "node")
+        else
             this.preview = this._generatePreview(object, undefined, columnNames, isTable, skipEntriesPreview);
     }
 
@@ -929,6 +957,10 @@ InjectedScript.RemoteObject.prototype = {
             if ((subtype === "map" || subtype === "set") && descriptor.name === "size")
                 return true;
 
+            // Ignore ArrayBuffer previews
+            if (subtype === 'arraybuffer' && (descriptor.name === "[[Int8Array]]" || descriptor.name === "[[Uint8Array]]" || descriptor.name === "[[Int16Array]]" || descriptor.name === "[[Int32Array]]"))
+                return true;
+
             // Never preview prototype properties.
             if (!descriptor.isOwn)
                 return true;
@@ -988,9 +1020,10 @@ InjectedScript.RemoteObject.prototype = {
 
             var maxLength = 100;
             if (InjectedScript.primitiveTypes[type]) {
-                if (type === "string" && value.length > maxLength)
-                    value = this._abbreviateString(value, maxLength, true);
-                push(preview.properties, { name: name, type: type, value: toStringDescription(value), __proto__: null });
+                var valueString = type === "string" ? value : toStringDescription(value);
+                if (valueString.length > maxLength)
+                    valueString = this._abbreviateString(valueString, maxLength, true);
+                push(preview.properties, { name: name, type: type, value: valueString, __proto__: null });
                 continue;
             }
 

@@ -7,18 +7,16 @@ import os
 import sys
 import unittest
 
+import mock
+
 if __name__ == '__main__':
   sys.path.append(os.path.abspath(
       os.path.join(os.path.dirname(__file__), '..', '..', '..')))
 
-from devil import devil_env
 from devil.android import device_utils
 from devil.android.sdk import adb_wrapper
 from devil.android.sdk import version_codes
 from devil.android.tools import system_app
-
-with devil_env.SysPath(devil_env.PYMOCK_PATH):
-  import mock
 
 
 class SystemAppTest(unittest.TestCase):
@@ -47,7 +45,7 @@ class SystemAppTest(unittest.TestCase):
     mock_device.GetProp.side_effect = dict_getprop
 
     with system_app.EnableSystemAppModification(mock_device):
-      mock_device.EnableRoot.assert_called_once()
+      mock_device.EnableRoot.assert_called_once_with()
       mock_device.GetProp.assert_called_once_with(
           system_app._ENABLE_MODIFICATION_PROP)
       mock_device.SetProp.assert_called_once_with(
@@ -55,10 +53,10 @@ class SystemAppTest(unittest.TestCase):
       mock_device.reset_mock()
 
       with system_app.EnableSystemAppModification(mock_device):
-        mock_device.EnableRoot.assert_not_called()
+        self.assertFalse(mock_device.EnableRoot.mock_calls)  # assert not called
         mock_device.GetProp.assert_called_once_with(
             system_app._ENABLE_MODIFICATION_PROP)
-        mock_device.SetProp.assert_not_called()
+        self.assertFalse(mock_device.SetProp.mock_calls)  # assert not called
         mock_device.reset_mock()
 
     mock_device.SetProp.assert_called_once_with(

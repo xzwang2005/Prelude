@@ -52,10 +52,6 @@ class TabListBackend(inspector_backend_list.InspectorBackendList):
       py_utils.TimeoutException
     """
     assert self._browser_backend.supports_tab_control
-    # TODO(dtu): crbug.com/160946, allow closing the last tab on some platforms.
-    # For now, just create a new tab before closing the last tab.
-    if len(self) <= 1:
-      self.New(timeout)
 
     response = self._browser_backend.devtools_client.CloseTab(tab_id, timeout)
 
@@ -84,6 +80,12 @@ class TabListBackend(inspector_backend_list.InspectorBackendList):
           app=self._browser_backend.browser,
           msg='Received response: %s' % response)
 
+    # Activate tab call is synchronous, so wait to make sure that Chrome
+    # have time to promote this tab to foreground.
+    py_utils.WaitFor(
+        lambda: tab_id == self._browser_backend.browser.foreground_tab.id,
+        timeout=5)
+
   def Get(self, index, ret):
     """Returns self[index] if it exists, or ret if index is out of bounds."""
     if len(self) <= index:
@@ -105,7 +107,7 @@ class TabListBackend(inspector_backend_list.InspectorBackendList):
     if not self._browser_backend.IsAppRunning():
       error.AddDebuggingMessage('The browser is not running. It probably '
                                 'crashed.')
-    elif not self._browser_backend.HasBrowserFinishedLaunching():
+    elif not self._browser_backend.HasDevToolsConnection():
       error.AddDebuggingMessage('The browser exists but cannot be reached.')
     else:
       error.AddDebuggingMessage('The browser exists and can be reached. '

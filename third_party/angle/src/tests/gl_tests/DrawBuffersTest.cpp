@@ -82,13 +82,6 @@ class DrawBuffersTest : public ANGLETest
 
     void setupMRTProgramESSL3(bool bufferEnabled[8], GLuint *programOut)
     {
-        const std::string vertexShaderSource =
-            "#version 300 es\n"
-            "in vec4 position;\n"
-            "void main() {\n"
-            "    gl_Position = position;\n"
-            "}\n";
-
         std::stringstream strstr;
 
         strstr << "#version 300 es\n"
@@ -122,7 +115,7 @@ class DrawBuffersTest : public ANGLETest
 
         strstr << "}\n";
 
-        *programOut = CompileProgram(vertexShaderSource, strstr.str());
+        *programOut = CompileProgram(essl3_shaders::vs::Simple(), strstr.str());
         if (*programOut == 0)
         {
             FAIL() << "shader compilation failed.";
@@ -131,12 +124,6 @@ class DrawBuffersTest : public ANGLETest
 
     void setupMRTProgramESSL1(bool bufferEnabled[8], GLuint *programOut)
     {
-        const std::string vertexShaderSource =
-            "attribute vec4 position;\n"
-            "void main() {\n"
-            "    gl_Position = position;\n"
-            "}\n";
-
         std::stringstream strstr;
 
         strstr << "#extension GL_EXT_draw_buffers : enable\n"
@@ -160,7 +147,7 @@ class DrawBuffersTest : public ANGLETest
 
         strstr << "}\n";
 
-        *programOut = CompileProgram(vertexShaderSource, strstr.str());
+        *programOut = CompileProgram(essl1_shaders::vs::Simple(), strstr.str());
         if (*programOut == 0)
         {
             FAIL() << "shader compilation failed.";
@@ -177,6 +164,18 @@ class DrawBuffersTest : public ANGLETest
         {
             ASSERT_EQ(getClientMajorVersion(), 2);
             setupMRTProgramESSL1(bufferEnabled, programOut);
+        }
+    }
+
+    const char *positionAttrib()
+    {
+        if (getClientMajorVersion() == 3)
+        {
+            return essl3_shaders::PositionAttrib();
+        }
+        else
+        {
+            return essl1_shaders::PositionAttrib();
         }
     }
 
@@ -222,41 +221,26 @@ class DrawBuffersTest : public ANGLETest
 TEST_P(DrawBuffersTest, VerifyD3DLimits)
 {
     EGLPlatformParameters platform = GetParam().eglParameters;
-    if (platform.renderer == EGL_PLATFORM_ANGLE_TYPE_D3D11_ANGLE)
+
+    ANGLE_SKIP_TEST_IF(platform.renderer != EGL_PLATFORM_ANGLE_TYPE_D3D11_ANGLE);
+    if (platform.majorVersion == 9 && platform.minorVersion == 3)
     {
-        if (platform.majorVersion == 9 && platform.minorVersion == 3)
-        {
-            // D3D11 Feature Level 9_3 supports 4 draw buffers
-            ASSERT_EQ(mMaxDrawBuffers, 4);
-        }
-        else
-        {
-            // D3D11 Feature Level 10_0+ supports 8 draw buffers
-            ASSERT_EQ(mMaxDrawBuffers, 8);
-        }
+        // D3D11 Feature Level 9_3 supports 4 draw buffers
+        ASSERT_EQ(mMaxDrawBuffers, 4);
     }
     else
     {
-        std::cout << "Test skipped for non-D3D11 renderers." << std::endl;
-        return;
+        // D3D11 Feature Level 10_0+ supports 8 draw buffers
+        ASSERT_EQ(mMaxDrawBuffers, 8);
     }
 }
 
 TEST_P(DrawBuffersTest, Gaps)
 {
-    if (!checkSupport())
-    {
-        std::cout << "Test skipped because ES3 or GL_EXT_draw_buffers is not available."
-                  << std::endl;
-        return;
-    }
+    ANGLE_SKIP_TEST_IF(!checkSupport());
 
-    if (IsWindows() && IsAMD() && IsDesktopOpenGL())
-    {
-        // TODO(ynovikov): Investigate the failure (http://anglebug.com/1535)
-        std::cout << "Test disabled on Windows AMD OpenGL." << std::endl;
-        return;
-    }
+    // TODO(ynovikov): Investigate the failure (http://anglebug.com/1535)
+    ANGLE_SKIP_TEST_IF(IsWindows() && IsAMD() && IsDesktopOpenGL());
 
     glBindTexture(GL_TEXTURE_2D, mTextures[0]);
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, GL_TEXTURE_2D, mTextures[0], 0);
@@ -272,7 +256,7 @@ TEST_P(DrawBuffersTest, Gaps)
         GL_COLOR_ATTACHMENT1
     };
     setDrawBuffers(2, bufs);
-    drawQuad(program, "position", 0.5);
+    drawQuad(program, positionAttrib(), 0.5);
 
     verifyAttachment2D(1, mTextures[0], GL_TEXTURE_2D, 0);
 
@@ -281,19 +265,10 @@ TEST_P(DrawBuffersTest, Gaps)
 
 TEST_P(DrawBuffersTest, FirstAndLast)
 {
-    if (!checkSupport())
-    {
-        std::cout << "Test skipped because ES3 or GL_EXT_draw_buffers is not available."
-                  << std::endl;
-        return;
-    }
+    ANGLE_SKIP_TEST_IF(!checkSupport());
 
-    if (IsWindows() && IsAMD() && IsDesktopOpenGL())
-    {
-        // TODO(ynovikov): Investigate the failure (https://anglebug.com/1533)
-        std::cout << "Test disabled on Windows AMD OpenGL." << std::endl;
-        return;
-    }
+    // TODO(ynovikov): Investigate the failure (https://anglebug.com/1533)
+    ANGLE_SKIP_TEST_IF(IsWindows() && IsAMD() && IsDesktopOpenGL());
 
     glBindTexture(GL_TEXTURE_2D, mTextures[0]);
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, mTextures[0], 0);
@@ -315,7 +290,7 @@ TEST_P(DrawBuffersTest, FirstAndLast)
     };
 
     setDrawBuffers(4, bufs);
-    drawQuad(program, "position", 0.5);
+    drawQuad(program, positionAttrib(), 0.5);
 
     verifyAttachment2D(0, mTextures[0], GL_TEXTURE_2D, 0);
     verifyAttachment2D(3, mTextures[1], GL_TEXTURE_2D, 0);
@@ -327,19 +302,10 @@ TEST_P(DrawBuffersTest, FirstAndLast)
 
 TEST_P(DrawBuffersTest, FirstHalfNULL)
 {
-    if (!checkSupport())
-    {
-        std::cout << "Test skipped because ES3 or GL_EXT_draw_buffers is not available."
-                  << std::endl;
-        return;
-    }
+    ANGLE_SKIP_TEST_IF(!checkSupport());
 
-    if (IsWindows() && IsAMD() && IsDesktopOpenGL())
-    {
-        // TODO(ynovikov): Investigate the failure (https://anglebug.com/1533)
-        std::cout << "Test disabled on Windows AMD OpenGL." << std::endl;
-        return;
-    }
+    // TODO(ynovikov): Investigate the failure (https://anglebug.com/1533)
+    ANGLE_SKIP_TEST_IF(IsWindows() && IsAMD() && IsDesktopOpenGL());
 
     bool flags[8] = { false };
     GLenum bufs[8] = { GL_NONE };
@@ -358,7 +324,7 @@ TEST_P(DrawBuffersTest, FirstHalfNULL)
     setupMRTProgram(flags, &program);
 
     setDrawBuffers(mMaxDrawBuffers, bufs);
-    drawQuad(program, "position", 0.5);
+    drawQuad(program, positionAttrib(), 0.5);
 
     for (GLuint texIndex = 0; texIndex < halfMaxDrawBuffers; texIndex++)
     {
@@ -372,12 +338,7 @@ TEST_P(DrawBuffersTest, FirstHalfNULL)
 
 TEST_P(DrawBuffersTest, UnwrittenOutputVariablesShouldNotCrash)
 {
-    if (!checkSupport())
-    {
-        std::cout << "Test skipped because ES3 or GL_EXT_draw_buffers is not available."
-                  << std::endl;
-        return;
-    }
+    ANGLE_SKIP_TEST_IF(!checkSupport());
 
     // Bind two render targets but use a shader which writes only to the first one.
     glBindTexture(GL_TEXTURE_2D, mTextures[0]);
@@ -402,7 +363,7 @@ TEST_P(DrawBuffersTest, UnwrittenOutputVariablesShouldNotCrash)
     setDrawBuffers(4, bufs);
 
     // This call should not crash when we dynamically generate the HLSL code.
-    drawQuad(program, "position", 0.5);
+    drawQuad(program, positionAttrib(), 0.5);
 
     verifyAttachment2D(0, mTextures[0], GL_TEXTURE_2D, 0);
 
@@ -413,11 +374,7 @@ TEST_P(DrawBuffersTest, UnwrittenOutputVariablesShouldNotCrash)
 
 TEST_P(DrawBuffersTest, BroadcastGLFragColor)
 {
-    if (!extensionEnabled("GL_EXT_draw_buffers"))
-    {
-        std::cout << "Test skipped because EGL_EXT_draw_buffers is not enabled." << std::endl;
-        return;
-    }
+    ANGLE_SKIP_TEST_IF(!extensionEnabled("GL_EXT_draw_buffers"));
 
     // Bind two render targets. gl_FragColor should be broadcast to both.
     glBindTexture(GL_TEXTURE_2D, mTextures[0]);
@@ -427,12 +384,6 @@ TEST_P(DrawBuffersTest, BroadcastGLFragColor)
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, GL_TEXTURE_2D, mTextures[1], 0);
 
     const GLenum bufs[] = {GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1};
-
-    const std::string vertexShaderSource =
-        "attribute vec4 position;\n"
-        "void main() {\n"
-        "    gl_Position = position;\n"
-        "}\n";
 
     const std::string fragmentShaderSource =
         "#extension GL_EXT_draw_buffers : enable\n"
@@ -447,14 +398,14 @@ TEST_P(DrawBuffersTest, BroadcastGLFragColor)
         "    }\n"
         "}\n";
 
-    GLuint program = CompileProgram(vertexShaderSource, fragmentShaderSource);
+    GLuint program = CompileProgram(essl1_shaders::vs::Simple(), fragmentShaderSource);
     if (program == 0)
     {
         FAIL() << "shader compilation failed.";
     }
 
     setDrawBuffers(2, bufs);
-    drawQuad(program, "position", 0.5);
+    drawQuad(program, essl1_shaders::PositionAttrib(), 0.5);
 
     verifyAttachment2D(0, mTextures[0], GL_TEXTURE_2D, 0);
     verifyAttachment2D(0, mTextures[1], GL_TEXTURE_2D, 0);
@@ -491,7 +442,7 @@ TEST_P(DrawBuffersTestES3, 3DTextures)
     };
 
     glDrawBuffers(4, bufs);
-    drawQuad(program, "position", 0.5);
+    drawQuad(program, positionAttrib(), 0.5);
 
     verifyAttachmentLayer(0, texture.get(), 0, 0);
     verifyAttachmentLayer(1, texture.get(), 0, 1);
@@ -526,7 +477,7 @@ TEST_P(DrawBuffersTestES3, 2DArrayTextures)
     };
 
     glDrawBuffers(4, bufs);
-    drawQuad(program, "position", 0.5);
+    drawQuad(program, positionAttrib(), 0.5);
 
     verifyAttachmentLayer(0, texture.get(), 0, 0);
     verifyAttachmentLayer(1, texture.get(), 0, 1);

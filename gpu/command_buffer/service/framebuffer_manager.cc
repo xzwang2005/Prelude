@@ -21,9 +21,8 @@ namespace gles2 {
 
 DecoderFramebufferState::DecoderFramebufferState()
     : clear_state_dirty(false),
-      bound_read_framebuffer(NULL),
-      bound_draw_framebuffer(NULL) {
-}
+      bound_read_framebuffer(nullptr),
+      bound_draw_framebuffer(nullptr) {}
 
 DecoderFramebufferState::~DecoderFramebufferState() = default;
 
@@ -51,6 +50,11 @@ class RenderbufferAttachment
   GLsizei samples() const override { return renderbuffer_->samples(); }
 
   GLuint object_name() const override { return renderbuffer_->client_id(); }
+
+  GLint level() const override {
+    NOTREACHED();
+    return -1;
+  }
 
   bool cleared() const override { return renderbuffer_->cleared(); }
 
@@ -183,7 +187,7 @@ class TextureAttachment
 
   GLenum target() const { return target_; }
 
-  GLint level() const { return level_; }
+  GLint level() const override { return level_; }
 
   GLuint object_name() const override { return texture_ref_->client_id(); }
 
@@ -401,7 +405,7 @@ Framebuffer::~Framebuffer() {
       glDeleteFramebuffersEXT(1, &id);
     }
     manager_->StopTracking(this);
-    manager_ = NULL;
+    manager_ = nullptr;
   }
 
   for (auto& attachment : attachments_) {
@@ -651,14 +655,8 @@ GLenum Framebuffer::GetReadBufferInternalFormat() const {
 }
 
 GLenum Framebuffer::GetReadBufferTextureType() const {
-  if (read_buffer_ == GL_NONE)
-    return 0;
-  AttachmentMap::const_iterator it = attachments_.find(read_buffer_);
-  if (it == attachments_.end()) {
-    return 0;
-  }
-  const Attachment* attachment = it->second.get();
-  return attachment->texture_type();
+  const Attachment* attachment = GetReadBufferAttachment();
+  return attachment ? attachment->texture_type() : 0;
 }
 
 GLsizei Framebuffer::GetSamples() const {
@@ -873,8 +871,8 @@ bool Framebuffer::HasAlphaMRT() const {
       const Attachment* attachment = GetAttachment(draw_buffers_[i]);
       if (!attachment)
         continue;
-      if ((GLES2Util::GetChannelsForFormat(
-               attachment->internal_format()) & 0x0008) != 0)
+      if ((GLES2Util::GetChannelsForFormat(attachment->internal_format()) &
+           GLES2Util::kAlpha) != 0)
         return true;
     }
   }
@@ -909,7 +907,7 @@ void Framebuffer::UnbindRenderbuffer(
       if (attachment->IsRenderbuffer(renderbuffer)) {
         // TODO(gman): manually detach renderbuffer.
         // glFramebufferRenderbufferEXT(target, it->first, GL_RENDERBUFFER, 0);
-        AttachRenderbuffer(it->first, NULL);
+        AttachRenderbuffer(it->first, nullptr);
         done = false;
         break;
       }
@@ -928,7 +926,7 @@ void Framebuffer::UnbindTexture(
       if (attachment->IsTexture(texture_ref)) {
         // TODO(gman): manually detach texture.
         // glFramebufferTexture2DEXT(target, it->first, GL_TEXTURE_2D, 0, 0);
-        AttachTexture(it->first, NULL, GL_TEXTURE_2D, 0, 0);
+        AttachTexture(it->first, nullptr, GL_TEXTURE_2D, 0, 0);
         done = false;
         break;
       }
@@ -965,7 +963,7 @@ void Framebuffer::UpdateDrawBufferMasks() {
 Framebuffer* FramebufferManager::GetFramebuffer(
     GLuint client_id) {
   FramebufferMap::iterator it = framebuffers_.find(client_id);
-  return it != framebuffers_.end() ? it->second.get() : NULL;
+  return it != framebuffers_.end() ? it->second.get() : nullptr;
 }
 
 void FramebufferManager::RemoveFramebuffer(GLuint client_id) {
@@ -1041,7 +1039,7 @@ const Framebuffer::Attachment*
   if (it != attachments_.end()) {
     return it->second.get();
   }
-  return NULL;
+  return nullptr;
 }
 
 const Framebuffer::Attachment* Framebuffer::GetReadBufferAttachment() const {

@@ -15,6 +15,7 @@
 #include "libANGLE/Context.h"
 #include "libANGLE/Fence.h"
 #include "libANGLE/Framebuffer.h"
+#include "libANGLE/GLES1State.h"
 #include "libANGLE/Program.h"
 #include "libANGLE/Renderbuffer.h"
 #include "libANGLE/Sampler.h"
@@ -33,7 +34,7 @@ namespace
 
 template <typename ParamType>
 void QueryTexLevelParameterBase(const Texture *texture,
-                                GLenum target,
+                                TextureTarget target,
                                 GLint level,
                                 GLenum pname,
                                 ParamType *params)
@@ -169,10 +170,10 @@ void QueryTexParameterBase(const Texture *texture, GLenum pname, ParamType *para
             *params = CastFromGLintStateValue<ParamType>(pname, texture->getMaxLevel());
             break;
         case GL_TEXTURE_MIN_LOD:
-            *params = CastFromStateValue<ParamType>(pname, texture->getSamplerState().minLod);
+            *params = CastFromStateValue<ParamType>(pname, texture->getMinLod());
             break;
         case GL_TEXTURE_MAX_LOD:
-            *params = CastFromStateValue<ParamType>(pname, texture->getSamplerState().maxLod);
+            *params = CastFromStateValue<ParamType>(pname, texture->getMaxLod());
             break;
         case GL_TEXTURE_COMPARE_MODE:
             *params = CastFromGLintStateValue<ParamType>(pname, texture->getCompareMode());
@@ -182,6 +183,22 @@ void QueryTexParameterBase(const Texture *texture, GLenum pname, ParamType *para
             break;
         case GL_TEXTURE_SRGB_DECODE_EXT:
             *params = CastFromGLintStateValue<ParamType>(pname, texture->getSRGBDecode());
+            break;
+        case GL_DEPTH_STENCIL_TEXTURE_MODE:
+            *params =
+                CastFromGLintStateValue<ParamType>(pname, texture->getDepthStencilTextureMode());
+            break;
+        case GL_TEXTURE_CROP_RECT_OES:
+        {
+            const gl::Rectangle &crop = texture->getCrop();
+            params[0]                 = CastFromGLintStateValue<ParamType>(pname, crop.x);
+            params[1]                 = CastFromGLintStateValue<ParamType>(pname, crop.y);
+            params[2]                 = CastFromGLintStateValue<ParamType>(pname, crop.width);
+            params[3]                 = CastFromGLintStateValue<ParamType>(pname, crop.height);
+            break;
+        }
+        case GL_GENERATE_MIPMAP:
+            *params = CastFromGLintStateValue<ParamType>(pname, texture->getGenerateMipmapHint());
             break;
         default:
             UNREACHABLE();
@@ -256,6 +273,15 @@ void SetTexParameterBase(Context *context, Texture *texture, GLenum pname, const
         case GL_TEXTURE_SRGB_DECODE_EXT:
             texture->setSRGBDecode(ConvertToGLenum(pname, params[0]));
             break;
+        case GL_TEXTURE_CROP_RECT_OES:
+            texture->setCrop(gl::Rectangle(CastQueryValueTo<GLint>(pname, params[0]),
+                                           CastQueryValueTo<GLint>(pname, params[1]),
+                                           CastQueryValueTo<GLint>(pname, params[2]),
+                                           CastQueryValueTo<GLint>(pname, params[3])));
+            break;
+        case GL_GENERATE_MIPMAP:
+            texture->setGenerateMipmapHint(ConvertToGLenum(params[0]));
+            break;
         default:
             UNREACHABLE();
             break;
@@ -307,7 +333,10 @@ void QuerySamplerParameterBase(const Sampler *sampler, GLenum pname, ParamType *
 }
 
 template <typename ParamType>
-void SetSamplerParameterBase(Sampler *sampler, GLenum pname, const ParamType *params)
+void SetSamplerParameterBase(Context *context,
+                             Sampler *sampler,
+                             GLenum pname,
+                             const ParamType *params)
 {
     switch (pname)
     {
@@ -348,6 +377,8 @@ void SetSamplerParameterBase(Sampler *sampler, GLenum pname, const ParamType *pa
             UNREACHABLE();
             break;
     }
+
+    sampler->onStateChange(context, angle::SubjectMessage::CONTENTS_CHANGED);
 }
 
 // Warning: you should ensure binding really matches attrib.bindingIndex before using this function.
@@ -476,6 +507,7 @@ GLint GetInputResourceProperty(const Program *program, GLuint index, GLenum prop
 
         case GL_REFERENCED_BY_FRAGMENT_SHADER:
         case GL_REFERENCED_BY_COMPUTE_SHADER:
+        case GL_REFERENCED_BY_GEOMETRY_SHADER_EXT:
             return 0;
 
         default:
@@ -497,14 +529,35 @@ GLint GetOutputResourceProperty(const Program *program, GLuint index, const GLen
         case GL_LOCATION:
             return program->getFragDataLocation(outputVariable.name);
 
-        case GL_REFERENCED_BY_VERTEX_SHADER:
-            return 0;
-
         case GL_REFERENCED_BY_FRAGMENT_SHADER:
             return 1;
 
+        case GL_REFERENCED_BY_VERTEX_SHADER:
         case GL_REFERENCED_BY_COMPUTE_SHADER:
+        case GL_REFERENCED_BY_GEOMETRY_SHADER_EXT:
             return 0;
+
+        default:
+            UNREACHABLE();
+            return GL_INVALID_VALUE;
+    }
+}
+
+GLint GetTransformFeedbackVaryingResourceProperty(const Program *program,
+                                                  GLuint index,
+                                                  const GLenum prop)
+{
+    const auto &tfVariable = program->getTransformFeedbackVaryingResource(index);
+    switch (prop)
+    {
+        case GL_TYPE:
+            return clampCast<GLint>(tfVariable.type);
+
+        case GL_ARRAY_SIZE:
+            return clampCast<GLint>(tfVariable.size());
+
+        case GL_NAME_LENGTH:
+            return clampCast<GLint>(tfVariable.nameWithArrayIndex().size() + 1);
 
         default:
             UNREACHABLE();
@@ -537,10 +590,8 @@ GLint QueryProgramInterfaceActiveResources(const Program *program, GLenum progra
         case GL_SHADER_STORAGE_BLOCK:
             return clampCast<GLint>(program->getState().getShaderStorageBlocks().size());
 
-        // TODO(jie.a.chen@intel.com): more interfaces.
         case GL_TRANSFORM_FEEDBACK_VARYING:
-            UNIMPLEMENTED();
-            return 0;
+            return clampCast<GLint>(program->getTransformFeedbackVaryingCount());
 
         default:
             UNREACHABLE();
@@ -578,9 +629,7 @@ GLint QueryProgramInterfaceMaxNameLength(const Program *program, GLenum programI
             break;
 
         case GL_UNIFORM_BLOCK:
-            maxNameLength =
-                FindMaxSize(program->getState().getUniformBlocks(), &InterfaceBlock::name);
-            break;
+            return program->getActiveUniformBlockMaxNameLength();
 
         case GL_BUFFER_VARIABLE:
             maxNameLength =
@@ -588,14 +637,10 @@ GLint QueryProgramInterfaceMaxNameLength(const Program *program, GLenum programI
             break;
 
         case GL_SHADER_STORAGE_BLOCK:
-            maxNameLength =
-                FindMaxSize(program->getState().getShaderStorageBlocks(), &InterfaceBlock::name);
-            break;
+            return program->getActiveShaderStorageBlockMaxNameLength();
 
-        // TODO(jie.a.chen@intel.com): more interfaces.
         case GL_TRANSFORM_FEEDBACK_VARYING:
-            UNIMPLEMENTED();
-            return 0;
+            return clampCast<GLint>(program->getTransformFeedbackVaryingMaxLength());
 
         default:
             UNREACHABLE();
@@ -709,13 +754,16 @@ void GetShaderVariableBufferResourceProperty(const ShaderVariableBuffer &buffer,
             }
             break;
         case GL_REFERENCED_BY_VERTEX_SHADER:
-            params[(*outputPosition)++] = static_cast<GLint>(buffer.vertexStaticUse);
+            params[(*outputPosition)++] = static_cast<GLint>(buffer.isActive(ShaderType::Vertex));
             break;
         case GL_REFERENCED_BY_FRAGMENT_SHADER:
-            params[(*outputPosition)++] = static_cast<GLint>(buffer.fragmentStaticUse);
+            params[(*outputPosition)++] = static_cast<GLint>(buffer.isActive(ShaderType::Fragment));
             break;
         case GL_REFERENCED_BY_COMPUTE_SHADER:
-            params[(*outputPosition)++] = static_cast<GLint>(buffer.computeStaticUse);
+            params[(*outputPosition)++] = static_cast<GLint>(buffer.isActive(ShaderType::Compute));
+            break;
+        case GL_REFERENCED_BY_GEOMETRY_SHADER_EXT:
+            params[(*outputPosition)++] = static_cast<GLint>(buffer.isActive(ShaderType::Geometry));
             break;
         default:
             UNREACHABLE();
@@ -776,6 +824,32 @@ void GetAtomicCounterBufferResourceProperty(const Program *program,
     GetShaderVariableBufferResourceProperty(buffer, pname, params, bufSize, outputPosition);
 }
 
+bool IsTextureEnvEnumParameter(TextureEnvParameter pname)
+{
+    switch (pname)
+    {
+        case TextureEnvParameter::Mode:
+        case TextureEnvParameter::CombineRgb:
+        case TextureEnvParameter::CombineAlpha:
+        case TextureEnvParameter::Src0Rgb:
+        case TextureEnvParameter::Src1Rgb:
+        case TextureEnvParameter::Src2Rgb:
+        case TextureEnvParameter::Src0Alpha:
+        case TextureEnvParameter::Src1Alpha:
+        case TextureEnvParameter::Src2Alpha:
+        case TextureEnvParameter::Op0Rgb:
+        case TextureEnvParameter::Op1Rgb:
+        case TextureEnvParameter::Op2Rgb:
+        case TextureEnvParameter::Op0Alpha:
+        case TextureEnvParameter::Op1Alpha:
+        case TextureEnvParameter::Op2Alpha:
+        case TextureEnvParameter::PointCoordReplace:
+            return true;
+        default:
+            return false;
+    }
+}
+
 }  // anonymous namespace
 
 void QueryFramebufferAttachmentParameteriv(const Context *context,
@@ -830,8 +904,19 @@ void QueryFramebufferAttachmentParameteriv(const Context *context,
             break;
 
         case GL_FRAMEBUFFER_ATTACHMENT_TEXTURE_CUBE_MAP_FACE:
-            *params = attachmentObject->cubeMapFace();
-            break;
+        {
+            TextureTarget face = attachmentObject->cubeMapFace();
+            if (face != TextureTarget::InvalidEnum)
+            {
+                *params = ToGLenum(attachmentObject->cubeMapFace());
+            }
+            else
+            {
+                // This happens when the attachment isn't a texture cube map face
+                *params = GL_NONE;
+            }
+        }
+        break;
 
         case GL_FRAMEBUFFER_ATTACHMENT_RED_SIZE:
             *params = attachmentObject->getRedSize();
@@ -892,6 +977,10 @@ void QueryFramebufferAttachmentParameteriv(const Context *context,
         }
         break;
 
+        case GL_FRAMEBUFFER_ATTACHMENT_LAYERED_EXT:
+            *params = attachmentObject->isLayered();
+            break;
+
         default:
             UNREACHABLE();
             break;
@@ -934,6 +1023,9 @@ void QueryProgramiv(const Context *context, const Program *program, GLenum pname
         case GL_LINK_STATUS:
             *params = program->isLinked();
             return;
+        case GL_COMPLETION_STATUS_KHR:
+            *params = program->isLinking() ? GL_FALSE : GL_TRUE;
+            return;
         case GL_VALIDATE_STATUS:
             *params = program->isValidated();
             return;
@@ -956,19 +1048,21 @@ void QueryProgramiv(const Context *context, const Program *program, GLenum pname
             *params = program->getActiveUniformMaxLength();
             return;
         case GL_PROGRAM_BINARY_LENGTH_OES:
-            *params = program->getBinaryLength(context);
+            *params = context->getCaps().programBinaryFormats.empty()
+                          ? 0
+                          : program->getBinaryLength(context);
             return;
         case GL_ACTIVE_UNIFORM_BLOCKS:
             *params = program->getActiveUniformBlockCount();
             return;
         case GL_ACTIVE_UNIFORM_BLOCK_MAX_NAME_LENGTH:
-            *params = program->getActiveUniformBlockMaxLength();
+            *params = program->getActiveUniformBlockMaxNameLength();
             break;
         case GL_TRANSFORM_FEEDBACK_BUFFER_MODE:
             *params = program->getTransformFeedbackBufferMode();
             break;
         case GL_TRANSFORM_FEEDBACK_VARYINGS:
-            *params = program->getTransformFeedbackVaryingCount();
+            *params = clampCast<GLint>(program->getTransformFeedbackVaryingCount());
             break;
         case GL_TRANSFORM_FEEDBACK_VARYING_MAX_LENGTH:
             *params = program->getTransformFeedbackVaryingMaxLength();
@@ -989,6 +1083,18 @@ void QueryProgramiv(const Context *context, const Program *program, GLenum pname
         break;
         case GL_ACTIVE_ATOMIC_COUNTER_BUFFERS:
             *params = program->getActiveAtomicCounterBufferCount();
+            break;
+        case GL_GEOMETRY_LINKED_INPUT_TYPE_EXT:
+            *params = ToGLenum(program->getGeometryShaderInputPrimitiveType());
+            break;
+        case GL_GEOMETRY_LINKED_OUTPUT_TYPE_EXT:
+            *params = ToGLenum(program->getGeometryShaderOutputPrimitiveType());
+            break;
+        case GL_GEOMETRY_LINKED_VERTICES_OUT_EXT:
+            *params = program->getGeometryShaderMaxVertices();
+            break;
+        case GL_GEOMETRY_SHADER_INVOCATIONS_EXT:
+            *params = program->getGeometryShaderInvocations();
             break;
         default:
             UNREACHABLE();
@@ -1050,29 +1156,32 @@ void QueryRenderbufferiv(const Context *context,
     }
 }
 
-void QueryShaderiv(const Context *context, Shader *shader, GLenum pname, GLint *params)
+void QueryShaderiv(Shader *shader, GLenum pname, GLint *params)
 {
     ASSERT(shader != nullptr);
 
     switch (pname)
     {
         case GL_SHADER_TYPE:
-            *params = shader->getType();
+            *params = static_cast<GLint>(ToGLenum(shader->getType()));
             return;
         case GL_DELETE_STATUS:
             *params = shader->isFlaggedForDeletion();
             return;
         case GL_COMPILE_STATUS:
-            *params = shader->isCompiled(context) ? GL_TRUE : GL_FALSE;
+            *params = shader->isCompiled() ? GL_TRUE : GL_FALSE;
+            return;
+        case GL_COMPLETION_STATUS_KHR:
+            *params = shader->isCompleted() ? GL_TRUE : GL_FALSE;
             return;
         case GL_INFO_LOG_LENGTH:
-            *params = shader->getInfoLogLength(context);
+            *params = shader->getInfoLogLength();
             return;
         case GL_SHADER_SOURCE_LENGTH:
             *params = shader->getSourceLength();
             return;
         case GL_TRANSLATED_SHADER_SOURCE_LENGTH_ANGLE:
-            *params = shader->getTranslatedSourceWithDebugInfoLength(context);
+            *params = shader->getTranslatedSourceWithDebugInfoLength();
             return;
         default:
             UNREACHABLE();
@@ -1081,7 +1190,7 @@ void QueryShaderiv(const Context *context, Shader *shader, GLenum pname, GLint *
 }
 
 void QueryTexLevelParameterfv(const Texture *texture,
-                              GLenum target,
+                              TextureTarget target,
                               GLint level,
                               GLenum pname,
                               GLfloat *params)
@@ -1090,7 +1199,7 @@ void QueryTexLevelParameterfv(const Texture *texture,
 }
 
 void QueryTexLevelParameteriv(const Texture *texture,
-                              GLenum target,
+                              TextureTarget target,
                               GLint level,
                               GLenum pname,
                               GLint *params)
@@ -1224,13 +1333,21 @@ void QueryFramebufferParameteriv(const Framebuffer *framebuffer, GLenum pname, G
         case GL_FRAMEBUFFER_DEFAULT_FIXED_SAMPLE_LOCATIONS:
             *params = ConvertToGLBoolean(framebuffer->getDefaultFixedSampleLocations());
             break;
+        case GL_FRAMEBUFFER_DEFAULT_LAYERS_EXT:
+            *params = framebuffer->getDefaultLayers();
+            break;
         default:
             UNREACHABLE();
             break;
     }
 }
 
-Error QuerySynciv(const Sync *sync, GLenum pname, GLsizei bufSize, GLsizei *length, GLint *values)
+Error QuerySynciv(const Context *context,
+                  const Sync *sync,
+                  GLenum pname,
+                  GLsizei bufSize,
+                  GLsizei *length,
+                  GLint *values)
 {
     ASSERT(sync);
 
@@ -1256,7 +1373,7 @@ Error QuerySynciv(const Sync *sync, GLenum pname, GLsizei bufSize, GLsizei *leng
             *values = clampCast<GLint>(sync->getFlags());
             break;
         case GL_SYNC_STATUS:
-            ANGLE_TRY(sync->getStatus(values));
+            ANGLE_TRY(sync->getStatus(context, values));
             break;
 
         default:
@@ -1292,43 +1409,49 @@ void SetTexParameteriv(Context *context, Texture *texture, GLenum pname, const G
     SetTexParameterBase(context, texture, pname, params);
 }
 
-void SetSamplerParameterf(Sampler *sampler, GLenum pname, GLfloat param)
+void SetSamplerParameterf(Context *context, Sampler *sampler, GLenum pname, GLfloat param)
 {
-    SetSamplerParameterBase(sampler, pname, &param);
+    SetSamplerParameterBase(context, sampler, pname, &param);
 }
 
-void SetSamplerParameterfv(Sampler *sampler, GLenum pname, const GLfloat *params)
+void SetSamplerParameterfv(Context *context, Sampler *sampler, GLenum pname, const GLfloat *params)
 {
-    SetSamplerParameterBase(sampler, pname, params);
+    SetSamplerParameterBase(context, sampler, pname, params);
 }
 
-void SetSamplerParameteri(Sampler *sampler, GLenum pname, GLint param)
+void SetSamplerParameteri(Context *context, Sampler *sampler, GLenum pname, GLint param)
 {
-    SetSamplerParameterBase(sampler, pname, &param);
+    SetSamplerParameterBase(context, sampler, pname, &param);
 }
 
-void SetSamplerParameteriv(Sampler *sampler, GLenum pname, const GLint *params)
+void SetSamplerParameteriv(Context *context, Sampler *sampler, GLenum pname, const GLint *params)
 {
-    SetSamplerParameterBase(sampler, pname, params);
+    SetSamplerParameterBase(context, sampler, pname, params);
 }
 
-void SetFramebufferParameteri(Framebuffer *framebuffer, GLenum pname, GLint param)
+void SetFramebufferParameteri(const Context *context,
+                              Framebuffer *framebuffer,
+                              GLenum pname,
+                              GLint param)
 {
     ASSERT(framebuffer);
 
     switch (pname)
     {
         case GL_FRAMEBUFFER_DEFAULT_WIDTH:
-            framebuffer->setDefaultWidth(param);
+            framebuffer->setDefaultWidth(context, param);
             break;
         case GL_FRAMEBUFFER_DEFAULT_HEIGHT:
-            framebuffer->setDefaultHeight(param);
+            framebuffer->setDefaultHeight(context, param);
             break;
         case GL_FRAMEBUFFER_DEFAULT_SAMPLES:
-            framebuffer->setDefaultSamples(param);
+            framebuffer->setDefaultSamples(context, param);
             break;
         case GL_FRAMEBUFFER_DEFAULT_FIXED_SAMPLE_LOCATIONS:
-            framebuffer->setDefaultFixedSampleLocations(ConvertToBool(param));
+            framebuffer->setDefaultFixedSampleLocations(context, ConvertToBool(param));
+            break;
+        case GL_FRAMEBUFFER_DEFAULT_LAYERS_EXT:
+            framebuffer->setDefaultLayers(param);
             break;
         default:
             UNREACHABLE();
@@ -1384,13 +1507,16 @@ GLint GetUniformResourceProperty(const Program *program, GLuint index, const GLe
             return static_cast<GLint>(uniform.blockInfo.isRowMajorMatrix);
 
         case GL_REFERENCED_BY_VERTEX_SHADER:
-            return uniform.vertexStaticUse;
+            return uniform.isActive(ShaderType::Vertex);
 
         case GL_REFERENCED_BY_FRAGMENT_SHADER:
-            return uniform.fragmentStaticUse;
+            return uniform.isActive(ShaderType::Fragment);
 
         case GL_REFERENCED_BY_COMPUTE_SHADER:
-            return uniform.computeStaticUse;
+            return uniform.isActive(ShaderType::Compute);
+
+        case GL_REFERENCED_BY_GEOMETRY_SHADER_EXT:
+            return uniform.isActive(ShaderType::Geometry);
 
         case GL_ATOMIC_COUNTER_BUFFER_INDEX:
             return (uniform.isAtomicCounter() ? uniform.bufferIndex : -1);
@@ -1427,13 +1553,16 @@ GLint GetBufferVariableResourceProperty(const Program *program, GLuint index, co
             return static_cast<GLint>(bufferVariable.blockInfo.isRowMajorMatrix);
 
         case GL_REFERENCED_BY_VERTEX_SHADER:
-            return bufferVariable.vertexStaticUse;
+            return bufferVariable.isActive(ShaderType::Vertex);
 
         case GL_REFERENCED_BY_FRAGMENT_SHADER:
-            return bufferVariable.fragmentStaticUse;
+            return bufferVariable.isActive(ShaderType::Fragment);
 
         case GL_REFERENCED_BY_COMPUTE_SHADER:
-            return bufferVariable.computeStaticUse;
+            return bufferVariable.isActive(ShaderType::Compute);
+
+        case GL_REFERENCED_BY_GEOMETRY_SHADER_EXT:
+            return bufferVariable.isActive(ShaderType::Geometry);
 
         case GL_TOP_LEVEL_ARRAY_SIZE:
             return bufferVariable.topLevelArraySize;
@@ -1471,10 +1600,8 @@ GLuint QueryProgramResourceIndex(const Program *program,
         case GL_UNIFORM_BLOCK:
             return program->getUniformBlockIndex(name);
 
-        // TODO(jie.a.chen@intel.com): more interfaces.
         case GL_TRANSFORM_FEEDBACK_VARYING:
-            UNIMPLEMENTED();
-            return GL_INVALID_INDEX;
+            return program->getTransformFeedbackVaryingResourceIndex(name);
 
         default:
             UNREACHABLE();
@@ -1515,9 +1642,8 @@ void QueryProgramResourceName(const Program *program,
             program->getActiveUniformBlockName(index, bufSize, length, name);
             break;
 
-        // TODO(jie.a.chen@intel.com): more interfaces.
         case GL_TRANSFORM_FEEDBACK_VARYING:
-            UNIMPLEMENTED();
+            program->getTransformFeedbackVarying(index, bufSize, length, nullptr, nullptr, name);
             break;
 
         default:
@@ -1602,10 +1728,10 @@ void QueryProgramResourceiv(const Program *program,
                 GetAtomicCounterBufferResourceProperty(program, index, props[i], params, bufSize,
                                                        &pos);
                 break;
-            // TODO(jie.a.chen@intel.com): more interfaces.
+
             case GL_TRANSFORM_FEEDBACK_VARYING:
-                UNIMPLEMENTED();
-                params[i] = GL_INVALID_VALUE;
+                params[i] = GetTransformFeedbackVaryingResourceProperty(program, index, props[i]);
+                ++pos;
                 break;
 
             default:
@@ -1647,6 +1773,814 @@ void QueryProgramInterfaceiv(const Program *program,
 
         default:
             UNREACHABLE();
+    }
+}
+
+ClientVertexArrayType ParamToVertexArrayType(GLenum param)
+{
+    switch (param)
+    {
+        case GL_VERTEX_ARRAY:
+        case GL_VERTEX_ARRAY_BUFFER_BINDING:
+        case GL_VERTEX_ARRAY_STRIDE:
+        case GL_VERTEX_ARRAY_SIZE:
+        case GL_VERTEX_ARRAY_TYPE:
+        case GL_VERTEX_ARRAY_POINTER:
+            return ClientVertexArrayType::Vertex;
+        case GL_NORMAL_ARRAY:
+        case GL_NORMAL_ARRAY_BUFFER_BINDING:
+        case GL_NORMAL_ARRAY_STRIDE:
+        case GL_NORMAL_ARRAY_TYPE:
+        case GL_NORMAL_ARRAY_POINTER:
+            return ClientVertexArrayType::Normal;
+        case GL_COLOR_ARRAY:
+        case GL_COLOR_ARRAY_BUFFER_BINDING:
+        case GL_COLOR_ARRAY_STRIDE:
+        case GL_COLOR_ARRAY_SIZE:
+        case GL_COLOR_ARRAY_TYPE:
+        case GL_COLOR_ARRAY_POINTER:
+            return ClientVertexArrayType::Color;
+        case GL_POINT_SIZE_ARRAY_OES:
+        case GL_POINT_SIZE_ARRAY_BUFFER_BINDING_OES:
+        case GL_POINT_SIZE_ARRAY_STRIDE_OES:
+        case GL_POINT_SIZE_ARRAY_TYPE_OES:
+        case GL_POINT_SIZE_ARRAY_POINTER_OES:
+            return ClientVertexArrayType::PointSize;
+        case GL_TEXTURE_COORD_ARRAY:
+        case GL_TEXTURE_COORD_ARRAY_BUFFER_BINDING:
+        case GL_TEXTURE_COORD_ARRAY_STRIDE:
+        case GL_TEXTURE_COORD_ARRAY_SIZE:
+        case GL_TEXTURE_COORD_ARRAY_TYPE:
+        case GL_TEXTURE_COORD_ARRAY_POINTER:
+            return ClientVertexArrayType::TextureCoord;
+        default:
+            UNREACHABLE();
+            return ClientVertexArrayType::InvalidEnum;
+    }
+}
+
+void SetLightModelParameters(GLES1State *state, GLenum pname, const GLfloat *params)
+{
+    LightModelParameters &lightModel = state->lightModelParameters();
+
+    switch (pname)
+    {
+        case GL_LIGHT_MODEL_AMBIENT:
+            lightModel.color = ColorF::fromData(params);
+            break;
+        case GL_LIGHT_MODEL_TWO_SIDE:
+            lightModel.twoSided = *params == 1.0f ? true : false;
+            break;
+        default:
+            break;
+    }
+}
+
+void GetLightModelParameters(const GLES1State *state, GLenum pname, GLfloat *params)
+{
+    const LightModelParameters &lightModel = state->lightModelParameters();
+
+    switch (pname)
+    {
+        case GL_LIGHT_MODEL_TWO_SIDE:
+            *params = lightModel.twoSided ? 1.0f : 0.0f;
+            break;
+        case GL_LIGHT_MODEL_AMBIENT:
+            lightModel.color.writeData(params);
+            break;
+        default:
+            break;
+    }
+}
+
+bool IsLightModelTwoSided(const GLES1State *state)
+{
+    return state->lightModelParameters().twoSided;
+}
+
+void SetLightParameters(GLES1State *state,
+                        GLenum light,
+                        LightParameter pname,
+                        const GLfloat *params)
+{
+    uint32_t lightIndex = light - GL_LIGHT0;
+
+    LightParameters &lightParams = state->lightParameters(lightIndex);
+
+    switch (pname)
+    {
+        case LightParameter::Ambient:
+            lightParams.ambient = ColorF::fromData(params);
+            break;
+        case LightParameter::Diffuse:
+            lightParams.diffuse = ColorF::fromData(params);
+            break;
+        case LightParameter::Specular:
+            lightParams.specular = ColorF::fromData(params);
+            break;
+        case LightParameter::Position:
+        {
+            angle::Mat4 mv = state->getModelviewMatrix();
+            angle::Vector4 transformedPos =
+                mv.product(angle::Vector4(params[0], params[1], params[2], params[3]));
+            lightParams.position[0] = transformedPos[0];
+            lightParams.position[1] = transformedPos[1];
+            lightParams.position[2] = transformedPos[2];
+            lightParams.position[3] = transformedPos[3];
+        }
+        break;
+        case LightParameter::SpotDirection:
+        {
+            angle::Mat4 mv = state->getModelviewMatrix();
+            angle::Vector4 transformedPos =
+                mv.product(angle::Vector4(params[0], params[1], params[2], 0.0f));
+            lightParams.direction[0] = transformedPos[0];
+            lightParams.direction[1] = transformedPos[1];
+            lightParams.direction[2] = transformedPos[2];
+        }
+        break;
+        case LightParameter::SpotExponent:
+            lightParams.spotlightExponent = *params;
+            break;
+        case LightParameter::SpotCutoff:
+            lightParams.spotlightCutoffAngle = *params;
+            break;
+        case LightParameter::ConstantAttenuation:
+            lightParams.attenuationConst = *params;
+            break;
+        case LightParameter::LinearAttenuation:
+            lightParams.attenuationLinear = *params;
+            break;
+        case LightParameter::QuadraticAttenuation:
+            lightParams.attenuationQuadratic = *params;
+            break;
+        default:
+            return;
+    }
+}
+
+void GetLightParameters(const GLES1State *state,
+                        GLenum light,
+                        LightParameter pname,
+                        GLfloat *params)
+{
+    uint32_t lightIndex                = light - GL_LIGHT0;
+    const LightParameters &lightParams = state->lightParameters(lightIndex);
+
+    switch (pname)
+    {
+        case LightParameter::Ambient:
+            lightParams.ambient.writeData(params);
+            break;
+        case LightParameter::Diffuse:
+            lightParams.diffuse.writeData(params);
+            break;
+        case LightParameter::Specular:
+            lightParams.specular.writeData(params);
+            break;
+        case LightParameter::Position:
+            memcpy(params, lightParams.position.data(), 4 * sizeof(GLfloat));
+            break;
+        case LightParameter::SpotDirection:
+            memcpy(params, lightParams.direction.data(), 3 * sizeof(GLfloat));
+            break;
+        case LightParameter::SpotExponent:
+            *params = lightParams.spotlightExponent;
+            break;
+        case LightParameter::SpotCutoff:
+            *params = lightParams.spotlightCutoffAngle;
+            break;
+        case LightParameter::ConstantAttenuation:
+            *params = lightParams.attenuationConst;
+            break;
+        case LightParameter::LinearAttenuation:
+            *params = lightParams.attenuationLinear;
+            break;
+        case LightParameter::QuadraticAttenuation:
+            *params = lightParams.attenuationQuadratic;
+            break;
+        default:
+            break;
+    }
+}
+
+void SetMaterialParameters(GLES1State *state,
+                           GLenum face,
+                           MaterialParameter pname,
+                           const GLfloat *params)
+{
+    MaterialParameters &material = state->materialParameters();
+    switch (pname)
+    {
+        case MaterialParameter::Ambient:
+            material.ambient = ColorF::fromData(params);
+            break;
+        case MaterialParameter::Diffuse:
+            material.diffuse = ColorF::fromData(params);
+            break;
+        case MaterialParameter::AmbientAndDiffuse:
+            material.ambient = ColorF::fromData(params);
+            material.diffuse = ColorF::fromData(params);
+            break;
+        case MaterialParameter::Specular:
+            material.specular = ColorF::fromData(params);
+            break;
+        case MaterialParameter::Emission:
+            material.emissive = ColorF::fromData(params);
+            break;
+        case MaterialParameter::Shininess:
+            material.specularExponent = *params;
+            break;
+        default:
+            return;
+    }
+}
+
+void GetMaterialParameters(const GLES1State *state,
+                           GLenum face,
+                           MaterialParameter pname,
+                           GLfloat *params)
+{
+    const ColorF &currentColor         = state->getCurrentColor();
+    const MaterialParameters &material = state->materialParameters();
+    const bool colorMaterialEnabled    = state->isColorMaterialEnabled();
+
+    switch (pname)
+    {
+        case MaterialParameter::Ambient:
+            if (colorMaterialEnabled)
+            {
+                currentColor.writeData(params);
+            }
+            else
+            {
+                material.ambient.writeData(params);
+            }
+            break;
+        case MaterialParameter::Diffuse:
+            if (colorMaterialEnabled)
+            {
+                currentColor.writeData(params);
+            }
+            else
+            {
+                material.diffuse.writeData(params);
+            }
+            break;
+        case MaterialParameter::Specular:
+            material.specular.writeData(params);
+            break;
+        case MaterialParameter::Emission:
+            material.emissive.writeData(params);
+            break;
+        case MaterialParameter::Shininess:
+            *params = material.specularExponent;
+            break;
+        default:
+            return;
+    }
+}
+
+unsigned int GetLightModelParameterCount(GLenum pname)
+{
+    switch (pname)
+    {
+        case GL_LIGHT_MODEL_AMBIENT:
+            return 4;
+        case GL_LIGHT_MODEL_TWO_SIDE:
+            return 1;
+        default:
+            return 0;
+    }
+}
+
+unsigned int GetLightParameterCount(LightParameter pname)
+{
+    switch (pname)
+    {
+        case LightParameter::Ambient:
+        case LightParameter::Diffuse:
+        case LightParameter::Specular:
+        case LightParameter::Position:
+            return 4;
+        case LightParameter::SpotDirection:
+            return 3;
+        case LightParameter::SpotExponent:
+        case LightParameter::SpotCutoff:
+        case LightParameter::ConstantAttenuation:
+        case LightParameter::LinearAttenuation:
+        case LightParameter::QuadraticAttenuation:
+            return 1;
+        default:
+            return 0;
+    }
+}
+
+unsigned int GetMaterialParameterCount(MaterialParameter pname)
+{
+    switch (pname)
+    {
+        case MaterialParameter::Ambient:
+        case MaterialParameter::Diffuse:
+        case MaterialParameter::Specular:
+        case MaterialParameter::Emission:
+            return 4;
+        case MaterialParameter::Shininess:
+            return 1;
+        default:
+            return 0;
+    }
+}
+
+void SetFogParameters(GLES1State *state, GLenum pname, const GLfloat *params)
+{
+    FogParameters &fog = state->fogParameters();
+    switch (pname)
+    {
+        case GL_FOG_MODE:
+            fog.mode = FromGLenum<FogMode>(static_cast<GLenum>(params[0]));
+            break;
+        case GL_FOG_DENSITY:
+            fog.density = params[0];
+            break;
+        case GL_FOG_START:
+            fog.start = params[0];
+            break;
+        case GL_FOG_END:
+            fog.end = params[0];
+            break;
+        case GL_FOG_COLOR:
+            fog.color = ColorF::fromData(params);
+            break;
+        default:
+            return;
+    }
+}
+
+void GetFogParameters(const GLES1State *state, GLenum pname, GLfloat *params)
+{
+    const FogParameters &fog = state->fogParameters();
+    switch (pname)
+    {
+        case GL_FOG_MODE:
+            params[0] = static_cast<GLfloat>(ToGLenum(fog.mode));
+            break;
+        case GL_FOG_DENSITY:
+            params[0] = fog.density;
+            break;
+        case GL_FOG_START:
+            params[0] = fog.start;
+            break;
+        case GL_FOG_END:
+            params[0] = fog.end;
+            break;
+        case GL_FOG_COLOR:
+            fog.color.writeData(params);
+            break;
+        default:
+            return;
+    }
+}
+
+unsigned int GetFogParameterCount(GLenum pname)
+{
+    switch (pname)
+    {
+        case GL_FOG_MODE:
+        case GL_FOG_DENSITY:
+        case GL_FOG_START:
+        case GL_FOG_END:
+            return 1;
+        case GL_FOG_COLOR:
+            return 4;
+        default:
+            return 0;
+    }
+}
+
+unsigned int GetTextureEnvParameterCount(TextureEnvParameter pname)
+{
+    switch (pname)
+    {
+        case TextureEnvParameter::Mode:
+        case TextureEnvParameter::CombineRgb:
+        case TextureEnvParameter::CombineAlpha:
+        case TextureEnvParameter::Src0Rgb:
+        case TextureEnvParameter::Src1Rgb:
+        case TextureEnvParameter::Src2Rgb:
+        case TextureEnvParameter::Src0Alpha:
+        case TextureEnvParameter::Src1Alpha:
+        case TextureEnvParameter::Src2Alpha:
+        case TextureEnvParameter::Op0Rgb:
+        case TextureEnvParameter::Op1Rgb:
+        case TextureEnvParameter::Op2Rgb:
+        case TextureEnvParameter::Op0Alpha:
+        case TextureEnvParameter::Op1Alpha:
+        case TextureEnvParameter::Op2Alpha:
+        case TextureEnvParameter::RgbScale:
+        case TextureEnvParameter::AlphaScale:
+        case TextureEnvParameter::PointCoordReplace:
+            return 1;
+        case TextureEnvParameter::Color:
+            return 4;
+        default:
+            return 0;
+    }
+}
+
+void ConvertTextureEnvFromInt(TextureEnvParameter pname, const GLint *input, GLfloat *output)
+{
+    if (IsTextureEnvEnumParameter(pname))
+    {
+        ConvertGLenumValue(input[0], output);
+        return;
+    }
+
+    switch (pname)
+    {
+        case TextureEnvParameter::RgbScale:
+        case TextureEnvParameter::AlphaScale:
+            output[0] = static_cast<GLfloat>(input[0]);
+            break;
+        case TextureEnvParameter::Color:
+            for (int i = 0; i < 4; i++)
+            {
+                output[i] = input[i] / 255.0f;
+            }
+            break;
+        default:
+            UNREACHABLE();
+            break;
+    }
+}
+
+void ConvertTextureEnvFromFixed(TextureEnvParameter pname, const GLfixed *input, GLfloat *output)
+{
+    if (IsTextureEnvEnumParameter(pname))
+    {
+        ConvertGLenumValue(input[0], output);
+        return;
+    }
+
+    switch (pname)
+    {
+        case TextureEnvParameter::RgbScale:
+        case TextureEnvParameter::AlphaScale:
+            output[0] = FixedToFloat(input[0]);
+            break;
+        case TextureEnvParameter::Color:
+            for (int i = 0; i < 4; i++)
+            {
+                output[i] = FixedToFloat(input[i]);
+            }
+            break;
+        default:
+            UNREACHABLE();
+            break;
+    }
+}
+
+void ConvertTextureEnvToInt(TextureEnvParameter pname, const GLfloat *input, GLint *output)
+{
+    if (IsTextureEnvEnumParameter(pname))
+    {
+        ConvertGLenumValue(input[0], output);
+        return;
+    }
+
+    switch (pname)
+    {
+        case TextureEnvParameter::RgbScale:
+        case TextureEnvParameter::AlphaScale:
+            output[0] = static_cast<GLint>(input[0]);
+            break;
+        case TextureEnvParameter::Color:
+            for (int i = 0; i < 4; i++)
+            {
+                output[i] = static_cast<GLint>(input[i] * 255.0f);
+            }
+            break;
+        default:
+            UNREACHABLE();
+            break;
+    }
+}
+
+void ConvertTextureEnvToFixed(TextureEnvParameter pname, const GLfloat *input, GLfixed *output)
+{
+    if (IsTextureEnvEnumParameter(pname))
+    {
+        ConvertGLenumValue(input[0], output);
+        return;
+    }
+
+    switch (pname)
+    {
+        case TextureEnvParameter::RgbScale:
+        case TextureEnvParameter::AlphaScale:
+            output[0] = FloatToFixed(input[0]);
+            break;
+        case TextureEnvParameter::Color:
+            for (int i = 0; i < 4; i++)
+            {
+                output[i] = FloatToFixed(input[i]);
+            }
+            break;
+        default:
+            UNREACHABLE();
+            break;
+    }
+}
+
+void SetTextureEnv(unsigned int unit,
+                   GLES1State *state,
+                   TextureEnvTarget target,
+                   TextureEnvParameter pname,
+                   const GLfloat *params)
+{
+    TextureEnvironmentParameters &env = state->textureEnvironment(unit);
+    GLenum asEnum                     = ConvertToGLenum(params[0]);
+
+    switch (target)
+    {
+        case TextureEnvTarget::Env:
+            switch (pname)
+            {
+                case TextureEnvParameter::Mode:
+                    env.mode = FromGLenum<TextureEnvMode>(asEnum);
+                    break;
+                case TextureEnvParameter::CombineRgb:
+                    env.combineRgb = FromGLenum<TextureCombine>(asEnum);
+                    break;
+                case TextureEnvParameter::CombineAlpha:
+                    env.combineAlpha = FromGLenum<TextureCombine>(asEnum);
+                    break;
+                case TextureEnvParameter::Src0Rgb:
+                    env.src0Rgb = FromGLenum<TextureSrc>(asEnum);
+                    break;
+                case TextureEnvParameter::Src1Rgb:
+                    env.src1Rgb = FromGLenum<TextureSrc>(asEnum);
+                    break;
+                case TextureEnvParameter::Src2Rgb:
+                    env.src2Rgb = FromGLenum<TextureSrc>(asEnum);
+                    break;
+                case TextureEnvParameter::Src0Alpha:
+                    env.src0Alpha = FromGLenum<TextureSrc>(asEnum);
+                    break;
+                case TextureEnvParameter::Src1Alpha:
+                    env.src1Alpha = FromGLenum<TextureSrc>(asEnum);
+                    break;
+                case TextureEnvParameter::Src2Alpha:
+                    env.src2Alpha = FromGLenum<TextureSrc>(asEnum);
+                    break;
+                case TextureEnvParameter::Op0Rgb:
+                    env.op0Rgb = FromGLenum<TextureOp>(asEnum);
+                    break;
+                case TextureEnvParameter::Op1Rgb:
+                    env.op1Rgb = FromGLenum<TextureOp>(asEnum);
+                    break;
+                case TextureEnvParameter::Op2Rgb:
+                    env.op2Rgb = FromGLenum<TextureOp>(asEnum);
+                    break;
+                case TextureEnvParameter::Op0Alpha:
+                    env.op0Alpha = FromGLenum<TextureOp>(asEnum);
+                    break;
+                case TextureEnvParameter::Op1Alpha:
+                    env.op1Alpha = FromGLenum<TextureOp>(asEnum);
+                    break;
+                case TextureEnvParameter::Op2Alpha:
+                    env.op2Alpha = FromGLenum<TextureOp>(asEnum);
+                    break;
+                case TextureEnvParameter::Color:
+                    env.color = ColorF::fromData(params);
+                    break;
+                case TextureEnvParameter::RgbScale:
+                    env.rgbScale = params[0];
+                    break;
+                case TextureEnvParameter::AlphaScale:
+                    env.alphaScale = params[0];
+                    break;
+                default:
+                    UNREACHABLE();
+                    break;
+            }
+            break;
+        case TextureEnvTarget::PointSprite:
+            switch (pname)
+            {
+                case TextureEnvParameter::PointCoordReplace:
+                    env.pointSpriteCoordReplace = static_cast<bool>(params[0]);
+                    break;
+                default:
+                    UNREACHABLE();
+                    break;
+            }
+            break;
+        default:
+            UNREACHABLE();
+            break;
+    }
+}
+
+void GetTextureEnv(unsigned int unit,
+                   const GLES1State *state,
+                   TextureEnvTarget target,
+                   TextureEnvParameter pname,
+                   GLfloat *params)
+{
+    const TextureEnvironmentParameters &env = state->textureEnvironment(unit);
+
+    switch (target)
+    {
+        case TextureEnvTarget::Env:
+            switch (pname)
+            {
+                case TextureEnvParameter::Mode:
+                    ConvertPackedEnum(env.mode, params);
+                    break;
+                case TextureEnvParameter::CombineRgb:
+                    ConvertPackedEnum(env.combineRgb, params);
+                    break;
+                case TextureEnvParameter::CombineAlpha:
+                    ConvertPackedEnum(env.combineAlpha, params);
+                    break;
+                case TextureEnvParameter::Src0Rgb:
+                    ConvertPackedEnum(env.src0Rgb, params);
+                    break;
+                case TextureEnvParameter::Src1Rgb:
+                    ConvertPackedEnum(env.src1Rgb, params);
+                    break;
+                case TextureEnvParameter::Src2Rgb:
+                    ConvertPackedEnum(env.src2Rgb, params);
+                    break;
+                case TextureEnvParameter::Src0Alpha:
+                    ConvertPackedEnum(env.src0Alpha, params);
+                    break;
+                case TextureEnvParameter::Src1Alpha:
+                    ConvertPackedEnum(env.src1Alpha, params);
+                    break;
+                case TextureEnvParameter::Src2Alpha:
+                    ConvertPackedEnum(env.src2Alpha, params);
+                    break;
+                case TextureEnvParameter::Op0Rgb:
+                    ConvertPackedEnum(env.op0Rgb, params);
+                    break;
+                case TextureEnvParameter::Op1Rgb:
+                    ConvertPackedEnum(env.op1Rgb, params);
+                    break;
+                case TextureEnvParameter::Op2Rgb:
+                    ConvertPackedEnum(env.op2Rgb, params);
+                    break;
+                case TextureEnvParameter::Op0Alpha:
+                    ConvertPackedEnum(env.op0Alpha, params);
+                    break;
+                case TextureEnvParameter::Op1Alpha:
+                    ConvertPackedEnum(env.op1Alpha, params);
+                    break;
+                case TextureEnvParameter::Op2Alpha:
+                    ConvertPackedEnum(env.op2Alpha, params);
+                    break;
+                case TextureEnvParameter::Color:
+                    env.color.writeData(params);
+                    break;
+                case TextureEnvParameter::RgbScale:
+                    *params = env.rgbScale;
+                    break;
+                case TextureEnvParameter::AlphaScale:
+                    *params = env.alphaScale;
+                    break;
+                default:
+                    UNREACHABLE();
+                    break;
+            }
+            break;
+        case TextureEnvTarget::PointSprite:
+            switch (pname)
+            {
+                case TextureEnvParameter::PointCoordReplace:
+                    *params = static_cast<GLfloat>(env.pointSpriteCoordReplace);
+                    break;
+                default:
+                    UNREACHABLE();
+                    break;
+            }
+            break;
+        default:
+            UNREACHABLE();
+            break;
+    }
+}
+
+unsigned int GetPointParameterCount(PointParameter pname)
+{
+    switch (pname)
+    {
+        case PointParameter::PointSizeMin:
+        case PointParameter::PointSizeMax:
+        case PointParameter::PointFadeThresholdSize:
+            return 1;
+        case PointParameter::PointDistanceAttenuation:
+            return 3;
+        default:
+            return 0;
+    }
+}
+
+void SetPointParameter(GLES1State *state, PointParameter pname, const GLfloat *params)
+{
+
+    PointParameters &pointParams = state->pointParameters();
+
+    switch (pname)
+    {
+        case PointParameter::PointSizeMin:
+            pointParams.pointSizeMin = params[0];
+            break;
+        case PointParameter::PointSizeMax:
+            pointParams.pointSizeMax = params[0];
+            break;
+        case PointParameter::PointFadeThresholdSize:
+            pointParams.pointFadeThresholdSize = params[0];
+            break;
+        case PointParameter::PointDistanceAttenuation:
+            for (unsigned int i = 0; i < 3; i++)
+            {
+                pointParams.pointDistanceAttenuation[i] = params[i];
+            }
+            break;
+        default:
+            UNREACHABLE();
+    }
+}
+
+void GetPointParameter(const GLES1State *state, PointParameter pname, GLfloat *params)
+{
+    const PointParameters &pointParams = state->pointParameters();
+
+    switch (pname)
+    {
+        case PointParameter::PointSizeMin:
+            params[0] = pointParams.pointSizeMin;
+            break;
+        case PointParameter::PointSizeMax:
+            params[0] = pointParams.pointSizeMax;
+            break;
+        case PointParameter::PointFadeThresholdSize:
+            params[0] = pointParams.pointFadeThresholdSize;
+            break;
+        case PointParameter::PointDistanceAttenuation:
+            for (unsigned int i = 0; i < 3; i++)
+            {
+                params[i] = pointParams.pointDistanceAttenuation[i];
+            }
+            break;
+        default:
+            UNREACHABLE();
+    }
+}
+
+void SetPointSize(GLES1State *state, GLfloat size)
+{
+    PointParameters &params = state->pointParameters();
+    params.pointSize        = size;
+}
+
+void GetPointSize(GLES1State *state, GLfloat *sizeOut)
+{
+    const PointParameters &params = state->pointParameters();
+    *sizeOut                      = params.pointSize;
+}
+
+unsigned int GetTexParameterCount(GLenum pname)
+{
+    switch (pname)
+    {
+        case GL_TEXTURE_CROP_RECT_OES:
+            return 4;
+        case GL_TEXTURE_MAG_FILTER:
+        case GL_TEXTURE_MIN_FILTER:
+        case GL_TEXTURE_WRAP_S:
+        case GL_TEXTURE_WRAP_T:
+        case GL_TEXTURE_USAGE_ANGLE:
+        case GL_TEXTURE_MAX_ANISOTROPY_EXT:
+        case GL_TEXTURE_IMMUTABLE_FORMAT:
+        case GL_TEXTURE_WRAP_R:
+        case GL_TEXTURE_IMMUTABLE_LEVELS:
+        case GL_TEXTURE_SWIZZLE_R:
+        case GL_TEXTURE_SWIZZLE_G:
+        case GL_TEXTURE_SWIZZLE_B:
+        case GL_TEXTURE_SWIZZLE_A:
+        case GL_TEXTURE_BASE_LEVEL:
+        case GL_TEXTURE_MAX_LEVEL:
+        case GL_TEXTURE_MIN_LOD:
+        case GL_TEXTURE_MAX_LOD:
+        case GL_TEXTURE_COMPARE_MODE:
+        case GL_TEXTURE_COMPARE_FUNC:
+        case GL_TEXTURE_SRGB_DECODE_EXT:
+        case GL_DEPTH_STENCIL_TEXTURE_MODE:
+            return 1;
+        default:
+            return 0;
     }
 }
 
@@ -1856,7 +2790,7 @@ void QuerySurfaceAttrib(const Surface *surface, EGLint attribute, EGLint *value)
             // The EGL spec states that value is not written if the surface is not a pbuffer
             if (surface->getType() == EGL_PBUFFER_BIT)
             {
-                *value = surface->getTextureFormat();
+                *value = ToEGLenum(surface->getTextureFormat());
             }
             break;
         case EGL_TEXTURE_TARGET:
@@ -1908,6 +2842,12 @@ void SetSurfaceAttrib(Surface *surface, EGLint attribute, EGLint value)
             break;
         case EGL_SWAP_BEHAVIOR:
             surface->setSwapBehavior(value);
+            break;
+        case EGL_WIDTH:
+            surface->setFixedWidth(value);
+            break;
+        case EGL_HEIGHT:
+            surface->setFixedHeight(value);
             break;
         default:
             UNREACHABLE();

@@ -6,6 +6,7 @@ import unittest
 
 
 from py_utils import expectations_parser
+from telemetry.core import os_version as os_version_module
 from telemetry.story import expectations
 from telemetry.testing import fakes
 
@@ -282,8 +283,16 @@ class TestConditionTest(unittest.TestCase):
         expectations.ANDROID_WEBVIEW.ShouldDisable(self._platform,
                                                    self._finder_options))
 
+  def testAndroidWebviewReturnsTrueOnAndroidWebviewGoogle(self):
+    self._platform.SetOSName('android')
+    self._finder_options.browser_type = 'android-webview-google'
+    self.assertTrue(
+        expectations.ANDROID_WEBVIEW.ShouldDisable(self._platform,
+                                                   self._finder_options))
+
   def testAndroidWebviewReturnsFalseOnAndroidNotWebview(self):
     self._platform.SetOSName('android')
+    self._finder_options.browser_type = 'android-chrome'
     self.assertFalse(
         expectations.ANDROID_WEBVIEW.ShouldDisable(self._platform,
                                                    self._finder_options))
@@ -419,6 +428,22 @@ class TestConditionTest(unittest.TestCase):
         expectations.ANDROID_NEXUS5X_WEBVIEW.ShouldDisable(
             self._platform, self._finder_options))
 
+  def testWin7(self):
+    self._platform.SetOSName('win')
+    self._platform.SetOSVersionName(os_version_module.WIN7)
+    self.assertTrue(
+        expectations.WIN_7.ShouldDisable(
+            self._platform, self._finder_options))
+    self.assertEquals('Win 7', str(expectations.WIN_7))
+
+  def testWin10(self):
+    self._platform.SetOSName('win')
+    self._platform.SetOSVersionName(os_version_module.WIN10)
+    self.assertTrue(
+        expectations.WIN_10.ShouldDisable(
+            self._platform, self._finder_options))
+    self.assertEquals('Win 10', str(expectations.WIN_10))
+
 
 class StoryExpectationsTest(unittest.TestCase):
   def setUp(self):
@@ -500,6 +525,39 @@ class StoryExpectationsTest(unittest.TestCase):
             [expectations.ALL], 'Too Long')
     FooExpectations()
 
+  def testDisableStoryWithLongNameContainsHtml(self):
+    class FooExpectations(expectations.StoryExpectations):
+      def SetExpectations(self):
+        self.DisableStory(
+            '123456789012345678901234567890123456789012345678901234567890123456'
+            '789012345.html?and_some_get_parameters',
+            [expectations.ALL], 'Too Long')
+    FooExpectations()
+
+  def testDisableBenchmarkWithNoReason(self):
+    class FooExpectations(expectations.StoryExpectations):
+      def SetExpectations(self):
+        self.DisableBenchmark([expectations.ALL_WIN], None)
+
+    e = FooExpectations()
+
+    self.platform.SetOSName('win')
+    reason = e.IsBenchmarkDisabled(self.platform, self.finder_options)
+    self.assertEqual(reason, 'No reason given')
+
+  def testDisableStoryWithNoReason(self):
+    class FooExpectations(expectations.StoryExpectations):
+      def SetExpectations(self):
+        self.DisableStory(
+            'story', [expectations.ALL_WIN], None)
+
+    e = FooExpectations()
+
+    self.platform.SetOSName('win')
+    reason = e.IsStoryDisabled(
+        MockStory('story'), self.platform, self.finder_options)
+    self.assertEqual(reason, 'No reason given')
+
   def testGetBrokenExpectationsNotMatching(self):
     class FooExpectations(expectations.StoryExpectations):
       def SetExpectations(self):
@@ -526,7 +584,7 @@ class StoryExpectationsTest(unittest.TestCase):
     e = expectations.StoryExpectations()
     e.GetBenchmarkExpectationsFromParser(raw_data, 'benchmark1')
     actual = e.AsDict()
-    expected = {'platforms': (), 'stories': {}}
+    expected = {'platforms': [], 'stories': {}}
     self.assertEqual(actual, expected)
 
   @staticmethod
@@ -536,6 +594,12 @@ class StoryExpectationsTest(unittest.TestCase):
         conditions, reason = e['stories'][story][index]
         conditions = [str(c) for c in conditions]
         e['stories'][story][index] = (conditions, reason)
+    new_platform = []
+    for conditions, reason in e['platforms']:
+      conditions = '+'.join([str(c) for c in conditions])
+
+      new_platform.append((conditions, reason))
+    e['platforms'] = new_platform
     return e
 
   def testGetBenchmarkExpectationsFromParserOneCondition(self):
@@ -547,7 +611,7 @@ class StoryExpectationsTest(unittest.TestCase):
     e.GetBenchmarkExpectationsFromParser(raw_data, 'benchmark1')
     actual = self._ConvertTestConditionsToStrings(e.AsDict())
     expected = {
-        'platforms': (),
+        'platforms': [],
         'stories': {
             'story': [(['All'], 'crbug.com/12345')],
         }
@@ -563,7 +627,7 @@ class StoryExpectationsTest(unittest.TestCase):
     e.GetBenchmarkExpectationsFromParser(raw_data, 'benchmark1')
     actual = self._ConvertTestConditionsToStrings(e.AsDict())
     expected = {
-        'platforms': (),
+        'platforms': [],
         'stories': {
             'story': [(['Win+Mac'], 'crbug.com/23456')],
         }
@@ -584,7 +648,7 @@ class StoryExpectationsTest(unittest.TestCase):
 
     actual = self._ConvertTestConditionsToStrings(e.AsDict())
     expected = {
-        'platforms': (),
+        'platforms': [],
         'stories': {
             'story': [(['Win+Mac'], 'crbug.com/123')],
             'story2': [(['Win'], 'crbug.com/234')]
@@ -606,7 +670,7 @@ class StoryExpectationsTest(unittest.TestCase):
     e.GetBenchmarkExpectationsFromParser(raw_data, 'benchmark1')
     actual = self._ConvertTestConditionsToStrings(e.AsDict())
     expected = {
-        'platforms': (),
+        'platforms': [],
         'stories': {
             'story': [
                 (['Win'], 'crbug.com/123'),
@@ -634,3 +698,37 @@ class StoryExpectationsTest(unittest.TestCase):
     e.GetBenchmarkExpectationsFromParser(raw_data, 'benchmark1')
     with self.assertRaises(AssertionError):
       e.DisableStory('story', [], 'reason')
+
+  def testGetBenchmarkExpectationsFromParserDisableBenchmark(self):
+    raw_data = [
+        expectations_parser.Expectation(
+            'crbug.com/123', 'benchmark1/*', ['Desktop', 'Linux'], ['Skip']),
+    ]
+    e = expectations.StoryExpectations()
+    e.GetBenchmarkExpectationsFromParser(raw_data, 'benchmark1')
+    actual = self._ConvertTestConditionsToStrings(e.AsDict())
+    expected = {
+        'platforms': [('Desktop+Linux', 'crbug.com/123')],
+        'stories': {},
+    }
+    self.assertEqual(actual, expected)
+
+  def testGetBenchmarkExpectationsFromParserDisableBenchmarkAndStory(self):
+    raw_data = [
+        expectations_parser.Expectation(
+            'crbug.com/123', 'benchmark1/*', ['Desktop'], ['Skip']),
+        expectations_parser.Expectation(
+            'crbug.com/234', 'benchmark1/story', ['Mac'], ['Skip']),
+    ]
+    e = expectations.StoryExpectations()
+    e.GetBenchmarkExpectationsFromParser(raw_data, 'benchmark1')
+    actual = self._ConvertTestConditionsToStrings(e.AsDict())
+    expected = {
+        'platforms': [('Desktop', 'crbug.com/123')],
+        'stories': {
+            'story': [
+                (['Mac'], 'crbug.com/234'),
+            ],
+        },
+    }
+    self.assertEqual(actual, expected)

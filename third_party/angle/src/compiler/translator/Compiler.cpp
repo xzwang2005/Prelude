@@ -10,41 +10,44 @@
 
 #include "angle_gl.h"
 #include "common/utilities.h"
-#include "compiler/translator/AddAndTrueToLoopCondition.h"
 #include "compiler/translator/CallDAG.h"
-#include "compiler/translator/ClampPointSize.h"
 #include "compiler/translator/CollectVariables.h"
-#include "compiler/translator/DeclareAndInitBuiltinsForInstancedMultiview.h"
-#include "compiler/translator/DeferGlobalInitializers.h"
-#include "compiler/translator/EmulateGLFragColorBroadcast.h"
-#include "compiler/translator/EmulatePrecision.h"
 #include "compiler/translator/Initialize.h"
-#include "compiler/translator/InitializeVariables.h"
-#include "compiler/translator/IntermNodePatternMatcher.h"
 #include "compiler/translator/IsASTDepthBelowLimit.h"
 #include "compiler/translator/OutputTree.h"
 #include "compiler/translator/ParseContext.h"
-#include "compiler/translator/PruneNoOps.h"
-#include "compiler/translator/RegenerateStructNames.h"
-#include "compiler/translator/RemoveArrayLengthMethod.h"
-#include "compiler/translator/RemoveEmptySwitchStatements.h"
-#include "compiler/translator/RemoveInvariantDeclaration.h"
-#include "compiler/translator/RemoveNoOpCasesFromEndOfSwitchStatements.h"
-#include "compiler/translator/RemovePow.h"
-#include "compiler/translator/RemoveUnreferencedVariables.h"
-#include "compiler/translator/RewriteDoWhile.h"
-#include "compiler/translator/ScalarizeVecAndMatConstructorArgs.h"
-#include "compiler/translator/SeparateDeclarations.h"
-#include "compiler/translator/SimplifyLoopConditions.h"
-#include "compiler/translator/SplitSequenceOperator.h"
-#include "compiler/translator/UnfoldShortCircuitAST.h"
-#include "compiler/translator/UseInterfaceBlockFields.h"
 #include "compiler/translator/ValidateLimitations.h"
 #include "compiler/translator/ValidateMaxParameters.h"
 #include "compiler/translator/ValidateOutputs.h"
 #include "compiler/translator/ValidateVaryingLocations.h"
 #include "compiler/translator/VariablePacker.h"
-#include "compiler/translator/VectorizeVectorScalarArithmetic.h"
+#include "compiler/translator/tree_ops/AddAndTrueToLoopCondition.h"
+#include "compiler/translator/tree_ops/ClampFragDepth.h"
+#include "compiler/translator/tree_ops/ClampPointSize.h"
+#include "compiler/translator/tree_ops/DeclareAndInitBuiltinsForInstancedMultiview.h"
+#include "compiler/translator/tree_ops/DeferGlobalInitializers.h"
+#include "compiler/translator/tree_ops/EmulateGLFragColorBroadcast.h"
+#include "compiler/translator/tree_ops/EmulatePrecision.h"
+#include "compiler/translator/tree_ops/FoldExpressions.h"
+#include "compiler/translator/tree_ops/InitializeVariables.h"
+#include "compiler/translator/tree_ops/PruneEmptyCases.h"
+#include "compiler/translator/tree_ops/PruneNoOps.h"
+#include "compiler/translator/tree_ops/RegenerateStructNames.h"
+#include "compiler/translator/tree_ops/RemoveArrayLengthMethod.h"
+#include "compiler/translator/tree_ops/RemoveInvariantDeclaration.h"
+#include "compiler/translator/tree_ops/RemovePow.h"
+#include "compiler/translator/tree_ops/RemoveUnreferencedVariables.h"
+#include "compiler/translator/tree_ops/RewriteDoWhile.h"
+#include "compiler/translator/tree_ops/RewriteRepeatedAssignToSwizzled.h"
+#include "compiler/translator/tree_ops/ScalarizeVecAndMatConstructorArgs.h"
+#include "compiler/translator/tree_ops/SeparateDeclarations.h"
+#include "compiler/translator/tree_ops/SimplifyLoopConditions.h"
+#include "compiler/translator/tree_ops/SplitSequenceOperator.h"
+#include "compiler/translator/tree_ops/UnfoldShortCircuitAST.h"
+#include "compiler/translator/tree_ops/UseInterfaceBlockFields.h"
+#include "compiler/translator/tree_ops/VectorizeVectorScalarArithmetic.h"
+#include "compiler/translator/tree_util/BuiltIn_autogen.h"
+#include "compiler/translator/tree_util/IntermNodePatternMatcher.h"
 #include "compiler/translator/util.h"
 #include "third_party/compiler/ArrayBoundsClamper.h"
 
@@ -157,7 +160,7 @@ int GetMaxUniformVectorsForShaderType(GLenum shaderType, const ShBuiltInResource
         // TODO (jiawei.shao@intel.com): check if we need finer-grained component counting
         case GL_COMPUTE_SHADER:
             return resources.MaxComputeUniformComponents / 4;
-        case GL_GEOMETRY_SHADER_OES:
+        case GL_GEOMETRY_SHADER_EXT:
             return resources.MaxGeometryUniformComponents / 4;
         default:
             UNREACHABLE();
@@ -191,12 +194,12 @@ class TScopedSymbolTableLevel
   public:
     TScopedSymbolTableLevel(TSymbolTable *table) : mTable(table)
     {
-        ASSERT(mTable->atBuiltInLevel());
+        ASSERT(mTable->isEmpty());
         mTable->push();
     }
     ~TScopedSymbolTableLevel()
     {
-        while (!mTable->atBuiltInLevel())
+        while (!mTable->isEmpty())
             mTable->pop();
     }
 
@@ -221,6 +224,51 @@ int MapSpecToShaderVersion(ShShaderSpec spec)
             UNREACHABLE();
             return 0;
     }
+}
+
+bool ValidateFragColorAndFragData(GLenum shaderType,
+                                  int shaderVersion,
+                                  const TSymbolTable &symbolTable,
+                                  TDiagnostics *diagnostics)
+{
+    if (shaderVersion > 100 || shaderType != GL_FRAGMENT_SHADER)
+    {
+        return true;
+    }
+
+    bool usesFragColor = false;
+    bool usesFragData  = false;
+    // This validation is a bit stricter than the spec - it's only an error to write to
+    // both FragData and FragColor. But because it's better not to have reads from undefined
+    // variables, we always return an error if they are both referenced, rather than only if they
+    // are written.
+    if (symbolTable.isStaticallyUsed(*BuiltInVariable::gl_FragColor()) ||
+        symbolTable.isStaticallyUsed(*BuiltInVariable::gl_SecondaryFragColorEXT()))
+    {
+        usesFragColor = true;
+    }
+    // Extension variables may not always be initialized (saves some time at symbol table init).
+    bool secondaryFragDataUsed =
+        symbolTable.gl_SecondaryFragDataEXT() != nullptr &&
+        symbolTable.isStaticallyUsed(*symbolTable.gl_SecondaryFragDataEXT());
+    if (symbolTable.isStaticallyUsed(*symbolTable.gl_FragData()) || secondaryFragDataUsed)
+    {
+        usesFragData = true;
+    }
+    if (usesFragColor && usesFragData)
+    {
+        const char *errorMessage = "cannot use both gl_FragData and gl_FragColor";
+        if (symbolTable.isStaticallyUsed(*BuiltInVariable::gl_SecondaryFragColorEXT()) ||
+            secondaryFragDataUsed)
+        {
+            errorMessage =
+                "cannot use both output variable sets (gl_FragData, gl_SecondaryFragDataEXT)"
+                " and (gl_FragColor, gl_SecondaryFragColorEXT)";
+        }
+        diagnostics->globalError(errorMessage);
+        return false;
+    }
+    return true;
 }
 
 }  // namespace
@@ -334,7 +382,8 @@ TIntermBlock *TCompiler::compileTreeImpl(const char *const shaderStrings[],
 
     // We preserve symbols at the built-in level from compile-to-compile.
     // Start pushing the user-defined symbols at global level.
-    TScopedSymbolTableLevel scopedSymbolLevel(&symbolTable);
+    TScopedSymbolTableLevel globalLevel(&symbolTable);
+    ASSERT(symbolTable.atGlobalLevel());
 
     // Parse shader.
     if (PaParseStrings(numStrings - firstSource, &shaderStrings[firstSource], nullptr,
@@ -350,9 +399,8 @@ TIntermBlock *TCompiler::compileTreeImpl(const char *const shaderStrings[],
 
     setASTMetadata(parseContext);
 
-    if (MapSpecToShaderVersion(shaderSpec) < shaderVersion)
+    if (!checkShaderVersion(&parseContext))
     {
-        mDiagnostics.globalError("unsupported shader version");
         return nullptr;
     }
 
@@ -363,6 +411,50 @@ TIntermBlock *TCompiler::compileTreeImpl(const char *const shaderStrings[],
     }
 
     return root;
+}
+
+bool TCompiler::checkShaderVersion(TParseContext *parseContext)
+{
+    if (MapSpecToShaderVersion(shaderSpec) < shaderVersion)
+    {
+        mDiagnostics.globalError("unsupported shader version");
+        return false;
+    }
+
+    ASSERT(parseContext);
+    switch (shaderType)
+    {
+        case GL_COMPUTE_SHADER:
+            if (shaderVersion < 310)
+            {
+                mDiagnostics.globalError("Compute shader is not supported in this shader version.");
+                return false;
+            }
+            break;
+
+        case GL_GEOMETRY_SHADER_EXT:
+            if (shaderVersion < 310)
+            {
+                mDiagnostics.globalError(
+                    "Geometry shader is not supported in this shader version.");
+                return false;
+            }
+            else
+            {
+                ASSERT(shaderVersion == 310);
+                if (!parseContext->checkCanUseExtension(sh::TSourceLoc(),
+                                                        TExtension::EXT_geometry_shader))
+                {
+                    return false;
+                }
+            }
+            break;
+
+        default:
+            break;
+    }
+
+    return true;
 }
 
 void TCompiler::setASTMetadata(const TParseContext &parseContext)
@@ -380,7 +472,7 @@ void TCompiler::setASTMetadata(const TParseContext &parseContext)
     // Highp might have been auto-enabled based on shader version
     fragmentPrecisionHigh = parseContext.getFragmentPrecisionHigh();
 
-    if (shaderType == GL_GEOMETRY_SHADER_OES)
+    if (shaderType == GL_GEOMETRY_SHADER_EXT)
     {
         mGeometryShaderInputPrimitiveType  = parseContext.getGeometryShaderInputPrimitiveType();
         mGeometryShaderOutputPrimitiveType = parseContext.getGeometryShaderOutputPrimitiveType();
@@ -399,6 +491,23 @@ bool TCompiler::checkAndSimplifyAST(TIntermBlock *root,
         return false;
     }
 
+    if (shouldRunLoopAndIndexingValidation(compileOptions) &&
+        !ValidateLimitations(root, shaderType, &symbolTable, &mDiagnostics))
+    {
+        return false;
+    }
+
+    if (!ValidateFragColorAndFragData(shaderType, shaderVersion, symbolTable, &mDiagnostics))
+    {
+        return false;
+    }
+
+    // Fold expressions that could not be folded before validation that was done as a part of
+    // parsing.
+    FoldExpressions(root, &mDiagnostics);
+    // Folding should only be able to generate warnings.
+    ASSERT(mDiagnostics.numErrors() == 0);
+
     // We prune no-ops to work around driver bugs and to keep AST processing and output simple.
     // The following kinds of no-ops are pruned:
     //   1. Empty declarations "int;".
@@ -406,17 +515,7 @@ bool TCompiler::checkAndSimplifyAST(TIntermBlock *root,
     //      for float, so float literal statements would end up with no precision which is
     //      invalid ESSL.
     // After this empty declarations are not allowed in the AST.
-    PruneNoOps(root);
-
-    // In case the last case inside a switch statement is a certain type of no-op, GLSL
-    // compilers in drivers may not accept it. In this case we clean up the dead code from the
-    // end of switch statements. This is also required because PruneNoOps may have left switch
-    // statements that only contained an empty declaration inside the final case in an invalid
-    // state. Relies on that PruneNoOps has already been run.
-    RemoveNoOpCasesFromEndOfSwitchStatements(root, &symbolTable);
-
-    // Remove empty switch statements - this makes output simpler.
-    RemoveEmptySwitchStatements(root);
+    PruneNoOps(root, &symbolTable);
 
     // Create the function DAG and check there is no recursion
     if (!initCallDag(root))
@@ -454,12 +553,6 @@ bool TCompiler::checkAndSimplifyAST(TIntermBlock *root,
         return false;
     }
 
-    if (shouldRunLoopAndIndexingValidation(compileOptions) &&
-        !ValidateLimitations(root, shaderType, &symbolTable, shaderVersion, &mDiagnostics))
-    {
-        return false;
-    }
-
     // Fail compilation if precision emulation not supported.
     if (getResources().WEBGL_debug_shader_precision && getPragma().debugShaderPrecision &&
         !EmulatePrecision::SupportedInLanguage(outputType))
@@ -487,23 +580,21 @@ bool TCompiler::checkAndSimplifyAST(TIntermBlock *root,
         RewriteDoWhile(root, &symbolTable);
 
     if (compileOptions & SH_ADD_AND_TRUE_TO_LOOP_CONDITION)
-        sh::AddAndTrueToLoopCondition(root);
+        AddAndTrueToLoopCondition(root);
 
     if (compileOptions & SH_UNFOLD_SHORT_CIRCUIT)
     {
-        UnfoldShortCircuitAST unfoldShortCircuit;
-        root->traverse(&unfoldShortCircuit);
-        unfoldShortCircuit.updateTree();
+        UnfoldShortCircuitAST(root);
     }
 
     if (compileOptions & SH_REMOVE_POW_WITH_CONSTANT_EXPONENT)
     {
-        RemovePow(root);
+        RemovePow(root, &symbolTable);
     }
 
     if (compileOptions & SH_REGENERATE_STRUCT_NAMES)
     {
-        RegenerateStructNames gen(&symbolTable, shaderVersion);
+        RegenerateStructNames gen(&symbolTable);
         root->traverse(&gen);
     }
 
@@ -525,18 +616,26 @@ bool TCompiler::checkAndSimplifyAST(TIntermBlock *root,
     SimplifyLoopConditions(root,
                            IntermNodePatternMatcher::kMultiDeclaration |
                                IntermNodePatternMatcher::kArrayLengthMethod | simplifyScalarized,
-                           &getSymbolTable(), getShaderVersion());
+                           &getSymbolTable());
 
     // Note that separate declarations need to be run before other AST transformations that
     // generate new statements from expressions.
     SeparateDeclarations(root);
 
     SplitSequenceOperator(root, IntermNodePatternMatcher::kArrayLengthMethod | simplifyScalarized,
-                          &getSymbolTable(), getShaderVersion());
+                          &getSymbolTable());
 
     RemoveArrayLengthMethod(root);
 
     RemoveUnreferencedVariables(root, &symbolTable);
+
+    // In case the last case inside a switch statement is a certain type of no-op, GLSL compilers in
+    // drivers may not accept it. In this case we clean up the dead code from the end of switch
+    // statements. This is also required because PruneNoOps or RemoveUnreferencedVariables may have
+    // left switch statements that only contained an empty declaration inside the final case in an
+    // invalid state. Relies on that PruneNoOps and RemoveUnreferencedVariables have already been
+    // run.
+    PruneEmptyCases(root);
 
     // Built-in function emulation needs to happen after validateLimitations pass.
     // TODO(jmadill): Remove global pool allocator.
@@ -555,7 +654,7 @@ bool TCompiler::checkAndSimplifyAST(TIntermBlock *root,
         ASSERT(!variablesCollected);
         CollectVariables(root, &attributes, &outputVariables, &uniforms, &inputVaryings,
                          &outputVaryings, &uniformBlocks, &shaderStorageBlocks, &inBlocks,
-                         hashFunction, &symbolTable, shaderVersion, shaderType, extensionBehavior);
+                         hashFunction, &symbolTable, shaderType, extensionBehavior);
         collectInterfaceBlocks();
         variablesCollected = true;
         if (compileOptions & SH_USE_UNUSED_STANDARD_SHARED_BLOCKS)
@@ -572,7 +671,7 @@ bool TCompiler::checkAndSimplifyAST(TIntermBlock *root,
                 return false;
             }
         }
-        if (compileOptions & SH_INIT_OUTPUT_VARIABLES)
+        if ((compileOptions & SH_INIT_OUTPUT_VARIABLES) && (shaderType != GL_COMPUTE_SHADER))
         {
             initializeOutputVariables(root);
         }
@@ -602,7 +701,10 @@ bool TCompiler::checkAndSimplifyAST(TIntermBlock *root,
     bool initializeLocalsAndGlobals =
         (compileOptions & SH_INITIALIZE_UNINITIALIZED_LOCALS) && !IsOutputHLSL(getOutputType());
     bool canUseLoopsToInitialize = !(compileOptions & SH_DONT_USE_LOOPS_TO_INITIALIZE_VARIABLES);
-    DeferGlobalInitializers(root, initializeLocalsAndGlobals, canUseLoopsToInitialize, &symbolTable);
+    bool highPrecisionSupported =
+        shaderType != GL_FRAGMENT_SHADER || compileResources.FragmentPrecisionHigh;
+    DeferGlobalInitializers(root, initializeLocalsAndGlobals, canUseLoopsToInitialize,
+                            highPrecisionSupported, &symbolTable);
 
     if (initializeLocalsAndGlobals)
     {
@@ -619,16 +721,26 @@ bool TCompiler::checkAndSimplifyAST(TIntermBlock *root,
             SimplifyLoopConditions(root,
                                    IntermNodePatternMatcher::kArrayDeclaration |
                                        IntermNodePatternMatcher::kNamelessStructDeclaration,
-                                   &getSymbolTable(), getShaderVersion());
+                                   &getSymbolTable());
         }
 
         InitializeUninitializedLocals(root, getShaderVersion(), canUseLoopsToInitialize,
-                                      &getSymbolTable());
+                                      highPrecisionSupported, &getSymbolTable());
     }
 
     if (getShaderType() == GL_VERTEX_SHADER && (compileOptions & SH_CLAMP_POINT_SIZE))
     {
         ClampPointSize(root, compileResources.MaxPointSize, &getSymbolTable());
+    }
+
+    if (getShaderType() == GL_FRAGMENT_SHADER && (compileOptions & SH_CLAMP_FRAG_DEPTH))
+    {
+        ClampFragDepth(root, &getSymbolTable());
+    }
+
+    if (compileOptions & SH_REWRITE_REPEATED_ASSIGN_TO_SWIZZLED)
+    {
+        sh::RewriteRepeatedAssignToSwizzled(root);
     }
 
     if (compileOptions & SH_REWRITE_VECTOR_SCALAR_ARITHMETIC)
@@ -694,54 +806,9 @@ bool TCompiler::InitBuiltInSymbolTable(const ShBuiltInResources &resources)
     compileResources = resources;
     setResourceString();
 
-    ASSERT(symbolTable.isEmpty());
-    symbolTable.push();  // COMMON_BUILTINS
-    symbolTable.push();  // ESSL1_BUILTINS
-    symbolTable.push();  // ESSL3_BUILTINS
-    symbolTable.push();  // ESSL3_1_BUILTINS
-    symbolTable.push();  // GLSL_BUILTINS
-
-    switch (shaderType)
-    {
-        case GL_FRAGMENT_SHADER:
-            symbolTable.setDefaultPrecision(EbtInt, EbpMedium);
-            break;
-        case GL_VERTEX_SHADER:
-        case GL_COMPUTE_SHADER:
-        case GL_GEOMETRY_SHADER_OES:
-            symbolTable.setDefaultPrecision(EbtInt, EbpHigh);
-            symbolTable.setDefaultPrecision(EbtFloat, EbpHigh);
-            break;
-        default:
-            UNREACHABLE();
-    }
-    // Set defaults for sampler types that have default precision, even those that are
-    // only available if an extension exists.
-    // New sampler types in ESSL3 don't have default precision. ESSL1 types do.
-    initSamplerDefaultPrecision(EbtSampler2D);
-    initSamplerDefaultPrecision(EbtSamplerCube);
-    // SamplerExternalOES is specified in the extension to have default precision.
-    initSamplerDefaultPrecision(EbtSamplerExternalOES);
-    // SamplerExternal2DY2YEXT is specified in the extension to have default precision.
-    initSamplerDefaultPrecision(EbtSamplerExternal2DY2YEXT);
-    // It isn't specified whether Sampler2DRect has default precision.
-    initSamplerDefaultPrecision(EbtSampler2DRect);
-
-    symbolTable.setDefaultPrecision(EbtAtomicCounter, EbpHigh);
-
-    InsertBuiltInFunctions(shaderType, shaderSpec, resources, symbolTable);
-
-    IdentifyBuiltIns(shaderType, shaderSpec, resources, symbolTable);
-
-    symbolTable.markBuiltInInitializationFinished();
+    symbolTable.initializeBuiltIns(shaderType, shaderSpec, resources);
 
     return true;
-}
-
-void TCompiler::initSamplerDefaultPrecision(TBasicType samplerType)
-{
-    ASSERT(samplerType > EbtGuardSamplerBegin && samplerType < EbtGuardSamplerEnd);
-    symbolTable.setDefaultPrecision(samplerType, EbpLow);
 }
 
 void TCompiler::setResourceString()
@@ -775,7 +842,7 @@ void TCompiler::setResourceString()
         << ":ARM_shader_framebuffer_fetch:" << compileResources.ARM_shader_framebuffer_fetch
         << ":OVR_multiview:" << compileResources.OVR_multiview
         << ":EXT_YUV_target:" << compileResources.EXT_YUV_target
-        << ":OES_geometry_shader:" << compileResources.OES_geometry_shader
+        << ":EXT_geometry_shader:" << compileResources.EXT_geometry_shader
         << ":MaxVertexOutputVectors:" << compileResources.MaxVertexOutputVectors
         << ":MaxFragmentInputVectors:" << compileResources.MaxFragmentInputVectors
         << ":MinProgramTexelOffset:" << compileResources.MinProgramTexelOffset
@@ -913,14 +980,17 @@ bool TCompiler::checkCallDepth()
             // Trace back the function chain to have a meaningful info log.
             std::stringstream errorStream;
             errorStream << "Call stack too deep (larger than " << maxCallStackDepth
-                        << ") with the following call chain: " << record.name;
+                        << ") with the following call chain: "
+                        << record.node->getFunction()->name();
 
             int currentFunction = static_cast<int>(i);
             int currentDepth    = depth;
 
             while (currentFunction != -1)
             {
-                errorStream << " -> " << mCallDag.getRecordFromIndex(currentFunction).name;
+                errorStream
+                    << " -> "
+                    << mCallDag.getRecordFromIndex(currentFunction).node->getFunction()->name();
 
                 int nextFunction = -1;
                 for (auto &calleeIndex : mCallDag.getRecordFromIndex(currentFunction).callees)
@@ -950,7 +1020,7 @@ bool TCompiler::tagUsedFunctions()
     // Search from main, starting from the end of the DAG as it usually is the root.
     for (size_t i = mCallDag.size(); i-- > 0;)
     {
-        if (mCallDag.getRecordFromIndex(i).name == "main")
+        if (mCallDag.getRecordFromIndex(i).node->getFunction()->isMain())
         {
             internalTagUsedFunction(i);
             return true;
@@ -990,22 +1060,22 @@ class TCompiler::UnusedPredicate
         const TIntermFunctionPrototype *asFunctionPrototype   = node->getAsFunctionPrototypeNode();
         const TIntermFunctionDefinition *asFunctionDefinition = node->getAsFunctionDefinition();
 
-        const TFunctionSymbolInfo *functionInfo = nullptr;
+        const TFunction *func = nullptr;
 
         if (asFunctionDefinition)
         {
-            functionInfo = asFunctionDefinition->getFunctionSymbolInfo();
+            func = asFunctionDefinition->getFunction();
         }
         else if (asFunctionPrototype)
         {
-            functionInfo = asFunctionPrototype->getFunctionSymbolInfo();
+            func = asFunctionPrototype->getFunction();
         }
-        if (functionInfo == nullptr)
+        if (func == nullptr)
         {
             return false;
         }
 
-        size_t callDagIndex = mCallDag->findIndex(functionInfo);
+        size_t callDagIndex = mCallDag->findIndex(func->uniqueId());
         if (callDagIndex == CallDAG::InvalidIndex)
         {
             // This happens only for unimplemented prototypes which are thus unused
@@ -1067,7 +1137,7 @@ void TCompiler::initializeGLPosition(TIntermBlock *root)
     sh::ShaderVariable var(GL_FLOAT_VEC4);
     var.name = "gl_Position";
     list.push_back(var);
-    InitializeVariables(root, list, &symbolTable, shaderVersion, extensionBehavior, false);
+    InitializeVariables(root, list, &symbolTable, shaderVersion, extensionBehavior, false, false);
 }
 
 void TCompiler::useAllMembersInUnusedStandardAndSharedBlocks(TIntermBlock *root)
@@ -1089,7 +1159,7 @@ void TCompiler::useAllMembersInUnusedStandardAndSharedBlocks(TIntermBlock *root)
 void TCompiler::initializeOutputVariables(TIntermBlock *root)
 {
     InitVariableList list;
-    if (shaderType == GL_VERTEX_SHADER || shaderType == GL_GEOMETRY_SHADER_OES)
+    if (shaderType == GL_VERTEX_SHADER || shaderType == GL_GEOMETRY_SHADER_EXT)
     {
         for (auto var : outputVaryings)
         {
@@ -1109,7 +1179,7 @@ void TCompiler::initializeOutputVariables(TIntermBlock *root)
             list.push_back(var);
         }
     }
-    InitializeVariables(root, list, &symbolTable, shaderVersion, extensionBehavior, false);
+    InitializeVariables(root, list, &symbolTable, shaderVersion, extensionBehavior, false, false);
 }
 
 const TExtensionBehavior &TCompiler::getExtensionBehavior() const

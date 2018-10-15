@@ -10,8 +10,6 @@
 #include "gm.h"
 #include "sk_tool_utils.h"
 
-#if SK_SUPPORT_GPU
-
 #include "GrContext.h"
 #include "GrRenderTargetContextPriv.h"
 #include "SkGr.h"
@@ -27,7 +25,7 @@ namespace skiagm {
 class ConstColorProcessor : public GM {
 public:
     ConstColorProcessor() {
-        this->setBGColor(sk_tool_utils::color_to_565(0xFFDDDDDD));
+        this->setBGColor(0xFFDDDDDD);
     }
 
 protected:
@@ -110,7 +108,7 @@ protected:
 
                     grPaint.addColorFragmentProcessor(std::move(fp));
                     renderTargetContext->priv().testingOnly_addDrawOp(
-                            GrRectOpFactory::MakeNonAAFill(std::move(grPaint), viewMatrix,
+                            GrRectOpFactory::MakeNonAAFill(context, std::move(grPaint), viewMatrix,
                                                            renderRect, GrAAType::kNone));
 
                     // Draw labels for the input to the processor and the processor to the right of
@@ -184,5 +182,3 @@ private:
 
 DEF_GM(return new ConstColorProcessor;)
 }
-
-#endif

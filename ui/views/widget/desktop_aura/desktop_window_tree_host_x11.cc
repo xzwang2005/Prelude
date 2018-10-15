@@ -7,6 +7,7 @@
 #include <utility>
 
 #include "base/command_line.h"
+#include "base/containers/flat_set.h"
 #include "base/location.h"
 #include "base/memory/ptr_util.h"
 #include "base/single_thread_task_runner.h"
@@ -19,6 +20,7 @@
 #include "ui/aura/client/aura_constants.h"
 #include "ui/aura/client/cursor_client.h"
 #include "ui/aura/client/focus_client.h"
+#include "ui/aura/null_window_targeter.h"
 #include "ui/aura/window.h"
 #include "ui/aura/window_event_dispatcher.h"
 #include "ui/base/class_property.h"
@@ -35,9 +37,9 @@
 #include "ui/events/devices/x11/device_list_cache_x11.h"
 #include "ui/events/devices/x11/touch_factory_x11.h"
 #include "ui/events/event_utils.h"
-#include "ui/events/null_event_targeter.h"
+#include "ui/events/keyboard_hook.h"
+#include "ui/events/keycodes/dom/dom_code.h"
 #include "ui/events/platform/platform_event_source.h"
-#include "ui/events/platform/x11/x11_event_source.h"
 #include "ui/gfx/geometry/insets.h"
 #include "ui/gfx/geometry/size_conversions.h"
 #include "ui/gfx/image/image_skia.h"
@@ -76,10 +78,6 @@ DEFINE_UI_CLASS_PROPERTY_KEY(
     DesktopWindowTreeHostX11*, kHostForRootWindow, NULL);
 
 namespace {
-
-// Constants that are part of EWMH.
-const int k_NET_WM_STATE_ADD = 1;
-const int k_NET_WM_STATE_REMOVE = 0;
 
 // Special value of the _NET_WM_DESKTOP property which indicates that the window
 // should appear on all desktops.
@@ -150,7 +148,6 @@ DesktopWindowTreeHostX11::DesktopWindowTreeHostX11(
       drag_drop_client_(NULL),
       native_widget_delegate_(native_widget_delegate),
       desktop_native_widget_aura_(desktop_native_widget_aura),
-      content_window_(NULL),
       window_parent_(NULL),
       custom_window_shape_(false),
       urgency_hint_set_(false),
@@ -341,6 +338,7 @@ void DesktopWindowTreeHostX11::OnFocusEvent(bool focus_in,
         //    (FocusOut with NotifyNonlinearVirtual)
         // |has_pointer_focus_| should be false before and after this event.
         has_pointer_focus_ = false;
+        break;
       default:
         break;
     }
@@ -389,13 +387,11 @@ void DesktopWindowTreeHostX11::CleanUpWindowList(
 ////////////////////////////////////////////////////////////////////////////////
 // DesktopWindowTreeHostX11, DesktopWindowTreeHost implementation:
 
-void DesktopWindowTreeHostX11::Init(aura::Window* content_window,
-                                    const Widget::InitParams& params) {
-  content_window_ = content_window;
+void DesktopWindowTreeHostX11::Init(const Widget::InitParams& params) {
   activatable_ = (params.activatable == Widget::InitParams::ACTIVATABLE_YES);
 
   if (params.type == Widget::InitParams::TYPE_WINDOW)
-    content_window_->SetProperty(aura::client::kAnimationsDisabledKey, true);
+    content_window()->SetProperty(aura::client::kAnimationsDisabledKey, true);
 
   // TODO(erg): Check whether we *should* be building a WindowTreeHost here, or
   // whether we should be proxying requests to another DRWHL.
@@ -415,7 +411,7 @@ void DesktopWindowTreeHostX11::Init(aura::Window* content_window,
 
 void DesktopWindowTreeHostX11::OnNativeWidgetCreated(
     const Widget::InitParams& params) {
-  window()->SetProperty(kViewsWindowForRootWindow, content_window_);
+  window()->SetProperty(kViewsWindowForRootWindow, content_window());
   window()->SetProperty(kHostForRootWindow, this);
 
   // Ensure that the X11DesktopHandler exists so that it tracks create/destroy
@@ -454,6 +450,8 @@ DesktopWindowTreeHostX11::CreateDragDropClient(
 }
 
 void DesktopWindowTreeHostX11::Close() {
+  content_window()->Hide();
+
   // TODO(erg): Might need to do additional hiding tasks here.
   delayed_resize_task_.Cancel();
 
@@ -516,16 +514,23 @@ aura::WindowTreeHost* DesktopWindowTreeHostX11::AsWindowTreeHost() {
   return this;
 }
 
-void DesktopWindowTreeHostX11::ShowWindowWithState(
-    ui::WindowShowState show_state) {
+void DesktopWindowTreeHostX11::Show(ui::WindowShowState show_state,
+                                    const gfx::Rect& restore_bounds) {
   if (compositor())
-    compositor()->SetVisible(true);
+    SetVisible(true);
+
   if (!IsVisible() || !window_mapped_in_server_)
     MapWindow(show_state);
 
   switch (show_state) {
     case ui::SHOW_STATE_MAXIMIZED:
       Maximize();
+      if (!restore_bounds.IsEmpty()) {
+        // Enforce |restored_bounds_in_pixels_| since calling Maximize() could
+        // have reset it.
+        restored_bounds_in_pixels_ = ToPixelRect(restore_bounds);
+      }
+
       break;
     case ui::SHOW_STATE_MINIMIZED:
       Minimize();
@@ -538,14 +543,8 @@ void DesktopWindowTreeHostX11::ShowWindowWithState(
   }
 
   native_widget_delegate_->AsWidget()->SetInitialFocus(show_state);
-}
 
-void DesktopWindowTreeHostX11::ShowMaximizedWithBounds(
-    const gfx::Rect& restored_bounds) {
-  ShowWindowWithState(ui::SHOW_STATE_MAXIMIZED);
-  // Enforce |restored_bounds_in_pixels_| since calling Maximize() could have
-  // reset it.
-  restored_bounds_in_pixels_ = ToPixelRect(restored_bounds);
+  content_window()->Show();
 }
 
 bool DesktopWindowTreeHostX11::IsVisible() const {
@@ -602,13 +601,13 @@ void DesktopWindowTreeHostX11::StackAtTop() {
 
 void DesktopWindowTreeHostX11::CenterWindow(const gfx::Size& size) {
   gfx::Size size_in_pixels = ToPixelRect(gfx::Rect(size)).size();
-  gfx::Rect parent_bounds_in_pixels = GetWorkAreaBoundsInPixels();
+  gfx::Rect parent_bounds_in_pixels = ToPixelRect(GetWorkAreaBoundsInScreen());
 
   // If |window_|'s transient parent bounds are big enough to contain |size|,
   // use them instead.
-  if (wm::GetTransientParent(content_window_)) {
+  if (wm::GetTransientParent(content_window())) {
     gfx::Rect transient_parent_rect =
-        wm::GetTransientParent(content_window_)->GetBoundsInScreen();
+        wm::GetTransientParent(content_window())->GetBoundsInScreen();
     if (transient_parent_rect.height() >= size.height() &&
         transient_parent_rect.width() >= size.width()) {
       parent_bounds_in_pixels = ToPixelRect(transient_parent_rect);
@@ -674,24 +673,21 @@ gfx::Rect DesktopWindowTreeHostX11::GetRestoredBounds() const {
 }
 
 std::string DesktopWindowTreeHostX11::GetWorkspace() const {
-  if (workspace_.empty())
-    const_cast<DesktopWindowTreeHostX11*>(this)->UpdateWorkspace();
-  return workspace_;
+  return workspace_ ? base::IntToString(workspace_.value()) : std::string();
 }
 
-bool DesktopWindowTreeHostX11::UpdateWorkspace() {
-  int workspace_int;
-  if (!ui::GetWindowDesktop(xwindow_, &workspace_int))
-    return false;
-  std::string workspace_str = base::IntToString(workspace_int);
-  if (workspace_ == workspace_str)
-    return false;
-  workspace_ = workspace_str;
-  return true;
+void DesktopWindowTreeHostX11::UpdateWorkspace() {
+  int workspace;
+  if (ui::GetWindowDesktop(xwindow_, &workspace))
+    workspace_ = workspace;
+  else
+    workspace_ = base::nullopt;
 }
 
 gfx::Rect DesktopWindowTreeHostX11::GetWorkAreaBoundsInScreen() const {
-  return ToDIPRect(GetWorkAreaBoundsInPixels());
+  return display::Screen::GetScreen()
+      ->GetDisplayNearestWindow(const_cast<aura::Window*>(window()))
+      .work_area();
 }
 
 void DesktopWindowTreeHostX11::SetShape(
@@ -805,7 +801,8 @@ bool DesktopWindowTreeHostX11::IsActive() const {
 }
 
 void DesktopWindowTreeHostX11::Maximize() {
-  if (HasWMSpecProperty("_NET_WM_STATE_FULLSCREEN")) {
+  if (ui::HasWMSpecProperty(window_properties_in_server_,
+                            gfx::GetAtom("_NET_WM_STATE_FULLSCREEN"))) {
     // Unfullscreen the window if it is fullscreen.
     SetWMSpecState(false, gfx::GetAtom("_NET_WM_STATE_FULLSCREEN"), x11::None);
 
@@ -830,7 +827,7 @@ void DesktopWindowTreeHostX11::Maximize() {
   SetWMSpecState(true, gfx::GetAtom("_NET_WM_STATE_MAXIMIZED_VERT"),
                  gfx::GetAtom("_NET_WM_STATE_MAXIMIZED_HORZ"));
   if (IsMinimized())
-    ShowWindowWithState(ui::SHOW_STATE_NORMAL);
+    Show(ui::SHOW_STATE_NORMAL, gfx::Rect());
 }
 
 void DesktopWindowTreeHostX11::Minimize() {
@@ -843,16 +840,19 @@ void DesktopWindowTreeHostX11::Restore() {
   SetWMSpecState(false, gfx::GetAtom("_NET_WM_STATE_MAXIMIZED_VERT"),
                  gfx::GetAtom("_NET_WM_STATE_MAXIMIZED_HORZ"));
   if (IsMinimized())
-    ShowWindowWithState(ui::SHOW_STATE_NORMAL);
+    Show(ui::SHOW_STATE_NORMAL, gfx::Rect());
 }
 
 bool DesktopWindowTreeHostX11::IsMaximized() const {
-  return (HasWMSpecProperty("_NET_WM_STATE_MAXIMIZED_VERT") &&
-          HasWMSpecProperty("_NET_WM_STATE_MAXIMIZED_HORZ"));
+  return (ui::HasWMSpecProperty(window_properties_in_server_,
+                                gfx::GetAtom("_NET_WM_STATE_MAXIMIZED_VERT")) &&
+          ui::HasWMSpecProperty(window_properties_in_server_,
+                                gfx::GetAtom("_NET_WM_STATE_MAXIMIZED_HORZ")));
 }
 
 bool DesktopWindowTreeHostX11::IsMinimized() const {
-  return HasWMSpecProperty("_NET_WM_STATE_HIDDEN");
+  return ui::HasWMSpecProperty(window_properties_in_server_,
+                               gfx::GetAtom("_NET_WM_STATE_HIDDEN"));
 }
 
 bool DesktopWindowTreeHostX11::HasCapture() const {
@@ -868,6 +868,13 @@ bool DesktopWindowTreeHostX11::IsAlwaysOnTop() const {
   return is_always_on_top_;
 }
 
+void DesktopWindowTreeHostX11::SetVisible(bool visible) {
+  if (compositor())
+    compositor()->SetVisible(visible);
+  if (IsVisible() != visible)
+    native_widget_delegate_->OnNativeWidgetVisibilityChanged(visible);
+}
+
 void DesktopWindowTreeHostX11::SetVisibleOnAllWorkspaces(bool always_visible) {
   SetWMSpecState(always_visible, gfx::GetAtom("_NET_WM_STATE_STICKY"),
                  x11::None);
@@ -880,7 +887,7 @@ void DesktopWindowTreeHostX11::SetVisibleOnAllWorkspaces(bool always_visible) {
       return;
   }
 
-  workspace_ = base::IntToString(kAllDesktops);
+  workspace_ = kAllDesktops;
   XEvent xevent;
   memset (&xevent, 0, sizeof (xevent));
   xevent.type = ClientMessage;
@@ -925,12 +932,13 @@ bool DesktopWindowTreeHostX11::SetWindowTitle(const base::string16& title) {
 
 void DesktopWindowTreeHostX11::ClearNativeFocus() {
   // This method is weird and misnamed. Instead of clearing the native focus,
-  // it sets the focus to our |content_window_|, which will trigger a cascade
+  // it sets the focus to our content_window(), which will trigger a cascade
   // of focus changes into views.
-  if (content_window_ && aura::client::GetFocusClient(content_window_) &&
-      content_window_->Contains(
-          aura::client::GetFocusClient(content_window_)->GetFocusedWindow())) {
-    aura::client::GetFocusClient(content_window_)->FocusWindow(content_window_);
+  if (content_window() && aura::client::GetFocusClient(content_window()) &&
+      content_window()->Contains(
+          aura::client::GetFocusClient(content_window())->GetFocusedWindow())) {
+    aura::client::GetFocusClient(content_window())
+        ->FocusWindow(content_window());
   }
 }
 
@@ -941,7 +949,7 @@ Widget::MoveLoopResult DesktopWindowTreeHostX11::RunMoveLoop(
   wm::WindowMoveSource window_move_source =
       source == Widget::MOVE_LOOP_SOURCE_MOUSE ? wm::WINDOW_MOVE_SOURCE_MOUSE
                                                : wm::WINDOW_MOVE_SOURCE_TOUCH;
-  if (x11_window_move_client_->RunMoveLoop(content_window_, drag_offset,
+  if (x11_window_move_client_->RunMoveLoop(content_window(), drag_offset,
                                            window_move_source) ==
       wm::MOVE_SUCCESSFUL)
     return Widget::MOVE_LOOP_SUCCESSFUL;
@@ -995,6 +1003,7 @@ void DesktopWindowTreeHostX11::SetFullscreen(bool fullscreen) {
   if (is_fullscreen_ == fullscreen)
     return;
   is_fullscreen_ = fullscreen;
+  OnFullscreenStateChanged();
   if (is_fullscreen_)
     delayed_resize_task_.Cancel();
 
@@ -1028,7 +1037,9 @@ void DesktopWindowTreeHostX11::SetFullscreen(bool fullscreen) {
   OnHostMovedInPixels(bounds_in_pixels_.origin());
   OnHostResizedInPixels(bounds_in_pixels_.size());
 
-  if (HasWMSpecProperty("_NET_WM_STATE_FULLSCREEN") == fullscreen) {
+  if (ui::HasWMSpecProperty(window_properties_in_server_,
+                            gfx::GetAtom("_NET_WM_STATE_FULLSCREEN")) ==
+      fullscreen) {
     Relayout();
     ResetWindowRegion();
   }
@@ -1060,6 +1071,18 @@ void DesktopWindowTreeHostX11::SetOpacity(float opacity) {
                     XA_CARDINAL, 32, PropModeReplace,
                     reinterpret_cast<unsigned char*>(&cardinality), 1);
   }
+}
+
+void DesktopWindowTreeHostX11::SetAspectRatio(const gfx::SizeF& aspect_ratio) {
+  XSizeHints size_hints;
+  size_hints.flags = 0;
+  long supplied_return;
+
+  XGetWMNormalHints(xdisplay_, xwindow_, &size_hints, &supplied_return);
+  size_hints.flags |= PAspect;
+  size_hints.min_aspect.x = size_hints.max_aspect.x = aspect_ratio.width();
+  size_hints.min_aspect.y = size_hints.max_aspect.y = aspect_ratio.height();
+  XSetWMNormalHints(xdisplay_, xwindow_, &size_hints);
 }
 
 void DesktopWindowTreeHostX11::SetWindowIcons(
@@ -1168,16 +1191,15 @@ gfx::AcceleratedWidget DesktopWindowTreeHostX11::GetAcceleratedWidget() {
 }
 
 void DesktopWindowTreeHostX11::ShowImpl() {
-  ShowWindowWithState(ui::SHOW_STATE_NORMAL);
-  native_widget_delegate_->OnNativeWidgetVisibilityChanged(true);
+  Show(ui::SHOW_STATE_NORMAL, gfx::Rect());
 }
 
 void DesktopWindowTreeHostX11::HideImpl() {
   if (IsVisible()) {
     XWithdrawWindow(xdisplay_, xwindow_, 0);
     window_mapped_in_client_ = false;
+    native_widget_delegate_->OnNativeWidgetVisibilityChanged(false);
   }
-  native_widget_delegate_->OnNativeWidgetVisibilityChanged(false);
 }
 
 gfx::Rect DesktopWindowTreeHostX11::GetBoundsInPixels() const {
@@ -1185,7 +1207,13 @@ gfx::Rect DesktopWindowTreeHostX11::GetBoundsInPixels() const {
 }
 
 void DesktopWindowTreeHostX11::SetBoundsInPixels(
-    const gfx::Rect& requested_bounds_in_pixel) {
+    const gfx::Rect& requested_bounds_in_pixel,
+    const viz::LocalSurfaceId& local_surface_id) {
+  // On desktop-x11, the callers of SetBoundsInPixels() shouldn't need to (or be
+  // able to) allocate LocalSurfaceId for the compositor. Aura itself should
+  // allocate the new ids as needed, instead.
+  DCHECK(!local_surface_id.is_valid());
+
   gfx::Rect bounds_in_pixels(requested_bounds_in_pixel.origin(),
                              AdjustSize(requested_bounds_in_pixel.size()));
   bool origin_changed = bounds_in_pixels_.origin() != bounds_in_pixels.origin();
@@ -1237,7 +1265,7 @@ void DesktopWindowTreeHostX11::SetBoundsInPixels(
   if (origin_changed)
     native_widget_delegate_->AsWidget()->OnNativeWidgetMove();
   if (size_changed) {
-    OnHostResizedInPixels(bounds_in_pixels.size());
+    OnHostResizedInPixels(bounds_in_pixels.size(), local_surface_id);
     ResetWindowRegion();
   }
 }
@@ -1283,6 +1311,28 @@ void DesktopWindowTreeHostX11::ReleaseCapture() {
   }
 }
 
+bool DesktopWindowTreeHostX11::CaptureSystemKeyEventsImpl(
+    base::Optional<base::flat_set<ui::DomCode>> dom_codes) {
+  // Only one KeyboardHook should be active at a time, otherwise there will be
+  // problems with event routing (i.e. which Hook takes precedence) and
+  // destruction ordering.
+  DCHECK(!keyboard_hook_);
+  keyboard_hook_ = ui::KeyboardHook::Create(
+      std::move(dom_codes), GetAcceleratedWidget(),
+      base::BindRepeating(&DesktopWindowTreeHostX11::DispatchKeyEvent,
+                          base::Unretained(this)));
+
+  return keyboard_hook_ != nullptr;
+}
+
+void DesktopWindowTreeHostX11::ReleaseSystemKeyEventCapture() {
+  keyboard_hook_.reset();
+}
+
+bool DesktopWindowTreeHostX11::IsKeyLocked(ui::DomCode dom_code) {
+  return keyboard_hook_ && keyboard_hook_->IsKeyLocked(dom_code);
+}
+
 void DesktopWindowTreeHostX11::SetCursorNative(gfx::NativeCursor cursor) {
   XDefineCursor(xdisplay_, xwindow_, cursor.platform());
 }
@@ -1321,16 +1371,46 @@ void DesktopWindowTreeHostX11::OnDisplayMetricsChanged(
 
 void DesktopWindowTreeHostX11::OnMaximizedStateChanged() {}
 
+void DesktopWindowTreeHostX11::OnFullscreenStateChanged() {}
+
 ////////////////////////////////////////////////////////////////////////////////
 // DesktopWindowTreeHostX11, private:
 
 void DesktopWindowTreeHostX11::InitX11Window(
     const Widget::InitParams& params) {
-  unsigned long attribute_mask = CWBackPixmap | CWBitGravity;
+  unsigned long attribute_mask = CWBackPixel | CWBitGravity;
   XSetWindowAttributes swa;
   memset(&swa, 0, sizeof(swa));
   swa.background_pixmap = x11::None;
   swa.bit_gravity = NorthWestGravity;
+
+  // Set the background color on startup to make the initial flickering
+  // happening between the XWindow is mapped and the first expose event
+  // is completely handled less annoying. If possible, we use the content
+  // window's background color, otherwise we fallback to white.
+  int background_color;
+
+  const views::LinuxUI* linux_ui = views::LinuxUI::instance();
+  if (linux_ui && content_window()) {
+    ui::NativeTheme::ColorId target_color;
+    switch (params.type) {
+      case Widget::InitParams::TYPE_BUBBLE:
+        target_color = ui::NativeTheme::kColorId_BubbleBackground;
+        break;
+      case Widget::InitParams::TYPE_TOOLTIP:
+        target_color = ui::NativeTheme::kColorId_TooltipBackground;
+        break;
+      default:
+        target_color = ui::NativeTheme::kColorId_WindowBackground;
+        break;
+    }
+
+    ui::NativeTheme* theme = linux_ui->GetNativeTheme(content_window());
+    background_color = theme->GetSystemColor(target_color);
+  } else {
+    background_color = WhitePixel(xdisplay_, DefaultScreen(xdisplay_));
+  }
+  swa.background_pixel = background_color;
 
   ::Atom window_type;
   switch (params.type) {
@@ -1443,7 +1523,7 @@ void DesktopWindowTreeHostX11::InitX11Window(
                   reinterpret_cast<unsigned char*>(&window_type), 1);
 
   // List of window state properties (_NET_WM_STATE) to set, if any.
-  std::vector< ::Atom> state_atom_list;
+  std::vector<XAtom> state_atom_list;
 
   // Remove popup windows from taskbar unless overridden.
   if ((params.type == Widget::InitParams::TYPE_POPUP ||
@@ -1458,7 +1538,7 @@ void DesktopWindowTreeHostX11::InitX11Window(
   if (is_always_on_top_)
     state_atom_list.push_back(gfx::GetAtom("_NET_WM_STATE_ABOVE"));
 
-  workspace_.clear();
+  workspace_ = base::nullopt;
   if (params.visible_on_all_workspaces) {
     state_atom_list.push_back(gfx::GetAtom("_NET_WM_STATE_STICKY"));
     ui::SetIntProperty(xwindow_, "_NET_WM_DESKTOP", "CARDINAL", kAllDesktops);
@@ -1472,6 +1552,10 @@ void DesktopWindowTreeHostX11::InitX11Window(
   // SetWMSpecState) has no effect here since the window has not yet been
   // mapped. So we manually change the state.
   if (!state_atom_list.empty()) {
+    DCHECK(window_properties_in_client_.empty());
+    window_properties_in_client_.clear();
+    for (XAtom atom : state_atom_list)
+      window_properties_in_client_.insert(std::make_pair(atom, x11::None));
     ui::SetAtomArrayProperty(xwindow_,
                              "_NET_WM_STATE",
                              "ATOM",
@@ -1517,6 +1601,11 @@ void DesktopWindowTreeHostX11::InitX11Window(
                     gfx::GetAtom("UTF8_STRING"), 8, PropModeReplace,
                     kDarkGtkThemeVariant, arraysize(kDarkGtkThemeVariant) - 1);
   }
+
+  // Always composite Chromium windows if a compositing WM is used.  Sometimes,
+  // WMs will not composite fullscreen windows as an optimization, but this can
+  // lead to tearing of fullscreen videos.
+  ui::SetIntProperty(xwindow_, "_NET_WM_BYPASS_COMPOSITOR", "CARDINAL", 2);
 
   // If we have a parent, record the parent/child relationship. We use this
   // data during destruction to make sure that when we try to close a parent
@@ -1564,6 +1653,18 @@ gfx::Size DesktopWindowTreeHostX11::AdjustSize(
   return size_in_pixels;
 }
 
+void DesktopWindowTreeHostX11::SetWMSpecState(bool enabled,
+                                              XAtom state1,
+                                              XAtom state2) {
+  if (IsVisible())
+    ui::SetWMSpecState(xwindow_, enabled, state1, state2);
+  auto atoms = std::make_pair(state1, state2);
+  if (enabled)
+    window_properties_in_client_.insert(atoms);
+  else
+    window_properties_in_client_.erase(atoms);
+}
+
 void DesktopWindowTreeHostX11::OnWMStateUpdated() {
   std::vector< ::Atom> atom_list;
   // Ignore the return value of gfx::GetAtomArrayProperty(). Fluxbox removes the
@@ -1573,9 +1674,10 @@ void DesktopWindowTreeHostX11::OnWMStateUpdated() {
   bool was_minimized = IsMinimized();
   bool was_maximized = IsMaximized();
 
-  window_properties_.clear();
+  window_properties_in_server_.clear();
   std::copy(atom_list.begin(), atom_list.end(),
-            inserter(window_properties_, window_properties_.begin()));
+            inserter(window_properties_in_server_,
+                     window_properties_in_server_.begin()));
 
   bool is_minimized = IsMinimized();
   bool is_maximized = IsMaximized();
@@ -1594,11 +1696,11 @@ void DesktopWindowTreeHostX11::OnWMStateUpdated() {
   // minimized.
   if (is_minimized != was_minimized) {
     if (is_minimized) {
-      compositor()->SetVisible(false);
-      content_window_->Hide();
+      SetVisible(false);
+      content_window()->Hide();
     } else {
-      content_window_->Show();
-      compositor()->SetVisible(true);
+      content_window()->Show();
+      SetVisible(true);
     }
   }
 
@@ -1623,7 +1725,8 @@ void DesktopWindowTreeHostX11::OnWMStateUpdated() {
   // handle window manager initiated fullscreen. In particular, Chrome needs to
   // do preprocessing before the x window's fullscreen state is toggled.
 
-  is_always_on_top_ = HasWMSpecProperty("_NET_WM_STATE_ABOVE");
+  is_always_on_top_ = ui::HasWMSpecProperty(
+      window_properties_in_server_, gfx::GetAtom("_NET_WM_STATE_ABOVE"));
 
   if (was_maximized != is_maximized)
     OnMaximizedStateChanged();
@@ -1701,31 +1804,6 @@ void DesktopWindowTreeHostX11::UpdateWMUserTime(
   }
 }
 
-void DesktopWindowTreeHostX11::SetWMSpecState(bool enabled,
-                                              ::Atom state1,
-                                              ::Atom state2) {
-  XEvent xclient;
-  memset(&xclient, 0, sizeof(xclient));
-  xclient.type = ClientMessage;
-  xclient.xclient.window = xwindow_;
-  xclient.xclient.message_type = gfx::GetAtom("_NET_WM_STATE");
-  xclient.xclient.format = 32;
-  xclient.xclient.data.l[0] =
-      enabled ? k_NET_WM_STATE_ADD : k_NET_WM_STATE_REMOVE;
-  xclient.xclient.data.l[1] = state1;
-  xclient.xclient.data.l[2] = state2;
-  xclient.xclient.data.l[3] = 1;
-  xclient.xclient.data.l[4] = 0;
-
-  XSendEvent(xdisplay_, x_root_window_, x11::False,
-             SubstructureRedirectMask | SubstructureNotifyMask, &xclient);
-}
-
-bool DesktopWindowTreeHostX11::HasWMSpecProperty(const char* property) const {
-  return window_properties_.find(gfx::GetAtom(property)) !=
-         window_properties_.end();
-}
-
 void DesktopWindowTreeHostX11::SetUseNativeFrame(bool use_native_frame) {
   use_native_frame_ = use_native_frame;
   ui::SetUseOSWindowFrame(xwindow_, use_native_frame);
@@ -1749,10 +1827,10 @@ void DesktopWindowTreeHostX11::DispatchMouseEvent(ui::MouseEvent* event) {
   // events on the ash desktop are clicking in what Windows considers to be a
   // non client area.) Likewise, we won't want to do the following in any
   // WindowTreeHost that hosts ash.
-  if (content_window_ && content_window_->delegate()) {
+  if (content_window() && content_window()->delegate()) {
     int flags = event->flags();
     int hit_test_code =
-        content_window_->delegate()->GetNonClientComponent(event->location());
+        content_window()->delegate()->GetNonClientComponent(event->location());
     if (hit_test_code != HTCLIENT && hit_test_code != HTNOWHERE)
       flags |= ui::EF_IS_NON_CLIENT;
     event->set_flags(flags);
@@ -1904,20 +1982,20 @@ void DesktopWindowTreeHostX11::MapWindow(ui::WindowShowState show_state) {
                     1);
   }
 
-  ui::X11EventSource* event_source = ui::X11EventSource::GetInstance();
-  DCHECK(event_source);
-
   UpdateMinAndMaxSize();
 
   XMapWindow(xdisplay_, xwindow_);
   window_mapped_in_client_ = true;
+
+  for (const auto& atoms : window_properties_in_client_)
+    ui::SetWMSpecState(xwindow_, true, atoms.first, atoms.second);
 }
 
 void DesktopWindowTreeHostX11::SetWindowTransparency() {
   compositor()->SetBackgroundColor(use_argb_visual_ ? SK_ColorTRANSPARENT
                                                     : SK_ColorWHITE);
   window()->SetTransparent(use_argb_visual_);
-  content_window_->SetTransparent(use_argb_visual_);
+  content_window()->SetTransparent(use_argb_visual_);
 }
 
 void DesktopWindowTreeHostX11::Relayout() {
@@ -2010,9 +2088,9 @@ uint32_t DesktopWindowTreeHostX11::DispatchEvent(
       }
       break;
     }
-    case FocusIn:
-    case FocusOut:
-      OnFocusEvent(xev->type == FocusIn, event->xfocus.mode,
+    case x11::FocusIn:
+    case x11::FocusOut:
+      OnFocusEvent(xev->type == x11::FocusIn, event->xfocus.mode,
                    event->xfocus.detail);
       break;
     case ConfigureNotify: {
@@ -2075,7 +2153,7 @@ uint32_t DesktopWindowTreeHostX11::DispatchEvent(
           num_coalesced = ui::CoalescePendingMotionEvents(xev, &last_event);
           if (num_coalesced > 0)
             xev = &last_event;
-          // fallthrough
+          FALLTHROUGH;
         case ui::ET_TOUCH_PRESSED:
         case ui::ET_TOUCH_RELEASED: {
           ui::TouchEvent touchev(xev);
@@ -2096,7 +2174,15 @@ uint32_t DesktopWindowTreeHostX11::DispatchEvent(
               xev = &last_event;
           }
           ui::MouseEvent mouseev(xev);
-          DispatchMouseEvent(&mouseev);
+          // If after CoalescePendingMotionEvents the type of xev is resolved to
+          // UNKNOWN, don't dispatch the event.
+          // TODO(804418): investigate why ColescePendingMotionEvents can
+          // include mouse wheel events as well. Investigation showed that
+          // events on Linux are checked with cmt-device path, and can include
+          // DT_CMT_SCROLL_ data. See more discussion in
+          // https://crrev.com/c/853953
+          if (mouseev.type() != ui::ET_UNKNOWN)
+            DispatchMouseEvent(&mouseev);
           break;
         }
         case ui::ET_MOUSEWHEEL: {
@@ -2108,7 +2194,12 @@ uint32_t DesktopWindowTreeHostX11::DispatchEvent(
         case ui::ET_SCROLL_FLING_CANCEL:
         case ui::ET_SCROLL: {
           ui::ScrollEvent scrollev(xev);
-          SendEventToSink(&scrollev);
+          // We need to filter zero scroll offset here. Because
+          // MouseWheelEventQueue assumes we'll never get a zero scroll offset
+          // event and we need delta to determine which element to scroll on
+          // phaseBegan.
+          if (scrollev.x_offset() != 0.0 || scrollev.y_offset() != 0.0)
+            SendEventToSink(&scrollev);
           break;
         }
         case ui::ET_KEY_PRESSED:
@@ -2227,7 +2318,9 @@ uint32_t DesktopWindowTreeHostX11::DispatchEvent(
       } else if (changed_atom == gfx::GetAtom("_NET_FRAME_EXTENTS")) {
         OnFrameExtentsUpdated();
       } else if (changed_atom == gfx::GetAtom("_NET_WM_DESKTOP")) {
-        if (UpdateWorkspace())
+        base::Optional<int> old_workspace = workspace_;
+        UpdateWorkspace();
+        if (workspace_ != old_workspace)
           OnHostWorkspaceChanged();
       }
       break;
@@ -2254,27 +2347,6 @@ void DesktopWindowTreeHostX11::DelayedChangeFrameType(Widget::FrameType type) {
   native_widget_delegate_->AsWidget()->non_client_view()->UpdateFrame();
 }
 
-gfx::Rect DesktopWindowTreeHostX11::GetWorkAreaBoundsInPixels() const {
-  std::vector<int> value;
-  if (ui::GetIntArrayProperty(x_root_window_, "_NET_WORKAREA", &value) &&
-      value.size() >= 4) {
-    return gfx::Rect(value[0], value[1], value[2], value[3]);
-  }
-
-  // Fetch the geometry of the root window.
-  Window root;
-  int x, y;
-  unsigned int width, height;
-  unsigned int border_width, depth;
-  if (!XGetGeometry(xdisplay_, x_root_window_, &root, &x, &y, &width, &height,
-                    &border_width, &depth)) {
-    NOTIMPLEMENTED();
-    return gfx::Rect(0, 0, 10, 10);
-  }
-
-  return gfx::Rect(x, y, width, height);
-}
-
 gfx::Rect DesktopWindowTreeHostX11::ToDIPRect(
     const gfx::Rect& rect_in_pixels) const {
   gfx::RectF rect_in_dip = gfx::RectF(rect_in_pixels);
@@ -2289,21 +2361,20 @@ gfx::Rect DesktopWindowTreeHostX11::ToPixelRect(
   return gfx::ToEnclosingRect(rect_in_pixels);
 }
 
-std::unique_ptr<base::Closure>
+std::unique_ptr<base::OnceClosure>
 DesktopWindowTreeHostX11::DisableEventListening() {
   // Allows to open multiple file-pickers. See https://crbug.com/678982
   modal_dialog_counter_++;
   if (modal_dialog_counter_ == 1) {
     // ScopedWindowTargeter is used to temporarily replace the event-targeter
-    // with NullEventTargeter to make |dialog| modal.
-    targeter_for_modal_.reset(new aura::ScopedWindowTargeter(
-        window(),
-        std::unique_ptr<ui::EventTargeter>(new ui::NullEventTargeter)));
+    // with NullWindowEventTargeter to make |dialog| modal.
+    targeter_for_modal_ = std::make_unique<aura::ScopedWindowTargeter>(
+        window(), std::make_unique<aura::NullWindowTargeter>());
   }
 
-  return std::make_unique<base::Closure>(
-      base::Bind(&DesktopWindowTreeHostX11::EnableEventListening,
-                 weak_factory_.GetWeakPtr()));
+  return std::make_unique<base::OnceClosure>(
+      base::BindOnce(&DesktopWindowTreeHostX11::EnableEventListening,
+                     weak_factory_.GetWeakPtr()));
 }
 
 void DesktopWindowTreeHostX11::EnableEventListening() {
@@ -2318,6 +2389,17 @@ void DesktopWindowTreeHostX11::RestartDelayedResizeTask() {
                  close_widget_factory_.GetWeakPtr(), bounds_in_pixels_.size()));
   base::ThreadTaskRunnerHandle::Get()->PostTask(
       FROM_HERE, delayed_resize_task_.callback());
+}
+
+aura::Window* DesktopWindowTreeHostX11::content_window() {
+  return desktop_native_widget_aura_->content_window();
+}
+
+base::flat_map<std::string, std::string>
+DesktopWindowTreeHostX11::GetKeyboardLayoutMap() {
+  if (views::LinuxUI::instance())
+    return views::LinuxUI::instance()->GetKeyboardLayoutMap();
+  return {};
 }
 
 ////////////////////////////////////////////////////////////////////////////////

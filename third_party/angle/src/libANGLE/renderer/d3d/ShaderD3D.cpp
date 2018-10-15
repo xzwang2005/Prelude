@@ -16,31 +16,6 @@
 #include "libANGLE/renderer/d3d/ProgramD3D.h"
 #include "libANGLE/renderer/d3d/RendererD3D.h"
 
-// Definitions local to the translation unit
-namespace
-{
-
-const char *GetShaderTypeString(GLenum type)
-{
-    switch (type)
-    {
-        case GL_VERTEX_SHADER:
-            return "VERTEX";
-
-        case GL_FRAGMENT_SHADER:
-            return "FRAGMENT";
-
-        case GL_COMPUTE_SHADER:
-            return "COMPUTE";
-
-        default:
-            UNREACHABLE();
-            return "";
-    }
-}
-
-}  // anonymous namespace
-
 namespace rx
 {
 
@@ -73,6 +48,10 @@ ShaderD3D::ShaderD3D(const gl::ShaderState &data,
     {
         mAdditionalOptions |= SH_EMULATE_ISNAN_FLOAT_FUNCTION;
     }
+    if (workarounds.skipVSConstantRegisterZero && mData.getShaderType() == gl::ShaderType::Vertex)
+    {
+        mAdditionalOptions |= SH_SKIP_D3D_CONSTANT_REGISTER_ZERO;
+    }
     if (extensions.multiview)
     {
         mAdditionalOptions |= SH_INITIALIZE_BUILTINS_FOR_INSTANCED_MULTIVIEW;
@@ -90,7 +69,7 @@ std::string ShaderD3D::getDebugInfo() const
         return "";
     }
 
-    return mDebugInfo + std::string("\n// ") + GetShaderTypeString(mData.getShaderType()) +
+    return mDebugInfo + std::string("\n// ") + gl::GetShaderTypeString(mData.getShaderType()) +
            " SHADER END\n";
 }
 
@@ -158,7 +137,8 @@ ShShaderOutput ShaderD3D::getCompilerOutputType() const
     return mCompilerOutputType;
 }
 
-ShCompileOptions ShaderD3D::prepareSourceAndReturnOptions(std::stringstream *shaderSourceStream,
+ShCompileOptions ShaderD3D::prepareSourceAndReturnOptions(const gl::Context *context,
+                                                          std::stringstream *shaderSourceStream,
                                                           std::string *sourcePath)
 {
     uncompile();
@@ -194,7 +174,7 @@ const std::map<std::string, unsigned int> &GetUniformRegisterMap(
     return *uniformRegisterMap;
 }
 
-bool ShaderD3D::postTranslateCompile(gl::Compiler *compiler, std::string *infoLog)
+bool ShaderD3D::postTranslateCompile(gl::ShCompilerInstance *compiler, std::string *infoLog)
 {
     // TODO(jmadill): We shouldn't need to cache this.
     mCompilerOutputType = compiler->getShaderOutputType();
@@ -219,13 +199,13 @@ bool ShaderD3D::postTranslateCompile(gl::Compiler *compiler, std::string *infoLo
     mRequiresIEEEStrictCompiling =
         translatedSource.find("ANGLE_REQUIRES_IEEE_STRICT_COMPILING") != std::string::npos;
 
-    ShHandle compilerHandle = compiler->getCompilerHandle(mData.getShaderType());
+    ShHandle compilerHandle = compiler->getHandle();
 
     mUniformRegisterMap = GetUniformRegisterMap(sh::GetUniformRegisterMap(compilerHandle));
 
     for (const sh::InterfaceBlock &interfaceBlock : mData.getUniformBlocks())
     {
-        if (interfaceBlock.staticUse)
+        if (interfaceBlock.active)
         {
             unsigned int index = static_cast<unsigned int>(-1);
             bool blockRegisterResult =
@@ -237,7 +217,7 @@ bool ShaderD3D::postTranslateCompile(gl::Compiler *compiler, std::string *infoLo
     }
 
     mDebugInfo +=
-        std::string("// ") + GetShaderTypeString(mData.getShaderType()) + " SHADER BEGIN\n";
+        std::string("// ") + gl::GetShaderTypeString(mData.getShaderType()) + " SHADER BEGIN\n";
     mDebugInfo += "\n// GLSL BEGIN\n\n" + mData.getSource() + "\n\n// GLSL END\n\n\n";
     mDebugInfo += "// INITIAL HLSL BEGIN\n\n" + translatedSource + "\n// INITIAL HLSL END\n\n\n";
     // Successive steps will append more info

@@ -52,15 +52,7 @@
     b = x;
     c = 1;
     hasOwnProperty() { return 1;}
-    static [x] = 2;
-    static b = 3;
-    static d;
   }
-
-  assertEquals(2, C.a);
-  assertEquals(3, C.b);
-  assertEquals(undefined, C.d);
-  assertEquals(undefined, C.c);
 
   let c = new C;
   assertEquals(undefined, c.a);
@@ -281,10 +273,10 @@
   }
 
   class C {
-    [run(1)] = run(7);
-    [run(2)] = run(8);
+    [run(1)] = run(6);
+    [run(2)] = run(7);
     [run(3)]() { run(9);}
-    static [run(4)] = run(6);
+    [run(4)] = run(8);
     [run(5)]() { throw new Error('should not execute');};
   }
 
@@ -303,10 +295,10 @@ function x() {
     }
 
     class C {
-      [run(1)] = run(7);
-      [run(2)] = run(8);
+      [run(1)] = run(6);
+      [run(2)] = run(7);
       [run(3)]() { run(9);}
-      static [run(4)] = run(6);
+      [run(4)] = run(8);
       [run(5)]() { throw new Error('should not execute');};
     }
 
@@ -515,7 +507,7 @@ x()();
   }
 
   assertThrows(() => new C1, ReferenceError);
-  assertEquals([1,1], log);
+  assertEquals([1], log);
 
   log = [];
   class C2 extends class {} {
@@ -528,7 +520,7 @@ x()();
   }
 
   assertThrows(() => new C2, ReferenceError);
-  assertEquals([1,1], log);
+  assertEquals([1], log);
 }
 
 {
@@ -637,20 +629,6 @@ x()();
 }
 
 {
-  function t() {
-    return class {
-      ['x'] = 1;
-      static ['x'] = 2;
-    }
-  }
-
-  let klass = t();
-  let obj = new klass;
-  assertEquals(1, obj.x);
-  assertEquals(2, klass.x);
-}
-
-{
   new class {
     t = 1;
     constructor(t = this.t) {
@@ -673,4 +651,66 @@ x()();
       }
     }
   }, ReferenceError);
+}
+
+{
+  class X {
+    p = function() { return arguments[0]; }
+  }
+
+  let x = new X;
+  assertEquals(1, x.p(1));
+}
+
+{
+  class X {
+    t = () => {
+      function p() { return arguments[0]; };
+      return p;
+    }
+  }
+
+  let x = new X;
+  let p = x.t();
+  assertEquals(1, p(1));
+}
+
+{
+  class X {
+    t = () => {
+      function p() { return eval("arguments[0]"); };
+      return p;
+    }
+  }
+
+  let x = new X;
+  let p = x.t();
+  assertEquals(1, p(1));
+}
+
+{
+  class X {
+    p = eval("(function() { return arguments[0]; })(1)");
+  }
+
+  let x = new X;
+  assertEquals(1, x.p);
+}
+
+{
+  let thisInInitializer, thisInConstructor, thisFromArrowFn, arrowFn;
+  let C = class extends class {} {
+    field = (thisInInitializer = this, thisFromArrowFn = arrowFn());
+    constructor() {
+      arrowFn = () => this;
+      super();
+      thisInConstructor = this;
+    }
+  };
+
+  let c = new C();
+
+  assertSame(thisInInitializer, c);
+  assertSame(thisFromArrowFn, c);
+  assertSame(thisInConstructor, c);
 }

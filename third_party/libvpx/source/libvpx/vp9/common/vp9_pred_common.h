@@ -8,8 +8,8 @@
  *  be found in the AUTHORS file in the root of the source tree.
  */
 
-#ifndef VP9_COMMON_VP9_PRED_COMMON_H_
-#define VP9_COMMON_VP9_PRED_COMMON_H_
+#ifndef VPX_VP9_COMMON_VP9_PRED_COMMON_H_
+#define VPX_VP9_COMMON_VP9_PRED_COMMON_H_
 
 #include "vp9/common/vp9_blockd.h"
 #include "vp9/common/vp9_onyxc_int.h"
@@ -176,12 +176,6 @@ static INLINE const vpx_prob *get_tx_probs(TX_SIZE max_tx_size, int ctx,
   }
 }
 
-static INLINE const vpx_prob *get_tx_probs2(TX_SIZE max_tx_size,
-                                            const MACROBLOCKD *xd,
-                                            const struct tx_probs *tx_probs) {
-  return get_tx_probs(max_tx_size, get_tx_size_context(xd), tx_probs);
-}
-
 static INLINE unsigned int *get_tx_counts(TX_SIZE max_tx_size, int ctx,
                                           struct tx_counts *tx_counts) {
   switch (max_tx_size) {
@@ -196,4 +190,4 @@ static INLINE unsigned int *get_tx_counts(TX_SIZE max_tx_size, int ctx,
 }  // extern "C"
 #endif
 
-#endif  // VP9_COMMON_VP9_PRED_COMMON_H_
+#endif  // VPX_VP9_COMMON_VP9_PRED_COMMON_H_

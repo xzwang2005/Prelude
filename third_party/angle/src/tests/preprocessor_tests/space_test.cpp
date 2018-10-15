@@ -4,8 +4,13 @@
 // found in the LICENSE file.
 //
 
+#include <tuple>
+
 #include "PreprocessorTest.h"
 #include "compiler/preprocessor/Token.h"
+
+namespace angle
+{
 
 class SpaceTest : public PreprocessorTest
 {
@@ -53,7 +58,7 @@ INSTANTIATE_TEST_CASE_P(SingleSpaceChar,
 // This test fixture tests the processing of a string containing consecutive
 // whitespace characters. All tests in this fixture are ran with all possible
 // combinations of whitespace characters allowed in GLSL.
-typedef std::tr1::tuple<char, char, char> SpaceStringParams;
+typedef std::tuple<char, char, char> SpaceStringParams;
 class SpaceStringTest : public SpaceTest,
                         public testing::WithParamInterface<SpaceStringParams>
 {
@@ -63,9 +68,9 @@ TEST_P(SpaceStringTest, SpaceIgnored)
 {
     // Construct test string with the whitespace char before "foo".
     std::string str;
-    str.push_back(std::tr1::get<0>(GetParam()));
-    str.push_back(std::tr1::get<1>(GetParam()));
-    str.push_back(std::tr1::get<2>(GetParam()));
+    str.push_back(std::get<0>(GetParam()));
+    str.push_back(std::get<1>(GetParam()));
+    str.push_back(std::get<2>(GetParam()));
     str.append("foo");
 
     expectSpace(str);
@@ -104,3 +109,5 @@ TEST_F(SpaceTest, LeadingSpace)
     EXPECT_EQ("bar", token.text);
     EXPECT_FALSE(token.hasLeadingSpace());
 }
+
+}  // namespace angle

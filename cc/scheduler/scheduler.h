@@ -34,7 +34,8 @@ class CompositorTimingHistory;
 
 class SchedulerClient {
  public:
-  virtual void WillBeginImplFrame(const viz::BeginFrameArgs& args) = 0;
+  // Returns whether the frame has damage.
+  virtual bool WillBeginImplFrame(const viz::BeginFrameArgs& args) = 0;
   virtual void ScheduledActionSendBeginMainFrame(
       const viz::BeginFrameArgs& args) = 0;
   virtual DrawResult ScheduledActionDrawIfPossible() = 0;
@@ -43,7 +44,8 @@ class SchedulerClient {
   virtual void ScheduledActionActivateSyncTree() = 0;
   virtual void ScheduledActionBeginLayerTreeFrameSinkCreation() = 0;
   virtual void ScheduledActionPrepareTiles() = 0;
-  virtual void ScheduledActionInvalidateLayerTreeFrameSink() = 0;
+  virtual void ScheduledActionInvalidateLayerTreeFrameSink(
+      bool needs_redraw) = 0;
   virtual void ScheduledActionPerformImplSideInvalidation() = 0;
   virtual void DidFinishImplFrame() = 0;
   virtual void DidNotProduceFrame(const viz::BeginFrameAck& ack) = 0;
@@ -54,7 +56,8 @@ class SchedulerClient {
   // Functions used for reporting anmation targeting UMA, crbug.com/758439.
   virtual size_t CompositedAnimationsCount() const = 0;
   virtual size_t MainThreadAnimationsCount() const = 0;
-  virtual size_t MainThreadCompositableAnimationsCount() const = 0;
+  virtual bool CurrentFrameHadRAF() const = 0;
+  virtual bool NextFrameHasPendingRAF() const = 0;
 
  protected:
   virtual ~SchedulerClient() {}
@@ -77,7 +80,8 @@ class CC_EXPORT Scheduler : public viz::BeginFrameObserverBase {
   void OnBeginFrameSourcePausedChanged(bool paused) override;
   bool OnBeginFrameDerivedImpl(const viz::BeginFrameArgs& args) override;
 
-  void OnDrawForLayerTreeFrameSink(bool resourceless_software_draw);
+  void OnDrawForLayerTreeFrameSink(bool resourceless_software_draw,
+                                   bool skip_draw);
 
   const SchedulerSettings& settings() const { return settings_; }
 
@@ -170,6 +174,8 @@ class CC_EXPORT Scheduler : public viz::BeginFrameObserverBase {
 
   viz::BeginFrameAck CurrentBeginFrameAckForActiveTree() const;
 
+  void ClearHistory();
+
  protected:
   // Virtual for testing.
   virtual base::TimeTicks Now() const;
@@ -187,32 +193,63 @@ class CC_EXPORT Scheduler : public viz::BeginFrameObserverBase {
 
   std::unique_ptr<CompositorTimingHistory> compositor_timing_history_;
 
-  SchedulerStateMachine::BeginImplFrameDeadlineMode
-      begin_impl_frame_deadline_mode_ =
-          SchedulerStateMachine::BeginImplFrameDeadlineMode::NONE;
+  // What the latest deadline was, and when it was scheduled.
   base::TimeTicks deadline_;
   base::TimeTicks deadline_scheduled_at_;
+  SchedulerStateMachine::BeginImplFrameDeadlineMode deadline_mode_;
 
   BeginFrameTracker begin_impl_frame_tracker_;
+  viz::BeginFrameAck last_begin_frame_ack_;
   viz::BeginFrameArgs begin_main_frame_args_;
 
-  base::Closure begin_impl_frame_deadline_closure_;
-  base::CancelableClosure begin_impl_frame_deadline_task_;
-  base::CancelableClosure missed_begin_frame_task_;
+  // Task posted for the deadline or drawing phase of the scheduler. This task
+  // can be rescheduled e.g. when the condition for the deadline is met, it is
+  // scheduled to run immediately.
+  // NOTE: Scheduler weak ptrs are not necessary if CancelableCallback is used.
+  base::CancelableOnceClosure begin_impl_frame_deadline_task_;
+
+  // This is used for queueing begin frames while scheduler is waiting for
+  // previous frame's deadline, or if it's inside ProcessScheduledActions().
+  // Only one such task is posted at any time, but the args are updated as we
+  // get new begin frames.
+  viz::BeginFrameArgs pending_begin_frame_args_;
+  base::CancelableOnceClosure pending_begin_frame_task_;
 
   SchedulerStateMachine state_machine_;
   bool inside_process_scheduled_actions_ = false;
+  bool inside_scheduled_action_ = false;
   SchedulerStateMachine::Action inside_action_ =
       SchedulerStateMachine::Action::NONE;
 
   bool stopped_ = false;
 
  private:
+  // Posts the deadline task if needed by checking
+  // SchedulerStateMachine::CurrentBeginImplFrameDeadlineMode(). This only
+  // happens when the scheduler is processing a begin frame
+  // (BeginImplFrameState::INSIDE_BEGIN_FRAME).
   void ScheduleBeginImplFrameDeadline();
-  void ScheduleBeginImplFrameDeadlineIfNeeded();
+
+  // Starts or stops begin frames as needed by checking
+  // SchedulerStateMachine::BeginFrameNeeded(). This only happens when the
+  // scheduler is not processing a begin frame (BeginImplFrameState::IDLE).
+  void StartOrStopBeginFrames();
+
+  // This will only post a task if the args are valid and there's no existing
+  // task. That implies that we're still expecting begin frames. If begin frames
+  // aren't needed this will be a nop. This only happens when the scheduler is
+  // not processing a begin frame (BeginImplFrameState::IDLE).
+  void PostPendingBeginFrameTask();
+
+  // Use |pending_begin_frame_args_| to begin a new frame like it was received
+  // in OnBeginFrameDerivedImpl().
+  void HandlePendingBeginFrame();
+
+  // Used to drop the pending begin frame before we go idle.
+  void CancelPendingBeginFrameTask();
+
   void BeginImplFrameNotExpectedSoon();
   void BeginMainFrameNotExpectedUntil(base::TimeTicks time);
-  void SetupNextBeginFrameIfNeeded();
   void DrawIfPossible();
   void DrawForced();
   void ProcessScheduledActions();
@@ -228,21 +265,19 @@ class CC_EXPORT Scheduler : public viz::BeginFrameObserverBase {
       base::TimeTicks now) const;
   void AdvanceCommitStateIfPossible();
   bool IsBeginMainFrameSentOrStarted() const;
+
   void BeginImplFrameWithDeadline(const viz::BeginFrameArgs& args);
   void BeginImplFrameSynchronous(const viz::BeginFrameArgs& args);
   void BeginImplFrame(const viz::BeginFrameArgs& args, base::TimeTicks now);
   void FinishImplFrame();
-  enum BeginFrameResult { kBeginFrameSkipped, kBeginFrameFinished };
-  void SendBeginFrameAck(const viz::BeginFrameArgs& args,
-                         BeginFrameResult result);
+  void SendDidNotProduceFrame(const viz::BeginFrameArgs& args);
   void OnBeginImplFrameDeadline();
   void PollToAdvanceCommitState();
+  void BeginMainFrameAnimateAndLayoutOnly(const viz::BeginFrameArgs& args);
 
   bool IsInsideAction(SchedulerStateMachine::Action action) {
     return inside_action_ == action;
   }
-
-  base::WeakPtrFactory<Scheduler> weak_factory_;
 
   DISALLOW_COPY_AND_ASSIGN(Scheduler);
 };

@@ -85,11 +85,7 @@ TEST(RunWord32ReverseBits) {
 
 TEST(RunWord32ReverseBytes) {
   BufferedRawMachineAssemblerTester<uint32_t> m(MachineType::Uint32());
-  if (!m.machine()->Word32ReverseBytes().IsSupported()) {
-    // We can only test the operator if it exists on the testing platform.
-    return;
-  }
-  m.Return(m.AddNode(m.machine()->Word32ReverseBytes().op(), m.Parameter(0)));
+  m.Return(m.AddNode(m.machine()->Word32ReverseBytes(), m.Parameter(0)));
 
   CHECK_EQ(uint32_t(0x00000000), m.Call(uint32_t(0x00000000)));
   CHECK_EQ(uint32_t(0x12345678), m.Call(uint32_t(0x78563412)));
@@ -224,11 +220,7 @@ TEST(RunWord64ReverseBits) {
 
 TEST(RunWord64ReverseBytes) {
   BufferedRawMachineAssemblerTester<uint64_t> m(MachineType::Uint64());
-  if (!m.machine()->Word64ReverseBytes().IsSupported()) {
-    return;
-  }
-
-  m.Return(m.AddNode(m.machine()->Word64ReverseBytes().op(), m.Parameter(0)));
+  m.Return(m.AddNode(m.machine()->Word64ReverseBytes(), m.Parameter(0)));
 
   CHECK_EQ(uint64_t(0x0000000000000000), m.Call(uint64_t(0x0000000000000000)));
   CHECK_EQ(uint64_t(0x1234567890ABCDEF), m.Call(uint64_t(0xEFCDAB9078563412)));
@@ -1257,7 +1249,8 @@ TEST(RunInt32AddP) {
   FOR_INT32_INPUTS(i) {
     FOR_INT32_INPUTS(j) {
       // Use uint32_t because signed overflow is UB in C.
-      int expected = static_cast<int32_t>(*i + *j);
+      int expected = static_cast<int32_t>(static_cast<uint32_t>(*i) +
+                                          static_cast<uint32_t>(*j));
       CHECK_EQ(expected, bt.call(*i, *j));
     }
   }
@@ -1721,7 +1714,7 @@ TEST(RunInt32SubP) {
 
   FOR_UINT32_INPUTS(i) {
     FOR_UINT32_INPUTS(j) {
-      uint32_t expected = static_cast<int32_t>(*i - *j);
+      uint32_t expected = *i - *j;
       CHECK_EQ(expected, bt.call(*i, *j));
     }
   }
@@ -2395,7 +2388,7 @@ TEST(RunWord32AndP) {
   {
     RawMachineAssemblerTester<int32_t> m;
     Int32BinopTester bt(&m);
-    bt.AddReturn(m.Word32And(bt.param0, m.Word32Not(bt.param1)));
+    bt.AddReturn(m.Word32And(bt.param0, m.Word32BitwiseNot(bt.param1)));
     FOR_UINT32_INPUTS(i) {
       FOR_UINT32_INPUTS(j) {
         int32_t expected = *i & ~(*j);
@@ -2406,7 +2399,7 @@ TEST(RunWord32AndP) {
   {
     RawMachineAssemblerTester<int32_t> m;
     Int32BinopTester bt(&m);
-    bt.AddReturn(m.Word32And(m.Word32Not(bt.param0), bt.param1));
+    bt.AddReturn(m.Word32And(m.Word32BitwiseNot(bt.param0), bt.param1));
     FOR_UINT32_INPUTS(i) {
       FOR_UINT32_INPUTS(j) {
         int32_t expected = ~(*i) & *j;
@@ -2515,7 +2508,8 @@ TEST(RunWord32AndImm) {
   {
     FOR_UINT32_INPUTS(i) {
       RawMachineAssemblerTester<uint32_t> m(MachineType::Uint32());
-      m.Return(m.Word32And(m.Int32Constant(*i), m.Word32Not(m.Parameter(0))));
+      m.Return(
+          m.Word32And(m.Int32Constant(*i), m.Word32BitwiseNot(m.Parameter(0))));
       FOR_UINT32_INPUTS(j) {
         uint32_t expected = *i & ~(*j);
         CHECK_EQ(expected, m.Call(*j));
@@ -2708,7 +2702,7 @@ TEST(RunWord32OrP) {
   {
     RawMachineAssemblerTester<int32_t> m;
     Uint32BinopTester bt(&m);
-    bt.AddReturn(m.Word32Or(bt.param0, m.Word32Not(bt.param1)));
+    bt.AddReturn(m.Word32Or(bt.param0, m.Word32BitwiseNot(bt.param1)));
     FOR_UINT32_INPUTS(i) {
       FOR_UINT32_INPUTS(j) {
         uint32_t expected = *i | ~(*j);
@@ -2719,7 +2713,7 @@ TEST(RunWord32OrP) {
   {
     RawMachineAssemblerTester<int32_t> m;
     Uint32BinopTester bt(&m);
-    bt.AddReturn(m.Word32Or(m.Word32Not(bt.param0), bt.param1));
+    bt.AddReturn(m.Word32Or(m.Word32BitwiseNot(bt.param0), bt.param1));
     FOR_UINT32_INPUTS(i) {
       FOR_UINT32_INPUTS(j) {
         uint32_t expected = ~(*i) | *j;
@@ -2744,7 +2738,8 @@ TEST(RunWord32OrImm) {
   {
     FOR_UINT32_INPUTS(i) {
       RawMachineAssemblerTester<uint32_t> m(MachineType::Uint32());
-      m.Return(m.Word32Or(m.Int32Constant(*i), m.Word32Not(m.Parameter(0))));
+      m.Return(
+          m.Word32Or(m.Int32Constant(*i), m.Word32BitwiseNot(m.Parameter(0))));
       FOR_UINT32_INPUTS(j) {
         uint32_t expected = *i | ~(*j);
         CHECK_EQ(expected, m.Call(*j));
@@ -2946,7 +2941,7 @@ TEST(RunWord32XorP) {
   {
     RawMachineAssemblerTester<int32_t> m;
     Int32BinopTester bt(&m);
-    bt.AddReturn(m.Word32Xor(bt.param0, m.Word32Not(bt.param1)));
+    bt.AddReturn(m.Word32Xor(bt.param0, m.Word32BitwiseNot(bt.param1)));
     FOR_INT32_INPUTS(i) {
       FOR_INT32_INPUTS(j) {
         int32_t expected = *i ^ ~(*j);
@@ -2957,7 +2952,7 @@ TEST(RunWord32XorP) {
   {
     RawMachineAssemblerTester<int32_t> m;
     Int32BinopTester bt(&m);
-    bt.AddReturn(m.Word32Xor(m.Word32Not(bt.param0), bt.param1));
+    bt.AddReturn(m.Word32Xor(m.Word32BitwiseNot(bt.param0), bt.param1));
     FOR_INT32_INPUTS(i) {
       FOR_INT32_INPUTS(j) {
         int32_t expected = ~(*i) ^ *j;
@@ -2968,7 +2963,8 @@ TEST(RunWord32XorP) {
   {
     FOR_UINT32_INPUTS(i) {
       RawMachineAssemblerTester<uint32_t> m(MachineType::Uint32());
-      m.Return(m.Word32Xor(m.Int32Constant(*i), m.Word32Not(m.Parameter(0))));
+      m.Return(
+          m.Word32Xor(m.Int32Constant(*i), m.Word32BitwiseNot(m.Parameter(0))));
       FOR_UINT32_INPUTS(j) {
         uint32_t expected = *i ^ ~(*j);
         CHECK_EQ(expected, m.Call(*j));
@@ -3198,6 +3194,54 @@ TEST(RunWord32ShrP) {
   }
 }
 
+TEST(RunWordShiftInBranch) {
+  static const uint32_t constant = 987654321;
+  FOR_UINT32_SHIFTS(shift) {
+    RawMachineAssemblerTester<uint32_t> m(MachineType::Uint32());
+    RawMachineLabel blocka, blockb;
+    m.Branch(m.Word32Equal(m.Word32Shl(m.Parameter(0), m.Int32Constant(shift)),
+                           m.Int32Constant(0)),
+             &blocka, &blockb);
+    m.Bind(&blocka);
+    m.Return(m.Int32Constant(constant));
+    m.Bind(&blockb);
+    m.Return(m.Int32Constant(0 - constant));
+    FOR_UINT32_INPUTS(i) {
+      uint32_t expected = ((*i << shift) == 0) ? constant : 0 - constant;
+      CHECK_EQ(expected, m.Call(*i));
+    }
+  }
+  FOR_UINT32_SHIFTS(shift) {
+    RawMachineAssemblerTester<uint32_t> m(MachineType::Uint32());
+    RawMachineLabel blocka, blockb;
+    m.Branch(m.Word32Equal(m.Word32Shr(m.Parameter(0), m.Int32Constant(shift)),
+                           m.Int32Constant(0)),
+             &blocka, &blockb);
+    m.Bind(&blocka);
+    m.Return(m.Int32Constant(constant));
+    m.Bind(&blockb);
+    m.Return(m.Int32Constant(0 - constant));
+    FOR_UINT32_INPUTS(i) {
+      uint32_t expected = ((*i >> shift) == 0) ? constant : 0 - constant;
+      CHECK_EQ(expected, m.Call(*i));
+    }
+  }
+  FOR_UINT32_SHIFTS(shift) {
+    RawMachineAssemblerTester<int32_t> m(MachineType::Int32());
+    RawMachineLabel blocka, blockb;
+    m.Branch(m.Word32Equal(m.Word32Sar(m.Parameter(0), m.Int32Constant(shift)),
+                           m.Int32Constant(0)),
+             &blocka, &blockb);
+    m.Bind(&blocka);
+    m.Return(m.Int32Constant(constant));
+    m.Bind(&blockb);
+    m.Return(m.Int32Constant(0 - constant));
+    FOR_INT32_INPUTS(i) {
+      int32_t expected = ((*i >> shift) == 0) ? constant : 0 - constant;
+      CHECK_EQ(expected, m.Call(*i));
+    }
+  }
+}
 
 TEST(RunWord32ShrInComparison) {
   {
@@ -3405,10 +3449,9 @@ TEST(RunWord32RorInComparison) {
   }
 }
 
-
-TEST(RunWord32NotP) {
+TEST(RunWord32BitwiseNotP) {
   RawMachineAssemblerTester<int32_t> m(MachineType::Int32());
-  m.Return(m.Word32Not(m.Parameter(0)));
+  m.Return(m.Word32BitwiseNot(m.Parameter(0)));
   FOR_INT32_INPUTS(i) {
     int expected = ~(*i);
     CHECK_EQ(expected, m.Call(*i));
@@ -3524,8 +3567,10 @@ TEST(RunWord32EqualAndWord32ShrP) {
 
 TEST(RunDeadNodes) {
   for (int i = 0; true; i++) {
-    RawMachineAssemblerTester<int32_t> m(i == 5 ? MachineType::Int32()
-                                                : MachineType::None());
+    RawMachineAssemblerTester<int32_t> m_v;
+    RawMachineAssemblerTester<int32_t> m_i(MachineType::Int32());
+    RawMachineAssemblerTester<int32_t>& m = i == 5 ? m_i : m_v;
+
     int constant = 0x55 + i;
     switch (i) {
       case 0:
@@ -4128,7 +4173,6 @@ TEST(RunChangeFloat64ToInt32_B) {
     CHECK_EQ(3 << n, m.Call(static_cast<double>(3 << n)));
   }
 }
-
 
 TEST(RunChangeFloat64ToUint32) {
   BufferedRawMachineAssemblerTester<uint32_t> m(MachineType::Float64());
@@ -5538,7 +5582,7 @@ TEST(RunInt32MulWithOverflowInBranchP) {
 TEST(RunWord64EqualInBranchP) {
   int64_t input;
   RawMachineLabel blocka, blockb;
-  RawMachineAssemblerTester<int64_t> m;
+  RawMachineAssemblerTester<int32_t> m;
   if (!m.machine()->Is64()) return;
   Node* value = m.LoadFromPointer(&input, MachineType::Int64());
   m.Branch(m.Word64Equal(value, m.Int64Constant(0)), &blocka, &blockb);
@@ -6295,6 +6339,29 @@ TEST(RunCallCFunction9) {
 #if V8_TARGET_ARCH_64_BIT
 // TODO(titzer): run int64 tests on all platforms when supported.
 
+TEST(RunChangeFloat64ToInt64) {
+  BufferedRawMachineAssemblerTester<int64_t> m(MachineType::Float64());
+  m.Return(m.ChangeFloat64ToInt64(m.Parameter(0)));
+
+  FOR_INT64_INPUTS(i) {
+    double input = static_cast<double>(*i);
+    if (static_cast<int64_t>(input) == *i) {
+      CHECK_EQ(static_cast<int64_t>(input), m.Call(input));
+    }
+  }
+}
+
+TEST(RunChangeInt64ToFloat64) {
+  BufferedRawMachineAssemblerTester<double> m(MachineType::Int64());
+  m.Return(m.ChangeInt64ToFloat64(m.Parameter(0)));
+  FOR_INT64_INPUTS(i) {
+    double output = static_cast<double>(*i);
+    if (static_cast<int64_t>(output) == *i) {
+      CHECK_EQ(output, m.Call(*i));
+    }
+  }
+}
+
 TEST(RunBitcastInt64ToFloat64) {
   int64_t input = 1;
   Float64 output;
@@ -6736,11 +6803,11 @@ TEST(RunComputedCodeObject) {
 
   // TODO(titzer): all this descriptor hackery is just to call the above
   // functions as code objects instead of direct addresses.
-  CSignature0<int32_t> sig;
+  CSignatureOf<int32_t> sig;
   CallDescriptor* c = Linkage::GetSimplifiedCDescriptor(r.zone(), &sig);
   LinkageLocation ret[] = {c->GetReturnLocation(0)};
   Signature<LinkageLocation> loc(1, 0, ret);
-  CallDescriptor* desc = new (r.zone()) CallDescriptor(  // --
+  auto call_descriptor = new (r.zone()) CallDescriptor(  // --
       CallDescriptor::kCallCodeObject,                   // kind
       MachineType::AnyTagged(),                          // target_type
       c->GetInputLocation(0),                            // target_loc
@@ -6751,7 +6818,7 @@ TEST(RunComputedCodeObject) {
       c->CalleeSavedFPRegisters(),                       // callee saved FP
       CallDescriptor::kNoFlags,                          // flags
       "c-call-as-code");
-  Node* call = r.AddNode(r.common()->Call(desc), phi);
+  Node* call = r.AddNode(r.common()->Call(call_descriptor), phi);
   r.Return(call);
 
   CHECK_EQ(33, r.Call(1));
@@ -6895,29 +6962,6 @@ TEST(Regression738952) {
   m.Return(m.Load(MachineType::Int32(), m.PointerConstant(&sentinel),
                   m.TruncateFloat64ToWord32(m.Float64Constant(d))));
   CHECK_EQ(sentinel, m.Call());
-}
-
-TEST(Regression6640) {
-  RawMachineAssemblerTester<int32_t> m;
-
-  int32_t old_value = 0;
-  int32_t new_value = 1;
-  Node* c = m.RelocatableInt32Constant(
-      old_value, RelocInfo::WASM_FUNCTION_TABLE_SIZE_REFERENCE);
-  m.Return(m.Word32Equal(c, c));
-
-  // Patch the code.
-  Handle<Code> code = m.GetCode();
-  for (RelocIterator it(*code,
-                        1 << RelocInfo::WASM_FUNCTION_TABLE_SIZE_REFERENCE);
-       !it.done(); it.next()) {
-    // TODO(6792): No longer needed once WebAssembly code is off heap.
-    CodeSpaceMemoryModificationScope modification_scope(code->GetHeap());
-    it.rinfo()->update_wasm_function_table_size_reference(
-        code->GetIsolate(), old_value, new_value, FLUSH_ICACHE_IF_NEEDED);
-  }
-
-  CHECK(m.Call());
 }
 
 }  // namespace compiler

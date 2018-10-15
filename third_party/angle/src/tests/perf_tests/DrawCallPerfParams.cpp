@@ -11,11 +11,20 @@
 
 #include <sstream>
 
-std::ostream &operator<<(std::ostream &os, const DrawCallPerfParams &params)
+DrawCallPerfParams::DrawCallPerfParams()
 {
-    os << params.suffix().substr(1);
-    return os;
+    majorVersion = 2;
+    minorVersion = 0;
+    windowWidth  = 256;
+    windowHeight = 256;
+
+    iterations     = 50;
+    runTimeSeconds = 10.0;
+    numTris        = 1;
+    useFBO         = false;
 }
+
+DrawCallPerfParams::~DrawCallPerfParams() = default;
 
 std::string DrawCallPerfParams::suffix() const
 {
@@ -77,10 +86,10 @@ DrawCallPerfParams DrawCallPerfValidationOnly()
     return params;
 }
 
-DrawCallPerfParams DrawCallPerfVulkanParams(bool renderToTexture)
+DrawCallPerfParams DrawCallPerfVulkanParams(bool useNullDevice, bool renderToTexture)
 {
     DrawCallPerfParams params;
-    params.eglParameters = VULKAN();
+    params.eglParameters = useNullDevice ? VULKAN_NULL() : VULKAN();
     params.useFBO        = renderToTexture;
     return params;
 }

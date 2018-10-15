@@ -1,6 +1,6 @@
 include_directories(../../include)
 
-if (${ARCH} STREQUAL "x86_64")
+if(${ARCH} STREQUAL "x86_64")
   set(
     CIPHER_ARCH_SOURCES
 
@@ -22,11 +22,11 @@ add_library(
   e_rc4.c
   e_aesgcmsiv.c
   e_aesctrhmac.c
+  e_aesccm.c
   e_chacha20poly1305.c
 
   tls_cbc.c
   e_tls.c
-  e_ssl3.c
 
   ${CIPHER_ARCH_SOURCES}
 )

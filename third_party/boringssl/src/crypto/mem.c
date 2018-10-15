@@ -59,14 +59,11 @@
 #include <assert.h>
 #include <stdarg.h>
 #include <stdio.h>
-#include <string.h>
 
 #if defined(OPENSSL_WINDOWS)
 OPENSSL_MSVC_PRAGMA(warning(push, 3))
 #include <windows.h>
 OPENSSL_MSVC_PRAGMA(warning(pop))
-#else
-#include <strings.h>
 #endif
 
 #include "internal.h"

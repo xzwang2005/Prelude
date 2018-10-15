@@ -75,7 +75,8 @@ bool SelectionController::OnMousePressed(
         initial_focus_state == InitialFocusStateOnMousePress::UNFOCUSED) {
       SelectAll();
     } else if (PlatformStyle::kSelectWordOnRightClick &&
-               !render_text->IsPointInSelection(event.location())) {
+               !render_text->IsPointInSelection(event.location()) &&
+               IsInsideText(event.location())) {
       SelectWord(event.location());
     }
   }
@@ -154,12 +155,18 @@ void SelectionController::OnMouseCaptureLost() {
     delegate_->UpdateSelectionClipboard();
 }
 
+void SelectionController::OffsetDoubleClickWord(int offset) {
+  double_click_word_.set_start(double_click_word_.start() + offset);
+  double_click_word_.set_end(double_click_word_.end() + offset);
+}
+
 void SelectionController::TrackMouseClicks(const ui::MouseEvent& event) {
   if (event.IsOnlyLeftMouseButton()) {
     base::TimeDelta time_delta = event.time_stamp() - last_click_time_;
     if (!last_click_time_.is_null() &&
         time_delta.InMilliseconds() <= GetDoubleClickInterval() &&
-        !View::ExceededDragThreshold(event.location() - last_click_location_)) {
+        !View::ExceededDragThreshold(event.root_location() -
+                                     last_click_root_location_)) {
       // Upon clicking after a triple click, the count should go back to
       // double click and alternate between double and triple. This assignment
       // maps 0 to 1, 1 to 2, 2 to 1.
@@ -168,7 +175,7 @@ void SelectionController::TrackMouseClicks(const ui::MouseEvent& event) {
       aggregated_clicks_ = 0;
     }
     last_click_time_ = event.time_stamp();
-    last_click_location_ = event.location();
+    last_click_root_location_ = event.root_location();
   }
 }
 
@@ -215,6 +222,18 @@ void SelectionController::SelectThroughLastDragLocation() {
     render_text->SelectRange(selection);
   }
   delegate_->OnAfterPointerAction(false, true);
+}
+
+bool SelectionController::IsInsideText(const gfx::Point& point) {
+  gfx::RenderText* render_text = GetRenderText();
+  std::vector<gfx::Rect> bounds_rects = render_text->GetSubstringBounds(
+      gfx::Range(0, render_text->text().length()));
+
+  for (const auto& bounds : bounds_rects)
+    if (bounds.Contains(point))
+      return true;
+
+  return false;
 }
 
 }  // namespace views

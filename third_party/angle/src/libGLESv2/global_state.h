@@ -9,6 +9,10 @@
 #ifndef LIBGLESV2_GLOBALSTATE_H_
 #define LIBGLESV2_GLOBALSTATE_H_
 
+#include "libANGLE/features.h"
+
+#include <mutex>
+
 namespace gl
 {
 class Context;
@@ -20,10 +24,24 @@ Context *GetValidGlobalContext();
 
 namespace egl
 {
+class Debug;
 class Thread;
 
 Thread *GetCurrentThread();
+Debug *GetDebug();
 
 }  // namespace egl
 
-#endif // LIBGLESV2_GLOBALSTATE_H_
+#if ANGLE_FORCE_THREAD_SAFETY == ANGLE_ENABLED
+namespace angle
+{
+std::mutex &GetGlobalMutex();
+}  // namespace angle
+
+#define ANGLE_SCOPED_GLOBAL_LOCK() \
+    std::lock_guard<std::mutex> globalMutexLock(angle::GetGlobalMutex())
+#else
+#define ANGLE_SCOPED_GLOBAL_LOCK()
+#endif
+
+#endif  // LIBGLESV2_GLOBALSTATE_H_

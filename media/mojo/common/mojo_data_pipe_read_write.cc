@@ -8,29 +8,25 @@
 
 #include "base/logging.h"
 #include "base/memory/ptr_util.h"
+#include "media/mojo/common/mojo_pipe_read_write_util.h"
+
+using media::mojo_pipe_read_write_util::IsPipeReadWriteError;
 
 namespace media {
-
-namespace {
-
-bool IsPipeReadWriteError(MojoResult result) {
-  return result != MOJO_RESULT_OK && result != MOJO_RESULT_SHOULD_WAIT;
-}
-
-}  // namespace
 
 // MojoDataPipeReader
 
 MojoDataPipeReader::MojoDataPipeReader(
     mojo::ScopedDataPipeConsumerHandle consumer_handle)
     : consumer_handle_(std::move(consumer_handle)),
-      pipe_watcher_(FROM_HERE, mojo::SimpleWatcher::ArmingPolicy::MANUAL) {
+      pipe_watcher_(FROM_HERE,
+                    mojo::SimpleWatcher::ArmingPolicy::MANUAL,
+                    base::SequencedTaskRunnerHandle::Get()) {
   DVLOG(1) << __func__;
 
   MojoResult result = pipe_watcher_.Watch(
-      consumer_handle_.get(), MOJO_HANDLE_SIGNAL_READABLE,
-      MOJO_WATCH_CONDITION_SATISFIED,
-      base::BindRepeating(&MojoDataPipeReader::OnPipeReadable,
+      consumer_handle_.get(), MOJO_HANDLE_SIGNAL_NEW_DATA_READABLE,
+      base::BindRepeating(&MojoDataPipeReader::TryReadData,
                           base::Unretained(this)));
   if (result != MOJO_RESULT_OK) {
     DVLOG(1) << __func__
@@ -45,7 +41,7 @@ MojoDataPipeReader::~MojoDataPipeReader() {
 
 void MojoDataPipeReader::CompleteCurrentRead() {
   DVLOG(4) << __func__;
-  DCHECK(!done_cb_.is_null());
+  DCHECK(done_cb_);
   current_buffer_size_ = 0;
   std::move(done_cb_).Run(true);
 }
@@ -56,7 +52,7 @@ void MojoDataPipeReader::Read(uint8_t* buffer,
   DVLOG(3) << __func__;
   // Read() can not be called when there is another reading request in process.
   DCHECK(!current_buffer_size_);
-  DCHECK(!done_cb.is_null());
+  DCHECK(done_cb);
   if (!num_bytes) {
     std::move(done_cb).Run(true);
     return;
@@ -72,20 +68,16 @@ void MojoDataPipeReader::Read(uint8_t* buffer,
   current_buffer_ = buffer;
   bytes_read_ = 0;
   done_cb_ = std::move(done_cb);
-
-  pipe_watcher_.ArmOrNotify();
+  // Try reading data immediately to reduce latency.
+  TryReadData(MOJO_RESULT_OK);
 }
 
-void MojoDataPipeReader::OnPipeReadable(MojoResult result,
-                                        const mojo::HandleSignalsState& state) {
-  DVLOG(4) << __func__ << "(" << result << ", " << state.readable() << ")";
-
+void MojoDataPipeReader::TryReadData(MojoResult result) {
   if (result != MOJO_RESULT_OK) {
     OnPipeError(result);
     return;
   }
 
-  DCHECK(state.readable());
   DCHECK_GT(current_buffer_size_, bytes_read_);
   uint32_t num_bytes = current_buffer_size_ - bytes_read_;
   if (current_buffer_) {
@@ -124,7 +116,7 @@ void MojoDataPipeReader::OnPipeError(MojoResult result) {
     bytes_read_ = 0;
     current_buffer_ = nullptr;
     current_buffer_size_ = 0;
-    DCHECK(!done_cb_.is_null());
+    DCHECK(done_cb_);
     std::move(done_cb_).Run(false);
   }
 }
@@ -133,19 +125,24 @@ bool MojoDataPipeReader::IsPipeValid() const {
   return consumer_handle_.is_valid();
 }
 
+void MojoDataPipeReader::Close() {
+  consumer_handle_.reset();
+}
+
 // MojoDataPipeWriter
 
 MojoDataPipeWriter::MojoDataPipeWriter(
     mojo::ScopedDataPipeProducerHandle producer_handle)
     : producer_handle_(std::move(producer_handle)),
-      pipe_watcher_(FROM_HERE, mojo::SimpleWatcher::ArmingPolicy::MANUAL) {
+      pipe_watcher_(FROM_HERE,
+                    mojo::SimpleWatcher::ArmingPolicy::MANUAL,
+                    base::SequencedTaskRunnerHandle::Get()) {
   DVLOG(1) << __func__;
 
-  MojoResult result = pipe_watcher_.Watch(
-      producer_handle_.get(), MOJO_HANDLE_SIGNAL_WRITABLE,
-      MOJO_WATCH_CONDITION_SATISFIED,
-      base::BindRepeating(&MojoDataPipeWriter::OnPipeWritable,
-                          base::Unretained(this)));
+  MojoResult result =
+      pipe_watcher_.Watch(producer_handle_.get(), MOJO_HANDLE_SIGNAL_WRITABLE,
+                          base::BindRepeating(&MojoDataPipeWriter::TryWriteData,
+                                              base::Unretained(this)));
   if (result != MOJO_RESULT_OK) {
     DVLOG(1) << __func__
              << ": Failed to start watching the pipe. result=" << result;
@@ -163,7 +160,7 @@ void MojoDataPipeWriter::Write(const uint8_t* buffer,
   DVLOG(3) << __func__;
   // Write() can not be called when another writing request is in process.
   DCHECK(!current_buffer_);
-  DCHECK(!done_cb.is_null());
+  DCHECK(done_cb);
   if (!buffer_size) {
     std::move(done_cb).Run(true);
     return;
@@ -182,24 +179,22 @@ void MojoDataPipeWriter::Write(const uint8_t* buffer,
   current_buffer_size_ = buffer_size;
   bytes_written_ = 0;
   done_cb_ = std::move(done_cb);
-  pipe_watcher_.ArmOrNotify();
+  // Try writing data immediately to reduce latency.
+  TryWriteData(MOJO_RESULT_OK);
 }
 
-void MojoDataPipeWriter::OnPipeWritable(MojoResult result,
-                                        const mojo::HandleSignalsState& state) {
+void MojoDataPipeWriter::TryWriteData(MojoResult result) {
   if (result != MOJO_RESULT_OK) {
     OnPipeError(result);
     return;
   }
 
-  DCHECK(state.writable());
   DCHECK(current_buffer_);
   DCHECK_GT(current_buffer_size_, bytes_written_);
   uint32_t num_bytes = current_buffer_size_ - bytes_written_;
 
   result = producer_handle_->WriteData(current_buffer_ + bytes_written_,
                                        &num_bytes, MOJO_WRITE_DATA_FLAG_NONE);
-
   if (IsPipeReadWriteError(result)) {
     OnPipeError(result);
   } else {
@@ -217,7 +212,7 @@ void MojoDataPipeWriter::OnPipeWritable(MojoResult result,
 
 void MojoDataPipeWriter::CompleteCurrentWrite() {
   DVLOG(4) << __func__;
-  DCHECK(!done_cb_.is_null());
+  DCHECK(done_cb_);
   current_buffer_ = nullptr;
   std::move(done_cb_).Run(true);
 }
@@ -235,13 +230,17 @@ void MojoDataPipeWriter::OnPipeError(MojoResult result) {
     current_buffer_ = nullptr;
     current_buffer_size_ = 0;
     bytes_written_ = 0;
-    DCHECK(!done_cb_.is_null());
+    DCHECK(done_cb_);
     std::move(done_cb_).Run(false);
   }
 }
 
 bool MojoDataPipeWriter::IsPipeValid() const {
   return producer_handle_.is_valid();
+}
+
+void MojoDataPipeWriter::Close() {
+  producer_handle_.reset();
 }
 
 }  // namespace media

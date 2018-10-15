@@ -10,8 +10,8 @@ namespace switches {
 // TODO(rjkroege): Some of these have an "ash" prefix. When ChromeOS startup
 // scripts have been updated, the leading "ash" prefix should be removed.
 
-// Enables mirroring across multiple displays.
-const char kEnableMultiMirroring[] = "enable-multi-mirroring";
+// Disables mirroring across multiple displays.
+const char kDisableMultiMirroring[] = "disable-multi-mirroring";
 
 // Enables software based mirroring.
 const char kEnableSoftwareMirroring[] = "ash-enable-software-mirroring";
@@ -25,7 +25,11 @@ const char kEnsureForcedColorProfile[] = "ensure-forced-color-profile";
 // Force all monitors to be treated as though they have the specified color
 // profile. Accepted values are "srgb" and "generic-rgb" (currently used by Mac
 // layout tests) and "color-spin-gamma24" (used by layout tests).
-const char kForceColorProfile[] = "force-color-profile";
+const char kForceDisplayColorProfile[] = "force-color-profile";
+
+// Force rastering to take place in the specified color profile. Accepted values
+// are the same as for the kForceDisplayColorProfile case above.
+const char kForceRasterColorProfile[] = "force-raster-color-profile";
 
 // Overrides the device scale factor for the browser UI and the contents.
 const char kForceDeviceScaleFactor[] = "force-device-scale-factor";
@@ -53,12 +57,8 @@ const char kScreenConfig[] = "screen-config";
 const char kUseFirstDisplayAsInternal[] = "use-first-display-as-internal";
 
 #if defined(OS_CHROMEOS)
-
 // Enables unified desktop mode.
 const char kEnableUnifiedDesktop[] = "ash-enable-unified-desktop";
-
-// Enables using the monitor's provided color space information when rendering.
-const char kUseMonitorColorSpace[] = "use-monitor-color-space";
 #endif
 
 }  // namespace switches
@@ -67,5 +67,13 @@ namespace features {
 
 const base::Feature kHighDynamicRange{"HighDynamicRange",
                                       base::FEATURE_ENABLED_BY_DEFAULT};
+
+#if defined(OS_CHROMEOS)
+// Enables using the monitor's provided color space information when
+// rendering.
+// TODO(mcasas): remove this flag http://crbug.com/771345.
+const base::Feature kUseMonitorColorSpace{"UseMonitorColorSpace",
+                                          base::FEATURE_ENABLED_BY_DEFAULT};
+#endif  // OS_CHROMEOS
 
 }  // namespace features

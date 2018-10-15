@@ -2,14 +2,22 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
+import collections
 import json
+import ntpath
+import posixpath
 
 from dashboard.common import histogram_helpers
 from dashboard.pinpoint.models.quest import execution
 from dashboard.pinpoint.models.quest import quest
-from dashboard.services import isolate_service
+from dashboard.services import isolate
 from tracing.value import histogram_set
+from tracing.value.diagnostics import diagnostic_ref
 from tracing.value.diagnostics import reserved_infos
+
+
+_PERFORMANCE_TESTS = ('performance_test_suite',
+                      'performance_webview_test_suite')
 
 
 class ReadValueError(Exception):
@@ -17,108 +25,11 @@ class ReadValueError(Exception):
   pass
 
 
-class ReadChartJsonValue(quest.Quest):
-
-  def __init__(self, chart, tir_label=None, trace=None, statistic=None):
-    self._chart = chart
-    self._tir_label = tir_label
-    self._trace = trace
-    self._statistic = statistic
-
-  # TODO: Remove this method after data migration.
-  def __setstate__(self, state):
-    # pylint: disable=attribute-defined-outside-init
-    self.__dict__ = state
-
-    if not hasattr(self, '_statistic'):
-      self._statistic = None
-
-  def __eq__(self, other):
-    return (isinstance(other, type(self)) and
-            self._chart == other._chart and
-            self._tir_label == other._tir_label and
-            self._trace == other._trace and
-            self._statistic == other._statistic)
-
-  def __str__(self):
-    return 'Values'
-
-  def Start(self, change, isolate_hash):
-    del change
-    return _ReadChartJsonValueExecution(self._chart, self._tir_label,
-                                        self._trace, self._statistic,
-                                        isolate_hash)
-
-
-class _ReadChartJsonValueExecution(execution.Execution):
-
-  def __init__(self, chart, tir_label, trace, statistic, isolate_hash):
-    super(_ReadChartJsonValueExecution, self).__init__()
-    self._chart = chart
-    self._tir_label = tir_label
-    self._trace = trace
-    self._isolate_hash = isolate_hash
-    self._statistic = statistic
-
-    self._trace_urls = []
-
-  # TODO: Remove this method after data migration.
-  def __setstate__(self, state):
-    # pylint: disable=attribute-defined-outside-init
-    self.__dict__ = state
-
-    if not hasattr(self, '_statistic'):
-      self._statistic = None
-
-  def _AsDict(self):
-    if not self._trace_urls:
-      return {}
-    return {'traces': self._trace_urls}
-
-  def _Poll(self):
-    chartjson = _RetrieveOutputJson(self._isolate_hash, 'chartjson-output.json')
-
-    # Get and cache any trace URLs.
-    if 'trace' in chartjson['charts']:
-      traces = chartjson['charts']['trace']
-      traces = sorted(traces.iteritems(), key=lambda item: item[1]['page_id'])
-      for name, details in traces:
-        self._trace_urls.append({'name': name, 'url': details['cloud_url']})
-
-    # Look up chart.
-    if self._tir_label:
-      chart_name = '@@'.join((self._tir_label, self._chart))
-    else:
-      chart_name = self._chart
-
-    if self._statistic:
-      chart_name = '_'.join((chart_name, self._statistic))
-
-    if chart_name not in chartjson['charts']:
-      raise ReadValueError('The chart "%s" is not in the results.' % chart_name)
-
-    # Look up trace.
-    trace_name = self._trace or 'summary'
-    if trace_name not in chartjson['charts'][chart_name]:
-      raise ReadValueError('The trace "%s" is not in the results.' % trace_name)
-
-    # Convert data to individual values.
-    chart = chartjson['charts'][chart_name][trace_name]
-    if chart['type'] == 'list_of_scalar_values':
-      result_values = chart['values']
-    elif chart['type'] == 'histogram':
-      result_values = _ResultValuesFromHistogram(chart['buckets'])
-    elif chart['type'] == 'scalar':
-      result_values = [chart['value']]
-
-    if not result_values:
-      raise ReadValueError('The result value is None.')
-    self._Complete(result_values=tuple(result_values))
-
-
 class ReadHistogramsJsonValue(quest.Quest):
 
-  def __init__(self, hist_name, tir_label=None, story=None, statistic=None):
+  def __init__(self, results_filename, hist_name=None,
+               tir_label=None, story=None, statistic=None):
+    self._results_filename = results_filename
     self._hist_name = hist_name
     self._tir_label = tir_label
     self._story = story
@@ -126,93 +37,149 @@ class ReadHistogramsJsonValue(quest.Quest):
 
   def __eq__(self, other):
     return (isinstance(other, type(self)) and
+            self._results_filename == other._results_filename and
             self._hist_name == other._hist_name and
             self._tir_label == other._tir_label and
             self._story == other._story and
             self._statistic == other._statistic)
 
   def __str__(self):
-    return 'Values'
+    return 'Get results'
 
-  def Start(self, change, isolate_hash):
+  def Start(self, change, isolate_server=None, isolate_hash=None):
     del change
-    return _ReadHistogramsJsonValueExecution(self._hist_name, self._tir_label,
-                                             self._story, self._statistic,
-                                             isolate_hash)
+
+    # TODO(dtu): Remove after data migration.
+    # isolate_server and isolate_hash are required arguments.
+    assert isolate_hash
+    if not isolate_server:
+      isolate_server = 'https://isolateserver.appspot.com'
+
+    return _ReadHistogramsJsonValueExecution(
+        self._results_filename, self._hist_name, self._tir_label,
+        self._story, self._statistic, isolate_server, isolate_hash)
+
+  @classmethod
+  def FromDict(cls, arguments):
+    benchmark = arguments.get('benchmark')
+    if not benchmark:
+      raise TypeError('Missing "benchmark" argument.')
+    if arguments.get('target') in _PERFORMANCE_TESTS:
+      if _IsWindows(arguments):
+        results_filename = ntpath.join(benchmark, 'perf_results.json')
+      else:
+        results_filename = posixpath.join(benchmark, 'perf_results.json')
+    else:
+      # TODO: Remove this hack when all builders build performance_test_suite.
+      results_filename = 'chartjson-output.json'
+
+    chart = arguments.get('chart')
+    tir_label = arguments.get('tir_label')
+    trace = arguments.get('trace')
+    statistic = arguments.get('statistic')
+
+    return cls(results_filename, chart, tir_label, trace, statistic)
 
 
 class _ReadHistogramsJsonValueExecution(execution.Execution):
 
-  def __init__(self, hist_name, tir_label, story, statistic, isolate_hash):
+  def __init__(self, results_filename, hist_name, tir_label,
+               story, statistic, isolate_server, isolate_hash):
     super(_ReadHistogramsJsonValueExecution, self).__init__()
+    self._results_filename = results_filename
     self._hist_name = hist_name
     self._tir_label = tir_label
     self._story = story
     self._statistic = statistic
+    self._isolate_server = isolate_server
     self._isolate_hash = isolate_hash
 
     self._trace_urls = []
 
   def _AsDict(self):
-    if not self._trace_urls:
-      return {}
-    return {'traces': self._trace_urls}
+    return [{
+        'key': 'trace',
+        'value': trace_url['name'],
+        'url': trace_url['url'],
+    } for trace_url in self._trace_urls]
 
   def _Poll(self):
-    # TODO(simonhatch): Switch this to use the new perf-output flag instead
-    # of the chartjson one. They're functionally equivalent, just new name.
+    # TODO(dtu): Remove after data migration.
+    if not hasattr(self, '_isolate_server'):
+      self._isolate_server = 'https://isolateserver.appspot.com'
+    if not hasattr(self, '_results_filename'):
+      self._results_filename = 'chartjson-output.json'
     histogram_dicts = _RetrieveOutputJson(
-        self._isolate_hash, 'chartjson-output.json')
+        self._isolate_server, self._isolate_hash, self._results_filename)
     histograms = histogram_set.HistogramSet()
     histograms.ImportDicts(histogram_dicts)
     histograms.ResolveRelatedHistograms()
 
-    matching_histograms = histograms.GetHistogramsNamed(self._hist_name)
+    histograms_by_path = self._CreateHistogramSetByTestPathDict(histograms)
+    self._trace_urls = self._FindTraceUrls(histograms)
 
-    # Get and cache any trace URLs.
-    for hist in histograms:
-      trace_urls = hist.diagnostics.get(reserved_infos.TRACE_URLS.name)
-      if trace_urls:
-        for t in list(trace_urls):
-          self._trace_urls.append({'name': hist.name, 'url': t})
-    self._trace_urls = sorted(self._trace_urls, key=lambda x: x['name'])
-
-    # Filter the histograms by tir_label and story. Getting either the
-    # tir_label or the story from a histogram involves pulling out and
-    # examining various diagnostics associated with the histogram.
-    tir_label = self._tir_label or ''
-
-    matching_histograms = [
-        h for h in matching_histograms
-        if tir_label == histogram_helpers.GetTIRLabelFromHistogram(h)]
-
-
-    # If no story is supplied, we're looking for a summary metric so just match
-    # on name and tir_label. This is equivalent to the chartjson condition that
-    # if no story is specified, look for "summary".
-    if self._story:
-      matching_histograms = [
-          h for h in matching_histograms
-          if self._story == _GetStoryFromHistogram(h)]
+    test_path_to_match = histogram_helpers.ComputeTestPathFromComponents(
+        self._hist_name, tir_label=self._tir_label, story_name=self._story)
 
     # Have to pull out either the raw sample values, or the statistic
     result_values = []
-    for h in matching_histograms:
-      result_values.extend(self._GetValuesOrStatistic(h))
+    if test_path_to_match in histograms_by_path:
+      matching_histograms = histograms_by_path.get(test_path_to_match, [])
+
+      for h in matching_histograms:
+        result_values.extend(self._GetValuesOrStatistic(h))
+    elif self._hist_name:
+      # Histograms don't exist, which means this is summary
+      summary_value = []
+      for test_path, histograms_for_test_path in histograms_by_path.iteritems():
+        if test_path.startswith(test_path_to_match):
+          for h in histograms_for_test_path:
+            summary_value.extend(self._GetValuesOrStatistic(h))
+      if summary_value:
+        result_values.append(sum(summary_value))
 
     if not result_values and self._hist_name:
-      name = 'histogram: %s' % self._hist_name
-      if tir_label:
-        name += ' tir_label: %s' % tir_label
+      conditions = {'histogram': self._hist_name}
+      if self._tir_label:
+        conditions['tir_label'] = self._tir_label
       if self._story:
-        name += ' story: %s' % self._story
-      raise ReadValueError('Could not find values matching: %s' % name)
+        conditions['story'] = self._story
+      raise ReadValueError('Could not find values matching: %s' % conditions)
 
     self._Complete(result_values=tuple(result_values))
+
+  def _CreateHistogramSetByTestPathDict(self, histograms):
+    histograms_by_path = collections.defaultdict(list)
+
+    for h in histograms:
+      histograms_by_path[histogram_helpers.ComputeTestPath(h)].append(h)
+
+    return histograms_by_path
+
+  def _FindTraceUrls(self, histograms):
+    # Get and cache any trace URLs.
+    unique_trace_urls = set()
+    for hist in histograms:
+      trace_urls = hist.diagnostics.get(reserved_infos.TRACE_URLS.name)
+      # TODO(simonhatch): Remove this sometime after May 2018. We had a
+      # brief period where the histograms generated by tests had invalid
+      # trace_urls diagnostics. If the diagnostic we get back is just a ref,
+      # then skip.
+      # https://github.com/catapult-project/catapult/issues/4243
+      if trace_urls and not isinstance(
+          trace_urls, diagnostic_ref.DiagnosticRef):
+        unique_trace_urls.update(trace_urls)
+
+    sorted_urls = sorted(unique_trace_urls)
+
+    return [{'name': t.split('/')[-1], 'url': t} for t in sorted_urls]
 
   def _GetValuesOrStatistic(self, hist):
     if not self._statistic:
       return hist.sample_values
+
+    if not hist.sample_values:
+      return []
 
     # TODO(simonhatch): Use Histogram.getStatisticScalar when it's ported from
     # js.
@@ -231,22 +198,6 @@ class _ReadHistogramsJsonValueExecution(execution.Execution):
     raise ReadValueError('Unknown statistic type: %s' % self._statistic)
 
 
-def _ResultValuesFromHistogram(buckets):
-  total_count = sum(bucket['count'] for bucket in buckets)
-
-  result_values = []
-  for bucket in buckets:
-    # TODO: Assumes the bucket is evenly distributed.
-    bucket_mean = (bucket['low'] + bucket.get('high', bucket['low'])) / 2
-    if total_count > 10000:
-      bucket_count = 10000 * bucket['count'] / total_count
-    else:
-      bucket_count = bucket['count']
-    result_values += [bucket_mean] * bucket_count
-
-  return tuple(result_values)
-
-
 class ReadGraphJsonValue(quest.Quest):
 
   def __init__(self, chart, trace):
@@ -259,26 +210,54 @@ class ReadGraphJsonValue(quest.Quest):
             self._trace == other._trace)
 
   def __str__(self):
-    return 'Values'
+    return 'Get results'
 
-  def Start(self, change, isolate_hash):
+  def Start(self, change, isolate_server=None, isolate_hash=None):
     del change
-    return _ReadGraphJsonValueExecution(self._chart, self._trace, isolate_hash)
+
+    # TODO(dtu): Remove after data migration.
+    # isolate_server and isolate_hash are required arguments.
+    assert isolate_hash
+    if not isolate_server:
+      isolate_server = 'https://isolateserver.appspot.com'
+
+    return _ReadGraphJsonValueExecution(
+        self._chart, self._trace, isolate_server, isolate_hash)
+
+  @classmethod
+  def FromDict(cls, arguments):
+    chart = arguments.get('chart')
+    trace = arguments.get('trace')
+    if not (chart or trace):
+      return None
+    if chart and not trace:
+      raise TypeError('"chart" specified but no "trace" given.')
+    if trace and not chart:
+      raise TypeError('"trace" specified but no "chart" given.')
+    return cls(chart, trace)
 
 
 class _ReadGraphJsonValueExecution(execution.Execution):
 
-  def __init__(self, chart, trace, isolate_hash):
+  def __init__(self, chart, trace, isolate_server, isolate_hash):
     super(_ReadGraphJsonValueExecution, self).__init__()
     self._chart = chart
     self._trace = trace
+    self._isolate_server = isolate_server
     self._isolate_hash = isolate_hash
 
   def _AsDict(self):
-    return {}
+    # TODO(dtu): Remove after data migration.
+    if not hasattr(self, '_isolate_server'):
+      self._isolate_server = 'https://isolateserver.appspot.com'
+    return {'isolate_server': self._isolate_server}
 
   def _Poll(self):
-    graphjson = _RetrieveOutputJson(self._isolate_hash, 'chartjson-output.json')
+    # TODO(dtu): Remove after data migration.
+    if not hasattr(self, '_isolate_server'):
+      self._isolate_server = 'https://isolateserver.appspot.com'
+    graphjson = _RetrieveOutputJson(
+        self._isolate_server, self._isolate_hash, 'chartjson-output.json')
 
     if self._chart not in graphjson:
       raise ReadValueError('The chart "%s" is not in the results.' %
@@ -291,13 +270,21 @@ class _ReadGraphJsonValueExecution(execution.Execution):
     self._Complete(result_values=(result_value,))
 
 
-def _RetrieveOutputJson(isolate_hash, filename):
-  output_files = isolate_service.Retrieve(isolate_hash)['files']
+def _IsWindows(arguments):
+  for dimension in arguments.get('dimensions', []):
+    if dimension['key'] == 'os' and dimension['value'].startswith('Win'):
+      return True
+  return False
+
+
+def _RetrieveOutputJson(isolate_server, isolate_hash, filename):
+  output_files = json.loads(isolate.Retrieve(
+      isolate_server, isolate_hash))['files']
 
   if filename not in output_files:
     raise ReadValueError("The test didn't produce %s." % filename)
   output_json_isolate_hash = output_files[filename]['h']
-  return json.loads(isolate_service.Retrieve(output_json_isolate_hash))
+  return json.loads(isolate.Retrieve(isolate_server, output_json_isolate_hash))
 
 
 def _GetStoryFromHistogram(hist):

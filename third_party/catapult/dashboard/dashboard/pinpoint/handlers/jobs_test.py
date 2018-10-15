@@ -3,46 +3,36 @@
 # found in the LICENSE file.
 
 import json
-import unittest
-
-import webapp2
-import webtest
-
-from google.appengine.ext import ndb
-from google.appengine.ext import testbed
+import mock
 
 from dashboard.pinpoint.handlers import jobs
 from dashboard.pinpoint.models import job as job_module
+from dashboard.pinpoint import test
 
 
-class JobsTest(unittest.TestCase):
+class JobsTest(test.TestCase):
 
-  def setUp(self):
-    app = webapp2.WSGIApplication([
-        webapp2.Route(r'/jobs', jobs.Jobs),
-    ])
-    self.testapp = webtest.TestApp(app)
-    self.testapp.extra_environ.update({'REMOTE_ADDR': 'remote_ip'})
+  @mock.patch.object(jobs.utils, 'GetEmail', mock.MagicMock(return_value=None))
+  def testGet_NoUser(self):
+    job = job_module.Job.New((), ())
 
-    self.testbed = testbed.Testbed()
-    self.testbed.activate()
-    self.testbed.init_datastore_v3_stub()
-    self.testbed.init_memcache_stub()
-    ndb.get_context().clear_cache()
-
-  def tearDown(self):
-    self.testbed.deactivate()
-
-  def testPost_ValidRequest(self):
-    # Create job.
-    job = job_module.Job.New(
-        arguments={},
-        quests=(),
-        auto_explore=True)
-    job.put()
-
-    data = json.loads(self.testapp.get('/jobs').body)
+    data = json.loads(self.testapp.get('/api/jobs?o=STATE').body)
 
     self.assertEqual(1, data['count'])
     self.assertEqual(1, len(data['jobs']))
-    self.assertEqual(job.AsDict(include_state=False), data['jobs'][0])
+    self.assertEqual(job.AsDict([job_module.OPTION_STATE]), data['jobs'][0])
+
+  @mock.patch.object(jobs.utils, 'GetEmail',
+                     mock.MagicMock(return_value='lovely.user@example.com'))
+  def testGet_WithUser(self):
+    job_module.Job.New((), ())
+    job_module.Job.New((), (), user='lovely.user@example.com')
+    job = job_module.Job.New((), (), user='lovely.user@example.com')
+
+    data = json.loads(self.testapp.get('/api/jobs?o=STATE').body)
+
+    self.assertEqual(2, data['count'])
+    self.assertEqual(2, len(data['jobs']))
+
+    sorted_data = sorted(data['jobs'], key=lambda d: d['job_id'])
+    self.assertEqual(job.AsDict([job_module.OPTION_STATE]), sorted_data[-1])

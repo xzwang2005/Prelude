@@ -402,7 +402,7 @@ namespace sw
 			unsigned int index;
 			unsigned int swizzle : 8;
 			unsigned int scale;
-			bool deterministic;   // Equal accross shader instances run in lockstep (e.g. unrollable loop couters)
+			bool dynamic;   // Varies between concurrent shader instances
 		};
 
 		struct Parameter
@@ -433,7 +433,7 @@ namespace sw
 				rel.index = 0;
 				rel.swizzle = 0;
 				rel.scale = 1;
-				rel.deterministic = false;
+				rel.dynamic = true;
 			}
 
 			std::string string(ShaderType shaderType, unsigned short version) const;
@@ -560,14 +560,14 @@ namespace sw
 		int getSerialID() const;
 		size_t getLength() const;
 		ShaderType getShaderType() const;
-		unsigned short getVersion() const;
+		unsigned short getShaderModel() const;
 
 		void append(Instruction *instruction);
 		void declareSampler(int i);
 
 		const Instruction *getInstruction(size_t i) const;
 		int size(unsigned long opcode) const;
-		static int size(unsigned long opcode, unsigned short version);
+		static int size(unsigned long opcode, unsigned short shaderModel);
 
 		void print(const char *fileName, ...) const;
 		void printInstruction(int index, const char *fileName) const;
@@ -612,9 +612,9 @@ namespace sw
 		unsigned int dirtyConstantsI;
 		unsigned int dirtyConstantsB;
 
-		bool dynamicallyIndexedTemporaries;
-		bool dynamicallyIndexedInput;
-		bool dynamicallyIndexedOutput;
+		bool indirectAddressableTemporaries;
+		bool indirectAddressableInput;
+		bool indirectAddressableOutput;
 
 	protected:
 		void parse(const unsigned long *token);
@@ -627,14 +627,14 @@ namespace sw
 		void analyzeDynamicBranching();
 		void analyzeSamplers();
 		void analyzeCallSites();
-		void analyzeDynamicIndexing();
+		void analyzeIndirectAddressing();
 		void markFunctionAnalysis(unsigned int functionLabel, Analysis flag);
 
 		ShaderType shaderType;
 
 		union
 		{
-			unsigned short version;
+			unsigned short shaderModel;
 
 			struct
 			{

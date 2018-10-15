@@ -94,11 +94,11 @@ class DefaultPersistentValueMapTraits : public StdMapTraits<K, V> {
 
   static WeakCallbackDataType* WeakCallbackParameter(
       MapType* map, const K& key, Local<V> value) {
-    return NULL;
+    return nullptr;
   }
   static MapType* MapFromWeakCallbackInfo(
       const WeakCallbackInfo<WeakCallbackDataType>& data) {
-    return NULL;
+    return nullptr;
   }
   static K KeyFromWeakCallbackInfo(
       const WeakCallbackInfo<WeakCallbackDataType>& data) {
@@ -194,16 +194,6 @@ class PersistentValueMapBase {
   bool SetReturnValue(const K& key,
       ReturnValue<Value> returnValue) {
     return SetReturnValueFromVal(&returnValue, Traits::Get(&impl_, key));
-  }
-
-  /**
-   * Call Isolate::SetReference with the given parent and the map value.
-   */
-  void SetReference(const K& key,
-      const Persistent<Object>& parent) {
-    GetIsolate()->SetReference(
-      reinterpret_cast<internal::Object**>(parent.val_),
-      reinterpret_cast<internal::Object**>(FromVal(Traits::Get(&impl_, key))));
   }
 
   /**
@@ -312,7 +302,7 @@ class PersistentValueMapBase {
 
   static PersistentContainerValue ClearAndLeak(Global<V>* persistent) {
     V* v = persistent->val_;
-    persistent->val_ = 0;
+    persistent->val_ = nullptr;
     return reinterpret_cast<PersistentContainerValue>(v);
   }
 
@@ -643,7 +633,7 @@ class PersistentValueVector {
  private:
   static PersistentContainerValue ClearAndLeak(Global<V>* persistent) {
     V* v = persistent->val_;
-    persistent->val_ = 0;
+    persistent->val_ = nullptr;
     return reinterpret_cast<PersistentContainerValue>(v);
   }
 

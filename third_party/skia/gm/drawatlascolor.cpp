@@ -20,10 +20,7 @@ static sk_sp<SkImage> make_atlas(SkCanvas* caller, int atlasSize) {
     const int kBlockSize = atlasSize/2;
 
     SkImageInfo info = SkImageInfo::MakeN32Premul(atlasSize, atlasSize);
-    auto surface(caller->makeSurface(info));
-    if (nullptr == surface) {
-        surface = SkSurface::MakeRaster(info);
-    }
+    auto surface(sk_tool_utils::makeSurface(caller, info));
     SkCanvas* canvas = surface->getCanvas();
 
     SkPaint paint;
@@ -57,7 +54,7 @@ static sk_sp<SkImage> make_atlas(SkCanvas* caller, int atlasSize) {
 class DrawAtlasColorsGM : public skiagm::GM {
 public:
     DrawAtlasColorsGM() {
-        this->setBGColor(sk_tool_utils::color_to_565(0xFFCCCCCC));
+        this->setBGColor(0xFFCCCCCC);
     }
 
 protected:

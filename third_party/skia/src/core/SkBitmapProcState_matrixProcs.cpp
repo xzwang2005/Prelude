@@ -14,10 +14,11 @@
  */
 
 #include "SkBitmapProcState.h"
+#include "SkBitmapProcState_utils.h"
 #include "SkShader.h"
+#include "SkTo.h"
 #include "SkUtils.h"
 #include "SkUtilsArm.h"
-#include "SkBitmapProcState_utils.h"
 
 /*  returns 0...(n-1) given any x (positive or negative).
 
@@ -445,6 +446,9 @@ SkBitmapProcState::MatrixProc SkBitmapProcState::chooseMatrixProc(bool trivial_m
                 return repeatx_nofilter_trans;
             case SkShader::kMirror_TileMode:
                 return mirrorx_nofilter_trans;
+            case SkShader::kDecal_TileMode:
+                SkASSERT(false);    // should never get here, handled by stages
+                return clampx_nofilter_trans;
         }
     }
 

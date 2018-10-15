@@ -82,11 +82,25 @@ class CC_EXPORT CompositorTimingHistory {
                base::TimeTicks impl_frame_time,
                size_t composited_animations_count,
                size_t main_thread_animations_count,
-               size_t main_thread_compositable_animations_count);
+               bool current_frame_had_raf,
+               bool next_frame_has_pending_raf);
   void DidSubmitCompositorFrame();
   void DidReceiveCompositorFrameAck();
   void WillInvalidateOnImplSide();
   void SetTreePriority(TreePriority priority);
+
+  base::TimeTicks begin_main_frame_sent_time() const {
+    return begin_main_frame_sent_time_;
+  }
+
+  void ClearHistory();
+  size_t begin_main_frame_start_to_ready_to_commit_sample_count() const {
+    return begin_main_frame_start_to_ready_to_commit_duration_history_
+        .sample_count();
+  }
+  size_t commit_to_ready_to_activate_sample_count() const {
+    return commit_to_ready_to_activate_duration_history_.sample_count();
+  }
 
  protected:
   void DidBeginMainFrame(base::TimeTicks begin_main_frame_end_time);
@@ -111,6 +125,8 @@ class CC_EXPORT CompositorTimingHistory {
   base::TimeTicks new_active_tree_draw_end_time_prev_committing_continuously_;
   base::TimeTicks draw_end_time_prev_;
 
+  // If you add any history here, please remember to reset it in
+  // ClearHistory.
   RollingTimeDeltaHistory begin_main_frame_queue_duration_history_;
   RollingTimeDeltaHistory begin_main_frame_queue_duration_critical_history_;
   RollingTimeDeltaHistory begin_main_frame_queue_duration_not_critical_history_;
@@ -147,7 +163,7 @@ class CC_EXPORT CompositorTimingHistory {
   // Used only for reporting animation targeted UMA.
   bool previous_frame_had_composited_animations_ = false;
   bool previous_frame_had_main_thread_animations_ = false;
-  bool previous_frame_had_main_thread_compositable_animations_ = false;
+  bool previous_frame_had_raf_ = false;
 
   TreePriority tree_priority_ = SAME_PRIORITY_FOR_BOTH_TREES;
 

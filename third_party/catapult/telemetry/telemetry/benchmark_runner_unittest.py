@@ -2,75 +2,120 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
+import json
+import os
+import tempfile
+import StringIO
 import unittest
 
 from telemetry import benchmark
 from telemetry import benchmark_runner
-from telemetry.story import expectations
-from telemetry.testing import stream
+from telemetry import story as story_module
+from telemetry import page as page_module
 import mock
 
 
-class DisabledExpectation(expectations.StoryExpectations):
-  def SetExpectations(self):
-    self.DisableBenchmark([expectations.ALL], 'crbug.com/123')
+class BenchmarkFoo(benchmark.Benchmark):
+  """Benchmark foo for testing."""
 
-
-class BenchmarkEnabled(benchmark.Benchmark):
-  """ Enabled benchmark for testing."""
-
-  @classmethod
-  def Name(cls):
-    return 'EnabledBench'
-
-
-class BenchmarkEnabledTwo(benchmark.Benchmark):
-  """ Second enabled benchmark for testing."""
+  def page_set(self):
+    page = page_module.Page('http://example.com', name='dummy_page',
+                            tags=['foo', 'bar'])
+    story_set = story_module.StorySet()
+    story_set.AddStory(page)
+    return story_set
 
   @classmethod
   def Name(cls):
-    return 'EnabledBench2'
+    return 'BenchmarkFoo'
 
 
-class BenchmarkDisabled(benchmark.Benchmark):
-  """ Disabled benchmark for testing."""
+class BenchmarkBar(benchmark.Benchmark):
+  """Benchmark bar for testing."""
+
+  def page_set(self):
+    return story_module.StorySet()
 
   @classmethod
   def Name(cls):
-    return 'DisabledBench'
-
-  def GetExpectations(self):
-    return DisabledExpectation()
+    return 'BenchmarkBar'
 
 
 class BenchmarkRunnerUnittest(unittest.TestCase):
 
   def setUp(self):
-    self._stream = stream.TestOutputStream()
+    self._stream = StringIO.StringIO()
+    self._json_stream = StringIO.StringIO()
     self._mock_possible_browser = mock.MagicMock()
     self._mock_possible_browser.browser_type = 'TestBrowser'
 
   def testPrintBenchmarkListWithNoDisabledBenchmark(self):
     expected_printed_stream = (
         'Available benchmarks for TestBrowser are:\n'
-        '  EnabledBench  Enabled benchmark for testing.\n'
-        '  EnabledBench  Enabled benchmark for testing.\n'
+        '  BenchmarkBar Benchmark bar for testing.\n'
+        '  BenchmarkFoo Benchmark foo for testing.\n'
         'Pass --browser to list benchmarks for another browser.\n\n')
-    benchmark_runner.PrintBenchmarkList([BenchmarkEnabled, BenchmarkEnabled],
+    benchmark_runner.PrintBenchmarkList([BenchmarkBar, BenchmarkFoo],
                                         self._mock_possible_browser, None,
                                         self._stream)
-    self.assertEquals(expected_printed_stream, self._stream.output_data)
+    self.assertEquals(expected_printed_stream, self._stream.getvalue())
 
   def testPrintBenchmarkListWithOneDisabledBenchmark(self):
     expected_printed_stream = (
         'Available benchmarks for TestBrowser are:\n'
-        '  EnabledBench   Enabled benchmark for testing.\n'
+        '  BenchmarkFoo Benchmark foo for testing.\n'
         '\n'
         'Disabled benchmarks for TestBrowser are (force run with -d):\n'
-        '  DisabledBench  Disabled benchmark for testing.\n'
+        '  BenchmarkBar Benchmark bar for testing.\n'
         'Pass --browser to list benchmarks for another browser.\n\n')
 
-    benchmark_runner.PrintBenchmarkList([BenchmarkEnabled, BenchmarkDisabled],
-                                        self._mock_possible_browser, None,
-                                        self._stream)
-    self.assertEquals(expected_printed_stream, self._stream.output_data)
+    expectations_file_contents = (
+        '# tags: All\n'
+        'crbug.com/123 [ All ] BenchmarkBar/* [ Skip ]\n'
+    )
+
+    expectations_file = tempfile.NamedTemporaryFile(bufsize=0, delete=False)
+    try:
+      expectations_file.write(expectations_file_contents)
+      expectations_file.close()
+      benchmark_runner.PrintBenchmarkList([BenchmarkFoo, BenchmarkBar],
+                                          self._mock_possible_browser,
+                                          expectations_file.name,
+                                          self._stream)
+
+      self.assertEquals(expected_printed_stream, self._stream.getvalue())
+
+    finally:
+      os.remove(expectations_file.name)
+
+  def testPrintBenchmarkListInJSON(self):
+    expected_json_stream = json.dumps(
+        sorted([
+            {'name': BenchmarkFoo.Name(),
+             'description': BenchmarkFoo.Description(),
+             'enabled': True,
+             'story_tags': ['bar', 'foo']},
+            {'name': BenchmarkBar.Name(),
+             'description': BenchmarkBar.Description(),
+             'enabled': False,
+             'story_tags': []}], key=lambda b: b['name']),
+        indent=4, sort_keys=True, separators=(',', ': '))
+
+    expectations_file_contents = (
+        '# tags: All\n'
+        'crbug.com/123 [ All ] BenchmarkBar/* [ Skip ]\n'
+    )
+
+    expectations_file = tempfile.NamedTemporaryFile(bufsize=0, delete=False)
+    try:
+      expectations_file.write(expectations_file_contents)
+      expectations_file.close()
+      benchmark_runner.PrintBenchmarkList([BenchmarkFoo, BenchmarkBar],
+                                          self._mock_possible_browser,
+                                          expectations_file.name,
+                                          self._stream, self._json_stream)
+
+      self.assertEquals(expected_json_stream, self._json_stream.getvalue())
+
+    finally:
+      os.remove(expectations_file.name)

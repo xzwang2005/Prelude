@@ -14,10 +14,15 @@ sys.path.append(tracing_path)
 import tracing_project
 tracing_project.UpdateSysPathIfNeeded()
 from py_utils import camel_case
-from tracing.value import histogram
-from tracing.value import histogram_set
-from tracing.value import merge_histograms
+from tracing.value.diagnostics import add_reserved_diagnostics
+from tracing.value.diagnostics import generic_set
 from tracing.value.diagnostics import reserved_infos
+
+
+LOG_URLS_CAMELCASE = camel_case.ToUnderscore(reserved_infos.LOG_URLS.name)
+LOG_URLS_K = LOG_URLS_CAMELCASE + '_k'
+LOG_URLS_V = LOG_URLS_CAMELCASE + '_v'
+
 
 def main():
   parser = argparse.ArgumentParser(
@@ -43,40 +48,28 @@ def main():
       arg_names_to_infos[name] = info
       parser.add_argument('--%s' % name)
 
+  # TODO(#3770): Clean this up.
+  parser.add_argument('--%s' % LOG_URLS_K)
+  parser.add_argument('--%s' % LOG_URLS_V)
+
   args = parser.parse_args()
 
   names_to_values = {}
   for name, value in vars(args).iteritems():
+    if name == LOG_URLS_K and value is not None:
+      v_value = vars(args)[LOG_URLS_V]
+      names_to_values[reserved_infos.LOG_URLS.name] = [value, v_value]
+      continue
     if name in arg_names_to_infos and value is not None:
       diagnostic_name = arg_names_to_infos[name].name
       ctor = arg_names_to_infos[name].entry_type
       names_to_values[diagnostic_name] = ctor(value)
 
-  # TODO(#3987): Refactor recipes to call merge_histograms separately.
-  dicts_across_repeats = merge_histograms.MergeHistograms(args.input_path, (
-    'name', 'storyTags', 'stories'))
-  dicts_across_stories = merge_histograms.MergeHistograms(args.input_path, (
-    'name', 'storyTags'))
+  with open(args.input_path, 'r') as f:
+    dicts = json.loads(f.read())
 
-  # If any Histograms were only produced by a single story (e.g. if there's only
-  # 1 story in the benchmark, or only 1 story that causes a metric to generate a
-  # particular Histogram), then such Histograms will appear in both
-  # dicts_across_repeats and dicts_across_stories. Filter them out of
-  # dicts_across_stories. This is required to satisfy HistogramSet's requirement
-  # that no two Histograms have the same guid.
-  guids_across_repeats = [d['guid'] for d in dicts_across_repeats
-                          if 'type' not in d]
-  dicts_across_stories = [d for d in dicts_across_stories
-      if d['guid'] not in guids_across_repeats]
-
-  histograms = histogram_set.HistogramSet()
-  histograms.ImportDicts(dicts_across_repeats)
-  histograms.ImportDicts(dicts_across_stories)
-
-  for name, value in names_to_values.iteritems():
-    histograms.AddSharedDiagnostic(name, histogram.GenericSet([value]))
-
-  results_json = json.dumps(histograms.AsDicts())
+  results_json = add_reserved_diagnostics.AddReservedDiagnostics(
+      dicts, names_to_values)
 
   if args.stdout:
     print results_json

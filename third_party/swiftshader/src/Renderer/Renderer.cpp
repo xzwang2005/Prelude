@@ -72,6 +72,24 @@ namespace sw
 	TranscendentalPrecision rsqPrecision = ACCURATE;
 	bool perspectiveCorrection = true;
 
+	static void setGlobalRenderingSettings(Conventions conventions, bool exactColorRounding)
+	{
+		static bool initialized = false;
+
+		if(!initialized)
+		{
+			sw::halfIntegerCoordinates = conventions.halfIntegerCoordinates;
+			sw::symmetricNormalizedDepth = conventions.symmetricNormalizedDepth;
+			sw::booleanFaceRegister = conventions.booleanFaceRegister;
+			sw::fullPixelPositionRegister = conventions.fullPixelPositionRegister;
+			sw::leadingVertexFirst = conventions.leadingVertexFirst;
+			sw::secondaryColor = conventions.secondaryColor;
+			sw::colorsDefaultToZero = conventions.colorsDefaultToZero;
+			sw::exactColorRounding = exactColorRounding;
+			initialized = true;
+		}
+	}
+
 	struct Parameters
 	{
 		Renderer *renderer;
@@ -105,14 +123,7 @@ namespace sw
 
 	Renderer::Renderer(Context *context, Conventions conventions, bool exactColorRounding) : VertexProcessor(context), PixelProcessor(context), SetupProcessor(context), context(context), viewport()
 	{
-		sw::halfIntegerCoordinates = conventions.halfIntegerCoordinates;
-		sw::symmetricNormalizedDepth = conventions.symmetricNormalizedDepth;
-		sw::booleanFaceRegister = conventions.booleanFaceRegister;
-		sw::fullPixelPositionRegister = conventions.fullPixelPositionRegister;
-		sw::leadingVertexFirst = conventions.leadingVertexFirst;
-		sw::secondaryColor = conventions.secondaryColor;
-		sw::colorsDefaultToZero = conventions.colorsDefaultToZero;
-		sw::exactColorRounding = exactColorRounding;
+		setGlobalRenderingSettings(conventions, exactColorRounding);
 
 		setRenderTarget(0, 0);
 		clipper = new Clipper(symmetricNormalizedDepth);
@@ -224,6 +235,7 @@ namespace sw
 
 		int ss = context->getSuperSampleCount();
 		int ms = context->getMultiSampleCount();
+		bool requiresSync = false;
 
 		for(int q = 0; q < ss; q++)
 		{
@@ -281,7 +293,7 @@ namespace sw
 				setupPrimitives = &Renderer::setupPoints;
 			}
 
-			DrawCall *draw = 0;
+			DrawCall *draw = nullptr;
 
 			do
 			{
@@ -309,13 +321,12 @@ namespace sw
 			{
 				draw->queries = new std::list<Query*>();
 				bool includePrimitivesWrittenQueries = vertexState.transformFeedbackQueryEnabled && vertexState.transformFeedbackEnabled;
-				for(std::list<Query*>::iterator query = queries.begin(); query != queries.end(); query++)
+				for(auto &query : queries)
 				{
-					Query* q = *query;
-					if(includePrimitivesWrittenQueries || (q->type != Query::TRANSFORM_FEEDBACK_PRIMITIVES_WRITTEN))
+					if(includePrimitivesWrittenQueries || (query->type != Query::TRANSFORM_FEEDBACK_PRIMITIVES_WRITTEN))
 					{
-						++q->reference; // Atomic
-						draw->queries->push_back(q);
+						++query->reference; // Atomic
+						draw->queries->push_back(query);
 					}
 				}
 			}
@@ -368,6 +379,8 @@ namespace sw
 					draw->texture[sampler]->lock(PUBLIC, isReadWriteTexture(sampler) ? MANAGED : PRIVATE);   // If the texure is both read and written, use the same read/write lock as render targets
 
 					data->mipmap[sampler] = context->sampler[sampler].getTextureData();
+
+					requiresSync |= context->sampler[sampler].requiresSync();
 				}
 			}
 
@@ -402,7 +415,7 @@ namespace sw
 				}
 			}
 
-			if(context->pixelShaderVersion() <= 0x0104)
+			if(context->pixelShaderModel() <= 0x0104)
 			{
 				for(int stage = 0; stage < 8; stage++)
 				{
@@ -416,7 +429,7 @@ namespace sw
 
 			if(context->vertexShader)
 			{
-				if(context->vertexShader->getVersion() >= 0x0300)
+				if(context->vertexShader->getShaderModel() >= 0x0300)
 				{
 					for(int sampler = 0; sampler < VERTEX_TEXTURE_IMAGE_UNITS; sampler++)
 					{
@@ -426,6 +439,8 @@ namespace sw
 							draw->texture[TEXTURE_IMAGE_UNITS + sampler]->lock(PUBLIC, PRIVATE);
 
 							data->mipmap[TEXTURE_IMAGE_UNITS + sampler] = context->sampler[TEXTURE_IMAGE_UNITS + sampler].getTextureData();
+
+							requiresSync |= context->sampler[TEXTURE_IMAGE_UNITS + sampler].requiresSync();
 						}
 					}
 				}
@@ -607,7 +622,10 @@ namespace sw
 
 					if(draw->renderTarget[index])
 					{
-						data->colorBuffer[index] = (unsigned int*)context->renderTarget[index]->lockInternal(0, 0, q * ms, LOCK_READWRITE, MANAGED);
+						unsigned int layer = context->renderTargetLayer[index];
+						requiresSync |= context->renderTarget[index]->requiresSync();
+						data->colorBuffer[index] = (unsigned int*)context->renderTarget[index]->lockInternal(0, 0, layer, LOCK_READWRITE, MANAGED);
+						data->colorBuffer[index] += q * ms * context->renderTarget[index]->getSliceB(true);
 						data->colorPitchB[index] = context->renderTarget[index]->getInternalPitchB();
 						data->colorSliceB[index] = context->renderTarget[index]->getInternalSliceB();
 					}
@@ -618,14 +636,20 @@ namespace sw
 
 				if(draw->depthBuffer)
 				{
-					data->depthBuffer = (float*)context->depthBuffer->lockInternal(0, 0, q * ms, LOCK_READWRITE, MANAGED);
+					unsigned int layer = context->depthBufferLayer;
+					requiresSync |= context->depthBuffer->requiresSync();
+					data->depthBuffer = (float*)context->depthBuffer->lockInternal(0, 0, layer, LOCK_READWRITE, MANAGED);
+					data->depthBuffer += q * ms * context->depthBuffer->getSliceB(true);
 					data->depthPitchB = context->depthBuffer->getInternalPitchB();
 					data->depthSliceB = context->depthBuffer->getInternalSliceB();
 				}
 
 				if(draw->stencilBuffer)
 				{
-					data->stencilBuffer = (unsigned char*)context->stencilBuffer->lockStencil(0, 0, q * ms, MANAGED);
+					unsigned int layer = context->stencilBufferLayer;
+					requiresSync |= context->stencilBuffer->requiresSync();
+					data->stencilBuffer = (unsigned char*)context->stencilBuffer->lockStencil(0, 0, layer, MANAGED);
+					data->stencilBuffer += q * ms * context->stencilBuffer->getSliceB(true);
 					data->stencilPitchB = context->stencilBuffer->getStencilPitchB();
 					data->stencilSliceB = context->stencilBuffer->getStencilSliceB();
 				}
@@ -670,22 +694,22 @@ namespace sw
 				}
 			}
 		}
+
+		// TODO(sugoi): This is a temporary brute-force workaround to ensure IOSurface synchronization.
+		if(requiresSync)
+		{
+			synchronize();
+		}
 	}
 
 	void Renderer::clear(void *value, Format format, Surface *dest, const Rect &clearRect, unsigned int rgbaMask)
 	{
-		SliceRect rect = clearRect;
-		int samples = dest->getDepth();
-
-		for(rect.slice = 0; rect.slice < samples; rect.slice++)
-		{
-			blitter->clear(value, format, dest, rect, rgbaMask);
-		}
+		blitter->clear(value, format, dest, clearRect, rgbaMask);
 	}
 
-	void Renderer::blit(Surface *source, const SliceRect &sRect, Surface *dest, const SliceRect &dRect, bool filter, bool isStencil)
+	void Renderer::blit(Surface *source, const SliceRectF &sRect, Surface *dest, const SliceRect &dRect, bool filter, bool isStencil, bool sRGBconversion)
 	{
-		blitter->blit(source, sRect, dest, dRect, filter, isStencil);
+		blitter->blit(source, sRect, dest, dRect, {filter, isStencil, sRGBconversion});
 	}
 
 	void Renderer::blit3D(Surface *source, Surface *dest)
@@ -972,10 +996,8 @@ namespace sw
 
 				if(draw.queries)
 				{
-					for(std::list<Query*>::iterator q = draw.queries->begin(); q != draw.queries->end(); q++)
+					for(auto &query : *(draw.queries))
 					{
-						Query *query = *q;
-
 						switch(query->type)
 						{
 						case Query::FRAGMENTS_PASSED:
@@ -1168,9 +1190,18 @@ namespace sw
 
 				for(unsigned int i = 0; i < triangleCount; i++)
 				{
-					batch[i][0] = index + 0;
-					batch[i][1] = index + (index & 1) + 1;
-					batch[i][2] = index + (~index & 1) + 1;
+					if(leadingVertexFirst)
+					{
+						batch[i][0] = index + 0;
+						batch[i][1] = index + (index & 1) + 1;
+						batch[i][2] = index + (~index & 1) + 1;
+					}
+					else
+					{
+						batch[i][0] = index + (index & 1);
+						batch[i][1] = index + (~index & 1);
+						batch[i][2] = index + 2;
+					}
 
 					index += 1;
 				}
@@ -1182,9 +1213,18 @@ namespace sw
 
 				for(unsigned int i = 0; i < triangleCount; i++)
 				{
-					batch[i][0] = index + 1;
-					batch[i][1] = index + 2;
-					batch[i][2] = 0;
+					if(leadingVertexFirst)
+					{
+						batch[i][0] = index + 1;
+						batch[i][1] = index + 2;
+						batch[i][2] = 0;
+					}
+					else
+					{
+						batch[i][0] = 0;
+						batch[i][1] = index + 1;
+						batch[i][2] = index + 2;
+					}
 
 					index += 1;
 				}
@@ -1728,7 +1768,7 @@ namespace sw
 			return false;
 		}
 
-		if(false)   // Rectangle
+		if(state.multiSample > 1)   // Rectangle
 		{
 			float4 P[4];
 			int C[4];
@@ -1743,30 +1783,26 @@ namespace sw
 			dx *= scale;
 			dy *= scale;
 
-			float dx0w = dx * P0.w / W;
-			float dy0h = dy * P0.w / H;
 			float dx0h = dx * P0.w / H;
 			float dy0w = dy * P0.w / W;
 
-			float dx1w = dx * P1.w / W;
-			float dy1h = dy * P1.w / H;
 			float dx1h = dx * P1.w / H;
 			float dy1w = dy * P1.w / W;
 
-			P[0].x += -dy0w + -dx0w;
-			P[0].y += -dx0h + +dy0h;
+			P[0].x += -dy0w;
+			P[0].y += +dx0h;
 			C[0] = clipper->computeClipFlags(P[0]);
 
-			P[1].x += -dy1w + +dx1w;
-			P[1].y += -dx1h + +dy1h;
+			P[1].x += -dy1w;
+			P[1].y += +dx1h;
 			C[1] = clipper->computeClipFlags(P[1]);
 
-			P[2].x += +dy1w + +dx1w;
-			P[2].y += +dx1h + -dy1h;
+			P[2].x += +dy1w;
+			P[2].y += -dx1h;
 			C[2] = clipper->computeClipFlags(P[2]);
 
-			P[3].x += +dy0w + -dx0w;
-			P[3].y += +dx0h + +dy0h;
+			P[3].x += +dy0w;
+			P[3].y += -dx0h;
 			C[3] = clipper->computeClipFlags(P[3]);
 
 			if((C[0] & C[1] & C[2] & C[3]) == Clipper::CLIP_FINITE)
@@ -2445,6 +2481,18 @@ namespace sw
 		else
 		{
 			VertexProcessor::setMaxLod(sampler, maxLod);
+		}
+	}
+
+	void Renderer::setSyncRequired(SamplerType type, int sampler, bool syncRequired)
+	{
+		if(type == SAMPLER_PIXEL)
+		{
+			PixelProcessor::setSyncRequired(sampler, syncRequired);
+		}
+		else
+		{
+			VertexProcessor::setSyncRequired(sampler, syncRequired);
 		}
 	}
 

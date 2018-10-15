@@ -23,7 +23,7 @@
 #include "base/logging.h"
 #include "base/macros.h"
 #include "base/memory/singleton.h"
-#include "base/message_loop/message_loop.h"
+#include "base/message_loop/message_loop_current.h"
 #include "base/metrics/histogram_macros.h"
 #include "base/single_thread_task_runner.h"
 #include "base/stl_util.h"
@@ -32,6 +32,7 @@
 #include "base/strings/stringprintf.h"
 #include "base/sys_byteorder.h"
 #include "base/threading/thread.h"
+#include "base/threading/thread_local_storage.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "base/trace_event/trace_event.h"
 #include "build/build_config.h"
@@ -64,12 +65,28 @@
 
 namespace ui {
 
+class TLSDestructionCheckerForX11 {
+ public:
+  static bool HasBeenDestroyed() {
+    return base::ThreadLocalStorage::HasBeenDestroyed();
+  }
+};
+
 namespace {
 
+// Constants that are part of EWMH.
+constexpr int kNetWMStateAdd = 1;
+constexpr int kNetWMStateRemove = 0;
+
 int DefaultX11ErrorHandler(XDisplay* d, XErrorEvent* e) {
-  if (base::MessageLoop::current()) {
+  // This callback can be invoked by drivers very late in thread destruction,
+  // when Chrome TLS is no longer usable. https://crbug.com/849225.
+  if (TLSDestructionCheckerForX11::HasBeenDestroyed())
+    return 0;
+
+  if (base::MessageLoopCurrent::Get()) {
     base::ThreadTaskRunnerHandle::Get()->PostTask(
-        FROM_HERE, base::Bind(&LogErrorEventDescription, d, *e));
+        FROM_HERE, base::BindOnce(&LogErrorEventDescription, d, *e));
   } else {
     LOG(ERROR)
         << "X error received: "
@@ -152,6 +169,22 @@ bool GetWindowManagerName(std::string* wm_name) {
   bool result = GetStringProperty(
       static_cast<XID>(wm_window), "_NET_WM_NAME", wm_name);
   return !err_tracker.FoundNewError() && result;
+}
+
+unsigned int GetMaxCursorSize() {
+  // Although XQueryBestCursor() takes unsigned ints, the width and height will
+  // be sent over the wire as 16 bit integers.
+  constexpr unsigned int kQuerySize = std::numeric_limits<uint16_t>::max();
+  XDisplay* display = gfx::GetXDisplay();
+  unsigned int width = 0;
+  unsigned int height = 0;
+  XQueryBestCursor(display, DefaultRootWindow(display), kQuerySize, kQuerySize,
+                   &width, &height);
+  unsigned int min_dimension = std::min(width, height);
+  // libXcursor defines MAX_BITMAP_CURSOR_SIZE to 64 in src/xcursorint.h, so use
+  // this as a fallback in case the X server returns zero size, which can happen
+  // on some buggy implementations of XWayland/XMir.
+  return min_dimension > 0 ? min_dimension : 64;
 }
 
 struct XImageDeleter {
@@ -288,7 +321,7 @@ XcursorImage* SkBitmapToXcursorImage(const SkBitmap* cursor_image,
 
   // X11 seems to have issues with cursors when images get larger than 64
   // pixels. So rescale the image if necessary.
-  const float kMaxPixel = 64.f;
+  static const float kMaxPixel = GetMaxCursorSize();
   bool needs_scale = false;
   if (cursor_image->width() > kMaxPixel || cursor_image->height() > kMaxPixel) {
     float scale = 1.f;
@@ -900,6 +933,29 @@ void SetWindowRole(XDisplay* display, XID window, const std::string& role) {
                     8, PropModeReplace,
                     reinterpret_cast<unsigned char*>(role_c), role.size());
   }
+}
+
+void SetWMSpecState(XID window, bool enabled, XAtom state1, XAtom state2) {
+  XEvent xclient;
+  memset(&xclient, 0, sizeof(xclient));
+  xclient.type = ClientMessage;
+  xclient.xclient.window = window;
+  xclient.xclient.message_type = gfx::GetAtom("_NET_WM_STATE");
+  // The data should be viewed as a list of longs, because XAtom is a typedef of
+  // long.
+  xclient.xclient.format = 32;
+  xclient.xclient.data.l[0] = enabled ? kNetWMStateAdd : kNetWMStateRemove;
+  xclient.xclient.data.l[1] = state1;
+  xclient.xclient.data.l[2] = state2;
+  xclient.xclient.data.l[3] = 1;
+  xclient.xclient.data.l[4] = 0;
+
+  XSendEvent(gfx::GetXDisplay(), GetX11RootWindow(), x11::False,
+             SubstructureRedirectMask | SubstructureNotifyMask, &xclient);
+}
+
+bool HasWMSpecProperty(const base::flat_set<XAtom>& properties, XAtom atom) {
+  return properties.find(atom) != properties.end();
 }
 
 bool GetCustomFramePrefDefault() {

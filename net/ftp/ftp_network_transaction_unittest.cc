@@ -16,6 +16,8 @@
 #include "net/ftp/ftp_request_info.h"
 #include "net/socket/socket_test_util.h"
 #include "net/test/gtest_util.h"
+#include "net/test/test_with_scoped_task_environment.h"
+#include "net/traffic_annotation/network_traffic_annotation_test_helper.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "testing/platform_test.h"
@@ -755,9 +757,9 @@ class FtpSocketDataProviderEvilLogin
   DISALLOW_COPY_AND_ASSIGN(FtpSocketDataProviderEvilLogin);
 };
 
-class FtpNetworkTransactionTest
-    : public PlatformTest,
-      public ::testing::WithParamInterface<int> {
+class FtpNetworkTransactionTest : public PlatformTest,
+                                  public ::testing::WithParamInterface<int>,
+                                  public WithScopedTaskEnvironment {
  public:
   FtpNetworkTransactionTest() : host_resolver_(new MockHostResolver) {
     SetUpTransaction();
@@ -814,18 +816,20 @@ class FtpNetworkTransactionTest
     };
 
     std::unique_ptr<StaticSocketDataProvider> data_socket =
-        std::make_unique<StaticSocketDataProvider>(
-            data_reads, arraysize(data_reads), nullptr, 0);
+        std::make_unique<StaticSocketDataProvider>(data_reads,
+                                                   base::span<MockWrite>());
     mock_socket_factory_->AddSocketDataProvider(data_socket.get());
     FtpRequestInfo request_info = GetRequestInfo(request);
     EXPECT_EQ(LOAD_STATE_IDLE, transaction_->GetLoadState());
-    ASSERT_EQ(ERR_IO_PENDING,
-              transaction_->Start(&request_info, callback_.callback(),
-                                  NetLogWithSource()));
+    ASSERT_EQ(
+        ERR_IO_PENDING,
+        transaction_->Start(&request_info, callback_.callback(),
+                            NetLogWithSource(), TRAFFIC_ANNOTATION_FOR_TESTS));
     EXPECT_NE(LOAD_STATE_IDLE, transaction_->GetLoadState());
     ASSERT_EQ(expected_result, callback_.WaitForResult());
     if (expected_result == OK) {
-      scoped_refptr<IOBuffer> io_buffer(new IOBuffer(kBufferSize));
+      scoped_refptr<IOBuffer> io_buffer =
+          base::MakeRefCounted<IOBuffer>(kBufferSize);
       memset(io_buffer->data(), 0, kBufferSize);
       ASSERT_EQ(ERR_IO_PENDING, transaction_->Read(io_buffer.get(), kBufferSize,
                                                    callback_.callback()));
@@ -870,9 +874,10 @@ TEST_P(FtpNetworkTransactionTest, FailedLookup) {
   host_resolver_->set_rules(rules.get());
 
   EXPECT_EQ(LOAD_STATE_IDLE, transaction_->GetLoadState());
-  ASSERT_EQ(ERR_IO_PENDING,
-            transaction_->Start(&request_info, callback_.callback(),
-                                NetLogWithSource()));
+  ASSERT_EQ(
+      ERR_IO_PENDING,
+      transaction_->Start(&request_info, callback_.callback(),
+                          NetLogWithSource(), TRAFFIC_ANNOTATION_FOR_TESTS));
   ASSERT_THAT(callback_.WaitForResult(), IsError(ERR_NAME_NOT_RESOLVED));
   EXPECT_EQ(LOAD_STATE_IDLE, transaction_->GetLoadState());
 }
@@ -1133,17 +1138,17 @@ TEST_P(FtpNetworkTransactionTest, DownloadTransactionEvilPasvUnsafeHost) {
     MockRead(mock_data.c_str()),
   };
   StaticSocketDataProvider data_socket1;
-  StaticSocketDataProvider data_socket2(data_reads, arraysize(data_reads),
-                                        nullptr, 0);
+  StaticSocketDataProvider data_socket2(data_reads, base::span<MockWrite>());
   mock_socket_factory_->AddSocketDataProvider(&ctrl_socket);
   mock_socket_factory_->AddSocketDataProvider(&data_socket1);
   mock_socket_factory_->AddSocketDataProvider(&data_socket2);
   FtpRequestInfo request_info = GetRequestInfo("ftp://host/file");
 
   // Start the transaction.
-  ASSERT_EQ(ERR_IO_PENDING,
-            transaction_->Start(&request_info, callback_.callback(),
-                                NetLogWithSource()));
+  ASSERT_EQ(
+      ERR_IO_PENDING,
+      transaction_->Start(&request_info, callback_.callback(),
+                          NetLogWithSource(), TRAFFIC_ANNOTATION_FOR_TESTS));
   ASSERT_THAT(callback_.WaitForResult(), IsOk());
 
   // The transaction fires the callback when we can start reading data. That
@@ -1336,9 +1341,10 @@ TEST_P(FtpNetworkTransactionTest, EvilRestartUser) {
 
   FtpRequestInfo request_info = GetRequestInfo("ftp://host/file");
 
-  ASSERT_EQ(ERR_IO_PENDING,
-            transaction_->Start(&request_info, callback_.callback(),
-                                NetLogWithSource()));
+  ASSERT_EQ(
+      ERR_IO_PENDING,
+      transaction_->Start(&request_info, callback_.callback(),
+                          NetLogWithSource(), TRAFFIC_ANNOTATION_FOR_TESTS));
   ASSERT_THAT(callback_.WaitForResult(), IsError(ERR_FTP_FAILED));
 
   MockRead ctrl_reads[] = {
@@ -1349,8 +1355,7 @@ TEST_P(FtpNetworkTransactionTest, EvilRestartUser) {
   MockWrite ctrl_writes[] = {
     MockWrite("QUIT\r\n"),
   };
-  StaticSocketDataProvider ctrl_socket2(ctrl_reads, arraysize(ctrl_reads),
-                                        ctrl_writes, arraysize(ctrl_writes));
+  StaticSocketDataProvider ctrl_socket2(ctrl_reads, ctrl_writes);
   mock_socket_factory_->AddSocketDataProvider(&ctrl_socket2);
   ASSERT_EQ(ERR_IO_PENDING,
             transaction_->RestartWithAuth(
@@ -1369,9 +1374,10 @@ TEST_P(FtpNetworkTransactionTest, EvilRestartPassword) {
 
   FtpRequestInfo request_info = GetRequestInfo("ftp://host/file");
 
-  ASSERT_EQ(ERR_IO_PENDING,
-            transaction_->Start(&request_info, callback_.callback(),
-                                NetLogWithSource()));
+  ASSERT_EQ(
+      ERR_IO_PENDING,
+      transaction_->Start(&request_info, callback_.callback(),
+                          NetLogWithSource(), TRAFFIC_ANNOTATION_FOR_TESTS));
   ASSERT_THAT(callback_.WaitForResult(), IsError(ERR_FTP_FAILED));
 
   MockRead ctrl_reads[] = {
@@ -1384,8 +1390,7 @@ TEST_P(FtpNetworkTransactionTest, EvilRestartPassword) {
     MockWrite("USER innocent\r\n"),
     MockWrite("QUIT\r\n"),
   };
-  StaticSocketDataProvider ctrl_socket2(ctrl_reads, arraysize(ctrl_reads),
-                                        ctrl_writes, arraysize(ctrl_writes));
+  StaticSocketDataProvider ctrl_socket2(ctrl_reads, ctrl_writes);
   mock_socket_factory_->AddSocketDataProvider(&ctrl_socket2);
   ASSERT_EQ(ERR_IO_PENDING,
             transaction_->RestartWithAuth(

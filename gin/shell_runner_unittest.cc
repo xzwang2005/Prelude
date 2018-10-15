@@ -24,8 +24,7 @@ using v8::String;
 
 namespace gin {
 
-// TODO(yzshen): crbug.com/793480
-TEST(RunnerTest, DISABLED_Run) {
+TEST(RunnerTest, Run) {
   base::test::ScopedTaskEnvironment scoped_task_environment;
   std::string source = "this.result = 'PASS';\n";
 
@@ -33,14 +32,12 @@ TEST(RunnerTest, DISABLED_Run) {
   gin::V8Initializer::LoadV8Snapshot();
   gin::V8Initializer::LoadV8Natives();
 #endif
-#ifdef USE_V8_CONTEXT_SNAPSHOT
-  gin::V8Initializer::LoadV8ContextSnapshot();
-#endif
 
   gin::IsolateHolder::Initialize(gin::IsolateHolder::kStrictMode,
                                  gin::IsolateHolder::kStableV8Extras,
                                  gin::ArrayBufferAllocator::SharedInstance());
-  gin::IsolateHolder instance(base::ThreadTaskRunnerHandle::Get());
+  gin::IsolateHolder instance(base::ThreadTaskRunnerHandle::Get(),
+                              gin::IsolateHolder::IsolateType::kTest);
 
   ShellRunnerDelegate delegate;
   Isolate* isolate = instance.isolate();

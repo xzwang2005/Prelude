@@ -166,7 +166,7 @@ TEST_F(ScopedFeatureListTest, OverrideWithFeatureParameters) {
     EXPECT_TRUE(FeatureList::IsEnabled(kTestFeature1));
     EXPECT_TRUE(FeatureList::IsEnabled(kTestFeature2));
     EXPECT_EQ("", GetFieldTrialParamValueByFeature(kTestFeature1, kParam));
-    EXPECT_EQ("", GetFieldTrialParamValueByFeature(kTestFeature2, kParam));
+    EXPECT_EQ(kValue, GetFieldTrialParamValueByFeature(kTestFeature2, kParam));
     EXPECT_EQ(trial.get(), FeatureList::GetFieldTrial(kTestFeature1));
     EXPECT_NE(nullptr, FeatureList::GetFieldTrial(kTestFeature2));
   }
@@ -291,6 +291,17 @@ TEST_F(ScopedFeatureListTest, FeatureOverrideKeepsOtherExistingDefaultFeature) {
     feature_list2.InitWithFeatures({}, {kTestFeature2});
     ExpectFeatures("*TestFeature1", "TestFeature2");
   }
+}
+
+TEST_F(ScopedFeatureListTest, ScopedFeatureListIsNoopWhenNotInitialized) {
+  test::ScopedFeatureList feature_list1;
+  feature_list1.InitFromCommandLine("*TestFeature1", std::string());
+
+  // A ScopedFeatureList on which Init() is not called should not reset things
+  // when going out of scope.
+  { test::ScopedFeatureList feature_list2; }
+
+  ExpectFeatures("*TestFeature1", std::string());
 }
 
 }  // namespace test

@@ -12,7 +12,7 @@
 #include "base/command_line.h"
 #include "base/logging.h"
 #include "base/memory/ptr_util.h"
-#include "base/message_loop/message_loop.h"
+#include "base/stl_util.h"
 #include "base/time/time.h"
 #include "ui/events/event.h"
 #include "ui/events/event_constants.h"
@@ -360,39 +360,6 @@ GestureEventHelper* GestureRecognizerImpl::FindDispatchHelperForConsumer(
       return (*it);
   }
   return NULL;
-}
-
-// GestureRecognizer, static
-GestureRecognizer* GestureRecognizer::Create() {
-  return new GestureRecognizerImpl();
-}
-
-static GestureRecognizerImpl* g_gesture_recognizer_instance = NULL;
-
-// GestureRecognizer, static
-GestureRecognizer* GestureRecognizer::Get() {
-  if (!g_gesture_recognizer_instance)
-    g_gesture_recognizer_instance = new GestureRecognizerImpl();
-  return g_gesture_recognizer_instance;
-}
-
-// GestureRecognizer, static
-void GestureRecognizer::Reset() {
-  delete g_gesture_recognizer_instance;
-  g_gesture_recognizer_instance = NULL;
-}
-
-void SetGestureRecognizerForTesting(GestureRecognizer* gesture_recognizer) {
-  // Transfer helpers to the new GR.
-  std::vector<GestureEventHelper*>& helpers =
-      g_gesture_recognizer_instance->helpers();
-  std::vector<GestureEventHelper*>::iterator it;
-  for (it = helpers.begin(); it != helpers.end(); ++it)
-    gesture_recognizer->AddGestureEventHelper(*it);
-
-  helpers.clear();
-  g_gesture_recognizer_instance =
-      static_cast<GestureRecognizerImpl*>(gesture_recognizer);
 }
 
 }  // namespace ui

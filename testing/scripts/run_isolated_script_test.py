@@ -46,6 +46,12 @@ sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 import xvfb
 
 
+# Known typ test runners this script wraps. They need a different argument name
+# when selecting which tests to run.
+# TODO(dpranke): Detect if the wrapped test suite uses typ better.
+KNOWN_TYP_TEST_RUNNERS = ['run_blinkpy_tests.py', 'metrics_python_tests.py']
+
+
 def main():
   parser = argparse.ArgumentParser()
   parser.add_argument('--isolated-script-test-output', type=str,
@@ -61,7 +67,8 @@ def main():
 
   args, rest_args = parser.parse_known_args()
 
-  env = os.environ
+  env = os.environ.copy()
+  env['CHROME_HEADLESS'] = '1'
   cmd = [sys.executable] + rest_args
   cmd += ['--write-full-results-to', args.isolated_script_test_output]
   temp_filter_file = None
@@ -72,7 +79,14 @@ def main():
       temp_filter_file = tempfile.NamedTemporaryFile(mode='w', delete=False)
       temp_filter_file.write('\n'.join(filter_list))
       temp_filter_file.close()
-      cmd += ['--test-list=' + temp_filter_file.name]
+
+      arg_name = 'test-list'
+      for arg in rest_args:
+        for runner in KNOWN_TYP_TEST_RUNNERS:
+          if runner in arg:
+            arg_name = 'file-list'
+
+      cmd += ['--%s=' % arg_name + temp_filter_file.name]
     if args.xvfb:
       return xvfb.run_executable(cmd, env)
     else:

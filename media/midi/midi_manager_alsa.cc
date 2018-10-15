@@ -17,8 +17,6 @@
 #include "base/json/json_string_value_serializer.h"
 #include "base/logging.h"
 #include "base/macros.h"
-#include "base/memory/ptr_util.h"
-#include "base/message_loop/message_loop.h"
 #include "base/posix/eintr_wrapper.h"
 #include "base/posix/safe_strerror.h"
 #include "base/single_thread_task_runner.h"
@@ -273,11 +271,11 @@ void MidiManagerAlsa::StartInitialization() {
   // initialize these earlier, since they need to be destroyed by the
   // thread that calls Finalize(), not the destructor thread (and we
   // check this in the destructor).
-  in_client_.reset(in_client.release());
-  out_client_.reset(out_client.release());
-  decoder_.reset(decoder.release());
-  udev_.reset(udev.release());
-  udev_monitor_.reset(udev_monitor.release());
+  in_client_ = std::move(in_client);
+  out_client_ = std::move(out_client);
+  decoder_ = std::move(decoder);
+  udev_ = std::move(udev);
+  udev_monitor_ = std::move(udev_monitor);
 
   // Generate hotplug events for existing ports.
   // TODO(agoode): Check the return value for failure.
@@ -320,7 +318,7 @@ void MidiManagerAlsa::Finalize() {
 void MidiManagerAlsa::DispatchSendMidiData(MidiManagerClient* client,
                                            uint32_t port_index,
                                            const std::vector<uint8_t>& data,
-                                           double timestamp) {
+                                           base::TimeTicks timestamp) {
   service()->task_service()->PostBoundDelayedTask(
       kSendTaskRunner,
       base::BindOnce(&MidiManagerAlsa::SendMidiData, base::Unretained(this),
@@ -620,7 +618,7 @@ void MidiManagerAlsa::AlsaSeqState::ClientStart(int client_id,
                                                 snd_seq_client_type_t type) {
   ClientExit(client_id);
   clients_.insert(
-      std::make_pair(client_id, base::MakeUnique<Client>(client_name, type)));
+      std::make_pair(client_id, std::make_unique<Client>(client_name, type)));
   if (IsCardClient(type, client_id))
     ++card_client_count_;
 }
@@ -647,7 +645,7 @@ void MidiManagerAlsa::AlsaSeqState::PortStart(
   auto it = clients_.find(client_id);
   if (it != clients_.end())
     it->second->AddPort(port_id,
-                        base::MakeUnique<Port>(port_name, direction, midi));
+                        std::make_unique<Port>(port_name, direction, midi));
 }
 
 void MidiManagerAlsa::AlsaSeqState::PortExit(int client_id, int port_id) {
@@ -720,13 +718,13 @@ MidiManagerAlsa::AlsaSeqState::ToMidiPortState(const AlsaCardMap& alsa_cards) {
         PortDirection direction = port->direction();
         if (direction == PortDirection::kInput ||
             direction == PortDirection::kDuplex) {
-          midi_ports->push_back(base::MakeUnique<MidiPort>(
+          midi_ports->push_back(std::make_unique<MidiPort>(
               path, id, client_id, port_id, midi_device, client->name(),
               port->name(), manufacturer, version, MidiPort::Type::kInput));
         }
         if (direction == PortDirection::kOutput ||
             direction == PortDirection::kDuplex) {
-          midi_ports->push_back(base::MakeUnique<MidiPort>(
+          midi_ports->push_back(std::make_unique<MidiPort>(
               path, id, client_id, port_id, midi_device, client->name(),
               port->name(), manufacturer, version, MidiPort::Type::kOutput));
         }
@@ -885,8 +883,7 @@ void MidiManagerAlsa::EventLoop() {
     if (pfd[0].revents & POLLIN) {
       // Read available incoming MIDI data.
       int remaining;
-      double timestamp =
-          (base::TimeTicks::Now() - base::TimeTicks()).InSecondsF();
+      base::TimeTicks timestamp = base::TimeTicks::Now();
       do {
         snd_seq_event_t* event;
         err = snd_seq_event_input(in_client_.get(), &event);
@@ -953,7 +950,7 @@ void MidiManagerAlsa::EventLoop() {
 }
 
 void MidiManagerAlsa::ProcessSingleEvent(snd_seq_event_t* event,
-                                         double timestamp) {
+                                         base::TimeTicks timestamp) {
   auto source_it =
       source_map_.find(AddrToInt(event->source.client, event->source.port));
   if (source_it != source_map_.end()) {

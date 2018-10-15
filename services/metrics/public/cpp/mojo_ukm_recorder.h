@@ -10,7 +10,7 @@
 #include "base/memory/weak_ptr.h"
 #include "services/metrics/public/cpp/metrics_export.h"
 #include "services/metrics/public/cpp/ukm_recorder.h"
-#include "services/metrics/public/interfaces/ukm_interface.mojom.h"
+#include "services/metrics/public/mojom/ukm_interface.mojom.h"
 
 namespace service_manager {
 class Connector;
@@ -24,21 +24,16 @@ namespace ukm {
  *
  * Usage Example:
  *
- *  ukm::mojom::UkmRecorderInterfacePtr interface;
- *  content::RenderThread::Get()->GetConnector()->BindInterface(
- *      content::mojom::kBrowserServiceName, mojo::MakeRequest(&interface));
- *  ukm::MojoUkmRecorder ukm_recorder(std::move(interface));
+ *  std::unique_ptr<ukm::MojoUkmRecorder> ukm_recorder =
+ *      ukm::MojoUkmRecorder::Create(context()->connector());
  *  ukm::builders::MyEvent(source_id)
  *      .SetMyMetric(metric_value)
- *      .Record(ukm_recorder);
+ *      .Record(ukm_recorder.get());
  */
 class METRICS_EXPORT MojoUkmRecorder : public UkmRecorder {
  public:
   explicit MojoUkmRecorder(mojom::UkmRecorderInterfacePtr recorder_interface);
   ~MojoUkmRecorder() override;
-
-  // UkmRecorder:
-  void UpdateSourceURL(SourceId source_id, const GURL& url) override;
 
   // Helper for getting the wrapper from a connector.
   static std::unique_ptr<MojoUkmRecorder> Create(
@@ -48,6 +43,11 @@ class METRICS_EXPORT MojoUkmRecorder : public UkmRecorder {
 
  private:
   // UkmRecorder:
+  void UpdateSourceURL(SourceId source_id, const GURL& url) override;
+  void UpdateAppURL(SourceId source_id, const GURL& url) override;
+  void RecordNavigation(
+      SourceId source_id,
+      const UkmSource::NavigationData& navigation_data) override;
   void AddEntry(mojom::UkmEntryPtr entry) override;
 
   mojom::UkmRecorderInterfacePtr interface_;

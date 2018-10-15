@@ -12,45 +12,6 @@ using OS = v8::base::OS;
 namespace v8 {
 namespace internal {
 
-TEST(OSAllocateAndFree) {
-  size_t page_size = OS::AllocatePageSize();
-  CHECK_NE(0, page_size);
-
-  // A large allocation, aligned at native allocation granularity.
-  const size_t kAllocationSize = 1 * MB;
-  void* mem_addr = OS::Allocate(OS::GetRandomMmapAddr(), kAllocationSize,
-                                page_size, OS::MemoryPermission::kReadWrite);
-  CHECK_NOT_NULL(mem_addr);
-  CHECK(OS::Free(mem_addr, kAllocationSize));
-
-  // A large allocation, aligned significantly beyond native granularity.
-  const size_t kBigAlignment = 64 * MB;
-  void* aligned_mem_addr =
-      OS::Allocate(OS::GetRandomMmapAddr(), kAllocationSize, kBigAlignment,
-                   OS::MemoryPermission::kReadWrite);
-  CHECK_NOT_NULL(aligned_mem_addr);
-  CHECK_EQ(aligned_mem_addr, AlignedAddress(aligned_mem_addr, kBigAlignment));
-  CHECK(OS::Free(aligned_mem_addr, kAllocationSize));
-}
-
-TEST(OSReserveMemory) {
-  size_t page_size = OS::AllocatePageSize();
-  const size_t kAllocationSize = 1 * MB;
-  void* mem_addr = OS::Allocate(OS::GetRandomMmapAddr(), kAllocationSize,
-                                page_size, OS::MemoryPermission::kReadWrite);
-  CHECK_NE(0, page_size);
-  CHECK_NOT_NULL(mem_addr);
-  size_t commit_size = OS::CommitPageSize();
-  CHECK(OS::SetPermissions(mem_addr, commit_size,
-                           OS::MemoryPermission::kReadWrite));
-  // Check whether we can write to memory.
-  int* addr = static_cast<int*>(mem_addr);
-  addr[KB - 1] = 2;
-  CHECK(OS::SetPermissions(mem_addr, commit_size,
-                           OS::MemoryPermission::kNoAccess));
-  CHECK(OS::Free(mem_addr, kAllocationSize));
-}
-
 #ifdef V8_CC_GNU
 static uintptr_t sp_addr = 0;
 
@@ -68,7 +29,7 @@ void GetStackPointer(const v8::FunctionCallbackInfo<v8::Value>& args) {
 #elif V8_HOST_ARCH_MIPS64
   __asm__ __volatile__("sd $sp, %0" : "=g"(sp_addr));
 #elif defined(__s390x__) || defined(_ARCH_S390X)
-  __asm__ __volatile__("stg 15, %0" : "=m"(sp_addr));
+  __asm__ __volatile__("stg %%r15, %0" : "=m"(sp_addr));
 #elif defined(__s390__) || defined(_ARCH_S390)
   __asm__ __volatile__("st 15, %0" : "=m"(sp_addr));
 #elif defined(__PPC64__) || defined(_ARCH_PPC64)

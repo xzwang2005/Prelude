@@ -8,14 +8,18 @@
 #include "base/memory/ptr_util.h"
 #include "build/build_config.h"
 #include "ui/base/ime/mock_input_method.h"
+#include "ui/base/ui_base_features.h"
 #include "ui/gfx/switches.h"
 
 #if defined(OS_CHROMEOS)
 #include "ui/base/ime/input_method_chromeos.h"
 #elif defined(OS_WIN)
-#include "ui/base/ime/input_method_win.h"
+#include "ui/base/ime/input_method_win_imm32.h"
+#include "ui/base/ime/input_method_win_tsf.h"
 #elif defined(OS_MACOSX)
 #include "ui/base/ime/input_method_mac.h"
+#elif defined(OS_FUCHSIA)
+#include "ui/base/ime/input_method_fuchsia.h"
 #elif defined(USE_AURA) && defined(USE_X11)
 #include "ui/base/ime/input_method_auralinux.h"
 #else
@@ -55,9 +59,13 @@ std::unique_ptr<InputMethod> CreateInputMethod(
 #if defined(OS_CHROMEOS)
   return std::make_unique<InputMethodChromeOS>(delegate);
 #elif defined(OS_WIN)
-  return std::make_unique<InputMethodWin>(delegate, widget);
+  if (base::FeatureList::IsEnabled(features::kTSFImeSupport))
+    return std::make_unique<InputMethodWinTSF>(delegate, widget);
+  return std::make_unique<InputMethodWinImm32>(delegate, widget);
 #elif defined(OS_MACOSX)
   return std::make_unique<InputMethodMac>(delegate);
+#elif defined(OS_FUCHSIA)
+  return std::make_unique<InputMethodFuchsia>(delegate);
 #elif defined(USE_AURA) && defined(USE_X11)
   return std::make_unique<InputMethodAuraLinux>(delegate);
 #else

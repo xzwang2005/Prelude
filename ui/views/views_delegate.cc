@@ -5,7 +5,6 @@
 #include "ui/views/views_delegate.h"
 
 #include "base/command_line.h"
-#include "base/memory/ptr_util.h"
 #include "build/build_config.h"
 #include "ui/views/views_touch_selection_controller_factory.h"
 #include "ui/views/widget/native_widget_private.h"
@@ -49,8 +48,7 @@ ViewsDelegate* ViewsDelegate::GetInstance() {
 void ViewsDelegate::SaveWindowPlacement(const Widget* widget,
                                         const std::string& window_name,
                                         const gfx::Rect& bounds,
-                                        ui::WindowShowState show_state) {
-}
+                                        ui::WindowShowState show_state) {}
 
 bool ViewsDelegate::GetSavedWindowPlacement(
     const Widget* widget,
@@ -61,15 +59,13 @@ bool ViewsDelegate::GetSavedWindowPlacement(
 }
 
 void ViewsDelegate::NotifyAccessibilityEvent(View* view,
-                                             ui::AXEvent event_type) {
-}
+                                             ax::mojom::Event event_type) {}
 
 void ViewsDelegate::NotifyMenuItemFocused(const base::string16& menu_name,
                                           const base::string16& menu_item_name,
                                           int item_index,
                                           int item_count,
-                                          bool has_submenu) {
-}
+                                          bool has_submenu) {}
 
 ViewsDelegate::ProcessMenuAcceleratorResult
 ViewsDelegate::ProcessAcceleratorWhileMenuShowing(
@@ -79,6 +75,10 @@ ViewsDelegate::ProcessAcceleratorWhileMenuShowing(
 
 #if defined(OS_WIN)
 HICON ViewsDelegate::GetDefaultWindowIcon() const {
+  return nullptr;
+}
+
+HICON ViewsDelegate::GetSmallWindowIcon() const {
   return nullptr;
 }
 
@@ -96,17 +96,13 @@ NonClientFrameView* ViewsDelegate::CreateDefaultNonClientFrameView(
   return nullptr;
 }
 
-void ViewsDelegate::AddRef() {
-}
+void ViewsDelegate::AddRef() {}
 
-void ViewsDelegate::ReleaseRef() {
-}
+void ViewsDelegate::ReleaseRef() {}
 
-content::WebContents* ViewsDelegate::CreateWebContents(
-    content::BrowserContext* browser_context,
-    content::SiteInstance* site_instance) {
-  return nullptr;
-}
+void ViewsDelegate::OnBeforeWidgetInit(
+    Widget::InitParams* params,
+    internal::NativeWidgetDelegate* delegate) {}
 
 base::TimeDelta ViewsDelegate::GetTextfieldPasswordRevealDuration() {
   return base::TimeDelta();
@@ -138,6 +134,18 @@ int ViewsDelegate::GetAppbarAutohideEdges(HMONITOR monitor,
 
 bool ViewsDelegate::ShouldMirrorArrowsInRTL() const {
   return true;
+}
+
+void ViewsDelegate::AddPointerWatcher(PointerWatcher*, bool) {
+  NOTREACHED();
+}
+
+void ViewsDelegate::RemovePointerWatcher(PointerWatcher*) {
+  NOTREACHED();
+}
+
+bool ViewsDelegate::IsPointerWatcherSupported() const {
+  return false;
 }
 
 }  // namespace views

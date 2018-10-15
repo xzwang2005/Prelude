@@ -66,6 +66,12 @@ class TestButton : public Button, public ButtonListener {
 
   ~TestButton() override {}
 
+  KeyClickAction GetKeyClickActionForEvent(const ui::KeyEvent& event) override {
+    if (custom_key_click_action_ == KeyClickAction::CLICK_NONE)
+      return Button::GetKeyClickActionForEvent(event);
+    return custom_key_click_action_;
+  }
+
   void ButtonPressed(Button* sender, const ui::Event& event) override {
     pressed_ = true;
   }
@@ -87,6 +93,10 @@ class TestButton : public Button, public ButtonListener {
   int ink_drop_layer_add_count() { return ink_drop_layer_add_count_; }
   int ink_drop_layer_remove_count() { return ink_drop_layer_remove_count_; }
 
+  void set_custom_key_click_action(KeyClickAction custom_key_click_action) {
+    custom_key_click_action_ = custom_key_click_action;
+  }
+
   void Reset() {
     pressed_ = false;
     canceled_ = false;
@@ -101,6 +111,8 @@ class TestButton : public Button, public ButtonListener {
 
   int ink_drop_layer_add_count_ = 0;
   int ink_drop_layer_remove_count_ = 0;
+
+  KeyClickAction custom_key_click_action_ = KeyClickAction::CLICK_NONE;
 
   DISALLOW_COPY_AND_ASSIGN(TestButton);
 };
@@ -233,6 +245,19 @@ TEST_F(ButtonTest, HoverStateOnVisibilityChange) {
   button()->SetVisible(true);
   EXPECT_EQ(Button::STATE_NORMAL, button()->state());
 #endif  // !defined(OS_MACOSX) || defined(USE_AURA)
+}
+
+// Tests that the hover state is preserved during a view hierarchy update of a
+// button's child View.
+TEST_F(ButtonTest, HoverStatePreservedOnDescendantViewHierarchyChange) {
+  ui::test::EventGenerator generator(widget()->GetNativeWindow());
+  generator.MoveMouseTo(button()->GetBoundsInScreen().CenterPoint());
+
+  EXPECT_EQ(Button::STATE_HOVERED, button()->state());
+  Label* child = new Label(base::string16());
+  button()->AddChildView(child);
+  delete child;
+  EXPECT_EQ(Button::STATE_HOVERED, button()->state());
 }
 
 // Tests the different types of NotifyActions.
@@ -485,6 +510,58 @@ TEST_F(ButtonTest, InkDropAfterTryingToShowContextMenu) {
   EXPECT_EQ(InkDropState::ACTION_PENDING, ink_drop->GetTargetInkDropState());
 }
 
+TEST_F(ButtonTest, HideInkDropHighlightWhenRemoved) {
+  views::View test_container;
+  test_container.set_owned_by_client();
+  TestInkDrop* ink_drop = new TestInkDrop();
+  CreateButtonWithInkDrop(base::WrapUnique(ink_drop), false);
+  // Mark the button as owned by client so we can remove it from widget()
+  // without it being deleted.
+  button()->set_owned_by_client();
+
+  // Make sure that the button ink drop is hidden after the button gets removed.
+  widget()->SetContentsView(&test_container);
+  test_container.AddChildView(button());
+  ui::test::EventGenerator generator(widget()->GetNativeWindow());
+  generator.MoveMouseToInHost(2, 2);
+  EXPECT_TRUE(ink_drop->is_hovered());
+  // Set ink-drop state to ACTIVATED to make sure that removing the container
+  // sets it back to HIDDEN.
+  ink_drop->AnimateToState(InkDropState::ACTIVATED);
+  test_container.RemoveAllChildViews(false);
+  EXPECT_FALSE(ink_drop->is_hovered());
+  EXPECT_EQ(InkDropState::HIDDEN, ink_drop->GetTargetInkDropState());
+
+  // Make sure hiding the ink drop happens even if the button is indirectly
+  // being removed.
+  views::View parent_test_container;
+  parent_test_container.set_owned_by_client();
+  parent_test_container.AddChildView(&test_container);
+  test_container.AddChildView(button());
+  widget()->SetContentsView(&parent_test_container);
+
+  // Trigger hovering and then remove from the indirect parent. This should
+  // propagate down to Button which should remove the highlight effect.
+  EXPECT_FALSE(ink_drop->is_hovered());
+  generator.MoveMouseToInHost(10, 10);
+  EXPECT_TRUE(ink_drop->is_hovered());
+  // Set ink-drop state to ACTIVATED to make sure that removing the container
+  // sets it back to HIDDEN.
+  ink_drop->AnimateToState(InkDropState::ACTIVATED);
+  parent_test_container.RemoveAllChildViews(false);
+  EXPECT_EQ(InkDropState::HIDDEN, ink_drop->GetTargetInkDropState());
+  EXPECT_FALSE(ink_drop->is_hovered());
+
+  // Remove references to and delete button() which cannot be removed by owned
+  // containers as it's permanently set as owned by client.
+  test_container.RemoveAllChildViews(false);
+  delete button();
+
+  // Set the widget contents view to a new View so widget() doesn't contain a
+  // stale reference to the test containers that are about to go out of scope.
+  widget()->SetContentsView(new View());
+}
+
 // Tests that when button is set to notify on release, dragging mouse out and
 // back transitions ink drop states correctly.
 TEST_F(ButtonTest, InkDropShowHideOnMouseDraggedNotifyOnRelease) {
@@ -690,6 +767,27 @@ TEST_F(ButtonTest, ActionOnReturn) {
   ui::KeyEvent return_release(ui::ET_KEY_RELEASED, ui::VKEY_RETURN,
                               ui::EF_NONE);
   EXPECT_FALSE(button()->OnKeyReleased(return_release));
+}
+
+// Verify that a subclass may customize the action for a key pressed event.
+TEST_F(ButtonTest, CustomActionOnKeyPressedEvent) {
+  // Give focus to the button.
+  button()->SetFocusForPlatform();
+  button()->RequestFocus();
+  EXPECT_TRUE(button()->HasFocus());
+
+  // Set the button to handle any key pressed event as |CLICK_ON_KEY_PRESS|.
+  button()->set_custom_key_click_action(
+      Button::KeyClickAction::CLICK_ON_KEY_PRESS);
+
+  ui::KeyEvent control_press(ui::ET_KEY_PRESSED, ui::VKEY_CONTROL, ui::EF_NONE);
+  EXPECT_TRUE(button()->OnKeyPressed(control_press));
+  EXPECT_EQ(Button::STATE_NORMAL, button()->state());
+  EXPECT_TRUE(button()->pressed());
+
+  ui::KeyEvent control_release(ui::ET_KEY_RELEASED, ui::VKEY_CONTROL,
+                               ui::EF_NONE);
+  EXPECT_FALSE(button()->OnKeyReleased(control_release));
 }
 
 }  // namespace views

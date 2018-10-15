@@ -32,7 +32,8 @@ static std::string RoleToString(ERole role) {
 }
 
 AudioDeviceListenerWin::AudioDeviceListenerWin(const base::Closure& listener_cb)
-    : listener_cb_(listener_cb), tick_clock_(new base::DefaultTickClock()) {
+    : listener_cb_(listener_cb),
+      tick_clock_(base::DefaultTickClock::GetInstance()) {
   // CreateDeviceEnumerator can fail on some installations of Windows such
   // as "Windows Server 2008 R2" where the desktop experience isn't available.
   Microsoft::WRL::ComPtr<IMMDeviceEnumerator> device_enumerator(
@@ -134,6 +135,10 @@ STDMETHODIMP AudioDeviceListenerWin::OnDefaultDeviceChanged(
     listener_cb_.Run();
     did_run_listener_cb = true;
   }
+
+  base::SystemMonitor* monitor = base::SystemMonitor::Get();
+  if (monitor)
+    monitor->ProcessDevicesChanged(base::SystemMonitor::DEVTYPE_AUDIO);
 
   DVLOG(1) << "OnDefaultDeviceChanged() "
            << "new_default_device: "

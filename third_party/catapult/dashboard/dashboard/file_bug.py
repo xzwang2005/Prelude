@@ -6,6 +6,7 @@
 
 import json
 import logging
+import re
 
 from google.appengine.api import app_identity
 from google.appengine.api import urlfetch
@@ -15,13 +16,18 @@ from google.appengine.ext import ndb
 from dashboard import auto_bisect
 from dashboard import oauth2_decorator
 from dashboard import short_uri
+from dashboard.common import namespaced_stored_object
 from dashboard.common import request_handler
 from dashboard.common import utils
-from dashboard.models import alert_group
-from dashboard.models import anomaly
 from dashboard.models import bug_data
 from dashboard.models import bug_label_patterns
+from dashboard.models import histogram
+from dashboard.services import crrev_service
+from dashboard.services import gitiles_service
 from dashboard.services import issue_tracker_service
+
+from tracing.value.diagnostics import reserved_infos
+
 
 # A list of bug labels to suggest for all performance regression bugs.
 _DEFAULT_LABELS = [
@@ -143,7 +149,10 @@ class FileBugHandler(request_handler.RequestHandler):
     bug_id = new_bug_response['bug_id']
     bug_data.Bug(id=bug_id).put()
 
-    alert_group.ModifyAlertsAndAssociatedGroups(alerts, bug_id=bug_id)
+    for a in alerts:
+      a.bug_id = bug_id
+
+    ndb.put_multi(alerts)
 
     comment_body = _AdditionalDetails(bug_id, alerts)
     # Add the bug comment with the service account, so that there are no
@@ -155,13 +164,17 @@ class FileBugHandler(request_handler.RequestHandler):
     template_params = {'bug_id': bug_id}
     if all(k.kind() == 'Anomaly' for k in alert_keys):
       logging.info('Kicking bisect for bug ' + str(bug_id))
-      bisect_result = auto_bisect.StartNewBisectForBug(bug_id)
-      if 'error' in bisect_result:
-        logging.info('Failed to kick bisect for ' + str(bug_id))
-        template_params['bisect_error'] = bisect_result['error']
+      culprit_rev = _GetSingleCLForAnomalies(alerts)
+      if culprit_rev is not None:
+        _AssignBugToCLAuthor(bug_id, alerts[0], dashboard_issue_tracker_service)
       else:
-        logging.info('Successfully kicked bisect for ' + str(bug_id))
-        template_params.update(bisect_result)
+        bisect_result = auto_bisect.StartNewBisectForBug(bug_id)
+        if 'error' in bisect_result:
+          logging.info('Failed to kick bisect for ' + str(bug_id))
+          template_params['bisect_error'] = bisect_result['error']
+        else:
+          logging.info('Successfully kicked bisect for ' + str(bug_id))
+          template_params.update(bisect_result)
     else:
       kinds = set()
       for k in alert_keys:
@@ -173,6 +186,19 @@ class FileBugHandler(request_handler.RequestHandler):
     self.RenderHtml('bug_result.html', template_params)
 
 
+def _GetDocsForTest(test):
+  test_suite = utils.TestKey('/'.join(test.id().split('/')[:3]))
+
+  docs = histogram.SparseDiagnostic.GetMostRecentDataByNamesSync(
+      test_suite, [reserved_infos.DOCUMENTATION_URLS.name])
+
+  if not docs:
+    return None
+
+  docs = docs[reserved_infos.DOCUMENTATION_URLS.name].get('values')
+  return docs[0]
+
+
 def _AdditionalDetails(bug_id, alerts):
   """Returns a message with additional information to add to a bug."""
   base_url = '%s/group_report' % _GetServerURL()
@@ -182,12 +208,30 @@ def _AdditionalDetails(bug_id, alerts):
   comment = '<b>All graphs for this bug:</b>\n  %s\n\n' % bug_page_url
   comment += ('(For debugging:) Original alerts at time of bug-filing:\n  %s\n'
               % alerts_url)
-  bot_names = anomaly.GetBotNamesFromAlerts(alerts)
+  bot_names = {a.bot_name for a in alerts}
   if bot_names:
     comment += '\n\nBot(s) for this bug\'s original alert(s):\n\n'
     comment += '\n'.join(sorted(bot_names))
   else:
     comment += '\nCould not extract bot names from the list of alerts.'
+
+  docs_by_suite = {}
+  for a in alerts:
+    test = a.GetTestMetadataKey()
+
+    suite = test.id().split('/')[2]
+    if suite in docs_by_suite:
+      continue
+
+    docs = _GetDocsForTest(test)
+    if not docs:
+      continue
+
+    docs_by_suite[suite] = docs
+
+  for k, v in docs_by_suite.iteritems():
+    comment += '\n\n%s - %s:\n  %s' % (k, v[0], v[1])
+
   return comment
 
 
@@ -331,3 +375,59 @@ def _GetAllCurrentVersionsFromOmahaProxy():
   except ValueError:
     logging.error('OmahaProxy did not return valid JSON.')
   return []
+
+
+def _GetSingleCLForAnomalies(alerts):
+  """If all anomalies were caused by the same culprit, return it. Else None."""
+  revision = alerts[0].start_revision
+  if not all(a.start_revision == revision and
+             a.end_revision == revision for a in alerts):
+    return None
+  return revision
+
+def _AssignBugToCLAuthor(bug_id, alert, service):
+  """Assigns the bug to the author of the given revision."""
+  repository_url = None
+  repositories = namespaced_stored_object.Get('repositories')
+  test_path = utils.TestPath(alert.test)
+  if test_path.startswith('ChromiumPerf'):
+    repository_url = repositories['chromium']['repository_url']
+  elif test_path.startswith('ClankInternal'):
+    repository_url = repositories['clank']['repository_url']
+  if not repository_url:
+    # Can't get committer info from this repository.
+    return
+
+  rev = str(auto_bisect.GetRevisionForBisect(alert.end_revision, alert.test))
+  # TODO(sullivan, dtu): merge this with similar pinoint code.
+  if (re.match(r'^[0-9]{5,7}$', rev) and
+      repository_url == repositories['chromium']['repository_url']):
+    # This is a commit position, need the git hash.
+    result = crrev_service.GetNumbering(
+        number=rev,
+        numbering_identifier='refs/heads/master',
+        numbering_type='COMMIT_POSITION',
+        project='chromium',
+        repo='chromium/src')
+    rev = result['git_sha']
+  if not re.match(r'[a-fA-F0-9]{40}$', rev):
+    # This still isn't a git hash; can't assign bug.
+    return
+
+  commit_info = gitiles_service.CommitInfo(repository_url, rev)
+  author = commit_info['author']['email']
+  sheriff = utils.GetSheriffForAutorollCommit(commit_info)
+  if sheriff:
+    service.AddBugComment(
+        bug_id,
+        ('Assigning to sheriff %s because this autoroll is '
+         'the only CL in range:\n%s') % (sheriff, commit_info['message']),
+        status='Assigned',
+        owner=sheriff)
+  else:
+    service.AddBugComment(
+        bug_id,
+        'Assigning to %s because this is the only CL in range:\n%s' % (
+            author, commit_info['message']),
+        status='Assigned',
+        owner=author)

@@ -5,7 +5,7 @@
  * Use of this source code is governed by a BSD-style license that can be
  * found in the LICENSE file.
  */
-#include "SampleCode.h"
+#include "Sample.h"
 #include "Resources.h"
 #include "SkCanvas.h"
 #include "SkImage.h"
@@ -16,7 +16,7 @@
 ////////////////////////////////////////////////////////////////////////////
 // Sample to demonstrate tonal color shadows
 
-class ShadowColorView : public SampleView {
+class ShadowColorView : public Sample {
     SkPath    fRectPath;
     int       fZIndex;
 
@@ -42,15 +42,14 @@ protected:
         fRectPath.addRect(SkRect::MakeXYWH(-50, -50, 100, 100));
     }
 
-    // overrides from SkEventSink
-    bool onQuery(SkEvent* evt) override {
-        if (SampleCode::TitleQ(*evt)) {
-            SampleCode::TitleR(evt, "ShadowColor");
+    bool onQuery(Sample::Event* evt) override {
+        if (Sample::TitleQ(*evt)) {
+            Sample::TitleR(evt, "ShadowColor");
             return true;
         }
 
         SkUnichar uni;
-        if (SampleCode::CharQ(*evt, &uni)) {
+        if (Sample::CharQ(*evt, &uni)) {
             bool handled = false;
             switch (uni) {
                 case 'W':
@@ -111,10 +110,10 @@ protected:
         }
 
         if (fTwoPassColor) {
-            flags |= SkShadowFlags::kDisableTonalColor_ShadowFlag;
+            SkColor ambientColor = SkColorSetARGB(ambientAlpha*255, 0, 0, 0);
             SkShadowUtils::DrawShadow(canvas, path, zPlaneParams,
                                       lightPos, lightWidth,
-                                      ambientAlpha, 0, SK_ColorBLACK, flags);
+                                      ambientColor, SK_ColorTRANSPARENT, flags);
 
             if (paint.getColor() != SK_ColorBLACK) {
                 SkColor color = paint.getColor();
@@ -126,19 +125,31 @@ protected:
                 SkScalar luminance = 0.5f*(max + min) / 255.f;
                 SkScalar alpha = (.6 - .4*luminance)*luminance*luminance + 0.3f;
                 spotAlpha -= (alpha - 0.3f)*.5f;
+                SkColor spotColor = SkColorSetARGB(alpha*SkColorGetA(color), SkColorGetR(color),
+                                                   SkColorGetG(color), SkColorGetB(color));
 
                 SkShadowUtils::DrawShadow(canvas, path, zPlaneParams,
                                           lightPos, lightWidth,
-                                          0, alpha, paint.getColor(), flags);
+                                          SK_ColorTRANSPARENT, spotColor, flags);
             }
 
+            SkColor spotGreyscale = SkColorSetARGB(spotAlpha * 255, 0, 0, 0);
             SkShadowUtils::DrawShadow(canvas, path, zPlaneParams,
                                       lightPos, lightWidth,
-                                      0, spotAlpha, SK_ColorBLACK, flags);
+                                      SK_ColorTRANSPARENT, spotGreyscale, flags);
         } else {
+            SkColor color = paint.getColor();
+            SkColor baseAmbient = SkColorSetARGB(ambientAlpha*SkColorGetA(color),
+                                                 SkColorGetR(color), SkColorGetG(color),
+                                                 SkColorGetB(color));
+            SkColor baseSpot = SkColorSetARGB(spotAlpha*SkColorGetA(color),
+                                              SkColorGetR(color), SkColorGetG(color),
+                                              SkColorGetB(color));
+            SkColor tonalAmbient, tonalSpot;
+            SkShadowUtils::ComputeTonalColors(baseAmbient, baseSpot, &tonalAmbient, &tonalSpot);
             SkShadowUtils::DrawShadow(canvas, path, zPlaneParams,
                                       lightPos, lightWidth,
-                                      ambientAlpha, spotAlpha, paint.getColor(), flags);
+                                      tonalAmbient, tonalSpot, flags);
         }
         if (fShowObject) {
             canvas->drawPath(path, paint);
@@ -213,10 +224,9 @@ protected:
     }
 
 private:
-    typedef SampleView INHERITED;
+    typedef Sample INHERITED;
 };
 
 //////////////////////////////////////////////////////////////////////////////
 
-static SkView* MyFactory() { return new ShadowColorView; }
-static SkViewRegister reg(MyFactory);
+DEF_SAMPLE( return new ShadowColorView(); )

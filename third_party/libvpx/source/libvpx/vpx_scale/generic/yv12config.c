@@ -16,8 +16,8 @@
 #include "vpx_ports/mem.h"
 
 /****************************************************************************
-*  Exports
-****************************************************************************/
+ *  Exports
+ ****************************************************************************/
 
 /****************************************************************************
  *
@@ -54,7 +54,7 @@ int vp8_yv12_realloc_frame_buffer(YV12_BUFFER_CONFIG *ybf, int width,
     int uv_width = aligned_width >> 1;
     int uv_height = aligned_height >> 1;
     /** There is currently a bunch of code which assumes
-      *  uv_stride == y_stride/2, so enforce this here. */
+     *  uv_stride == y_stride/2, so enforce this here. */
     int uv_stride = y_stride >> 1;
     int uvplane_size = (uv_height + border) * uv_stride;
     const int frame_size = yplane_size + 2 * uvplane_size;
@@ -142,6 +142,10 @@ int vpx_realloc_frame_buffer(YV12_BUFFER_CONFIG *ybf, int width, int height,
                              int border, int byte_alignment,
                              vpx_codec_frame_buffer_t *fb,
                              vpx_get_frame_buffer_cb_fn_t cb, void *cb_priv) {
+#if CONFIG_SIZE_LIMIT
+  if (width > DECODE_WIDTH_LIMIT || height > DECODE_HEIGHT_LIMIT) return -1;
+#endif
+
   if (ybf) {
     const int vp9_byte_align = (byte_alignment == 0) ? 1 : byte_alignment;
     const int aligned_width = (width + 7) & ~7;

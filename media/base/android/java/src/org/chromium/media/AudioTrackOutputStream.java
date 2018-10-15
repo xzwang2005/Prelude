@@ -71,7 +71,7 @@ class AudioTrackOutputStream {
     private int mLeftSize;
 
     class WorkerThread extends Thread {
-        private volatile boolean mDone = false;
+        private volatile boolean mDone;
 
         public void finish() {
             mDone = true;
@@ -249,7 +249,7 @@ class AudioTrackOutputStream {
     void setVolume(double volume) {
         // Chrome sends the volume in the range [0, 1.0], whereas Android
         // expects the volume to be within [0, getMaxVolume()].
-        float scaledVolume = (float) (volume * mAudioTrack.getMaxVolume());
+        float scaledVolume = (float) (volume * AudioTrack.getMaxVolume());
         mAudioTrack.setStereoVolume(scaledVolume, scaledVolume);
     }
 

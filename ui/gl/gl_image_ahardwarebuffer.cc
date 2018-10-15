@@ -13,6 +13,15 @@ GLImageAHardwareBuffer::GLImageAHardwareBuffer(const gfx::Size& size)
 
 GLImageAHardwareBuffer::~GLImageAHardwareBuffer() {}
 
+bool GLImageAHardwareBuffer::Initialize(AHardwareBuffer* buffer,
+                                        bool preserved) {
+  EGLint attribs[] = {EGL_IMAGE_PRESERVED_KHR, preserved ? EGL_TRUE : EGL_FALSE,
+                      EGL_NONE};
+  EGLClientBuffer client_buffer = eglGetNativeClientBufferANDROID(buffer);
+  return GLImageEGL::Initialize(EGL_NO_CONTEXT, EGL_NATIVE_BUFFER_ANDROID,
+                                client_buffer, attribs);
+}
+
 unsigned GLImageAHardwareBuffer::GetInternalFormat() {
   return GL_RGBA;
 }
@@ -32,7 +41,9 @@ bool GLImageAHardwareBuffer::ScheduleOverlayPlane(
     int z_order,
     gfx::OverlayTransform transform,
     const gfx::Rect& bounds_rect,
-    const gfx::RectF& crop_rect) {
+    const gfx::RectF& crop_rect,
+    bool enable_blend,
+    std::unique_ptr<gfx::GpuFence> gpu_fence) {
   return false;
 }
 

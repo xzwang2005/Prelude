@@ -11,7 +11,6 @@ import os
 
 
 DEPS = [
-  'core',
   'env',
   'flavor',
   'recipe_engine/file',
@@ -25,6 +24,23 @@ DEPS = [
   'run',
   'vars',
 ]
+
+
+def upload_perf_results(buildername):
+  if 'Release' not in buildername:
+    return False
+  skip_upload_bots = [
+    'ASAN',
+    'Coverage',
+    'MSAN',
+    'TSAN',
+    'UBSAN',
+    'Valgrind',
+  ]
+  for s in skip_upload_bots:
+    if s in buildername:
+      return False
+  return True
 
 
 def nanobench_flags(api, bot):
@@ -44,12 +60,14 @@ def nanobench_flags(api, bot):
     args.append('--nogpu')
     configs.extend(['8888', 'nonrendering'])
 
-    if '-arm-' not in bot:
-      # For Android CPU tests, these take too long and cause the task to time
-      # out.
-      configs += [ 'f16', 'srgb' ]
-    if '-GCE-' in bot:
-      configs += [ '565' ]
+    if 'BonusConfigs' in bot or ('SAN' in bot and 'GCE' in bot):
+      configs += [
+          'f16',
+          'srgb',
+          'esrgb',
+          'narrow',
+          'enarrow',
+      ]
 
   elif api.vars.builder_cfg.get('cpu_or_gpu') == 'GPU':
     args.append('--nocpu')
@@ -81,24 +99,12 @@ def nanobench_flags(api, bot):
           'Quadro' in bot or
           'GTX' in bot or
           ('GT610' in bot and 'Ubuntu17' not in bot)):
-        configs.extend([gl_prefix + 'nvpr' + sample_count,
-                        gl_prefix + 'nvprdit' + sample_count])
+        configs.extend([gl_prefix + 'nvpr' + sample_count])
 
     # We want to test both the OpenGL config and the GLES config on Linux Intel:
     # GL is used by Chrome, GLES is used by ChromeOS.
     if 'Intel' in bot and api.vars.is_linux:
       configs.extend(['gles', 'glessrgb'])
-
-    # The following devices do not support glessrgb.
-    if 'glessrgb' in configs:
-      if ('IntelHD405'    in bot or
-          'IntelIris540'  in bot or
-          'IntelBayTrail' in bot or
-          'IntelHD2000'   in bot or
-          'AndroidOne'    in bot or
-          'Nexus7'        in bot or
-          'NexusPlayer'   in bot):
-        configs.remove('glessrgb')
 
     if 'CommandBuffer' in bot:
       configs = ['commandbuffer']
@@ -110,6 +116,11 @@ def nanobench_flags(api, bot):
       configs = ['angle_d3d11_es2']
       if sample_count is not '':
         configs.append('angle_d3d11_es2_msaa' + sample_count)
+      if 'QuadroP400' in bot:
+        # See skia:7823 and chromium:693090.
+        configs.append('angle_gl_es2')
+        if sample_count is not '':
+          configs.append('angle_gl_es2_msaa' + sample_count)
 
     if 'ChromeOS' in bot:
       # Just run GLES for now - maybe add gles_msaa4 in the future
@@ -118,9 +129,9 @@ def nanobench_flags(api, bot):
   args.append('--config')
   args.extend(configs)
 
-  # By default, we test with GPU threading enabled. Leave PixelC devices
-  # running without threads, just to get some coverage of that code path.
-  if 'PixelC' in bot:
+  # By default, we test with GPU threading enabled, unless specifically
+  # disabled.
+  if 'NoGPUThreads' in bot:
     args.extend(['--gpuThreads', '0'])
 
   if 'Valgrind' in bot:
@@ -148,8 +159,6 @@ def nanobench_flags(api, bot):
     match.append('~keymobi')
     match.append('~path_hairline')
     match.append('~GLInstancedArraysBench') # skia:4714
-  if 'IntelIris540' in bot and 'ANGLE' in bot:
-    match.append('~tile_image_filter_tiled_64')  # skia:6082
   if 'Vulkan' in bot and 'IntelIris540' in bot and 'Win' in bot:
     # skia:6398
     match.append('~GM_varied_text_clipped_lcd')
@@ -159,31 +168,44 @@ def nanobench_flags(api, bot):
     match.append('~blendmode_mask_SrcOut')
     match.append('~blendmode_mask_Src')
     match.append('~fontscaler_lcd')
-    match.append('~rotated_rects_aa_alternating_transparent_and_opaque_src')
     match.append('~rotated_rects_aa_changing_transparent_src')
     match.append('~rotated_rects_aa_same_transparent_src')
-    match.append('~shadermask_LCD_FF')
     match.append('~srcmode_rects_1')
-    match.append('~text_16_LCD_88')
-    match.append('~text_16_LCD_BK')
-    match.append('~text_16_LCD_FF')
-    match.append('~text_16_LCD_WT')
+    if 'Release' in bot:
+      match.append('~rotated_rects_aa_alternating_transparent_and_opaque_src')
+      match.append('~shadermask_LCD_FF')
+      match.append('~text_16_LCD_88')
+      match.append('~text_16_LCD_BK')
+      match.append('~text_16_LCD_FF')
+      match.append('~text_16_LCD_WT')
     # skia:6863
     match.append('~desk_skbug6850overlay2')
     match.append('~desk_googlespreadsheet')
+    match.append('~desk_carsvg')
+  if 'MoltenVK' in bot:
+    # skbug.com/7962
+    match.append('~^path_text_clipped_uncached$')
+    match.append('~^path_text_uncached$')
   if ('Intel' in bot and api.vars.is_linux and not 'Vulkan' in bot):
     # TODO(dogben): Track down what's causing bots to die.
     verbose = True
   if 'IntelHD405' in bot and api.vars.is_linux and 'Vulkan' in bot:
     # skia:7322
+    match.append('~desk_carsvg.skp_1')
     match.append('~desk_tiger8svg.skp_1')
+    match.append('~desk_wowwiki.skp')
+    match.append('~keymobi_booking_com.skp_1')
+    match.append('~keymobi_booking_com.skp_1_mpd')
+    match.append('~keymobi_sfgate.skp_1')
     match.append('~keymobi_techcrunch_com.skp_1.1')
+    match.append('~keymobi_techcrunch.skp_1.1')
+    match.append('~keymobi_techcrunch.skp_1.1_mpd')
     match.append('~tabl_gamedeksiam.skp_1.1')
     match.append('~tabl_pravda.skp_1')
     match.append('~top25desk_ebay_com.skp_1.1')
-  if 'Vulkan' in bot and 'NexusPlayer' in bot:
-    match.append('~blendmode_') # skia:6691
-  if 'ASAN' in bot and 'CPU' in bot:
+    match.append('~top25desk_ebay.skp_1.1')
+    match.append('~top25desk_ebay.skp_1.1_mpd')
+  if ('ASAN' in bot or 'UBSAN' in bot) and 'CPU' in bot:
     # floor2int_undef benches undefined behavior, so ASAN correctly complains.
     match.append('~^floor2int_undef$')
 
@@ -221,14 +243,15 @@ def nanobench_flags(api, bot):
 
 def perf_steps(api):
   """Run Skia benchmarks."""
-  if api.vars.upload_perf_results:
+  b = api.properties['buildername']
+  if upload_perf_results(b):
     api.flavor.create_clean_device_dir(
         api.flavor.device_dirs.perf_data_dir)
 
   # Run nanobench.
   properties = [
     '--properties',
-    'gitHash',      api.vars.got_revision,
+    'gitHash', api.properties['revision'],
   ]
   if api.vars.is_trybot:
     properties.extend([
@@ -264,24 +287,27 @@ def perf_steps(api):
     args.extend([
       '-i', api.flavor.device_dirs.resource_dir,
       '--images', api.flavor.device_path_join(
-          api.flavor.device_dirs.resource_dir, 'color_wheel.jpg'),
+          api.flavor.device_dirs.resource_dir, 'images', 'color_wheel.jpg'),
       '--skps',  api.flavor.device_dirs.skp_dir,
       '--pre_log',
-      '--match', # skia:6581
+      '--match', # skia:6687
       '~matrixconvolution',
       '~blur_image_filter',
       '~blur_0.01',
       '~GM_animated-image-blurs',
       '~blendmode_mask_',
+      '~desk_carsvg.skp',
       '~^path_text_clipped', # Bot times out; skia:7190
+      '~shapes_rrect_inner_rrect_50_500x500', # skia:7551
+      '~compositing_images',
     ])
 
-  if api.vars.upload_perf_results:
+  if upload_perf_results(b):
     now = api.time.utcnow()
     ts = int(calendar.timegm(now.utctimetuple()))
     json_path = api.flavor.device_path_join(
         api.flavor.device_dirs.perf_data_dir,
-        'nanobench_%s_%d.json' % (api.vars.got_revision, ts))
+        'nanobench_%s_%d.json' % (api.properties['revision'], ts))
     args.extend(['--outResultsFile', json_path])
     args.extend(properties)
 
@@ -292,24 +318,27 @@ def perf_steps(api):
         args.extend([k, api.vars.builder_cfg[k]])
 
   # See skia:2789.
-  extra_config_parts = api.vars.builder_cfg.get('extra_config', '').split('_')
-  if 'AbandonGpuContext' in extra_config_parts:
+  if 'AbandonGpuContext' in api.vars.extra_tokens:
     args.extend(['--abandonGpuContext'])
 
   api.run(api.flavor.step, target, cmd=args,
           abort_on_failure=False)
 
   # Copy results to swarming out dir.
-  if api.vars.upload_perf_results:
-    api.file.ensure_directory('makedirs perf_dir',
-                              api.path.dirname(api.vars.perf_data_dir))
+  if upload_perf_results(b):
+    api.file.ensure_directory(
+        'makedirs perf_dir',
+        api.flavor.host_dirs.perf_data_dir)
     api.flavor.copy_directory_contents_to_host(
         api.flavor.device_dirs.perf_data_dir,
-        api.vars.perf_data_dir)
+        api.flavor.host_dirs.perf_data_dir)
 
 
 def RunSteps(api):
-  api.core.setup()
+  api.vars.setup()
+  api.file.ensure_directory('makedirs tmp_dir', api.vars.tmp_dir)
+  api.flavor.setup()
+
   env = {}
   if 'iOS' in api.vars.builder_name:
     env['IOS_BUNDLE_ID'] = 'com.google.nanobench'
@@ -319,7 +348,7 @@ def RunSteps(api):
       if 'Chromecast' in api.vars.builder_name:
         api.flavor.install(resources=True, skps=True)
       else:
-        api.flavor.install_everything()
+        api.flavor.install(skps=True, images=True, svgs=True, resources=True)
       perf_steps(api)
     finally:
       api.flavor.cleanup_steps()
@@ -327,38 +356,27 @@ def RunSteps(api):
 
 
 TEST_BUILDERS = [
-  ('Perf-Android-Clang-NVIDIA_Shield-GPU-TegraX1-arm64-Debug-All-'
-   'Android_Vulkan'),
   'Perf-Android-Clang-Nexus5-GPU-Adreno330-arm-Debug-All-Android',
-  'Perf-Android-Clang-Nexus5x-GPU-Adreno418-arm64-Release-All-Android',
-  'Perf-Android-Clang-Nexus7-CPU-Tegra3-arm-Release-All-Android',
-  'Perf-Android-Clang-Nexus7-GPU-Tegra3-arm-Release-All-Android',
-  'Perf-Android-Clang-NexusPlayer-GPU-PowerVR-x86-Release-All-Android',
-  'Perf-Android-Clang-NexusPlayer-GPU-PowerVR-x86-Release-All-Android_Vulkan',
-  'Perf-Android-Clang-PixelC-GPU-TegraX1-arm64-Release-All-Android_Skpbench',
+  ('Perf-Android-Clang-Nexus5x-GPU-Adreno418-arm64-Release-All-'
+   'Android_NoGPUThreads'),
   'Perf-ChromeOS-Clang-ASUSChromebookFlipC100-GPU-MaliT764-arm-Release-All',
-  'Perf-Chromecast-GCC-Chorizo-CPU-Cortex_A7-arm-Debug-All',
-  'Perf-Chromecast-GCC-Chorizo-GPU-Cortex_A7-arm-Release-All',
+  'Perf-Chromecast-Clang-Chorizo-CPU-Cortex_A7-arm-Debug-All',
+  'Perf-Chromecast-Clang-Chorizo-GPU-Cortex_A7-arm-Release-All',
+  'Perf-Debian9-Clang-GCE-CPU-AVX2-x86_64-Debug-All',
   'Perf-Debian9-Clang-GCE-CPU-AVX2-x86_64-Debug-All-ASAN',
-  'Perf-Debian9-Clang-GCE-CPU-AVX2-x86_64-Release-All',
-  'Perf-Mac-Clang-MacMini7.1-CPU-AVX-x86_64-Release-All',
-  'Perf-Mac-Clang-MacMini7.1-GPU-IntelIris5100-x86_64-Release-All',
+  'Perf-Debian9-Clang-GCE-CPU-AVX2-x86_64-Release-All-BonusConfigs',
+  'Perf-Debian9-Clang-NUC5PPYH-GPU-IntelHD405-x86_64-Debug-All-Vulkan',
+  'Perf-Debian9-Clang-NUC7i5BNK-GPU-IntelIris640-x86_64-Release-All',
   ('Perf-Mac-Clang-MacMini7.1-GPU-IntelIris5100-x86_64-Release-All-'
-   'CommandBuffer'),
-  'Perf-Ubuntu16-Clang-NUC5PPYH-GPU-IntelHD405-x86_64-Debug-All-Vulkan',
-  'Perf-Ubuntu16-Clang-NUC6i5SYK-GPU-IntelIris540-x86_64-Debug-All-Vulkan',
-  'Perf-Ubuntu16-Clang-NUC6i5SYK-GPU-IntelIris540-x86_64-Release-All',
+    'CommandBuffer'),
+  ('Perf-Mac-Clang-MacBookPro11.5-GPU-RadeonHD8870M-x86_64-Release-All-'
+   'MoltenVK_Vulkan'),
   ('Perf-Ubuntu17-GCC-Golo-GPU-QuadroP400-x86_64-Release-All-'
-   'Valgrind_AbandonGpuContext_SK_CPU_LIMIT_SSE41'),
-  ('Perf-Ubuntu17-GCC-Golo-GPU-QuadroP400-x86_64-Release-All-'
-   'Valgrind_SK_CPU_LIMIT_SSE41'),
-  'Perf-Win10-Clang-AlphaR2-GPU-RadeonR9M470X-x86_64-Release-All-ANGLE',
+    'Valgrind_AbandonGpuContext_SK_CPU_LIMIT_SSE41'),
+  'Perf-Win10-Clang-Golo-GPU-QuadroP400-x86_64-Release-All-ANGLE',
   'Perf-Win10-Clang-NUC6i5SYK-GPU-IntelIris540-x86_64-Release-All-ANGLE',
   'Perf-Win10-Clang-NUC6i5SYK-GPU-IntelIris540-x86_64-Release-All-Vulkan',
-  'Perf-Win10-Clang-ShuttleC-GPU-GTX960-x86_64-Release-All-ANGLE',
-  'Perf-Win2016-MSVC-GCE-CPU-AVX2-x86_64-Debug-All',
-  'Perf-Win2016-MSVC-GCE-CPU-AVX2-x86_64-Release-All',
-  'Perf-iOS-Clang-iPadPro-GPU-GT7800-arm64-Release-All',
+  'Perf-iOS-Clang-iPadPro-GPU-PowerVRGT7800-arm64-Release-All',
 ]
 
 
@@ -421,66 +439,4 @@ def GenTests(api):
                                      'svg', 'VERSION'),
         api.path['start_dir'].join('tmp', 'uninteresting_hashes.txt')
     )
-  )
-
-  builder = ('Perf-Android-Clang-NexusPlayer-CPU-Moorefield-x86-Debug-All-' +
-             'Android')
-  yield (
-    api.test('failed_push') +
-    api.properties(buildername=builder,
-                   revision='abc123',
-                   path_config='kitchen',
-                   swarm_out_dir='[SWARM_OUT_DIR]') +
-    api.path.exists(
-        api.path['start_dir'].join('skia'),
-        api.path['start_dir'].join('skia', 'infra', 'bots', 'assets',
-                                     'skimage', 'VERSION'),
-        api.path['start_dir'].join('skia', 'infra', 'bots', 'assets',
-                                     'skp', 'VERSION'),
-        api.path['start_dir'].join('skia', 'infra', 'bots', 'assets',
-                                     'svg', 'VERSION'),
-        api.path['start_dir'].join('tmp', 'uninteresting_hashes.txt')
-    ) +
-    api.step_data('push [START_DIR]/skia/resources/* '+
-                  '/sdcard/revenge_of_the_skiabot/resources', retcode=1)
-  )
-
-  yield (
-    api.test('cpu_scale_failed_once') +
-    api.properties(buildername=builder,
-                   revision='abc123',
-                   path_config='kitchen',
-                   swarm_out_dir='[SWARM_OUT_DIR]') +
-    api.path.exists(
-        api.path['start_dir'].join('skia'),
-        api.path['start_dir'].join('skia', 'infra', 'bots', 'assets',
-                                     'skimage', 'VERSION'),
-        api.path['start_dir'].join('skia', 'infra', 'bots', 'assets',
-                                     'skp', 'VERSION'),
-        api.path['start_dir'].join('skia', 'infra', 'bots', 'assets',
-                                     'svg', 'VERSION'),
-        api.path['start_dir'].join('tmp', 'uninteresting_hashes.txt')
-    ) +
-    api.step_data('Scale CPU to 0.600000', retcode=1)
-  )
-
-  yield (
-    api.test('cpu_scale_failed') +
-    api.properties(buildername=builder,
-                   revision='abc123',
-                   path_config='kitchen',
-                   swarm_out_dir='[SWARM_OUT_DIR]') +
-    api.path.exists(
-        api.path['start_dir'].join('skia'),
-        api.path['start_dir'].join('skia', 'infra', 'bots', 'assets',
-                                     'skimage', 'VERSION'),
-        api.path['start_dir'].join('skia', 'infra', 'bots', 'assets',
-                                     'skp', 'VERSION'),
-        api.path['start_dir'].join('skia', 'infra', 'bots', 'assets',
-                                     'svg', 'VERSION'),
-        api.path['start_dir'].join('tmp', 'uninteresting_hashes.txt')
-    ) +
-    api.step_data('Scale CPU to 0.600000', retcode=1)+
-    api.step_data('Scale CPU to 0.600000 (attempt 2)', retcode=1)+
-    api.step_data('Scale CPU to 0.600000 (attempt 3)', retcode=1)
   )

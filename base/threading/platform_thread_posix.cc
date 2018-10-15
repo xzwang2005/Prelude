@@ -9,7 +9,6 @@
 #include <sched.h>
 #include <stddef.h>
 #include <stdint.h>
-#include <sys/resource.h>
 #include <sys/time.h>
 #include <sys/types.h>
 #include <unistd.h>
@@ -20,9 +19,13 @@
 #include "base/lazy_instance.h"
 #include "base/logging.h"
 #include "base/threading/platform_thread_internal_posix.h"
+#include "base/threading/scoped_blocking_call.h"
 #include "base/threading/thread_id_name_manager.h"
-#include "base/threading/thread_restrictions.h"
 #include "build/build_config.h"
+
+#if !defined(OS_MACOSX) && !defined(OS_FUCHSIA) && !defined(OS_NACL)
+#include "base/posix/can_lower_nice_to.h"
+#endif
 
 #if defined(OS_LINUX)
 #include <sys/syscall.h>
@@ -30,6 +33,8 @@
 
 #if defined(OS_FUCHSIA)
 #include <zircon/process.h>
+#else
+#include <sys/resource.h>
 #endif
 
 namespace base {
@@ -225,7 +230,7 @@ void PlatformThread::Join(PlatformThreadHandle thread_handle) {
   // Joining another thread may block the current thread for a long time, since
   // the thread referred to by |thread_handle| may still be running long-lived /
   // blocking tasks.
-  AssertBlockingAllowed();
+  base::ScopedBlockingCall scoped_blocking_call(base::BlockingType::MAY_BLOCK);
   CHECK_EQ(0, pthread_join(thread_handle.platform_handle(), nullptr));
 }
 
@@ -234,18 +239,17 @@ void PlatformThread::Detach(PlatformThreadHandle thread_handle) {
   CHECK_EQ(0, pthread_detach(thread_handle.platform_handle()));
 }
 
-// Mac has its own Set/GetCurrentThreadPriority() implementations.
-#if !defined(OS_MACOSX)
+// Mac and Fuchsia have their own Set/GetCurrentThreadPriority()
+// implementations.
+#if !defined(OS_MACOSX) && !defined(OS_FUCHSIA)
 
 // static
-bool PlatformThread::CanIncreaseCurrentThreadPriority() {
+bool PlatformThread::CanIncreaseThreadPriority(ThreadPriority priority) {
 #if defined(OS_NACL)
   return false;
 #else
-  // Only root can raise thread priority on POSIX environment. On Linux, users
-  // who have CAP_SYS_NICE permission also can raise the thread priority, but
-  // libcap.so would be needed to check the capability.
-  return geteuid() == 0;
+  return internal::CanLowerNiceTo(
+      internal::ThreadPriorityToNiceValue(priority));
 #endif  // defined(OS_NACL)
 }
 
@@ -298,6 +302,6 @@ ThreadPriority PlatformThread::GetCurrentThreadPriority() {
 #endif  // !defined(OS_NACL)
 }
 
-#endif  // !defined(OS_MACOSX)
+#endif  // !defined(OS_MACOSX) && !defined(OS_FUCHSIA)
 
 }  // namespace base

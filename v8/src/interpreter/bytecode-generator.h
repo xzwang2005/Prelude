@@ -6,6 +6,7 @@
 #define V8_INTERPRETER_BYTECODE_GENERATOR_H_
 
 #include "src/ast/ast.h"
+#include "src/feedback-vector.h"
 #include "src/interpreter/bytecode-array-builder.h"
 #include "src/interpreter/bytecode-label.h"
 #include "src/interpreter/bytecode-register.h"
@@ -16,7 +17,7 @@ namespace internal {
 
 class AstNodeSourceRanges;
 class AstStringConstants;
-class CompilationInfo;
+class UnoptimizedCompilationInfo;
 enum class SourceRangeKind;
 
 namespace interpreter {
@@ -28,8 +29,10 @@ class BytecodeJumpTable;
 
 class BytecodeGenerator final : public AstVisitor<BytecodeGenerator> {
  public:
-  explicit BytecodeGenerator(CompilationInfo* info,
-                             const AstStringConstants* ast_string_constants);
+  explicit BytecodeGenerator(
+      UnoptimizedCompilationInfo* info,
+      const AstStringConstants* ast_string_constants,
+      ZoneVector<FunctionLiteral*>* eager_inner_literals);
 
   void GenerateBytecode(uintptr_t stack_limit);
   Handle<BytecodeArray> FinalizeBytecode(Isolate* isolate,
@@ -41,7 +44,7 @@ class BytecodeGenerator final : public AstVisitor<BytecodeGenerator> {
 
   // Visiting function for declarations list and statements are overridden.
   void VisitDeclarations(Declaration::List* declarations);
-  void VisitStatements(ZoneList<Statement*>* statments);
+  void VisitStatements(ZonePtrList<Statement>* statments);
 
  private:
   class ContextScope;
@@ -56,6 +59,7 @@ class BytecodeGenerator final : public AstVisitor<BytecodeGenerator> {
   class EffectResultScope;
   class FeedbackSlotCache;
   class GlobalDeclarationsBuilder;
+  class IteratorRecord;
   class NaryCodeCoverageSlots;
   class RegisterAllocationScope;
   class TestResultScope;
@@ -64,7 +68,7 @@ class BytecodeGenerator final : public AstVisitor<BytecodeGenerator> {
   using ToBooleanMode = BytecodeArrayBuilder::ToBooleanMode;
 
   enum class TestFallthrough { kThen, kElse, kNone };
-  enum class TypeHint { kAny, kBoolean };
+  enum class TypeHint { kAny, kBoolean, kString };
 
   void GenerateBytecodeBody();
   void AllocateDeferredConstants(Isolate* isolate, Handle<Script> script);
@@ -97,7 +101,7 @@ class BytecodeGenerator final : public AstVisitor<BytecodeGenerator> {
 
   // Visit the arguments expressions in |args| and store them in |args_regs|,
   // growing |args_regs| for each argument visited.
-  void VisitArguments(ZoneList<Expression*>* args, RegisterList* arg_regs);
+  void VisitArguments(ZonePtrList<Expression>* args, RegisterList* arg_regs);
 
   // Visit a keyed super property load. The optional
   // |opt_receiver_out| register will have the receiver stored to it
@@ -117,6 +121,11 @@ class BytecodeGenerator final : public AstVisitor<BytecodeGenerator> {
   void VisitPropertyLoadForRegister(Register obj, Property* expr,
                                     Register destination);
 
+  void BuildLoadNamedProperty(Property* property, Register object,
+                              const AstRawString* name);
+  void BuildStoreNamedProperty(Property* property, Register object,
+                               const AstRawString* name);
+
   void BuildVariableLoad(Variable* variable, HoleCheckMode hole_check_mode,
                          TypeofMode typeof_mode = NOT_INSIDE_TYPEOF);
   void BuildVariableLoadForAccumulatorValue(
@@ -125,7 +134,8 @@ class BytecodeGenerator final : public AstVisitor<BytecodeGenerator> {
   void BuildVariableAssignment(
       Variable* variable, Token::Value op, HoleCheckMode hole_check_mode,
       LookupHoistingMode lookup_hoisting_mode = LookupHoistingMode::kNormal);
-  void BuildLiteralCompareNil(Token::Value compare_op, NilValue nil);
+  void BuildLiteralCompareNil(Token::Value compare_op,
+                              BytecodeArrayBuilder::NilValue nil);
   void BuildReturn(int source_position = kNoSourcePosition);
   void BuildAsyncReturn(int source_position = kNoSourcePosition);
   void BuildAsyncGeneratorReturn();
@@ -145,12 +155,40 @@ class BytecodeGenerator final : public AstVisitor<BytecodeGenerator> {
   void BuildNewLocalWithContext(Scope* scope);
 
   void BuildGeneratorPrologue();
-  void BuildSuspendPoint(int suspend_id);
+  void BuildSuspendPoint(Expression* suspend_expr);
 
-  void BuildAwait(int suspend_id);
+  void BuildAwait(Expression* await_expr);
 
   void BuildGetIterator(Expression* iterable, IteratorType hint);
 
+  // Create an IteratorRecord with pre-allocated registers holding the next
+  // method and iterator object.
+  IteratorRecord BuildGetIteratorRecord(Expression* iterable,
+                                        Register iterator_next,
+                                        Register iterator_object,
+                                        IteratorType hint);
+
+  // Create an IteratorRecord allocating new registers to hold the next method
+  // and iterator object.
+  IteratorRecord BuildGetIteratorRecord(Expression* iterable,
+                                        IteratorType hint);
+  void BuildIteratorNext(const IteratorRecord& iterator, Register next_result);
+  void BuildIteratorClose(const IteratorRecord& iterator,
+                          Expression* expr = nullptr);
+  void BuildCallIteratorMethod(Register iterator, const AstRawString* method,
+                               RegisterList receiver_and_args,
+                               BytecodeLabel* if_called,
+                               BytecodeLabels* if_notcalled);
+
+  void BuildArrayLiteralSpread(Spread* spread, Register array, Register index,
+                               FeedbackSlot index_slot,
+                               FeedbackSlot element_slot);
+  // Create Array literals. |expr| can be nullptr, but if provided,
+  // a boilerplate will be used to create an initial array for elements
+  // before the first spread.
+  void BuildCreateArrayLiteral(ZonePtrList<Expression>* elements,
+                               ArrayLiteral* expr);
+  void BuildCreateObjectLiteral(Register literal, uint8_t flags, size_t entry);
   void AllocateTopLevelRegisters();
   void VisitArgumentsObject(Variable* variable);
   void VisitRestArgumentsArray(Variable* rest);
@@ -162,7 +200,6 @@ class BytecodeGenerator final : public AstVisitor<BytecodeGenerator> {
                                         Register instance);
   void BuildGeneratorObjectVariableInitialization();
   void VisitBlockDeclarationsAndStatements(Block* stmt);
-  void VisitFunctionClosureForContext();
   void VisitSetHomeObject(Register value, Register home_object,
                           LiteralProperty* property);
   void VisitObjectLiteralAccessor(Register home_object,
@@ -191,11 +228,7 @@ class BytecodeGenerator final : public AstVisitor<BytecodeGenerator> {
                                     BytecodeLabels* end_labels,
                                     int coverage_slot);
 
-  // Visit the header/body of a loop iteration.
-  void VisitIterationHeader(IterationStatement* stmt,
-                            LoopBuilder* loop_builder);
-  void VisitIterationHeader(int first_suspend_id, int suspend_count,
-                            LoopBuilder* loop_builder);
+  // Visit the body of a loop iteration.
   void VisitIterationBody(IterationStatement* stmt, LoopBuilder* loop_builder);
 
   // Visit a statement and switch scopes, the context is in the accumulator.
@@ -220,8 +253,8 @@ class BytecodeGenerator final : public AstVisitor<BytecodeGenerator> {
   // specifies the type of the result of the visited expression.
   TypeHint VisitForAccumulatorValue(Expression* expr);
   void VisitForAccumulatorValueOrTheHole(Expression* expr);
-  MUST_USE_RESULT Register VisitForRegisterValue(Expression* expr);
-  INLINE(void VisitForRegisterValue(Expression* expr, Register destination));
+  V8_WARN_UNUSED_RESULT Register VisitForRegisterValue(Expression* expr);
+  V8_INLINE void VisitForRegisterValue(Expression* expr, Register destination);
   void VisitAndPushIntoRegisterList(Expression* expr, RegisterList* reg_list);
   void VisitForEffect(Expression* expr);
   void VisitForTest(Expression* expr, BytecodeLabels* then_labels,
@@ -240,7 +273,21 @@ class BytecodeGenerator final : public AstVisitor<BytecodeGenerator> {
   // already exists.
   FeedbackSlot GetCachedLoadGlobalICSlot(TypeofMode typeof_mode,
                                          Variable* variable);
+  FeedbackSlot GetCachedStoreGlobalICSlot(LanguageMode language_mode,
+                                          Variable* variable);
   FeedbackSlot GetCachedCreateClosureSlot(FunctionLiteral* literal);
+  FeedbackSlot GetCachedLoadICSlot(const Expression* expr,
+                                   const AstRawString* name);
+  FeedbackSlot GetCachedStoreICSlot(const Expression* expr,
+                                    const AstRawString* name);
+  FeedbackSlot GetDummyCompareICSlot();
+
+  void AddToEagerLiteralsIfEager(FunctionLiteral* literal);
+
+  // Checks if the visited expression is one shot, i.e executed only once. Any
+  // expression either in a top level code or an IIFE that is not within a loop
+  // is eligible for one shot optimizations.
+  inline bool ShouldOptimizeAsOneShot() const;
 
   static constexpr ToBooleanMode ToBooleanModeFromTypeHint(TypeHint type_hint) {
     return type_hint == TypeHint::kBoolean ? ToBooleanMode::kAlreadyBoolean
@@ -252,7 +299,7 @@ class BytecodeGenerator final : public AstVisitor<BytecodeGenerator> {
   inline BytecodeArrayBuilder* builder() { return &builder_; }
   inline Zone* zone() const { return zone_; }
   inline DeclarationScope* closure_scope() const { return closure_scope_; }
-  inline CompilationInfo* info() const { return info_; }
+  inline UnoptimizedCompilationInfo* info() const { return info_; }
   inline const AstStringConstants* ast_string_constants() const {
     return ast_string_constants_;
   }
@@ -298,10 +345,13 @@ class BytecodeGenerator final : public AstVisitor<BytecodeGenerator> {
 
   Zone* zone_;
   BytecodeArrayBuilder builder_;
-  CompilationInfo* info_;
+  UnoptimizedCompilationInfo* info_;
   const AstStringConstants* ast_string_constants_;
   DeclarationScope* closure_scope_;
   Scope* current_scope_;
+
+  // External vector of literals to be eagerly compiled.
+  ZoneVector<FunctionLiteral*>* eager_inner_literals_;
 
   FeedbackSlotCache* feedback_slot_cache_;
 
@@ -322,8 +372,12 @@ class BytecodeGenerator final : public AstVisitor<BytecodeGenerator> {
 
   Register incoming_new_target_or_generator_;
 
+  // Dummy feedback slot for compare operations, where we don't care about
+  // feedback
+  SharedFeedbackSlot dummy_feedback_slot_;
+
   BytecodeJumpTable* generator_jump_table_;
-  Register generator_state_;
+  int suspend_count_;
   int loop_depth_;
 
   HandlerTable::CatchPrediction catch_prediction_;

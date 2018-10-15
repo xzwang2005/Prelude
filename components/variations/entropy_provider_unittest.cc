@@ -9,17 +9,18 @@
 
 #include <cmath>
 #include <limits>
+#include <memory>
 #include <numeric>
 
 #include "base/guid.h"
 #include "base/macros.h"
-#include "base/memory/ptr_util.h"
 #include "base/rand_util.h"
+#include "base/stl_util.h"
 #include "base/strings/string_number_conversions.h"
-#include "components/variations/metrics_util.h"
+#include "components/variations/hashing.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
-namespace metrics {
+namespace variations {
 
 namespace {
 
@@ -61,6 +62,14 @@ double GeneratePermutedEntropy(uint16_t entropy_source,
                                const std::string& trial_name) {
   PermutedEntropyProvider permuted_provider(entropy_source, entropy_max);
   return permuted_provider.GetEntropyForTrial(trial_name, 0);
+}
+
+// Make a vector of consecutive integers for shuffling.
+std::vector<uint16_t> MakeRange(size_t vector_size) {
+  std::vector<uint16_t> range(vector_size);
+  for (size_t i = 0; i < vector_size; ++i)
+    range[i] = i;
+  return range;
 }
 
 // Helper interface for testing used to generate entropy values for a given
@@ -191,7 +200,7 @@ TEST(EntropyProviderTest, UseOneTimeRandomizationSHA1) {
   // _might_ actually give the same result, but we know that given
   // the particular client_id we use for unit tests they won't.
   base::FieldTrialList field_trial_list(
-      base::MakeUnique<SHA1EntropyProvider>("client_id"));
+      std::make_unique<SHA1EntropyProvider>("client_id"));
   const int kNoExpirationYear = base::FieldTrialList::kNoExpirationYear;
   scoped_refptr<base::FieldTrial> trials[] = {
       base::FieldTrialList::FactoryGetFieldTrial(
@@ -202,7 +211,7 @@ TEST(EntropyProviderTest, UseOneTimeRandomizationSHA1) {
           base::FieldTrial::ONE_TIME_RANDOMIZED, nullptr),
   };
 
-  for (size_t i = 0; i < arraysize(trials); ++i) {
+  for (size_t i = 0; i < base::size(trials); ++i) {
     for (int j = 0; j < 100; ++j)
       trials[i]->AppendGroup(std::string(), 1);
   }
@@ -221,7 +230,7 @@ TEST(EntropyProviderTest, UseOneTimeRandomizationPermuted) {
   // _might_ actually give the same result, but we know that given
   // the particular client_id we use for unit tests they won't.
   base::FieldTrialList field_trial_list(
-      base::MakeUnique<PermutedEntropyProvider>(1234, kMaxLowEntropySize));
+      std::make_unique<PermutedEntropyProvider>(1234, kMaxLowEntropySize));
   const int kNoExpirationYear = base::FieldTrialList::kNoExpirationYear;
   scoped_refptr<base::FieldTrial> trials[] = {
       base::FieldTrialList::FactoryGetFieldTrial(
@@ -232,7 +241,7 @@ TEST(EntropyProviderTest, UseOneTimeRandomizationPermuted) {
           base::FieldTrial::ONE_TIME_RANDOMIZED, nullptr),
   };
 
-  for (size_t i = 0; i < arraysize(trials); ++i) {
+  for (size_t i = 0; i < base::size(trials); ++i) {
     for (int j = 0; j < 100; ++j)
       trials[i]->AppendGroup(std::string(), 1);
   }
@@ -247,7 +256,7 @@ TEST(EntropyProviderTest, UseOneTimeRandomizationWithCustomSeedPermuted) {
   // Ensures that two trials with different names but the same custom seed used
   // for one time randomization produce the same group assignments.
   base::FieldTrialList field_trial_list(
-      base::MakeUnique<PermutedEntropyProvider>(1234, kMaxLowEntropySize));
+      std::make_unique<PermutedEntropyProvider>(1234, kMaxLowEntropySize));
   const int kNoExpirationYear = base::FieldTrialList::kNoExpirationYear;
   const uint32_t kCustomSeed = 9001;
   scoped_refptr<base::FieldTrial> trials[] = {
@@ -259,7 +268,7 @@ TEST(EntropyProviderTest, UseOneTimeRandomizationWithCustomSeedPermuted) {
           base::FieldTrial::ONE_TIME_RANDOMIZED, kCustomSeed, nullptr, nullptr),
   };
 
-  for (size_t i = 0; i < arraysize(trials); ++i) {
+  for (size_t i = 0; i < base::size(trials); ++i) {
     for (int j = 0; j < 100; ++j)
       trials[i]->AppendGroup(std::string(), 1);
   }
@@ -274,7 +283,7 @@ TEST(EntropyProviderTest, UseOneTimeRandomizationWithCustomSeedSHA1) {
   // Ensures that two trials with different names but the same custom seed used
   // for one time randomization produce the same group assignments.
   base::FieldTrialList field_trial_list(
-      base::MakeUnique<SHA1EntropyProvider>("client_id"));
+      std::make_unique<SHA1EntropyProvider>("client_id"));
   const int kNoExpirationYear = base::FieldTrialList::kNoExpirationYear;
   const uint32_t kCustomSeed = 9001;
   scoped_refptr<base::FieldTrial> trials[] = {
@@ -286,7 +295,7 @@ TEST(EntropyProviderTest, UseOneTimeRandomizationWithCustomSeedSHA1) {
           base::FieldTrial::ONE_TIME_RANDOMIZED, kCustomSeed, nullptr, nullptr),
   };
 
-  for (size_t i = 0; i < arraysize(trials); ++i) {
+  for (size_t i = 0; i < base::size(trials); ++i) {
     for (int j = 0; j < 100; ++j)
       trials[i]->AppendGroup(std::string(), 1);
   }
@@ -302,7 +311,7 @@ TEST(EntropyProviderTest, SHA1Entropy) {
                              GenerateSHA1Entropy("there", "1") };
 
   EXPECT_NE(results[0], results[1]);
-  for (size_t i = 0; i < arraysize(results); ++i) {
+  for (size_t i = 0; i < base::size(results); ++i) {
     EXPECT_LE(0.0, results[i]);
     EXPECT_GT(1.0, results[i]);
   }
@@ -319,7 +328,7 @@ TEST(EntropyProviderTest, PermutedEntropy) {
       GeneratePermutedEntropy(4321, kMaxLowEntropySize, "1") };
 
   EXPECT_NE(results[0], results[1]);
-  for (size_t i = 0; i < arraysize(results); ++i) {
+  for (size_t i = 0; i < base::size(results); ++i) {
     EXPECT_LE(0.0, results[i]);
     EXPECT_GT(1.0, results[i]);
   }
@@ -344,17 +353,34 @@ TEST(EntropyProviderTest, PermutedEntropyProviderResults) {
 }
 
 TEST(EntropyProviderTest, SHA1EntropyIsUniform) {
-  for (size_t i = 0; i < arraysize(kTestTrialNames); ++i) {
+  for (size_t i = 0; i < base::size(kTestTrialNames); ++i) {
     SHA1EntropyGenerator entropy_generator(kTestTrialNames[i]);
     PerformEntropyUniformityTest(kTestTrialNames[i], entropy_generator);
   }
 }
 
 TEST(EntropyProviderTest, PermutedEntropyIsUniform) {
-  for (size_t i = 0; i < arraysize(kTestTrialNames); ++i) {
+  for (size_t i = 0; i < base::size(kTestTrialNames); ++i) {
     PermutedEntropyGenerator entropy_generator(kTestTrialNames[i]);
     PerformEntropyUniformityTest(kTestTrialNames[i], entropy_generator);
   }
+}
+
+TEST(EntropyProviderTest, PermutedEntropyConsistency) {
+  std::vector<uint16_t> to_shuffle = MakeRange(10);
+  std::vector<uint16_t> expected = {7, 6, 8, 3, 2, 0, 1, 4, 9, 5};
+  internal::PermuteMappingUsingRandomizationSeed(5, &to_shuffle);
+  EXPECT_EQ(expected, to_shuffle);
+}
+
+TEST(EntropyProviderTest, PermutedEntropyConsistencyWithReroll) {
+  // Test that the permuted entropy provider is consistent with previously
+  // shipped versions, with a case that requires rerolls.
+  std::vector<uint16_t> to_shuffle = MakeRange(1000);
+  std::vector<uint16_t> expected = {776, 561, 72, 966, 500};
+  internal::PermuteMappingUsingRandomizationSeed(10694, &to_shuffle);
+  std::vector<uint16_t> slice(to_shuffle.begin(), to_shuffle.begin() + 5);
+  EXPECT_EQ(expected, slice);
 }
 
 TEST(EntropyProviderTest, SeededRandGeneratorIsUniform) {
@@ -369,7 +395,7 @@ TEST(EntropyProviderTest, SeededRandGeneratorIsUniform) {
   const int kMinAttempts = 1000;
   const int kMaxAttempts = 1000000;
 
-  for (size_t i = 0; i < arraysize(kTestTrialNames); ++i) {
+  for (size_t i = 0; i < base::size(kTestTrialNames); ++i) {
     const uint32_t seed = HashName(kTestTrialNames[i]);
     internal::SeededRandGenerator rand_generator(seed);
 
@@ -396,4 +422,4 @@ TEST(EntropyProviderTest, SeededRandGeneratorIsUniform) {
   }
 }
 
-}  // namespace metrics
+}  // namespace variations

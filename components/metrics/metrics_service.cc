@@ -132,12 +132,11 @@
 #include "base/bind.h"
 #include "base/callback.h"
 #include "base/location.h"
-#include "base/memory/ptr_util.h"
 #include "base/metrics/histogram_base.h"
+#include "base/metrics/histogram_functions.h"
 #include "base/metrics/histogram_macros.h"
 #include "base/metrics/histogram_samples.h"
 #include "base/metrics/persistent_histogram_allocator.h"
-#include "base/metrics/sparse_histogram.h"
 #include "base/metrics/statistics_recorder.h"
 #include "base/single_thread_task_runner.h"
 #include "base/strings/string_piece.h"
@@ -175,6 +174,9 @@ const int kInitializationDelaySeconds = 5;
 #else
 const int kInitializationDelaySeconds = 30;
 #endif
+
+// The browser last live timestamp is updated every 15 minutes.
+const int kUpdateAliveTimestampSeconds = 15 * 60;
 
 #if defined(OS_ANDROID) || defined(OS_IOS)
 void MarkAppCleanShutdownAndCommit(CleanExitBeacon* clean_exit_beacon,
@@ -227,11 +229,11 @@ MetricsService::MetricsService(MetricsStateManager* state_manager,
   DCHECK(local_state_);
 
   RegisterMetricsProvider(
-      base::MakeUnique<StabilityMetricsProvider>(local_state_));
+      std::make_unique<StabilityMetricsProvider>(local_state_));
 
   RegisterMetricsProvider(state_manager_->GetProvider());
 
-  RegisterMetricsProvider(base::MakeUnique<variations::FieldTrialsProvider>(
+  RegisterMetricsProvider(std::make_unique<variations::FieldTrialsProvider>(
       &synthetic_trial_registry_, base::StringPiece()));
 }
 
@@ -254,6 +256,7 @@ void MetricsService::InitializeMetricsRecordingState() {
       base::Bind(&MetricsServiceClient::GetStandardUploadInterval,
                  base::Unretained(client_))));
 
+  // Init() has to be called after LogCrash() in order for LogCrash() to work.
   delegating_provider_.Init();
 }
 
@@ -267,6 +270,14 @@ void MetricsService::StartRecordingForTests() {
   test_mode_active_ = true;
   EnableRecording();
   DisableReporting();
+}
+
+void MetricsService::StartUpdatingLastLiveTimestamp() {
+  base::SequencedTaskRunnerHandle::Get()->PostDelayedTask(
+      FROM_HERE,
+      base::BindOnce(&MetricsService::UpdateLastLiveTimestampTask,
+                     self_ptr_factory_.GetWeakPtr()),
+      base::TimeDelta::FromSeconds(kUpdateAliveTimestampSeconds));
 }
 
 void MetricsService::Stop() {
@@ -474,13 +485,14 @@ void MetricsService::InitializeMetricsState() {
 
   StabilityMetricsProvider provider(local_state_);
   if (!state_manager_->clean_exit_beacon()->exited_cleanly()) {
-    provider.LogCrash();
+    provider.LogCrash(
+        state_manager_->clean_exit_beacon()->browser_last_live_timestamp());
     // Reset flag, and wait until we call LogNeedForCleanShutdown() before
     // monitoring.
     state_manager_->clean_exit_beacon()->WriteBeaconValue(true);
     ExecutionPhaseManager manager(local_state_);
-    UMA_HISTOGRAM_SPARSE_SLOWLY("Chrome.Browser.CrashedExecutionPhase",
-                                static_cast<int>(manager.GetExecutionPhase()));
+    base::UmaHistogramSparse("Chrome.Browser.CrashedExecutionPhase",
+                             static_cast<int>(manager.GetExecutionPhase()));
     manager.SetExecutionPhase(ExecutionPhase::UNINITIALIZED_PHASE);
   }
 
@@ -551,7 +563,7 @@ void MetricsService::FinishedInitTask() {
   state_ = INIT_TASK_DONE;
 
   // Create the initial log.
-  if (!initial_metrics_log_.get()) {
+  if (!initial_metrics_log_) {
     initial_metrics_log_ = CreateLog(MetricsLog::ONGOING_LOG);
     delegating_provider_.OnDidCreateMetricsLog();
   }
@@ -595,14 +607,14 @@ void MetricsService::OpenNewLog() {
 
     base::SequencedTaskRunnerHandle::Get()->PostDelayedTask(
         FROM_HERE,
-        base::Bind(&MetricsService::StartInitTask,
-                   self_ptr_factory_.GetWeakPtr()),
+        base::BindOnce(&MetricsService::StartInitTask,
+                       self_ptr_factory_.GetWeakPtr()),
         base::TimeDelta::FromSeconds(kInitializationDelaySeconds));
 
     base::SequencedTaskRunnerHandle::Get()->PostDelayedTask(
         FROM_HERE,
-        base::Bind(&MetricsService::PrepareProviderMetricsTask,
-                   self_ptr_factory_.GetWeakPtr()),
+        base::BindOnce(&MetricsService::PrepareProviderMetricsTask,
+                       self_ptr_factory_.GetWeakPtr()),
         base::TimeDelta::FromSeconds(2 * kInitializationDelaySeconds));
   }
 }
@@ -811,7 +823,7 @@ void MetricsService::CheckForClonedInstall() {
 
 std::unique_ptr<MetricsLog> MetricsService::CreateLog(
     MetricsLog::LogType log_type) {
-  return base::MakeUnique<MetricsLog>(state_manager_->client_id(), session_id_,
+  return std::make_unique<MetricsLog>(state_manager_->client_id(), session_id_,
                                       log_type, client_);
 }
 
@@ -836,7 +848,6 @@ void MetricsService::RecordCurrentEnvironment(MetricsLog* log) {
 
 void MetricsService::RecordCurrentHistograms() {
   DCHECK(log_manager_.current_log());
-  SCOPED_UMA_HISTOGRAM_TIMER("UMA.MetricsService.RecordCurrentHistograms.Time");
 
   // "true" indicates that StatisticsRecorder should include histograms held in
   // persistent storage.
@@ -884,8 +895,8 @@ void MetricsService::PrepareProviderMetricsTask() {
                                      : base::TimeDelta::FromMinutes(15);
   base::SequencedTaskRunnerHandle::Get()->PostDelayedTask(
       FROM_HERE,
-      base::Bind(&MetricsService::PrepareProviderMetricsTask,
-                 self_ptr_factory_.GetWeakPtr()),
+      base::BindOnce(&MetricsService::PrepareProviderMetricsTask,
+                     self_ptr_factory_.GetWeakPtr()),
       next_check);
 }
 
@@ -898,6 +909,13 @@ void MetricsService::LogCleanShutdown(bool end_completed) {
   state_manager_->clean_exit_beacon()->WriteBeaconValue(true);
   SetExecutionPhase(ExecutionPhase::SHUTDOWN_COMPLETE, local_state_);
   StabilityMetricsProvider(local_state_).MarkSessionEndCompleted(end_completed);
+}
+
+void MetricsService::UpdateLastLiveTimestampTask() {
+  state_manager_->clean_exit_beacon()->UpdateLastLiveTimestamp();
+
+  // Schecule the next update.
+  StartUpdatingLastLiveTimestamp();
 }
 
 }  // namespace metrics

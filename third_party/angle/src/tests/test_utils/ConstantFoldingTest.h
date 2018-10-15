@@ -13,7 +13,9 @@
 #include <vector>
 
 #include "common/mathutil.h"
-#include "compiler/translator/IntermTraverse.h"
+#include "compiler/translator/tree_util/FindMain.h"
+#include "compiler/translator/tree_util/FindSymbolNode.h"
+#include "compiler/translator/tree_util/IntermTraverse.h"
 #include "tests/test_utils/ShaderCompileTreeTest.h"
 
 namespace sh
@@ -54,7 +56,7 @@ class ConstantFinder : public TIntermTraverser
             bool found = true;
             for (size_t i = 0; i < mConstantVector.size(); i++)
             {
-                if (!isEqual(node->getUnionArrayPointer()[i], mConstantVector[i]))
+                if (!isEqual(node->getConstantValue()[i], mConstantVector[i]))
                 {
                     found = false;
                     break;
@@ -168,6 +170,16 @@ class ConstantFoldingTest : public ShaderCompileTreeTest
         ConstantFinder<T> finder(constantVector, faultTolerance);
         mASTRoot->traverse(&finder);
         return finder.found();
+    }
+
+    bool symbolFoundInAST(const char *symbolName)
+    {
+        return FindSymbolNode(mASTRoot, ImmutableString(symbolName)) != nullptr;
+    }
+
+    bool symbolFoundInMain(const char *symbolName)
+    {
+        return FindSymbolNode(FindMain(mASTRoot), ImmutableString(symbolName)) != nullptr;
     }
 };
 

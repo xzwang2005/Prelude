@@ -13,6 +13,7 @@
 #include "SkMathPriv.h"
 #include "SkPoint.h"
 #include "SkRandom.h"
+#include "SkTo.h"
 #include "Test.h"
 
 static void test_clz(skiatest::Reporter* reporter) {
@@ -197,27 +198,6 @@ static void test_blend31() {
     SkDebugf("---- failed %d death %d\n", failed, death);
 }
 
-static void test_blend(skiatest::Reporter* reporter) {
-    for (int src = 0; src <= 255; src++) {
-        for (int dst = 0; dst <= 255; dst++) {
-            for (int a = 0; a <= 255; a++) {
-                int r0 = SkAlphaBlend255(src, dst, a);
-                float f1 = float_blend(src, dst, a / 255.f);
-                int r1 = SkScalarRoundToInt(f1);
-
-                if (r0 != r1) {
-                    float diff = sk_float_abs(f1 - r1);
-                    diff = sk_float_abs(diff - 0.5f);
-                    if (diff > (1 / 255.f)) {
-                        ERRORF(reporter, "src:%d dst:%d a:%d "
-                               "result:%d float:%g\n", src, dst, a, r0, f1);
-                    }
-                }
-            }
-        }
-    }
-}
-
 static void check_length(skiatest::Reporter* reporter,
                          const SkPoint& p, SkScalar targetLen) {
     float x = SkScalarToFloat(p.fX);
@@ -229,13 +209,9 @@ static void check_length(skiatest::Reporter* reporter,
     REPORTER_ASSERT(reporter, len > 0.999f && len < 1.001f);
 }
 
-static float make_zero() {
-    return sk_float_sin(0);
-}
-
 static void unittest_isfinite(skiatest::Reporter* reporter) {
     float nan = sk_float_asin(2);
-    float inf = 1.0f / make_zero();
+    float inf = SK_ScalarInfinity;
     float big = 3.40282e+038f;
 
     REPORTER_ASSERT(reporter, !SkScalarIsNaN(inf));
@@ -416,6 +392,21 @@ static void test_copysign(skiatest::Reporter* reporter) {
     }
 }
 
+static void huge_vector_normalize(skiatest::Reporter* reporter) {
+    // these values should fail (overflow/underflow) trying to normalize
+    const SkVector fail[] = {
+        { 0, 0 },
+        { SK_ScalarInfinity, 0 }, { 0, SK_ScalarInfinity },
+        { 0, SK_ScalarNaN }, { SK_ScalarNaN, 0 },
+    };
+    for (SkVector v : fail) {
+        SkVector v2 = v;
+        if (v2.setLength(1.0f)) {
+            REPORTER_ASSERT(reporter, !v.setLength(1.0f));
+        }
+    }
+}
+
 DEF_TEST(Math, reporter) {
     int         i;
     SkRandom    rand;
@@ -450,8 +441,8 @@ DEF_TEST(Math, reporter) {
     }
 
     for (i = 0; i < 1000; i++) {
-        int value = rand.nextS16();
-        int max = rand.nextU16();
+        int value = rand.nextS() >> 16;
+        int max = rand.nextU() >> 16;
 
         int clamp = SkClampMax(value, max);
         int clamp2 = value < 0 ? 0 : (value > max ? max : value);
@@ -488,6 +479,7 @@ DEF_TEST(Math, reporter) {
         REPORTER_ASSERT(reporter, (SkFixedCeilToFixed(-SK_Fixed1 * 10) >> 1) == -SK_Fixed1 * 5);
     }
 
+    huge_vector_normalize(reporter);
     unittest_isfinite(reporter);
     unittest_half(reporter);
     test_rsqrt(reporter, sk_float_rsqrt);
@@ -513,8 +505,6 @@ DEF_TEST(Math, reporter) {
         }
         REPORTER_ASSERT(reporter, result == (int32_t)check);
     }
-
-    test_blend(reporter);
 
     if (false) test_floor(reporter);
 
@@ -672,7 +662,7 @@ DEF_TEST(GrNextSizePow2, reporter) {
     test_nextsizepow2(reporter, SIZE_MAX, SIZE_MAX);
 }
 
-DEF_TEST(FloatSaturate, reporter) {
+DEF_TEST(FloatSaturate32, reporter) {
     const struct {
         float   fFloat;
         int     fExpectedInt;
@@ -691,10 +681,43 @@ DEF_TEST(FloatSaturate, reporter) {
     for (auto r : recs) {
         int i = sk_float_saturate2int(r.fFloat);
         REPORTER_ASSERT(reporter, r.fExpectedInt == i);
+
+        // ensure that these bound even non-finite values (including NaN)
+
+        SkScalar mx = SkTMax<SkScalar>(r.fFloat, 50);
+        REPORTER_ASSERT(reporter, mx >= 50);
+
+        SkScalar mn = SkTMin<SkScalar>(r.fFloat, 50);
+        REPORTER_ASSERT(reporter, mn <= 50);
+
+        SkScalar p = SkTPin<SkScalar>(r.fFloat, 0, 100);
+        REPORTER_ASSERT(reporter, p >= 0 && p <= 100);
     }
 }
 
-DEF_TEST(DoubleSaturate, reporter) {
+DEF_TEST(FloatSaturate64, reporter) {
+    const struct {
+        float   fFloat;
+        int64_t fExpected64;
+    } recs[] = {
+        { 0, 0 },
+        { 100.5f, 100 },
+        { (float)SK_MaxS64, SK_MaxS64FitsInFloat },
+        { (float)SK_MinS64, SK_MinS64FitsInFloat },
+        { SK_MaxS64 * 100.0f, SK_MaxS64FitsInFloat },
+        { SK_MinS64 * 100.0f, SK_MinS64FitsInFloat },
+        { SK_ScalarInfinity, SK_MaxS64FitsInFloat },
+        { SK_ScalarNegativeInfinity, SK_MinS64FitsInFloat },
+        { SK_ScalarNaN, SK_MaxS64FitsInFloat },
+    };
+
+    for (auto r : recs) {
+        int64_t i = sk_float_saturate2int64(r.fFloat);
+        REPORTER_ASSERT(reporter, r.fExpected64 == i);
+    }
+}
+
+DEF_TEST(DoubleSaturate32, reporter) {
     const struct {
         double  fDouble;
         int     fExpectedInt;
@@ -717,3 +740,23 @@ DEF_TEST(DoubleSaturate, reporter) {
         REPORTER_ASSERT(reporter, r.fExpectedInt == i);
     }
 }
+
+#if defined(__ARM_NEON)
+    #include <arm_neon.h>
+
+    DEF_TEST(NeonU16Div255, r) {
+
+        for (int v = 0; v <= 255*255; v++) {
+            int want = (v + 127)/255;
+
+            uint16x8_t V = vdupq_n_u16(v);
+            int got = vrshrq_n_u16(vrsraq_n_u16(V, V, 8), 8)[0];
+
+            if (got != want) {
+                SkDebugf("%d -> %d, want %d\n", v, got, want);
+            }
+            REPORTER_ASSERT(r, got == want);
+        }
+    }
+
+#endif

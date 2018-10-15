@@ -170,7 +170,8 @@ class UnallocatedOperand final : public InstructionOperand {
 
   enum ExtendedPolicy {
     NONE,
-    ANY,
+    REGISTER_OR_SLOT,
+    REGISTER_OR_SLOT_OR_CONSTANT,
     FIXED_REGISTER,
     FIXED_FP_REGISTER,
     MUST_HAVE_REGISTER,
@@ -236,8 +237,13 @@ class UnallocatedOperand final : public InstructionOperand {
   }
 
   // Predicates for the operand policy.
-  bool HasAnyPolicy() const {
-    return basic_policy() == EXTENDED_POLICY && extended_policy() == ANY;
+  bool HasRegisterOrSlotPolicy() const {
+    return basic_policy() == EXTENDED_POLICY &&
+           extended_policy() == REGISTER_OR_SLOT;
+  }
+  bool HasRegisterOrSlotOrConstantPolicy() const {
+    return basic_policy() == EXTENDED_POLICY &&
+           extended_policy() == REGISTER_OR_SLOT_OR_CONSTANT;
   }
   bool HasFixedPolicy() const {
     return basic_policy() == FIXED_SLOT ||
@@ -490,6 +496,9 @@ class LocationOperand : public InstructionOperand {
     }
     UNREACHABLE();
   }
+
+  // Return true if the locations can be moved to one another.
+  bool IsCompatible(LocationOperand* op);
 
   static LocationOperand* cast(InstructionOperand* op) {
     DCHECK(op->IsAnyLocationOperand());
@@ -802,7 +811,7 @@ class V8_EXPORT_PRIVATE Instruction final {
     return &operands_[i];
   }
 
-  bool HasOutput() const { return OutputCount() == 1; }
+  bool HasOutput() const { return OutputCount() > 0; }
   const InstructionOperand* Output() const { return OutputAt(0); }
   InstructionOperand* Output() { return OutputAt(0); }
 
@@ -889,7 +898,8 @@ class V8_EXPORT_PRIVATE Instruction final {
 
   bool IsDeoptimizeCall() const {
     return arch_opcode() == ArchOpcode::kArchDeoptimize ||
-           FlagsModeField::decode(opcode()) == kFlags_deoptimize;
+           FlagsModeField::decode(opcode()) == kFlags_deoptimize ||
+           FlagsModeField::decode(opcode()) == kFlags_deoptimize_and_poison;
   }
 
   bool IsTrap() const {
@@ -1029,7 +1039,8 @@ class V8_EXPORT_PRIVATE Constant final {
     kFloat64,
     kExternalReference,
     kHeapObject,
-    kRpoNumber
+    kRpoNumber,
+    kDelayedStringConstant
   };
 
   explicit Constant(int32_t v);
@@ -1037,10 +1048,12 @@ class V8_EXPORT_PRIVATE Constant final {
   explicit Constant(float v) : type_(kFloat32), value_(bit_cast<int32_t>(v)) {}
   explicit Constant(double v) : type_(kFloat64), value_(bit_cast<int64_t>(v)) {}
   explicit Constant(ExternalReference ref)
-      : type_(kExternalReference), value_(bit_cast<intptr_t>(ref)) {}
+      : type_(kExternalReference), value_(bit_cast<intptr_t>(ref.address())) {}
   explicit Constant(Handle<HeapObject> obj)
       : type_(kHeapObject), value_(bit_cast<intptr_t>(obj)) {}
   explicit Constant(RpoNumber rpo) : type_(kRpoNumber), value_(rpo.ToInt()) {}
+  explicit Constant(const StringConstantBase* str)
+      : type_(kDelayedStringConstant), value_(bit_cast<intptr_t>(str)) {}
   explicit Constant(RelocatablePtrConstantInfo info);
 
   Type type() const { return type_; }
@@ -1080,7 +1093,7 @@ class V8_EXPORT_PRIVATE Constant final {
 
   ExternalReference ToExternalReference() const {
     DCHECK_EQ(kExternalReference, type());
-    return bit_cast<ExternalReference>(static_cast<intptr_t>(value_));
+    return ExternalReference::FromRawAddress(static_cast<Address>(value_));
   }
 
   RpoNumber ToRpoNumber() const {
@@ -1090,14 +1103,11 @@ class V8_EXPORT_PRIVATE Constant final {
 
   Handle<HeapObject> ToHeapObject() const;
   Handle<Code> ToCode() const;
+  const StringConstantBase* ToDelayedStringConstant() const;
 
  private:
   Type type_;
-#if V8_TARGET_ARCH_32_BIT
-  RelocInfo::Mode rmode_ = RelocInfo::NONE32;
-#else
-  RelocInfo::Mode rmode_ = RelocInfo::NONE64;
-#endif
+  RelocInfo::Mode rmode_ = RelocInfo::NONE;
   int64_t value_;
 };
 
@@ -1315,19 +1325,24 @@ class FrameStateDescriptor : public ZoneObject {
 // frame state descriptor that we have to go back to.
 class DeoptimizationEntry final {
  public:
-  DeoptimizationEntry() {}
+  DeoptimizationEntry() = default;
   DeoptimizationEntry(FrameStateDescriptor* descriptor, DeoptimizeKind kind,
-                      DeoptimizeReason reason)
-      : descriptor_(descriptor), kind_(kind), reason_(reason) {}
+                      DeoptimizeReason reason, VectorSlotPair const& feedback)
+      : descriptor_(descriptor),
+        kind_(kind),
+        reason_(reason),
+        feedback_(feedback) {}
 
   FrameStateDescriptor* descriptor() const { return descriptor_; }
   DeoptimizeKind kind() const { return kind_; }
   DeoptimizeReason reason() const { return reason_; }
+  VectorSlotPair const& feedback() const { return feedback_; }
 
  private:
   FrameStateDescriptor* descriptor_ = nullptr;
   DeoptimizeKind kind_ = DeoptimizeKind::kEager;
-  DeoptimizeReason reason_ = DeoptimizeReason::kNoReason;
+  DeoptimizeReason reason_ = DeoptimizeReason::kUnknown;
+  VectorSlotPair feedback_ = VectorSlotPair();
 };
 
 typedef ZoneVector<DeoptimizationEntry> DeoptimizationVector;
@@ -1509,13 +1524,20 @@ class V8_EXPORT_PRIVATE InstructionSequence final
   }
   MachineRepresentation GetRepresentation(int virtual_register) const;
   void MarkAsRepresentation(MachineRepresentation rep, int virtual_register);
-  int representation_mask() const { return representation_mask_; }
 
   bool IsReference(int virtual_register) const {
     return CanBeTaggedPointer(GetRepresentation(virtual_register));
   }
   bool IsFP(int virtual_register) const {
     return IsFloatingPoint(GetRepresentation(virtual_register));
+  }
+  int representation_mask() const { return representation_mask_; }
+  bool HasFPVirtualRegisters() const {
+    constexpr int kFPRepMask =
+        RepresentationBit(MachineRepresentation::kFloat32) |
+        RepresentationBit(MachineRepresentation::kFloat64) |
+        RepresentationBit(MachineRepresentation::kSimd128);
+    return (representation_mask() & kFPRepMask) != 0;
   }
 
   Instruction* GetBlockStart(RpoNumber rpo) const;
@@ -1586,7 +1608,8 @@ class V8_EXPORT_PRIVATE InstructionSequence final
   }
 
   int AddDeoptimizationEntry(FrameStateDescriptor* descriptor,
-                             DeoptimizeKind kind, DeoptimizeReason reason);
+                             DeoptimizeKind kind, DeoptimizeReason reason,
+                             VectorSlotPair const& feedback);
   DeoptimizationEntry const& GetDeoptimizationEntry(int deoptimization_id);
   int GetDeoptimizationEntryCount() const {
     return static_cast<int>(deoptimization_entries_.size());

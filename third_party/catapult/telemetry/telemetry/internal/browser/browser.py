@@ -8,7 +8,6 @@ import sys
 from py_utils import cloud_storage  # pylint: disable=import-error
 
 from telemetry.core import exceptions
-from telemetry.core import profiling_controller
 from telemetry import decorators
 from telemetry.internal import app
 from telemetry.internal.backends import browser_backend
@@ -21,43 +20,45 @@ from telemetry.internal.util import exception_formatter
 class Browser(app.App):
   """A running browser instance that can be controlled in a limited way.
 
-  To create a browser instance, use browser_finder.FindBrowser.
+  To create a browser instance, use browser_finder.FindBrowser, e.g:
 
-  Be sure to clean up after yourself by calling Close() when you are done with
-  the browser. Or better yet:
-    browser_to_create = FindBrowser(options)
-    with browser_to_create.Create(options) as browser:
-      ... do all your operations on browser here
+    possible_browser = browser_finder.FindBrowser(finder_options)
+    with possible_browser.BrowserSession(
+        finder_options.browser_options) as browser:
+      # Do all your operations on browser here.
+
+  See telemetry.internal.browser.possible_browser for more details and use
+  cases.
   """
-  def __init__(self, backend, platform_backend):
+  def __init__(self, backend, platform_backend, startup_args,
+               find_existing=False):
     super(Browser, self).__init__(app_backend=backend,
                                   platform_backend=platform_backend)
     try:
       self._browser_backend = backend
       self._platform_backend = platform_backend
       self._tabs = tab_list.TabList(backend.tab_list_backend)
-      self._platform_backend.DidCreateBrowser(self, self._browser_backend)
       self._browser_backend.SetBrowser(self)
-      self._browser_backend.Start()
+      if find_existing:
+        self._browser_backend.BindDevToolsClient()
+      else:
+        # TODO(crbug.com/787834): Move url computation out of the browser
+        # backend and into the callers of this constructor.
+        startup_url = self._browser_backend.GetBrowserStartupUrl()
+        self._browser_backend.Start(startup_args, startup_url=startup_url)
       self._LogBrowserInfo()
-      self._platform_backend.DidStartBrowser(self, self._browser_backend)
-      self._profiling_controller = profiling_controller.ProfilingController(
-          self._browser_backend.profiling_controller_backend)
     except Exception:
       exc_info = sys.exc_info()
       logging.error(
           'Failed with %s while starting the browser backend.',
           exc_info[0].__name__)  # Show the exception name only.
       try:
+        self.DumpStateUponFailure()
         self.Close()
       except Exception: # pylint: disable=broad-except
         exception_formatter.PrintFormattedException(
             msg='Exception raised while closing platform backend')
       raise exc_info[0], exc_info[1], exc_info[2]
-
-  @property
-  def profiling_controller(self):
-    return self._profiling_controller
 
   @property
   def browser_type(self):
@@ -103,8 +104,8 @@ class Browser(app.App):
     os_detail = self._platform_backend.platform.GetOSVersionDetailString()
     if os_detail:
       logging.info('Detailed OS version: %s', os_detail)
-    if self.supports_system_info:
-      system_info = self.GetSystemInfo()
+    system_info = self.GetSystemInfo()
+    if system_info:
       if system_info.model_name:
         logging.info('Model: %s', system_info.model_name)
       if system_info.command_line:
@@ -205,9 +206,7 @@ class Browser(app.App):
     try:
       if self._browser_backend.IsBrowserRunning():
         logging.info('Closing browser (pid=%s) ...', self._browser_backend.pid)
-        self._platform_backend.WillCloseBrowser(self, self._browser_backend)
 
-      self._browser_backend.profiling_controller_backend.WillCloseBrowser()
       if self._browser_backend.supports_uploading_logs:
         try:
           self._browser_backend.UploadLogsToCloudStorage()
@@ -220,7 +219,6 @@ class Browser(app.App):
             'Browser is still running (pid=%s).', self._browser_backend.pid)
       else:
         logging.info('Browser is closed.')
-      self.credentials = None
 
   def Foreground(self):
     """Ensure the browser application is moved to the foreground."""
@@ -270,10 +268,6 @@ class Browser(app.App):
        See devil.android.app_ui for the documentation of the API provided."""
     assert self.supports_app_ui_interactions
     return self._browser_backend.GetAppUi()
-
-  @property
-  def supports_system_info(self):
-    return self._browser_backend.supports_system_info
 
   def GetSystemInfo(self):
     """Returns low-level information about the system, if available.
@@ -338,6 +332,16 @@ class Browser(app.App):
   def supports_power_metrics(self):
     return self._browser_backend.supports_power_metrics
 
+  def LogSymbolizedUnsymbolizedMinidumps(self, log_level):
+    if not self.GetAllUnsymbolizedMinidumpPaths():
+      return
+    for unsymbolized_path in self.GetAllUnsymbolizedMinidumpPaths()[:10]:
+      sym = self.SymbolizeMinidump(unsymbolized_path)
+      if sym[0]:
+        logging.log(log_level, 'Symbolized minidump:\n%s', sym[1])
+      else:
+        logging.log(log_level, 'Minidump symbolization failed:%s\n', sym[1])
+
   def DumpStateUponFailure(self):
     logging.info('*************** BROWSER STANDARD OUTPUT ***************')
     try:
@@ -352,3 +356,12 @@ class Browser(app.App):
     except Exception: # pylint: disable=broad-except
       logging.exception('Failed to get browser log:')
     logging.info('***************** END OF BROWSER LOG ******************')
+
+    logging.info(
+        '********************* SYMBOLIZED MINIDUMP *********************')
+    try:
+      self.LogSymbolizedUnsymbolizedMinidumps(logging.INFO)
+    except Exception: # pylint: disable=broad-except
+      logging.exception('Failed to get symbolized minidump:')
+    logging.info(
+        '***************** END OF SYMBOLIZED MINIDUMP ******************')

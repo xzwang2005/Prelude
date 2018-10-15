@@ -22,7 +22,7 @@ class StateManagerGL;
 class QueryGL : public QueryImpl
 {
   public:
-    QueryGL(GLenum type);
+    QueryGL(gl::QueryType type);
     ~QueryGL() override;
 
     // OpenGL is only allowed to have one query of each type active at any given time. Since ANGLE
@@ -38,17 +38,17 @@ class QueryGL : public QueryImpl
 class StandardQueryGL : public QueryGL
 {
   public:
-    StandardQueryGL(GLenum type, const FunctionsGL *functions, StateManagerGL *stateManager);
+    StandardQueryGL(gl::QueryType type, const FunctionsGL *functions, StateManagerGL *stateManager);
     ~StandardQueryGL() override;
 
-    gl::Error begin() override;
-    gl::Error end() override;
-    gl::Error queryCounter() override;
-    gl::Error getResult(GLint *params) override;
-    gl::Error getResult(GLuint *params) override;
-    gl::Error getResult(GLint64 *params) override;
-    gl::Error getResult(GLuint64 *params) override;
-    gl::Error isResultAvailable(bool *available) override;
+    gl::Error begin(const gl::Context *context) override;
+    gl::Error end(const gl::Context *context) override;
+    gl::Error queryCounter(const gl::Context *context) override;
+    gl::Error getResult(const gl::Context *context, GLint *params) override;
+    gl::Error getResult(const gl::Context *context, GLuint *params) override;
+    gl::Error getResult(const gl::Context *context, GLint64 *params) override;
+    gl::Error getResult(const gl::Context *context, GLuint64 *params) override;
+    gl::Error isResultAvailable(const gl::Context *context, bool *available) override;
 
     gl::Error pause() override;
     gl::Error resume() override;
@@ -59,7 +59,7 @@ class StandardQueryGL : public QueryGL
     template <typename T>
     gl::Error getResultBase(T *params);
 
-    GLenum mType;
+    gl::QueryType mType;
 
     const FunctionsGL *mFunctions;
     StateManagerGL *mStateManager;
@@ -73,19 +73,19 @@ class SyncProviderGL;
 class SyncQueryGL : public QueryGL
 {
   public:
-    SyncQueryGL(GLenum type, const FunctionsGL *functions, StateManagerGL *stateManager);
+    SyncQueryGL(gl::QueryType type, const FunctionsGL *functions, StateManagerGL *stateManager);
     ~SyncQueryGL() override;
 
     static bool IsSupported(const FunctionsGL *functions);
 
-    gl::Error begin() override;
-    gl::Error end() override;
-    gl::Error queryCounter() override;
-    gl::Error getResult(GLint *params) override;
-    gl::Error getResult(GLuint *params) override;
-    gl::Error getResult(GLint64 *params) override;
-    gl::Error getResult(GLuint64 *params) override;
-    gl::Error isResultAvailable(bool *available) override;
+    gl::Error begin(const gl::Context *context) override;
+    gl::Error end(const gl::Context *context) override;
+    gl::Error queryCounter(const gl::Context *context) override;
+    gl::Error getResult(const gl::Context *context, GLint *params) override;
+    gl::Error getResult(const gl::Context *context, GLuint *params) override;
+    gl::Error getResult(const gl::Context *context, GLint64 *params) override;
+    gl::Error getResult(const gl::Context *context, GLuint64 *params) override;
+    gl::Error isResultAvailable(const gl::Context *context, bool *available) override;
 
     gl::Error pause() override;
     gl::Error resume() override;

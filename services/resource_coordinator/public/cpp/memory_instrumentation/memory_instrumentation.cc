@@ -15,6 +15,13 @@ MemoryInstrumentation* g_instance = nullptr;
 void DestroyCoordinatorTLS(void* tls_object) {
   delete reinterpret_cast<mojom::CoordinatorPtr*>(tls_object);
 };
+
+void WrapGlobalMemoryDump(
+    MemoryInstrumentation::RequestGlobalDumpCallback callback,
+    bool success,
+    mojom::GlobalMemoryDumpPtr dump) {
+  std::move(callback).Run(success, GlobalMemoryDump::MoveFrom(std::move(dump)));
+}
 }  // namespace
 
 // static
@@ -45,11 +52,31 @@ MemoryInstrumentation::~MemoryInstrumentation() {
 }
 
 void MemoryInstrumentation::RequestGlobalDump(
+    const std::vector<std::string>& allocator_dump_names,
     RequestGlobalDumpCallback callback) {
   const auto& coordinator = GetCoordinatorBindingForCurrentThread();
-  base::trace_event::GlobalMemoryDumpRequestArgs args = {
-      MemoryDumpType::SUMMARY_ONLY, MemoryDumpLevelOfDetail::BACKGROUND};
-  coordinator->RequestGlobalMemoryDump(args, callback);
+  coordinator->RequestGlobalMemoryDump(
+      MemoryDumpType::SUMMARY_ONLY, MemoryDumpLevelOfDetail::BACKGROUND,
+      allocator_dump_names,
+      base::BindOnce(&WrapGlobalMemoryDump, std::move(callback)));
+}
+
+void MemoryInstrumentation::RequestPrivateMemoryFootprint(
+    base::ProcessId pid,
+    RequestGlobalDumpCallback callback) {
+  const auto& coordinator = GetCoordinatorBindingForCurrentThread();
+  coordinator->RequestPrivateMemoryFootprint(
+      pid, base::BindOnce(&WrapGlobalMemoryDump, std::move(callback)));
+}
+
+void MemoryInstrumentation::RequestGlobalDumpForPid(
+    base::ProcessId pid,
+    const std::vector<std::string>& allocator_dump_names,
+    RequestGlobalDumpCallback callback) {
+  const auto& coordinator = GetCoordinatorBindingForCurrentThread();
+  coordinator->RequestGlobalMemoryDumpForPid(
+      pid, allocator_dump_names,
+      base::BindOnce(&WrapGlobalMemoryDump, std::move(callback)));
 }
 
 void MemoryInstrumentation::RequestGlobalDumpAndAppendToTrace(
@@ -57,15 +84,8 @@ void MemoryInstrumentation::RequestGlobalDumpAndAppendToTrace(
     MemoryDumpLevelOfDetail level_of_detail,
     RequestGlobalMemoryDumpAndAppendToTraceCallback callback) {
   const auto& coordinator = GetCoordinatorBindingForCurrentThread();
-  base::trace_event::GlobalMemoryDumpRequestArgs args = {dump_type,
-                                                         level_of_detail};
-  coordinator->RequestGlobalMemoryDumpAndAppendToTrace(args, callback);
-}
-
-void MemoryInstrumentation::GetVmRegionsForHeapProfiler(
-    RequestGlobalDumpCallback callback) {
-  const auto& coordinator = GetCoordinatorBindingForCurrentThread();
-  coordinator->GetVmRegionsForHeapProfiler(callback);
+  coordinator->RequestGlobalMemoryDumpAndAppendToTrace(
+      dump_type, level_of_detail, std::move(callback));
 }
 
 const mojom::CoordinatorPtr&
@@ -82,9 +102,9 @@ MemoryInstrumentation::GetCoordinatorBindingForCurrentThread() {
     // invoking methods on the |coordinator| proxy objects.
     connector_task_runner_->PostTask(
         FROM_HERE,
-        base::Bind(
+        base::BindOnce(
             &MemoryInstrumentation::BindCoordinatorRequestOnConnectorThread,
-            base::Unretained(this), base::Passed(std::move(coordinator_req))));
+            base::Unretained(this), std::move(coordinator_req)));
   }
   DCHECK(*coordinator);
   return *coordinator;

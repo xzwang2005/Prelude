@@ -33,37 +33,51 @@ from testrunner.local import testsuite
 from testrunner.local import utils
 from testrunner.objects import testcase
 
+SHELL = 'cctest'
 
-class CcTestSuite(testsuite.TestSuite):
-  SHELL = 'cctest'
 
-  def ListTests(self, context):
-    shell = os.path.abspath(os.path.join(context.shell_dir, self.SHELL))
+class TestSuite(testsuite.TestSuite):
+  def ListTests(self):
+    shell = os.path.abspath(os.path.join(self.test_config.shell_dir, SHELL))
     if utils.IsWindows():
       shell += ".exe"
     cmd = command.Command(
-        cmd_prefix=context.command_prefix,
+        cmd_prefix=self.test_config.command_prefix,
         shell=shell,
-        args=["--list"] + context.extra_flags)
+        args=["--list"] + self.test_config.extra_flags)
     output = cmd.execute()
     if output.exit_code != 0:
       print cmd
       print output.stdout
       print output.stderr
       return []
-    tests = []
-    for test_desc in output.stdout.strip().split():
-      test = testcase.TestCase(self, test_desc)
-      tests.append(test)
+    tests = map(self._create_test, output.stdout.strip().split())
     tests.sort(key=lambda t: t.path)
     return tests
 
-  def GetShellForTestCase(self, testcase):
-    return self.SHELL
-
-  def GetParametersForTestCase(self, testcase, context):
-    return [testcase.path], testcase.flags + context.mode_flags, {}
+  def _test_class(self):
+    return TestCase
 
 
-def GetSuite(name, root):
-  return CcTestSuite(name, root)
+class TestCase(testcase.TestCase):
+  def get_shell(self):
+    return SHELL
+
+  def _get_files_params(self):
+    return [self.path]
+
+  def _get_resources(self):
+    # Bytecode-generator tests are the only ones requiring extra files on
+    # Android.
+    parts = self.name.split('/')
+    if parts[0] == 'test-bytecode-generator':
+      expectation_file = os.path.join(
+          self.suite.root, 'interpreter', 'bytecode_expectations',
+          '%s.golden' % parts[1])
+      if os.path.exists(expectation_file):
+        return [expectation_file]
+    return []
+
+
+def GetSuite(*args, **kwargs):
+  return TestSuite(*args, **kwargs)

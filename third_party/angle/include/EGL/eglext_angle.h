@@ -51,16 +51,17 @@
 #define EGL_PLATFORM_ANGLE_MAX_VERSION_MINOR_ANGLE 0x3205
 #define EGL_PLATFORM_ANGLE_TYPE_DEFAULT_ANGLE 0x3206
 #define EGL_PLATFORM_ANGLE_DEBUG_LAYERS_ENABLED_ANGLE 0x3451
+#define EGL_PLATFORM_ANGLE_DEVICE_TYPE_ANGLE 0x3209
+#define EGL_PLATFORM_ANGLE_DEVICE_TYPE_HARDWARE_ANGLE 0x320A
+#define EGL_PLATFORM_ANGLE_DEVICE_TYPE_NULL_ANGLE 0x345E
 #endif /* EGL_ANGLE_platform_angle */
 
 #ifndef EGL_ANGLE_platform_angle_d3d
 #define EGL_ANGLE_platform_angle_d3d 1
 #define EGL_PLATFORM_ANGLE_TYPE_D3D9_ANGLE 0x3207
 #define EGL_PLATFORM_ANGLE_TYPE_D3D11_ANGLE 0x3208
-#define EGL_PLATFORM_ANGLE_DEVICE_TYPE_ANGLE 0x3209
-#define EGL_PLATFORM_ANGLE_DEVICE_TYPE_HARDWARE_ANGLE 0x320A
-#define EGL_PLATFORM_ANGLE_DEVICE_TYPE_WARP_ANGLE 0x320B
-#define EGL_PLATFORM_ANGLE_DEVICE_TYPE_REFERENCE_ANGLE 0x320C
+#define EGL_PLATFORM_ANGLE_DEVICE_TYPE_D3D_WARP_ANGLE 0x320B
+#define EGL_PLATFORM_ANGLE_DEVICE_TYPE_D3D_REFERENCE_ANGLE 0x320C
 #define EGL_PLATFORM_ANGLE_ENABLE_AUTOMATIC_TRIM_ANGLE 0x320F
 #endif /* EGL_ANGLE_platform_angle_d3d */
 
@@ -68,6 +69,7 @@
 #define EGL_ANGLE_platform_angle_opengl 1
 #define EGL_PLATFORM_ANGLE_TYPE_OPENGL_ANGLE 0x320D
 #define EGL_PLATFORM_ANGLE_TYPE_OPENGLES_ANGLE 0x320E
+#define EGL_PLATFORM_ANGLE_EGL_HANDLE_ANGLE 0x3480
 #endif /* EGL_ANGLE_platform_angle_opengl */
 
 #ifndef EGL_ANGLE_platform_angle_null
@@ -79,6 +81,11 @@
 #define EGL_ANGLE_platform_angle_vulkan 1
 #define EGL_PLATFORM_ANGLE_TYPE_VULKAN_ANGLE 0x3450
 #endif /* EGL_ANGLE_platform_angle_vulkan */
+
+#ifndef EGL_ANGLE_platform_angle_context_virtualization
+#define EGL_ANGLE_platform_angle_context_virtualization 1
+#define EGL_PLATFORM_ANGLE_CONTEXT_VIRTUALIZATION_ANGLE 0x3481
+#endif /* EGL_ANGLE_platform_angle_context_virtualization */
 
 #ifndef EGL_ANGLE_x11_visual
 #define EGL_ANGLE_x11_visual
@@ -118,17 +125,17 @@ EGLAPI EGLBoolean EGLAPIENTRY eglStreamPostD3DTextureANGLE(EGLDisplay dpy, EGLSt
 
 #ifndef EGL_ANGLE_create_context_webgl_compatibility
 #define EGL_ANGLE_create_context_webgl_compatibility 1
-#define EGL_CONTEXT_WEBGL_COMPATIBILITY_ANGLE 0x3AAC
+#define EGL_CONTEXT_WEBGL_COMPATIBILITY_ANGLE 0x33AC
 #endif /* EGL_ANGLE_create_context_webgl_compatibility */
 
 #ifndef EGL_ANGLE_display_texture_share_group
 #define EGL_ANGLE_display_texture_share_group 1
-#define EGL_DISPLAY_TEXTURE_SHARE_GROUP_ANGLE 0x3AAF
+#define EGL_DISPLAY_TEXTURE_SHARE_GROUP_ANGLE 0x33AF
 #endif /* EGL_ANGLE_display_texture_share_group */
 
 #ifndef EGL_CHROMIUM_create_context_bind_generates_resource
 #define EGL_CHROMIUM_create_context_bind_generates_resource 1
-#define EGL_CONTEXT_BIND_GENERATES_RESOURCE_CHROMIUM 0x3AAD
+#define EGL_CONTEXT_BIND_GENERATES_RESOURCE_CHROMIUM 0x33AD
 #endif /* EGL_CHROMIUM_create_context_bind_generates_resource */
 
 #ifndef EGL_ANGLE_create_context_client_arrays
@@ -164,6 +171,20 @@ EGLAPI void EGLAPIENTRY eglProgramCachePopulateANGLE(EGLDisplay dpy, const void 
 EGLAPI EGLint EGLAPIENTRY eglProgramCacheResizeANGLE(EGLDisplay dpy, EGLint limit, EGLenum mode);
 #endif
 #endif /* EGL_ANGLE_program_cache_control */
+
+#ifndef EGL_ANGLE_iosurface_client_buffer
+#define EGL_ANGLE_iosurface_client_buffer 1
+#define EGL_IOSURFACE_ANGLE 0x3454
+#define EGL_IOSURFACE_PLANE_ANGLE 0x345A
+#define EGL_TEXTURE_RECTANGLE_ANGLE 0x345B
+#define EGL_TEXTURE_TYPE_ANGLE 0x345C
+#define EGL_TEXTURE_INTERNAL_FORMAT_ANGLE 0x345D
+#endif /* EGL_ANGLE_iosurface_client_buffer */
+
+#ifndef EGL_ANGLE_create_context_extensions_enabled
+#define EGL_ANGLE_create_context_extensions_enabled 1
+#define EGL_EXTENSIONS_ENABLED_ANGLE 0x345F
+#endif /* EGL_ANGLE_create_context_extensions_enabled */
 
 // clang-format on
 

@@ -40,6 +40,7 @@ class SyntheticTrialRegistry {
                            RegisterSyntheticMultiGroupFieldTrial);
   FRIEND_TEST_ALL_PREFIXES(SyntheticTrialRegistryTest,
                            GetSyntheticFieldTrialActiveGroups);
+  FRIEND_TEST_ALL_PREFIXES(VariationsCrashKeysTest, BasicFunctionality);
 
   // Registers a field trial name and group to be used to annotate a UMA report
   // with a particular Chrome configuration state. A UMA report will be
@@ -71,7 +72,8 @@ class SyntheticTrialRegistry {
   std::vector<SyntheticTrialGroup> synthetic_trial_groups_;
 
   // List of observers of |synthetic_trial_groups_| changes.
-  base::ObserverList<SyntheticTrialObserver> synthetic_trial_observer_list_;
+  base::ObserverList<SyntheticTrialObserver>::Unchecked
+      synthetic_trial_observer_list_;
 };
 
 }  // namespace variations

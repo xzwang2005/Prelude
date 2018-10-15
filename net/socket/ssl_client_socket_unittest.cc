@@ -17,13 +17,15 @@
 #include "base/memory/ref_counted.h"
 #include "base/run_loop.h"
 #include "base/single_thread_task_runner.h"
-#include "base/test/histogram_tester.h"
+#include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "base/time/time.h"
 #include "base/values.h"
+#include "build/build_config.h"
 #include "crypto/rsa_private_key.h"
 #include "net/base/address_list.h"
+#include "net/base/completion_once_callback.h"
 #include "net/base/io_buffer.h"
 #include "net/base/ip_address.h"
 #include "net/base/ip_endpoint.h"
@@ -64,10 +66,14 @@
 #include "net/ssl/ssl_server_config.h"
 #include "net/ssl/test_ssl_private_key.h"
 #include "net/test/cert_test_util.h"
+#include "net/test/embedded_test_server/embedded_test_server.h"
+#include "net/test/embedded_test_server/http_request.h"
+#include "net/test/embedded_test_server/http_response.h"
 #include "net/test/gtest_util.h"
 #include "net/test/spawned_test_server/spawned_test_server.h"
 #include "net/test/test_data_directory.h"
-#include "net/traffic_annotation/network_traffic_annotation.h"
+#include "net/test/test_with_scoped_task_environment.h"
+#include "net/traffic_annotation/network_traffic_annotation_test_helper.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "testing/platform_test.h"
@@ -89,92 +95,6 @@ class NetLogWithSource;
 
 namespace {
 
-// WrappedStreamSocket is a base class that wraps an existing StreamSocket,
-// forwarding the Socket and StreamSocket interfaces to the underlying
-// transport.
-// This is to provide a common base class for subclasses to override specific
-// StreamSocket methods for testing, while still communicating with a 'real'
-// StreamSocket.
-class WrappedStreamSocket : public StreamSocket {
- public:
-  explicit WrappedStreamSocket(std::unique_ptr<StreamSocket> transport)
-      : transport_(std::move(transport)) {}
-  ~WrappedStreamSocket() override = default;
-
-  // StreamSocket implementation:
-  int Connect(const CompletionCallback& callback) override {
-    return transport_->Connect(callback);
-  }
-  void Disconnect() override { transport_->Disconnect(); }
-  bool IsConnected() const override { return transport_->IsConnected(); }
-  bool IsConnectedAndIdle() const override {
-    return transport_->IsConnectedAndIdle();
-  }
-  int GetPeerAddress(IPEndPoint* address) const override {
-    return transport_->GetPeerAddress(address);
-  }
-  int GetLocalAddress(IPEndPoint* address) const override {
-    return transport_->GetLocalAddress(address);
-  }
-  const NetLogWithSource& NetLog() const override {
-    return transport_->NetLog();
-  }
-  void SetSubresourceSpeculation() override {
-    transport_->SetSubresourceSpeculation();
-  }
-  void SetOmniboxSpeculation() override { transport_->SetOmniboxSpeculation(); }
-  bool WasEverUsed() const override { return transport_->WasEverUsed(); }
-  bool WasAlpnNegotiated() const override {
-    return transport_->WasAlpnNegotiated();
-  }
-  NextProto GetNegotiatedProtocol() const override {
-    return transport_->GetNegotiatedProtocol();
-  }
-  bool GetSSLInfo(SSLInfo* ssl_info) override {
-    return transport_->GetSSLInfo(ssl_info);
-  }
-  void GetConnectionAttempts(ConnectionAttempts* out) const override {
-    transport_->GetConnectionAttempts(out);
-  }
-  void ClearConnectionAttempts() override {
-    transport_->ClearConnectionAttempts();
-  }
-  void AddConnectionAttempts(const ConnectionAttempts& attempts) override {
-    transport_->AddConnectionAttempts(attempts);
-  }
-  int64_t GetTotalReceivedBytes() const override {
-    return transport_->GetTotalReceivedBytes();
-  }
-
-  // Socket implementation:
-  int Read(IOBuffer* buf,
-           int buf_len,
-           const CompletionCallback& callback) override {
-    return transport_->Read(buf, buf_len, callback);
-  }
-  int ReadIfReady(IOBuffer* buf,
-                  int buf_len,
-                  const CompletionCallback& callback) override {
-    return transport_->ReadIfReady(buf, buf_len, callback);
-  }
-  int Write(IOBuffer* buf,
-            int buf_len,
-            const CompletionCallback& callback,
-            const NetworkTrafficAnnotationTag& traffic_annotation =
-                NO_TRAFFIC_ANNOTATION_BUG_656607) override {
-    return transport_->Write(buf, buf_len, callback);
-  }
-  int SetReceiveBufferSize(int32_t size) override {
-    return transport_->SetReceiveBufferSize(size);
-  }
-  int SetSendBufferSize(int32_t size) override {
-    return transport_->SetSendBufferSize(size);
-  }
-
- protected:
-  std::unique_ptr<StreamSocket> transport_;
-};
-
 // ReadBufferingStreamSocket is a wrapper for an existing StreamSocket that
 // will ensure a certain amount of data is internally buffered before
 // satisfying a Read() request. It exists to mimic OS-level internal
@@ -189,11 +109,11 @@ class ReadBufferingStreamSocket : public WrappedStreamSocket {
   // Socket implementation:
   int Read(IOBuffer* buf,
            int buf_len,
-           const CompletionCallback& callback) override;
+           CompletionOnceCallback callback) override;
 
   int ReadIfReady(IOBuffer* buf,
                   int buf_len,
-                  const CompletionCallback& callback) override;
+                  CompletionOnceCallback callback) override;
 
   // Sets the internal buffer to |size|. This must not be greater than
   // the largest value supplied to Read() - that is, it does not handle
@@ -221,13 +141,13 @@ class ReadBufferingStreamSocket : public WrappedStreamSocket {
   int buffer_size_;
 
   scoped_refptr<IOBuffer> user_read_buf_;
-  CompletionCallback user_read_callback_;
+  CompletionOnceCallback user_read_callback_;
 };
 
 ReadBufferingStreamSocket::ReadBufferingStreamSocket(
     std::unique_ptr<StreamSocket> transport)
     : WrappedStreamSocket(std::move(transport)),
-      read_buffer_(new GrowableIOBuffer()),
+      read_buffer_(base::MakeRefCounted<GrowableIOBuffer>()),
       buffer_size_(0) {}
 
 void ReadBufferingStreamSocket::SetBufferSize(int size) {
@@ -238,11 +158,11 @@ void ReadBufferingStreamSocket::SetBufferSize(int size) {
 
 int ReadBufferingStreamSocket::Read(IOBuffer* buf,
                                     int buf_len,
-                                    const CompletionCallback& callback) {
+                                    CompletionOnceCallback callback) {
   DCHECK(!user_read_buf_);
   if (buffer_size_ == 0)
-    return transport_->Read(buf, buf_len, callback);
-  int rv = ReadIfReady(buf, buf_len, callback);
+    return transport_->Read(buf, buf_len, std::move(callback));
+  int rv = ReadIfReady(buf, buf_len, std::move(callback));
   if (rv == ERR_IO_PENDING)
     user_read_buf_ = buf;
   return rv;
@@ -250,10 +170,10 @@ int ReadBufferingStreamSocket::Read(IOBuffer* buf,
 
 int ReadBufferingStreamSocket::ReadIfReady(IOBuffer* buf,
                                            int buf_len,
-                                           const CompletionCallback& callback) {
+                                           CompletionOnceCallback callback) {
   DCHECK(!user_read_buf_);
   if (buffer_size_ == 0)
-    return transport_->ReadIfReady(buf, buf_len, callback);
+    return transport_->ReadIfReady(buf, buf_len, std::move(callback));
 
   if (read_buffer_->RemainingCapacity() == 0) {
     memcpy(buf->data(), read_buffer_->StartOfBuffer(),
@@ -268,7 +188,7 @@ int ReadBufferingStreamSocket::ReadIfReady(IOBuffer* buf,
   state_ = STATE_READ;
   int rv = DoLoop(OK);
   if (rv == ERR_IO_PENDING)
-    user_read_callback_ = callback;
+    user_read_callback_ = std::move(callback);
   return rv;
 }
 
@@ -334,7 +254,7 @@ void ReadBufferingStreamSocket::OnReadCompleted(int result) {
   if (result == ERR_IO_PENDING)
     return;
   user_read_buf_ = nullptr;
-  base::ResetAndReturn(&user_read_callback_).Run(result);
+  std::move(user_read_callback_).Run(result);
 }
 
 // Simulates synchronously receiving an error during Read() or Write()
@@ -347,16 +267,14 @@ class SynchronousErrorStreamSocket : public WrappedStreamSocket {
   // Socket implementation:
   int Read(IOBuffer* buf,
            int buf_len,
-           const CompletionCallback& callback) override;
+           CompletionOnceCallback callback) override;
   int ReadIfReady(IOBuffer* buf,
                   int buf_len,
-                  const CompletionCallback& callback) override;
-  // TODO(crbug.com/656607): Remove default value.
+                  CompletionOnceCallback callback) override;
   int Write(IOBuffer* buf,
             int buf_len,
-            const CompletionCallback& callback,
-            const NetworkTrafficAnnotationTag& traffic_annotation =
-                NO_TRAFFIC_ANNOTATION_BUG_656607) override;
+            CompletionOnceCallback callback,
+            const NetworkTrafficAnnotationTag& traffic_annotation) override;
 
   // Sets the next Read() call and all future calls to return |error|.
   // If there is already a pending asynchronous read, the configured error
@@ -390,29 +308,29 @@ class SynchronousErrorStreamSocket : public WrappedStreamSocket {
 
 int SynchronousErrorStreamSocket::Read(IOBuffer* buf,
                                        int buf_len,
-                                       const CompletionCallback& callback) {
+                                       CompletionOnceCallback callback) {
   if (have_read_error_)
     return pending_read_error_;
-  return transport_->Read(buf, buf_len, callback);
+  return transport_->Read(buf, buf_len, std::move(callback));
 }
 
-int SynchronousErrorStreamSocket::ReadIfReady(
-    IOBuffer* buf,
-    int buf_len,
-    const CompletionCallback& callback) {
+int SynchronousErrorStreamSocket::ReadIfReady(IOBuffer* buf,
+                                              int buf_len,
+                                              CompletionOnceCallback callback) {
   if (have_read_error_)
     return pending_read_error_;
-  return transport_->ReadIfReady(buf, buf_len, callback);
+  return transport_->ReadIfReady(buf, buf_len, std::move(callback));
 }
 
 int SynchronousErrorStreamSocket::Write(
     IOBuffer* buf,
     int buf_len,
-    const CompletionCallback& callback,
+    CompletionOnceCallback callback,
     const NetworkTrafficAnnotationTag& traffic_annotation) {
   if (have_write_error_)
     return pending_write_error_;
-  return transport_->Write(buf, buf_len, callback);
+  return transport_->Write(buf, buf_len, std::move(callback),
+                           traffic_annotation);
 }
 
 // FakeBlockingStreamSocket wraps an existing StreamSocket and simulates the
@@ -428,16 +346,14 @@ class FakeBlockingStreamSocket : public WrappedStreamSocket {
   // Socket implementation:
   int Read(IOBuffer* buf,
            int buf_len,
-           const CompletionCallback& callback) override;
+           CompletionOnceCallback callback) override;
   int ReadIfReady(IOBuffer* buf,
                   int buf_len,
-                  const CompletionCallback& callback) override;
-  // TODO(crbug.com/656607): Remove default value.
+                  CompletionOnceCallback callback) override;
   int Write(IOBuffer* buf,
             int buf_len,
-            const CompletionCallback& callback,
-            const NetworkTrafficAnnotationTag& traffic_annotation =
-                NO_TRAFFIC_ANNOTATION_BUG_656607) override;
+            CompletionOnceCallback callback,
+            const NetworkTrafficAnnotationTag& traffic_annotation) override;
 
   int pending_read_result() const { return pending_read_result_; }
   IOBuffer* pending_read_buf() const { return pending_read_buf_.get(); }
@@ -478,6 +394,9 @@ class FakeBlockingStreamSocket : public WrappedStreamSocket {
   // Finishes the current read.
   void ReturnReadResult();
 
+  // Callback for writes.
+  void CallPendingWriteCallback(int result);
+
   // True if read callbacks are blocked.
   bool should_block_read_ = false;
 
@@ -485,7 +404,7 @@ class FakeBlockingStreamSocket : public WrappedStreamSocket {
   std::string read_if_ready_buf_;
 
   // Non-null if there is a pending ReadIfReady().
-  CompletionCallback read_if_ready_callback_;
+  CompletionOnceCallback read_if_ready_callback_;
 
   // The buffer for the pending read, or NULL if not consumed.
   scoped_refptr<IOBuffer> pending_read_buf_;
@@ -494,7 +413,7 @@ class FakeBlockingStreamSocket : public WrappedStreamSocket {
   int pending_read_buf_len_ = -1;
 
   // The user callback for the pending read call.
-  CompletionCallback pending_read_callback_;
+  CompletionOnceCallback pending_read_callback_;
 
   // The result for the blocked read callback, or ERR_IO_PENDING if not
   // completed.
@@ -510,7 +429,7 @@ class FakeBlockingStreamSocket : public WrappedStreamSocket {
   scoped_refptr<IOBuffer> pending_write_buf_;
 
   // The callback for the pending write call.
-  CompletionCallback pending_write_callback_;
+  CompletionOnceCallback pending_write_callback_;
 
   // The length for the pending write, or -1 if not scheduled.
   int pending_write_len_ = -1;
@@ -521,7 +440,7 @@ class FakeBlockingStreamSocket : public WrappedStreamSocket {
 
 int FakeBlockingStreamSocket::Read(IOBuffer* buf,
                                    int len,
-                                   const CompletionCallback& callback) {
+                                   CompletionOnceCallback callback) {
   DCHECK(!pending_read_buf_);
   DCHECK(pending_read_callback_.is_null());
   DCHECK_EQ(ERR_IO_PENDING, pending_read_result_);
@@ -535,7 +454,7 @@ int FakeBlockingStreamSocket::Read(IOBuffer* buf,
     // Save the callback to be called later.
     pending_read_buf_ = buf;
     pending_read_buf_len_ = len;
-    pending_read_callback_ = callback;
+    pending_read_callback_ = std::move(callback);
     // Save the read result.
     if (rv != ERR_IO_PENDING) {
       OnReadCompleted(rv);
@@ -547,7 +466,7 @@ int FakeBlockingStreamSocket::Read(IOBuffer* buf,
 
 int FakeBlockingStreamSocket::ReadIfReady(IOBuffer* buf,
                                           int len,
-                                          const CompletionCallback& callback) {
+                                          CompletionOnceCallback callback) {
   if (!read_if_ready_buf_.empty()) {
     // If ReadIfReady() is used, asynchronous reads with a large enough buffer
     // and no BlockReadResult() are supported by this class. Explicitly check
@@ -560,27 +479,27 @@ int FakeBlockingStreamSocket::ReadIfReady(IOBuffer* buf,
     read_if_ready_buf_.clear();
     return rv;
   }
-  scoped_refptr<IOBuffer> buf_copy = new IOBuffer(len);
+  scoped_refptr<IOBuffer> buf_copy = base::MakeRefCounted<IOBuffer>(len);
   int rv = Read(buf_copy.get(), len,
                 base::Bind(&FakeBlockingStreamSocket::CompleteReadIfReady,
                            base::Unretained(this), buf_copy));
   if (rv > 0)
     memcpy(buf->data(), buf_copy->data(), rv);
   if (rv == ERR_IO_PENDING)
-    read_if_ready_callback_ = callback;
+    read_if_ready_callback_ = std::move(callback);
   return rv;
 }
 
 int FakeBlockingStreamSocket::Write(
     IOBuffer* buf,
     int len,
-    const CompletionCallback& callback,
+    CompletionOnceCallback callback,
     const NetworkTrafficAnnotationTag& traffic_annotation) {
   DCHECK(buf);
   DCHECK_LE(0, len);
 
   if (!should_block_write_)
-    return transport_->Write(buf, len, callback);
+    return transport_->Write(buf, len, std::move(callback), traffic_annotation);
 
   // Schedule the write, but do nothing.
   DCHECK(!pending_write_buf_.get());
@@ -589,7 +508,7 @@ int FakeBlockingStreamSocket::Write(
   DCHECK(!callback.is_null());
   pending_write_buf_ = buf;
   pending_write_len_ = len;
-  pending_write_callback_ = callback;
+  pending_write_callback_ = std::move(callback);
 
   // Stop the write loop, if any.
   if (write_loop_)
@@ -642,6 +561,10 @@ void FakeBlockingStreamSocket::BlockWrite() {
   should_block_write_ = true;
 }
 
+void FakeBlockingStreamSocket::CallPendingWriteCallback(int rv) {
+  std::move(pending_write_callback_).Run(rv);
+}
+
 void FakeBlockingStreamSocket::UnblockWrite() {
   DCHECK(should_block_write_);
   should_block_write_ = false;
@@ -652,13 +575,15 @@ void FakeBlockingStreamSocket::UnblockWrite() {
     return;
 
   int rv = transport_->Write(
-      pending_write_buf_.get(), pending_write_len_, pending_write_callback_);
+      pending_write_buf_.get(), pending_write_len_,
+      base::BindOnce(&FakeBlockingStreamSocket::CallPendingWriteCallback,
+                     base::Unretained(this)),
+      TRAFFIC_ANNOTATION_FOR_TESTS);
+
   pending_write_buf_ = NULL;
   pending_write_len_ = -1;
-  if (rv == ERR_IO_PENDING) {
-    pending_write_callback_.Reset();
-  } else {
-    base::ResetAndReturn(&pending_write_callback_).Run(rv);
+  if (rv != ERR_IO_PENDING) {
+    std::move(pending_write_callback_).Run(rv);
   }
 }
 
@@ -697,7 +622,7 @@ void FakeBlockingStreamSocket::CompleteReadIfReady(scoped_refptr<IOBuffer> buf,
   DCHECK(!should_block_read_);
   if (rv > 0)
     read_if_ready_buf_ = std::string(buf->data(), buf->data() + rv);
-  base::ResetAndReturn(&read_if_ready_callback_).Run(rv > 0 ? OK : rv);
+  std::move(read_if_ready_callback_).Run(rv > 0 ? OK : rv);
 }
 
 void FakeBlockingStreamSocket::ReturnReadResult() {
@@ -705,7 +630,7 @@ void FakeBlockingStreamSocket::ReturnReadResult() {
   pending_read_result_ = ERR_IO_PENDING;
   pending_read_buf_ = nullptr;
   pending_read_buf_len_ = -1;
-  base::ResetAndReturn(&pending_read_callback_).Run(result);
+  std::move(pending_read_callback_).Run(result);
 }
 
 // CountingStreamSocket wraps an existing StreamSocket and maintains a count of
@@ -721,16 +646,17 @@ class CountingStreamSocket : public WrappedStreamSocket {
   // Socket implementation:
   int Read(IOBuffer* buf,
            int buf_len,
-           const CompletionCallback& callback) override {
+           CompletionOnceCallback callback) override {
     read_count_++;
-    return transport_->Read(buf, buf_len, callback);
+    return transport_->Read(buf, buf_len, std::move(callback));
   }
   int Write(IOBuffer* buf,
             int buf_len,
-            const CompletionCallback& callback,
+            CompletionOnceCallback callback,
             const NetworkTrafficAnnotationTag& traffic_annotation) override {
     write_count_++;
-    return transport_->Write(buf, buf_len, callback);
+    return transport_->Write(buf, buf_len, std::move(callback),
+                             traffic_annotation);
   }
 
   int read_count() const { return read_count_; }
@@ -741,17 +667,16 @@ class CountingStreamSocket : public WrappedStreamSocket {
   int write_count_;
 };
 
-// CompletionCallback that will delete the associated StreamSocket when
-// the callback is invoked.
+// A helper class that will delete |socket| when the callback is invoked.
 class DeleteSocketCallback : public TestCompletionCallbackBase {
  public:
-  explicit DeleteSocketCallback(StreamSocket* socket)
-      : socket_(socket),
-        callback_(base::Bind(&DeleteSocketCallback::OnComplete,
-                             base::Unretained(this))) {}
+  explicit DeleteSocketCallback(StreamSocket* socket) : socket_(socket) {}
   ~DeleteSocketCallback() override = default;
 
-  const CompletionCallback& callback() const { return callback_; }
+  CompletionOnceCallback callback() {
+    return base::BindOnce(&DeleteSocketCallback::OnComplete,
+                          base::Unretained(this));
+  }
 
  private:
   void OnComplete(int result) {
@@ -765,7 +690,6 @@ class DeleteSocketCallback : public TestCompletionCallbackBase {
   }
 
   StreamSocket* socket_;
-  CompletionCallback callback_;
 
   DISALLOW_COPY_AND_ASSIGN(DeleteSocketCallback);
 };
@@ -775,19 +699,19 @@ class DeleteSocketCallback : public TestCompletionCallbackBase {
 class FailingChannelIDStore : public ChannelIDStore {
   int GetChannelID(const std::string& server_identifier,
                    std::unique_ptr<crypto::ECPrivateKey>* key_result,
-                   const GetChannelIDCallback& callback) override {
+                   GetChannelIDCallback callback) override {
     return ERR_UNEXPECTED;
   }
   void SetChannelID(std::unique_ptr<ChannelID> channel_id) override {}
   void DeleteChannelID(const std::string& server_identifier,
-                       const base::Closure& completion_callback) override {}
+                       base::OnceClosure completion_callback) override {}
   void DeleteForDomainsCreatedBetween(
       const base::Callback<bool(const std::string&)>& domain_predicate,
       base::Time delete_begin,
       base::Time delete_end,
-      const base::Closure& completion_callback) override {}
-  void DeleteAll(const base::Closure& completion_callback) override {}
-  void GetAllChannelIDs(const GetChannelIDListCallback& callback) override {}
+      base::OnceClosure completion_callback) override {}
+  void DeleteAll(base::OnceClosure completion_callback) override {}
+  void GetAllChannelIDs(GetChannelIDListCallback callback) override {}
   int GetChannelIDCount() override { return 0; }
   void SetForceKeepSessionState() override {}
   void Flush() override {}
@@ -799,22 +723,22 @@ class FailingChannelIDStore : public ChannelIDStore {
 class AsyncFailingChannelIDStore : public ChannelIDStore {
   int GetChannelID(const std::string& server_identifier,
                    std::unique_ptr<crypto::ECPrivateKey>* key_result,
-                   const GetChannelIDCallback& callback) override {
+                   GetChannelIDCallback callback) override {
     base::ThreadTaskRunnerHandle::Get()->PostTask(
-        FROM_HERE,
-        base::Bind(callback, ERR_UNEXPECTED, server_identifier, nullptr));
+        FROM_HERE, base::BindOnce(std::move(callback), ERR_UNEXPECTED,
+                                  server_identifier, nullptr));
     return ERR_IO_PENDING;
   }
   void SetChannelID(std::unique_ptr<ChannelID> channel_id) override {}
   void DeleteChannelID(const std::string& server_identifier,
-                       const base::Closure& completion_callback) override {}
+                       base::OnceClosure completion_callback) override {}
   void DeleteForDomainsCreatedBetween(
       const base::Callback<bool(const std::string&)>& domain_predicate,
       base::Time delete_begin,
       base::Time delete_end,
-      const base::Closure& completion_callback) override {}
-  void DeleteAll(const base::Closure& completion_callback) override {}
-  void GetAllChannelIDs(const GetChannelIDListCallback& callback) override {}
+      base::OnceClosure completion_callback) override {}
+  void DeleteAll(base::OnceClosure completion_callback) override {}
+  void GetAllChannelIDs(GetChannelIDListCallback callback) override {}
   int GetChannelIDCount() override { return 0; }
   void SetForceKeepSessionState() override {}
   void Flush() override {}
@@ -870,13 +794,15 @@ class MockExpectCTReporter : public TransportSecurityState::ExpectCTReporter {
 // anything.
 class MockCTVerifier : public CTVerifier {
  public:
-  MOCK_METHOD5(Verify,
-               void(X509Certificate*,
+  MOCK_METHOD6(Verify,
+               void(base::StringPiece,
+                    X509Certificate*,
                     base::StringPiece,
                     base::StringPiece,
                     SignedCertificateTimestampAndStatusList*,
                     const NetLogWithSource&));
   MOCK_METHOD1(SetObserver, void(CTVerifier::Observer*));
+  MOCK_CONST_METHOD0(GetObserver, CTVerifier::Observer*());
 };
 
 // A mock CTPolicyEnforcer that returns a custom verification result.
@@ -890,11 +816,14 @@ class MockCTPolicyEnforcer : public CTPolicyEnforcer {
 
 class MockRequireCTDelegate : public TransportSecurityState::RequireCTDelegate {
  public:
-  MOCK_METHOD1(IsCTRequiredForHost,
-               CTRequirementLevel(const std::string& host));
+  MOCK_METHOD3(IsCTRequiredForHost,
+               CTRequirementLevel(const std::string& host,
+                                  const X509Certificate* chain,
+                                  const HashValueVector& hashes));
 };
 
-class SSLClientSocketTest : public PlatformTest {
+class SSLClientSocketTest : public PlatformTest,
+                            public WithScopedTaskEnvironment {
  public:
   SSLClientSocketTest()
       : socket_factory_(ClientSocketFactory::GetDefaultFactory()),
@@ -1035,10 +964,10 @@ class SSLClientSocketReadTest : public SSLClientSocketTest,
   int Read(StreamSocket* socket,
            IOBuffer* buf,
            int buf_len,
-           const CompletionCallback& callback) {
+           CompletionOnceCallback callback) {
     if (read_if_ready_enabled())
-      return socket->ReadIfReady(buf, buf_len, callback);
-    return socket->Read(buf, buf_len, callback);
+      return socket->ReadIfReady(buf, buf_len, std::move(callback));
+    return socket->Read(buf, buf_len, std::move(callback));
   }
 
   // Wait for Read()/ReadIfReady() to complete.
@@ -1203,18 +1132,19 @@ class SSLClientSocketFalseStartTest : public SSLClientSocketTest {
       const char request_text[] = "GET / HTTP/1.0\r\n\r\n";
       static const int kRequestTextSize =
           static_cast<int>(arraysize(request_text) - 1);
-      scoped_refptr<IOBuffer> request_buffer(new IOBuffer(kRequestTextSize));
+      scoped_refptr<IOBuffer> request_buffer =
+          base::MakeRefCounted<IOBuffer>(kRequestTextSize);
       memcpy(request_buffer->data(), request_text, kRequestTextSize);
 
       // Write the request.
       rv = callback.GetResult(sock->Write(request_buffer.get(),
-                                          kRequestTextSize,
-                                          callback.callback()));
+                                          kRequestTextSize, callback.callback(),
+                                          TRAFFIC_ANNOTATION_FOR_TESTS));
       EXPECT_EQ(kRequestTextSize, rv);
 
       // The read will hang; it's waiting for the peer to complete the
       // handshake, and the handshake is still blocked.
-      scoped_refptr<IOBuffer> buf(new IOBuffer(4096));
+      scoped_refptr<IOBuffer> buf = base::MakeRefCounted<IOBuffer>(4096);
       rv = sock->Read(buf.get(), 4096, callback.callback());
 
       // After releasing reads, the connection proceeds.
@@ -1254,6 +1184,153 @@ class SSLClientSocketChannelIDTest : public SSLClientSocketTest {
 
  private:
   std::unique_ptr<ChannelIDService> channel_id_service_;
+};
+
+// Provides a response to the 0RTT request indicating whether it was received
+// as early data.
+class ZeroRTTResponse : public test_server::HttpResponse {
+ public:
+  ZeroRTTResponse(bool zero_rtt) : zero_rtt_(zero_rtt) {}
+  ~ZeroRTTResponse() override {}
+
+  void SendResponse(const test_server::SendBytesCallback& send,
+                    const test_server::SendCompleteCallback& done) override {
+    std::string response;
+    if (zero_rtt_) {
+      response = "1";
+    } else {
+      response = "0";
+    }
+
+    // Since the EmbeddedTestServer doesn't keep the socket open by default, it
+    // is explicitly kept alive to allow the remaining leg of the 0RTT handshake
+    // to be received after the early data.
+    send.Run(response, base::BindRepeating([]() {}));
+  }
+
+ private:
+  bool zero_rtt_;
+
+  DISALLOW_COPY_AND_ASSIGN(ZeroRTTResponse);
+};
+
+std::unique_ptr<test_server::HttpResponse> HandleZeroRTTRequest(
+    const test_server::HttpRequest& request) {
+  if (request.GetURL().path() != "/zerortt")
+    return nullptr;
+  bool zero_rtt = false;
+  if (request.headers.find("Early-Data") != request.headers.end()) {
+    if (request.headers.at("Early-Data") == "1") {
+      zero_rtt = true;
+    }
+  }
+
+  return std::unique_ptr<ZeroRTTResponse>(new ZeroRTTResponse(zero_rtt));
+}
+
+class SSLClientSocketZeroRTTTest : public SSLClientSocketTest {
+ protected:
+  SSLClientSocketZeroRTTTest() : SSLClientSocketTest() {}
+
+  bool StartServer() {
+    test_server_.reset(
+        new EmbeddedTestServer(net::EmbeddedTestServer::TYPE_HTTPS));
+    SSLServerConfig server_config;
+    server_config.early_data_enabled = true;
+    server_config.version_max = SSL_PROTOCOL_VERSION_TLS1_3;
+    test_server_->AddDefaultHandlers(base::FilePath());
+    test_server_->RegisterRequestHandler(
+        base::BindRepeating(&HandleZeroRTTRequest));
+    test_server_->SetSSLConfig(net::EmbeddedTestServer::CERT_OK, server_config);
+    if (!test_server_->Start()) {
+      LOG(ERROR) << "Could not start EmbeddedTestServer";
+      return false;
+    }
+
+    if (!test_server_->GetAddressList(&address_)) {
+      LOG(ERROR) << "Could not get EmbeddedTestServer address list";
+      return false;
+    }
+    return true;
+  }
+
+  void SetServerConfig(SSLServerConfig server_config) {
+    test_server_->ResetSSLConfig(net::EmbeddedTestServer::CERT_OK,
+                                 server_config);
+  }
+
+  FakeBlockingStreamSocket* MakeClient(bool early_data_enabled) {
+    SSLConfig ssl_config;
+    ssl_config.version_max = SSL_PROTOCOL_VERSION_TLS1_3;
+    ssl_config.early_data_enabled = early_data_enabled;
+
+    real_transport_.reset(
+        new TCPClientSocket(address_, NULL, NULL, NetLogSource()));
+    std::unique_ptr<FakeBlockingStreamSocket> transport(
+        new FakeBlockingStreamSocket(std::move(real_transport_)));
+    FakeBlockingStreamSocket* raw_transport = transport.get();
+
+    int rv = callback_.GetResult(transport->Connect(callback_.callback()));
+    EXPECT_THAT(rv, IsOk());
+
+    ssl_socket_ = CreateSSLClientSocket(
+        std::move(transport), test_server_->host_port_pair(), ssl_config);
+    EXPECT_FALSE(ssl_socket_->IsConnected());
+
+    return raw_transport;
+  }
+
+  int Connect() {
+    return callback_.GetResult(ssl_socket_->Connect(callback_.callback()));
+  }
+
+  int WriteAndWait(base::StringPiece request) {
+    scoped_refptr<IOBuffer> request_buffer =
+        base::MakeRefCounted<IOBuffer>(request.size());
+    memcpy(request_buffer->data(), request.data(), request.size());
+    return callback_.GetResult(
+        ssl_socket_->Write(request_buffer.get(), request.size(),
+                           callback_.callback(), TRAFFIC_ANNOTATION_FOR_TESTS));
+  }
+
+  int ReadAndWait(IOBuffer* buf, size_t len) {
+    return callback_.GetResult(
+        ssl_socket_->Read(buf, len, callback_.callback()));
+  }
+
+  bool GetSSLInfo(SSLInfo* ssl_info) {
+    return ssl_socket_->GetSSLInfo(ssl_info);
+  }
+
+  bool RunInitialConnection() {
+    if (MakeClient(true) == nullptr)
+      return false;
+
+    EXPECT_THAT(Connect(), IsOk());
+
+    // Use the socket for an HTTP request to ensure we've processed the
+    // post-handshake TLS 1.3 ticket.
+    constexpr base::StringPiece kRequest = "GET / HTTP/1.0\r\n\r\n";
+    if (kRequest.size() != WriteAndWait(kRequest))
+      return false;
+
+    scoped_refptr<IOBuffer> buf = base::MakeRefCounted<IOBuffer>(4096);
+    if (ReadAndWait(buf.get(), 4096) <= 0)
+      return false;
+
+    SSLInfo ssl_info;
+    EXPECT_TRUE(GetSSLInfo(&ssl_info));
+    return SSLInfo::HANDSHAKE_FULL == ssl_info.handshake_type;
+  }
+
+  SSLClientSocket* ssl_socket() { return ssl_socket_.get(); }
+
+ private:
+  std::unique_ptr<EmbeddedTestServer> test_server_;
+  AddressList address_;
+  TestCompletionCallback callback_;
+  std::unique_ptr<StreamSocket> real_transport_;
+  std::unique_ptr<SSLClientSocket> ssl_socket_;
 };
 
 // Returns a serialized unencrypted TLS 1.2 alert record for the given alert
@@ -1442,15 +1519,16 @@ TEST_P(SSLClientSocketReadTest, Read) {
   EXPECT_GT(sock->GetTotalReceivedBytes(), 0);
 
   const char request_text[] = "GET / HTTP/1.0\r\n\r\n";
-  scoped_refptr<IOBuffer> request_buffer(
-      new IOBuffer(arraysize(request_text) - 1));
+  scoped_refptr<IOBuffer> request_buffer =
+      base::MakeRefCounted<IOBuffer>(base::size(request_text) - 1);
   memcpy(request_buffer->data(), request_text, arraysize(request_text) - 1);
 
-  rv = callback.GetResult(sock->Write(
-      request_buffer.get(), arraysize(request_text) - 1, callback.callback()));
+  rv = callback.GetResult(
+      sock->Write(request_buffer.get(), arraysize(request_text) - 1,
+                  callback.callback(), TRAFFIC_ANNOTATION_FOR_TESTS));
   EXPECT_EQ(static_cast<int>(arraysize(request_text) - 1), rv);
 
-  scoped_refptr<IOBuffer> buf(new IOBuffer(4096));
+  scoped_refptr<IOBuffer> buf = base::MakeRefCounted<IOBuffer>(4096);
   int64_t unencrypted_bytes_read = 0;
   int64_t network_bytes_read_during_handshake = sock->GetTotalReceivedBytes();
   do {
@@ -1532,17 +1610,19 @@ TEST_P(SSLClientSocketReadTest, Read_WithSynchronousError) {
   const char request_text[] = "GET / HTTP/1.0\r\n\r\n";
   static const int kRequestTextSize =
       static_cast<int>(arraysize(request_text) - 1);
-  scoped_refptr<IOBuffer> request_buffer(new IOBuffer(kRequestTextSize));
+  scoped_refptr<IOBuffer> request_buffer =
+      base::MakeRefCounted<IOBuffer>(kRequestTextSize);
   memcpy(request_buffer->data(), request_text, kRequestTextSize);
 
-  rv = callback.GetResult(
-      sock->Write(request_buffer.get(), kRequestTextSize, callback.callback()));
+  rv = callback.GetResult(sock->Write(request_buffer.get(), kRequestTextSize,
+                                      callback.callback(),
+                                      TRAFFIC_ANNOTATION_FOR_TESTS));
   EXPECT_EQ(kRequestTextSize, rv);
 
   // Simulate an unclean/forcible shutdown.
   raw_transport->SetNextReadError(ERR_CONNECTION_RESET);
 
-  scoped_refptr<IOBuffer> buf(new IOBuffer(4096));
+  scoped_refptr<IOBuffer> buf = base::MakeRefCounted<IOBuffer>(4096);
 
   // Note: This test will hang if this bug has regressed. Simply checking that
   // rv != ERR_IO_PENDING is insufficient, as ERR_IO_PENDING is a legitimate
@@ -1587,7 +1667,8 @@ TEST_F(SSLClientSocketTest, Write_WithSynchronousError) {
   const char request_text[] = "GET / HTTP/1.0\r\n\r\n";
   static const int kRequestTextSize =
       static_cast<int>(arraysize(request_text) - 1);
-  scoped_refptr<IOBuffer> request_buffer(new IOBuffer(kRequestTextSize));
+  scoped_refptr<IOBuffer> request_buffer =
+      base::MakeRefCounted<IOBuffer>(kRequestTextSize);
   memcpy(request_buffer->data(), request_text, kRequestTextSize);
 
   // Simulate an unclean/forcible shutdown on the underlying socket.
@@ -1598,11 +1679,12 @@ TEST_F(SSLClientSocketTest, Write_WithSynchronousError) {
   // This write should complete synchronously, because the TLS ciphertext
   // can be created and placed into the outgoing buffers independent of the
   // underlying transport.
-  rv = callback.GetResult(
-      sock->Write(request_buffer.get(), kRequestTextSize, callback.callback()));
+  rv = callback.GetResult(sock->Write(request_buffer.get(), kRequestTextSize,
+                                      callback.callback(),
+                                      TRAFFIC_ANNOTATION_FOR_TESTS));
   EXPECT_EQ(kRequestTextSize, rv);
 
-  scoped_refptr<IOBuffer> buf(new IOBuffer(4096));
+  scoped_refptr<IOBuffer> buf = base::MakeRefCounted<IOBuffer>(4096);
 
   rv = sock->Read(buf.get(), 4096, callback.callback());
   EXPECT_THAT(rv, IsError(ERR_IO_PENDING));
@@ -1657,14 +1739,16 @@ TEST_F(SSLClientSocketTest, Write_WithSynchronousErrorNoRead) {
   const char request_text[] = "GET / HTTP/1.0\r\n\r\n";
   static const int kRequestTextSize =
       static_cast<int>(arraysize(request_text) - 1);
-  scoped_refptr<IOBuffer> request_buffer(new IOBuffer(kRequestTextSize));
+  scoped_refptr<IOBuffer> request_buffer =
+      base::MakeRefCounted<IOBuffer>(kRequestTextSize);
   memcpy(request_buffer->data(), request_text, kRequestTextSize);
 
   // This write should complete synchronously, because the TLS ciphertext
   // can be created and placed into the outgoing buffers independent of the
   // underlying transport.
-  rv = callback.GetResult(
-      sock->Write(request_buffer.get(), kRequestTextSize, callback.callback()));
+  rv = callback.GetResult(sock->Write(request_buffer.get(), kRequestTextSize,
+                                      callback.callback(),
+                                      TRAFFIC_ANNOTATION_FOR_TESTS));
   ASSERT_EQ(kRequestTextSize, rv);
 
   // Let the event loop spin for a little bit of time. Even on platforms where
@@ -1691,7 +1775,7 @@ TEST_P(SSLClientSocketReadTest, Read_FullDuplex) {
 
   // Issue a "hanging" Read first.
   TestCompletionCallback callback;
-  scoped_refptr<IOBuffer> buf(new IOBuffer(4096));
+  scoped_refptr<IOBuffer> buf = base::MakeRefCounted<IOBuffer>(4096);
   rv = Read(sock_.get(), buf.get(), 4096, callback.callback());
   // We haven't written the request, so there should be no response yet.
   ASSERT_THAT(rv, IsError(ERR_IO_PENDING));
@@ -1704,11 +1788,13 @@ TEST_P(SSLClientSocketReadTest, Read_FullDuplex) {
   for (int i = 0; i < 3770; ++i)
     request_text.push_back('*');
   request_text.append("\r\n\r\n");
-  scoped_refptr<IOBuffer> request_buffer(new StringIOBuffer(request_text));
+  scoped_refptr<IOBuffer> request_buffer =
+      base::MakeRefCounted<StringIOBuffer>(request_text);
 
   TestCompletionCallback callback2;  // Used for Write only.
-  rv = callback2.GetResult(sock_->Write(
-      request_buffer.get(), request_text.size(), callback2.callback()));
+  rv = callback2.GetResult(
+      sock_->Write(request_buffer.get(), request_text.size(),
+                   callback2.callback(), TRAFFIC_ANNOTATION_FOR_TESTS));
   EXPECT_EQ(static_cast<int>(request_text.size()), rv);
 
   // Now get the Read result.
@@ -1755,8 +1841,10 @@ TEST_P(SSLClientSocketReadTest, Read_DeleteWhilePendingFullDuplex) {
   std::string request_text = "GET / HTTP/1.1\r\nUser-Agent: long browser name ";
   request_text.append(20 * 1024, '*');
   request_text.append("\r\n\r\n");
-  scoped_refptr<DrainableIOBuffer> request_buffer(new DrainableIOBuffer(
-      new StringIOBuffer(request_text), request_text.size()));
+  scoped_refptr<DrainableIOBuffer> request_buffer =
+      base::MakeRefCounted<DrainableIOBuffer>(
+          base::MakeRefCounted<StringIOBuffer>(request_text),
+          request_text.size());
 
   // Simulate errors being returned from the underlying Read() and Write() ...
   raw_error_socket->SetNextReadError(ERR_CONNECTION_RESET);
@@ -1770,7 +1858,7 @@ TEST_P(SSLClientSocketReadTest, Read_DeleteWhilePendingFullDuplex) {
   // the ERR_IO_PENDING caused by SetReadShouldBlock() and thus return.
   SSLClientSocket* raw_sock = sock.get();
   DeleteSocketCallback read_callback(sock.release());
-  scoped_refptr<IOBuffer> read_buf(new IOBuffer(4096));
+  scoped_refptr<IOBuffer> read_buf = base::MakeRefCounted<IOBuffer>(4096);
   rv = Read(raw_sock, read_buf.get(), 4096, read_callback.callback());
 
   // Ensure things didn't complete synchronously, otherwise |sock| is invalid.
@@ -1779,9 +1867,8 @@ TEST_P(SSLClientSocketReadTest, Read_DeleteWhilePendingFullDuplex) {
 
   // Attempt to write the remaining data. OpenSSL will return that its blocked
   // because the underlying transport is blocked.
-  rv = raw_sock->Write(request_buffer.get(),
-                       request_buffer->BytesRemaining(),
-                       callback.callback());
+  rv = raw_sock->Write(request_buffer.get(), request_buffer->BytesRemaining(),
+                       callback.callback(), TRAFFIC_ANNOTATION_FOR_TESTS);
   ASSERT_THAT(rv, IsError(ERR_IO_PENDING));
   ASSERT_FALSE(callback.have_result());
 
@@ -1841,17 +1928,19 @@ TEST_P(SSLClientSocketReadTest, Read_WithWriteError) {
   const char request_text[] = "GET / HTTP/1.0\r\n\r\n";
   static const int kRequestTextSize =
       static_cast<int>(arraysize(request_text) - 1);
-  scoped_refptr<IOBuffer> request_buffer(new IOBuffer(kRequestTextSize));
+  scoped_refptr<IOBuffer> request_buffer =
+      base::MakeRefCounted<IOBuffer>(kRequestTextSize);
   memcpy(request_buffer->data(), request_text, kRequestTextSize);
 
-  rv = callback.GetResult(
-      sock->Write(request_buffer.get(), kRequestTextSize, callback.callback()));
+  rv = callback.GetResult(sock->Write(request_buffer.get(), kRequestTextSize,
+                                      callback.callback(),
+                                      TRAFFIC_ANNOTATION_FOR_TESTS));
   EXPECT_EQ(kRequestTextSize, rv);
 
   // Start a hanging read.
   TestCompletionCallback read_callback;
   raw_transport->BlockReadResult();
-  scoped_refptr<IOBuffer> buf(new IOBuffer(4096));
+  scoped_refptr<IOBuffer> buf = base::MakeRefCounted<IOBuffer>(4096);
   rv = Read(sock.get(), buf.get(), 4096, read_callback.callback());
   EXPECT_THAT(rv, IsError(ERR_IO_PENDING));
 
@@ -1862,16 +1951,18 @@ TEST_P(SSLClientSocketReadTest, Read_WithWriteError) {
       "GET / HTTP/1.1\r\nUser-Agent: long browser name ";
   long_request_text.append(20 * 1024, '*');
   long_request_text.append("\r\n\r\n");
-  scoped_refptr<DrainableIOBuffer> long_request_buffer(new DrainableIOBuffer(
-      new StringIOBuffer(long_request_text), long_request_text.size()));
+  scoped_refptr<DrainableIOBuffer> long_request_buffer =
+      base::MakeRefCounted<DrainableIOBuffer>(
+          base::MakeRefCounted<StringIOBuffer>(long_request_text),
+          long_request_text.size());
 
   raw_error_socket->SetNextWriteError(ERR_CONNECTION_RESET);
 
   // Write as much data as possible until hitting an error.
   do {
-    rv = callback.GetResult(sock->Write(long_request_buffer.get(),
-                                        long_request_buffer->BytesRemaining(),
-                                        callback.callback()));
+    rv = callback.GetResult(sock->Write(
+        long_request_buffer.get(), long_request_buffer->BytesRemaining(),
+        callback.callback(), TRAFFIC_ANNOTATION_FOR_TESTS));
     if (rv > 0) {
       long_request_buffer->DidConsume(rv);
       // Abort if the entire input is ever consumed. The input is larger than
@@ -1945,7 +2036,7 @@ TEST_P(SSLClientSocketReadTest, Read_WithZeroReturn) {
   EXPECT_TRUE(sock->IsConnected());
 
   raw_transport->SetNextReadError(0);
-  scoped_refptr<IOBuffer> buf(new IOBuffer(4096));
+  scoped_refptr<IOBuffer> buf = base::MakeRefCounted<IOBuffer>(4096);
   rv = ReadAndWaitForCompletion(sock.get(), buf.get(), 4096);
   EXPECT_EQ(0, rv);
 }
@@ -1982,7 +2073,7 @@ TEST_P(SSLClientSocketReadTest, Read_WithAsyncZeroReturn) {
 
   raw_error_socket->SetNextReadError(0);
   raw_transport->BlockReadResult();
-  scoped_refptr<IOBuffer> buf(new IOBuffer(4096));
+  scoped_refptr<IOBuffer> buf = base::MakeRefCounted<IOBuffer>(4096);
   TestCompletionCallback read_callback;
   rv = Read(sock.get(), buf.get(), 4096, read_callback.callback());
   EXPECT_THAT(rv, IsError(ERR_IO_PENDING));
@@ -2005,7 +2096,7 @@ TEST_P(SSLClientSocketReadTest, Read_WithFatalAlert) {
 
   // Receive the fatal alert.
   TestCompletionCallback callback;
-  scoped_refptr<IOBuffer> buf(new IOBuffer(4096));
+  scoped_refptr<IOBuffer> buf = base::MakeRefCounted<IOBuffer>(4096);
   EXPECT_EQ(ERR_SSL_PROTOCOL_ERROR,
             ReadAndWaitForCompletion(sock_.get(), buf.get(), 4096));
 }
@@ -2018,16 +2109,17 @@ TEST_P(SSLClientSocketReadTest, Read_SmallChunks) {
   EXPECT_THAT(rv, IsOk());
 
   const char request_text[] = "GET / HTTP/1.0\r\n\r\n";
-  scoped_refptr<IOBuffer> request_buffer(
-      new IOBuffer(arraysize(request_text) - 1));
+  scoped_refptr<IOBuffer> request_buffer =
+      base::MakeRefCounted<IOBuffer>(base::size(request_text) - 1);
   memcpy(request_buffer->data(), request_text, arraysize(request_text) - 1);
 
   TestCompletionCallback callback;
-  rv = callback.GetResult(sock_->Write(
-      request_buffer.get(), arraysize(request_text) - 1, callback.callback()));
+  rv = callback.GetResult(
+      sock_->Write(request_buffer.get(), arraysize(request_text) - 1,
+                   callback.callback(), TRAFFIC_ANNOTATION_FOR_TESTS));
   EXPECT_EQ(static_cast<int>(arraysize(request_text) - 1), rv);
 
-  scoped_refptr<IOBuffer> buf(new IOBuffer(1));
+  scoped_refptr<IOBuffer> buf = base::MakeRefCounted<IOBuffer>(1);
   do {
     rv = ReadAndWaitForCompletion(sock_.get(), buf.get(), 1);
     EXPECT_GE(rv, 0);
@@ -2056,12 +2148,13 @@ TEST_P(SSLClientSocketReadTest, Read_ManySmallRecords) {
   ASSERT_TRUE(sock->IsConnected());
 
   const char request_text[] = "GET /ssl-many-small-records HTTP/1.0\r\n\r\n";
-  scoped_refptr<IOBuffer> request_buffer(
-      new IOBuffer(arraysize(request_text) - 1));
+  scoped_refptr<IOBuffer> request_buffer =
+      base::MakeRefCounted<IOBuffer>(base::size(request_text) - 1);
   memcpy(request_buffer->data(), request_text, arraysize(request_text) - 1);
 
-  rv = callback.GetResult(sock->Write(
-      request_buffer.get(), arraysize(request_text) - 1, callback.callback()));
+  rv = callback.GetResult(
+      sock->Write(request_buffer.get(), arraysize(request_text) - 1,
+                  callback.callback(), TRAFFIC_ANNOTATION_FOR_TESTS));
   ASSERT_GT(rv, 0);
   ASSERT_EQ(static_cast<int>(arraysize(request_text) - 1), rv);
 
@@ -2076,7 +2169,7 @@ TEST_P(SSLClientSocketReadTest, Read_ManySmallRecords) {
   // of ciphertext necessary to contain the 8K of plaintext requested below.
   raw_transport->SetBufferSize(15000);
 
-  scoped_refptr<IOBuffer> buffer(new IOBuffer(8192));
+  scoped_refptr<IOBuffer> buffer = base::MakeRefCounted<IOBuffer>(8192);
   rv = ReadAndWaitForCompletion(sock.get(), buffer.get(), 8192);
   ASSERT_EQ(rv, 8192);
 }
@@ -2089,17 +2182,18 @@ TEST_P(SSLClientSocketReadTest, Read_Interrupted) {
   EXPECT_THAT(rv, IsOk());
 
   const char request_text[] = "GET / HTTP/1.0\r\n\r\n";
-  scoped_refptr<IOBuffer> request_buffer(
-      new IOBuffer(arraysize(request_text) - 1));
+  scoped_refptr<IOBuffer> request_buffer =
+      base::MakeRefCounted<IOBuffer>(base::size(request_text) - 1);
   memcpy(request_buffer->data(), request_text, arraysize(request_text) - 1);
 
   TestCompletionCallback callback;
-  rv = callback.GetResult(sock_->Write(
-      request_buffer.get(), arraysize(request_text) - 1, callback.callback()));
+  rv = callback.GetResult(
+      sock_->Write(request_buffer.get(), arraysize(request_text) - 1,
+                   callback.callback(), TRAFFIC_ANNOTATION_FOR_TESTS));
   EXPECT_EQ(static_cast<int>(arraysize(request_text) - 1), rv);
 
   // Do a partial read and then exit.  This test should not crash!
-  scoped_refptr<IOBuffer> buf(new IOBuffer(512));
+  scoped_refptr<IOBuffer> buf = base::MakeRefCounted<IOBuffer>(512);
   rv = ReadAndWaitForCompletion(sock_.get(), buf.get(), 512);
   EXPECT_GT(rv, 0);
 }
@@ -2124,12 +2218,13 @@ TEST_P(SSLClientSocketReadTest, Read_FullLogging) {
   EXPECT_TRUE(sock->IsConnected());
 
   const char request_text[] = "GET / HTTP/1.0\r\n\r\n";
-  scoped_refptr<IOBuffer> request_buffer(
-      new IOBuffer(arraysize(request_text) - 1));
+  scoped_refptr<IOBuffer> request_buffer =
+      base::MakeRefCounted<IOBuffer>(base::size(request_text) - 1);
   memcpy(request_buffer->data(), request_text, arraysize(request_text) - 1);
 
-  rv = callback.GetResult(sock->Write(
-      request_buffer.get(), arraysize(request_text) - 1, callback.callback()));
+  rv = callback.GetResult(
+      sock->Write(request_buffer.get(), arraysize(request_text) - 1,
+                  callback.callback(), TRAFFIC_ANNOTATION_FOR_TESTS));
   EXPECT_EQ(static_cast<int>(arraysize(request_text) - 1), rv);
 
   TestNetLogEntry::List entries;
@@ -2138,7 +2233,7 @@ TEST_P(SSLClientSocketReadTest, Read_FullLogging) {
       entries, 5, NetLogEventType::SSL_SOCKET_BYTES_SENT,
       NetLogEventPhase::NONE);
 
-  scoped_refptr<IOBuffer> buf(new IOBuffer(4096));
+  scoped_refptr<IOBuffer> buf = base::MakeRefCounted<IOBuffer>(4096);
   for (;;) {
     rv = ReadAndWaitForCompletion(sock.get(), buf.get(), 4096);
     EXPECT_GE(rv, 0);
@@ -2175,7 +2270,7 @@ TEST_F(SSLClientSocketTest, PrematureApplicationData) {
                arraysize(application_data)),
       MockRead(SYNCHRONOUS, OK), };
 
-  StaticSocketDataProvider data(data_reads, arraysize(data_reads), NULL, 0);
+  StaticSocketDataProvider data(data_reads, base::span<MockWrite>());
 
   TestCompletionCallback callback;
   std::unique_ptr<StreamSocket> transport(
@@ -2391,18 +2486,15 @@ TEST_F(SSLClientSocketTest, VerifyReturnChainProperlyOrdered) {
                                     X509Certificate::FORMAT_AUTO);
   ASSERT_EQ(3U, certs.size());
 
-  ASSERT_TRUE(certs[0]->Equals(unverified_certs[0].get()));
+  ASSERT_TRUE(certs[0]->EqualsExcludingChain(unverified_certs[0].get()));
 
   std::vector<bssl::UniquePtr<CRYPTO_BUFFER>> temp_intermediates;
-  temp_intermediates.push_back(
-      x509_util::DupCryptoBuffer(certs[1]->cert_buffer()));
-  temp_intermediates.push_back(
-      x509_util::DupCryptoBuffer(certs[2]->cert_buffer()));
+  temp_intermediates.push_back(bssl::UpRef(certs[1]->cert_buffer()));
+  temp_intermediates.push_back(bssl::UpRef(certs[2]->cert_buffer()));
 
   CertVerifyResult verify_result;
   verify_result.verified_cert = X509Certificate::CreateFromBuffer(
-      x509_util::DupCryptoBuffer(certs[0]->cert_buffer()),
-      std::move(temp_intermediates));
+      bssl::UpRef(certs[0]->cert_buffer()), std::move(temp_intermediates));
   ASSERT_TRUE(verify_result.verified_cert);
 
   // Add a rule that maps the server cert (A) to the chain of A->B->C2
@@ -2525,7 +2617,9 @@ TEST_F(SSLClientSocketCertRequestInfoTest, CertKeyTypes) {
   EXPECT_EQ(CLIENT_CERT_ECDSA_SIGN, request_info->cert_key_types[1]);
 }
 
-TEST_F(SSLClientSocketTest, ConnectSignedCertTimestampsEnabledTLSExtension) {
+// Tests that the Certificate Transparency (RFC 6962) TLS extension is
+// supported.
+TEST_F(SSLClientSocketTest, ConnectSignedCertTimestampsTLSExtension) {
   // Encoding of SCT List containing 'test'.
   base::StringPiece sct_ext("\x00\x06\x00\x04test", 8);
 
@@ -2534,7 +2628,6 @@ TEST_F(SSLClientSocketTest, ConnectSignedCertTimestampsEnabledTLSExtension) {
   ASSERT_TRUE(StartTestServer(ssl_options));
 
   SSLConfig ssl_config;
-  ssl_config.signed_cert_timestamps_enabled = true;
 
   MockCTVerifier ct_verifier;
   SetCTVerifier(&ct_verifier);
@@ -2542,8 +2635,8 @@ TEST_F(SSLClientSocketTest, ConnectSignedCertTimestampsEnabledTLSExtension) {
   // Check that the SCT list is extracted from the TLS extension as expected,
   // while also simulating that it was an unparsable response.
   SignedCertificateTimestampAndStatusList sct_list;
-  EXPECT_CALL(ct_verifier, Verify(_, _, sct_ext, _, _))
-      .WillOnce(testing::SetArgPointee<3>(sct_list));
+  EXPECT_CALL(ct_verifier, Verify(_, _, _, sct_ext, _, _))
+      .WillOnce(testing::SetArgPointee<4>(sct_list));
 
   int rv;
   ASSERT_TRUE(CreateAndConnectSSLClientSocket(ssl_config, &rv));
@@ -2687,8 +2780,9 @@ TEST_F(SSLClientSocketTest, CTCompliantEVHistogram) {
       static_cast<int>(ct::CTPolicyCompliance::CT_POLICY_COMPLIES_VIA_SCTS), 1);
 }
 
-// Test that enabling Signed Certificate Timestamps enables OCSP stapling.
-TEST_F(SSLClientSocketTest, ConnectSignedCertTimestampsEnabledOCSP) {
+// Tests that OCSP stapling is requested, as per Certificate Transparency (RFC
+// 6962).
+TEST_F(SSLClientSocketTest, ConnectSignedCertTimestampsEnablesOCSP) {
   SpawnedTestServer::SSLOptions ssl_options;
   ssl_options.staple_ocsp_response = true;
   // The test server currently only knows how to generate OCSP responses
@@ -2698,32 +2792,12 @@ TEST_F(SSLClientSocketTest, ConnectSignedCertTimestampsEnabledOCSP) {
   ASSERT_TRUE(StartTestServer(ssl_options));
 
   SSLConfig ssl_config;
-  // Enabling Signed Cert Timestamps ensures we request OCSP stapling for
-  // Certificate Transparency verification regardless of whether the platform
-  // is able to process the OCSP status itself.
-  ssl_config.signed_cert_timestamps_enabled = true;
 
   int rv;
   ASSERT_TRUE(CreateAndConnectSSLClientSocket(ssl_config, &rv));
   EXPECT_THAT(rv, IsOk());
 
   EXPECT_TRUE(sock_->stapled_ocsp_response_received_);
-}
-
-TEST_F(SSLClientSocketTest, ConnectSignedCertTimestampsDisabled) {
-  SpawnedTestServer::SSLOptions ssl_options;
-  ssl_options.signed_cert_timestamps_tls_ext = "test";
-
-  ASSERT_TRUE(StartTestServer(ssl_options));
-
-  SSLConfig ssl_config;
-  ssl_config.signed_cert_timestamps_enabled = false;
-
-  int rv;
-  ASSERT_TRUE(CreateAndConnectSSLClientSocket(ssl_config, &rv));
-  EXPECT_THAT(rv, IsOk());
-
-  EXPECT_FALSE(sock_->signed_cert_timestamps_received_);
 }
 
 // Tests that IsConnectedAndIdle and WasEverUsed behave as expected.
@@ -2742,12 +2816,14 @@ TEST_F(SSLClientSocketTest, ReuseStates) {
 
   const char kRequestText[] = "GET / HTTP/1.0\r\n\r\n";
   const size_t kRequestLen = arraysize(kRequestText) - 1;
-  scoped_refptr<IOBuffer> request_buffer(new IOBuffer(kRequestLen));
+  scoped_refptr<IOBuffer> request_buffer =
+      base::MakeRefCounted<IOBuffer>(kRequestLen);
   memcpy(request_buffer->data(), kRequestText, kRequestLen);
 
   TestCompletionCallback callback;
-  rv = callback.GetResult(
-      sock_->Write(request_buffer.get(), kRequestLen, callback.callback()));
+  rv = callback.GetResult(sock_->Write(request_buffer.get(), kRequestLen,
+                                       callback.callback(),
+                                       TRAFFIC_ANNOTATION_FOR_TESTS));
   EXPECT_EQ(static_cast<int>(kRequestLen), rv);
 
   // The socket has now been used.
@@ -2819,14 +2895,16 @@ TEST_F(SSLClientSocketTest, ReusableAfterWrite) {
   // Write a partial HTTP request.
   const char kRequestText[] = "GET / HTTP/1.0";
   const size_t kRequestLen = arraysize(kRequestText) - 1;
-  scoped_refptr<IOBuffer> request_buffer(new IOBuffer(kRequestLen));
+  scoped_refptr<IOBuffer> request_buffer =
+      base::MakeRefCounted<IOBuffer>(kRequestLen);
   memcpy(request_buffer->data(), kRequestText, kRequestLen);
 
   // Although transport writes are blocked, SSLClientSocketImpl completes the
   // outer Write operation.
   EXPECT_EQ(static_cast<int>(kRequestLen),
             callback.GetResult(sock->Write(request_buffer.get(), kRequestLen,
-                                           callback.callback())));
+                                           callback.callback(),
+                                           TRAFFIC_ANNOTATION_FOR_TESTS)));
 
   // The Write operation is complete, so the socket should be treated as
   // reusable, in case the server returns an HTTP response before completely
@@ -3148,7 +3226,7 @@ TEST_F(SSLClientSocketFalseStartTest, NoSessionResumptionBeforeFinished) {
   // processed; however, pump the underlying transport so that it is read from
   // the socket. NOTE: This may flakily pass if the server's final flight
   // doesn't come in one Read.
-  scoped_refptr<IOBuffer> buf(new IOBuffer(4096));
+  scoped_refptr<IOBuffer> buf = base::MakeRefCounted<IOBuffer>(4096);
   int rv = sock1->Read(buf.get(), 4096, callback.callback());
   EXPECT_THAT(rv, IsError(ERR_IO_PENDING));
   raw_transport1->WaitForReadResult();
@@ -3201,7 +3279,7 @@ TEST_F(SSLClientSocketFalseStartTest, NoSessionResumptionBadFinished) {
   // The actual read on |sock1| will not complete until the Finished message is
   // processed; however, pump the underlying transport so that it is read from
   // the socket.
-  scoped_refptr<IOBuffer> buf(new IOBuffer(4096));
+  scoped_refptr<IOBuffer> buf = base::MakeRefCounted<IOBuffer>(4096);
   int rv = sock1->Read(buf.get(), 4096, callback.callback());
   EXPECT_THAT(rv, IsError(ERR_IO_PENDING));
   raw_transport1->WaitForReadResult();
@@ -3556,12 +3634,12 @@ TEST_F(SSLClientSocketTest, CTIsRequired) {
   // Set up CT
   MockRequireCTDelegate require_ct_delegate;
   transport_security_state_->SetRequireCTDelegate(&require_ct_delegate);
-  EXPECT_CALL(require_ct_delegate, IsCTRequiredForHost(_))
+  EXPECT_CALL(require_ct_delegate, IsCTRequiredForHost(_, _, _))
       .WillRepeatedly(Return(TransportSecurityState::RequireCTDelegate::
                                  CTRequirementLevel::NOT_REQUIRED));
   EXPECT_CALL(
       require_ct_delegate,
-      IsCTRequiredForHost(spawned_test_server()->host_port_pair().host()))
+      IsCTRequiredForHost(spawned_test_server()->host_port_pair().host(), _, _))
       .WillRepeatedly(Return(TransportSecurityState::RequireCTDelegate::
                                  CTRequirementLevel::REQUIRED));
   EXPECT_CALL(*ct_policy_enforcer_, CheckCompliance(server_cert.get(), _, _))
@@ -3871,9 +3949,13 @@ TEST_F(SSLClientSocketTest, CTRequiredHistogramNonCompliantLocalRoot) {
   cert_verifier_->AddResultForCert(server_cert.get(), verify_result, OK);
 
   // Set up the CT requirement and failure to comply.
+  base::ScopedClosureRunner cleanup(base::BindOnce(
+      &TransportSecurityState::SetShouldRequireCTForTesting, nullptr));
+  bool require_ct = true;
+  TransportSecurityState::SetShouldRequireCTForTesting(&require_ct);
   MockRequireCTDelegate require_ct_delegate;
   transport_security_state_->SetRequireCTDelegate(&require_ct_delegate);
-  EXPECT_CALL(require_ct_delegate, IsCTRequiredForHost(_))
+  EXPECT_CALL(require_ct_delegate, IsCTRequiredForHost(_, _, _))
       .WillRepeatedly(Return(TransportSecurityState::RequireCTDelegate::
                                  CTRequirementLevel::REQUIRED));
   EXPECT_CALL(*ct_policy_enforcer_, CheckCompliance(server_cert.get(), _, _))
@@ -4013,12 +4095,12 @@ TEST_F(SSLClientSocketTest, PKPMoreImportantThanCT) {
   // Set up CT.
   MockRequireCTDelegate require_ct_delegate;
   transport_security_state_->SetRequireCTDelegate(&require_ct_delegate);
-  EXPECT_CALL(require_ct_delegate, IsCTRequiredForHost(_))
+  EXPECT_CALL(require_ct_delegate, IsCTRequiredForHost(_, _, _))
       .WillRepeatedly(Return(TransportSecurityState::RequireCTDelegate::
                                  CTRequirementLevel::NOT_REQUIRED));
   EXPECT_CALL(
       require_ct_delegate,
-      IsCTRequiredForHost(spawned_test_server()->host_port_pair().host()))
+      IsCTRequiredForHost(spawned_test_server()->host_port_pair().host(), _, _))
       .WillRepeatedly(Return(TransportSecurityState::RequireCTDelegate::
                                  CTRequirementLevel::REQUIRED));
   EXPECT_CALL(*ct_policy_enforcer_, CheckCompliance(server_cert.get(), _, _))
@@ -4313,6 +4395,226 @@ TEST_F(SSLClientSocketTest, AccessDeniedClientCerts) {
   EXPECT_THAT(rv, IsError(ERR_BAD_SSL_CLIENT_AUTH_CERT));
 }
 
+TEST_F(SSLClientSocketZeroRTTTest, ZeroRTT) {
+  ASSERT_TRUE(StartServer());
+  ASSERT_TRUE(RunInitialConnection());
+
+  // 0-RTT Connection
+  MakeClient(true);
+  ASSERT_THAT(Connect(), IsOk());
+  constexpr base::StringPiece kRequest = "GET /zerortt HTTP/1.0\r\n\r\n";
+  EXPECT_EQ(static_cast<int>(kRequest.size()), WriteAndWait(kRequest));
+
+  scoped_refptr<IOBuffer> buf = base::MakeRefCounted<IOBuffer>(4096);
+  int size = ReadAndWait(buf.get(), 4096);
+  EXPECT_GT(size, 0);
+  EXPECT_EQ('1', buf->data()[size - 1]);
+
+  SSLInfo ssl_info;
+  ASSERT_TRUE(GetSSLInfo(&ssl_info));
+  EXPECT_EQ(SSLInfo::HANDSHAKE_RESUME, ssl_info.handshake_type);
+}
+
+// Check that 0RTT is confirmed after a Write and Read.
+TEST_F(SSLClientSocketZeroRTTTest, ZeroRTTConfirmedAfterRead) {
+  ASSERT_TRUE(StartServer());
+  ASSERT_TRUE(RunInitialConnection());
+
+  // 0-RTT Connection
+  MakeClient(true);
+  ASSERT_THAT(Connect(), IsOk());
+  constexpr base::StringPiece kRequest = "GET /zerortt HTTP/1.0\r\n\r\n";
+  EXPECT_EQ(static_cast<int>(kRequest.size()), WriteAndWait(kRequest));
+
+  scoped_refptr<IOBuffer> buf = base::MakeRefCounted<IOBuffer>(4096);
+  int size = ReadAndWait(buf.get(), 4096);
+  EXPECT_GT(size, 0);
+  EXPECT_EQ('1', buf->data()[size - 1]);
+
+  // After the handshake is confirmed, ConfirmHandshake should return
+  // synchronously.
+  TestCompletionCallback callback;
+  ASSERT_THAT(ssl_socket()->ConfirmHandshake(callback.callback()), IsOk());
+
+  SSLInfo ssl_info;
+  ASSERT_TRUE(GetSSLInfo(&ssl_info));
+  EXPECT_EQ(SSLInfo::HANDSHAKE_RESUME, ssl_info.handshake_type);
+}
+
+// Wait to read ServerHello until after the client writes application data.
+TEST_F(SSLClientSocketZeroRTTTest, ZeroRTTWaitForEarlyDataSend) {
+  ASSERT_TRUE(StartServer());
+  ASSERT_TRUE(RunInitialConnection());
+
+  // 0-RTT Connection
+  FakeBlockingStreamSocket* socket = MakeClient(true);
+  socket->BlockReadResult();
+  ASSERT_THAT(Connect(), IsOk());
+  constexpr base::StringPiece kRequest = "GET /zerortt HTTP/1.0\r\n\r\n";
+  EXPECT_EQ(static_cast<int>(kRequest.size()), WriteAndWait(kRequest));
+  socket->UnblockReadResult();
+
+  scoped_refptr<IOBuffer> buf = base::MakeRefCounted<IOBuffer>(4096);
+  int size = ReadAndWait(buf.get(), 4096);
+  EXPECT_GT(size, 0);
+  EXPECT_EQ('1', buf->data()[size - 1]);
+
+  SSLInfo ssl_info;
+  ASSERT_TRUE(GetSSLInfo(&ssl_info));
+  EXPECT_EQ(SSLInfo::HANDSHAKE_RESUME, ssl_info.handshake_type);
+}
+
+TEST_F(SSLClientSocketZeroRTTTest, ZeroRTTNoZeroRTTOnResume) {
+  ASSERT_TRUE(StartServer());
+  ASSERT_TRUE(RunInitialConnection());
+
+  SSLServerConfig server_config;
+  server_config.early_data_enabled = false;
+  server_config.version_max = SSL_PROTOCOL_VERSION_TLS1_3;
+
+  SetServerConfig(server_config);
+
+  // 0-RTT Connection
+  FakeBlockingStreamSocket* socket = MakeClient(true);
+  socket->BlockReadResult();
+  ASSERT_THAT(Connect(), IsOk());
+  constexpr base::StringPiece kRequest = "GET /zerortt HTTP/1.0\r\n\r\n";
+  EXPECT_EQ(static_cast<int>(kRequest.size()), WriteAndWait(kRequest));
+  socket->UnblockReadResult();
+
+  // Expect early data to be rejected.
+  scoped_refptr<IOBuffer> buf = base::MakeRefCounted<IOBuffer>(4096);
+  int rv = ReadAndWait(buf.get(), 4096);
+  EXPECT_EQ(ERR_EARLY_DATA_REJECTED, rv);
+  rv = WriteAndWait(kRequest);
+  EXPECT_EQ(ERR_EARLY_DATA_REJECTED, rv);
+}
+
+// Test that the ConfirmHandshake successfully completes the handshake and that
+// it blocks until the server's leg has been received.
+TEST_F(SSLClientSocketZeroRTTTest, ZeroRTTConfirmHandshake) {
+  ASSERT_TRUE(StartServer());
+  ASSERT_TRUE(RunInitialConnection());
+
+  // 0-RTT Connection
+  FakeBlockingStreamSocket* socket = MakeClient(true);
+  socket->BlockReadResult();
+  ASSERT_THAT(Connect(), IsOk());
+
+  // The ServerHello is blocked, so ConfirmHandshake should not complete.
+  TestCompletionCallback callback;
+  ASSERT_EQ(ERR_IO_PENDING,
+            ssl_socket()->ConfirmHandshake(callback.callback()));
+  base::RunLoop().RunUntilIdle();
+  EXPECT_FALSE(callback.have_result());
+
+  // Release the ServerHello. ConfirmHandshake now completes.
+  socket->UnblockReadResult();
+  ASSERT_THAT(callback.GetResult(ERR_IO_PENDING), IsOk());
+
+  constexpr base::StringPiece kRequest = "GET /zerortt HTTP/1.0\r\n\r\n";
+  EXPECT_EQ(static_cast<int>(kRequest.size()), WriteAndWait(kRequest));
+
+  scoped_refptr<IOBuffer> buf = base::MakeRefCounted<IOBuffer>(4096);
+  int size = ReadAndWait(buf.get(), 4096);
+  EXPECT_GT(size, 0);
+  EXPECT_EQ('0', buf->data()[size - 1]);
+
+  SSLInfo ssl_info;
+  ASSERT_TRUE(GetSSLInfo(&ssl_info));
+  EXPECT_EQ(SSLInfo::HANDSHAKE_RESUME, ssl_info.handshake_type);
+}
+
+// Test that an early read does not break during zero RTT.
+TEST_F(SSLClientSocketZeroRTTTest, ZeroRTTReadBeforeWrite) {
+  ASSERT_TRUE(StartServer());
+  ASSERT_TRUE(RunInitialConnection());
+
+  // 0-RTT Connection
+  MakeClient(true);
+  scoped_refptr<IOBuffer> buf = base::MakeRefCounted<IOBuffer>(4096);
+  TestCompletionCallback read_callback;
+  ASSERT_THAT(Connect(), IsOk());
+  ASSERT_EQ(ERR_IO_PENDING,
+            ssl_socket()->Read(buf.get(), 4096, read_callback.callback()));
+  constexpr base::StringPiece kRequest = "GET /zerortt HTTP/1.0\r\n\r\n";
+  EXPECT_EQ(static_cast<int>(kRequest.size()), WriteAndWait(kRequest));
+
+  int size = read_callback.GetResult(ERR_IO_PENDING);
+  EXPECT_GT(size, 0);
+  EXPECT_EQ('1', buf->data()[size - 1]);
+
+  SSLInfo ssl_info;
+  ASSERT_TRUE(GetSSLInfo(&ssl_info));
+  EXPECT_EQ(SSLInfo::HANDSHAKE_RESUME, ssl_info.handshake_type);
+}
+
+TEST_F(SSLClientSocketZeroRTTTest, ZeroRTTDoubleConfirmHandshake) {
+  ASSERT_TRUE(StartServer());
+  ASSERT_TRUE(RunInitialConnection());
+
+  // 0-RTT Connection
+  MakeClient(true);
+  ASSERT_THAT(Connect(), IsOk());
+  TestCompletionCallback callback;
+  ASSERT_THAT(
+      callback.GetResult(ssl_socket()->ConfirmHandshake(callback.callback())),
+      IsOk());
+  // After the handshake is confirmed, ConfirmHandshake should return
+  // synchronously.
+  ASSERT_THAT(ssl_socket()->ConfirmHandshake(callback.callback()), IsOk());
+  constexpr base::StringPiece kRequest = "GET /zerortt HTTP/1.0\r\n\r\n";
+  EXPECT_EQ(static_cast<int>(kRequest.size()), WriteAndWait(kRequest));
+
+  scoped_refptr<IOBuffer> buf = base::MakeRefCounted<IOBuffer>(4096);
+  int size = ReadAndWait(buf.get(), 4096);
+  EXPECT_GT(size, 0);
+  EXPECT_EQ('0', buf->data()[size - 1]);
+
+  SSLInfo ssl_info;
+  ASSERT_TRUE(GetSSLInfo(&ssl_info));
+  EXPECT_EQ(SSLInfo::HANDSHAKE_RESUME, ssl_info.handshake_type);
+}
+
+TEST_F(SSLClientSocketZeroRTTTest, ZeroRTTParallelReadConfirm) {
+  ASSERT_TRUE(StartServer());
+  ASSERT_TRUE(RunInitialConnection());
+
+  // 0-RTT Connection
+  FakeBlockingStreamSocket* socket = MakeClient(true);
+  socket->BlockReadResult();
+  ASSERT_THAT(Connect(), IsOk());
+
+  constexpr base::StringPiece kRequest = "GET /zerortt HTTP/1.0\r\n\r\n";
+  EXPECT_EQ(static_cast<int>(kRequest.size()), WriteAndWait(kRequest));
+
+  // The ServerHello is blocked, so ConfirmHandshake should not complete.
+  TestCompletionCallback callback;
+  ASSERT_EQ(ERR_IO_PENDING,
+            ssl_socket()->ConfirmHandshake(callback.callback()));
+  base::RunLoop().RunUntilIdle();
+  EXPECT_FALSE(callback.have_result());
+
+  scoped_refptr<IOBuffer> buf = base::MakeRefCounted<IOBuffer>(4096);
+  TestCompletionCallback read_callback;
+  ASSERT_EQ(ERR_IO_PENDING,
+            ssl_socket()->Read(buf.get(), 4096, read_callback.callback()));
+  base::RunLoop().RunUntilIdle();
+  EXPECT_FALSE(read_callback.have_result());
+
+  // Release the ServerHello. ConfirmHandshake now completes.
+  socket->UnblockReadResult();
+  ASSERT_THAT(callback.WaitForResult(), IsOk());
+
+  int result = read_callback.WaitForResult();
+  EXPECT_GT(result, 0);
+  EXPECT_EQ('1', buf->data()[result - 1]);
+
+  SSLInfo ssl_info;
+  ASSERT_TRUE(GetSSLInfo(&ssl_info));
+  EXPECT_EQ(SSLInfo::HANDSHAKE_RESUME, ssl_info.handshake_type);
+}
+
 // Basic test for dumping memory stats.
 TEST_P(SSLClientSocketReadTest, DumpMemoryStats) {
   ASSERT_TRUE(StartTestServer(SpawnedTestServer::SSLOptions()));
@@ -4329,7 +4631,7 @@ TEST_P(SSLClientSocketReadTest, DumpMemoryStats) {
 
   // Read the response without writing a request, so the read will be pending.
   TestCompletionCallback read_callback;
-  scoped_refptr<IOBuffer> buf(new IOBuffer(4096));
+  scoped_refptr<IOBuffer> buf = base::MakeRefCounted<IOBuffer>(4096);
   rv = Read(sock_.get(), buf.get(), 4096, read_callback.callback());
   EXPECT_EQ(ERR_IO_PENDING, rv);
 
@@ -4399,12 +4701,13 @@ TEST_P(SSLClientSocketReadTest, IdleAfterRead) {
   EXPECT_THAT(client_callback.GetResult(client_rv), IsOk());
 
   // Write a single record on the server.
-  scoped_refptr<IOBuffer> write_buf(new StringIOBuffer("a"));
-  server_rv = server->Write(write_buf.get(), 1, server_callback.callback());
+  scoped_refptr<IOBuffer> write_buf = base::MakeRefCounted<StringIOBuffer>("a");
+  server_rv = server->Write(write_buf.get(), 1, server_callback.callback(),
+                            TRAFFIC_ANNOTATION_FOR_TESTS);
 
   // Read that record on the server, but with a much larger buffer than
   // necessary.
-  scoped_refptr<IOBuffer> read_buf(new IOBuffer(1024));
+  scoped_refptr<IOBuffer> read_buf = base::MakeRefCounted<IOBuffer>(1024);
   client_rv =
       Read(client.get(), read_buf.get(), 1024, client_callback.callback());
 
@@ -4468,6 +4771,30 @@ TEST_F(SSLClientSocketTest, SessionCacheShard) {
   ASSERT_THAT(rv, IsOk());
   ASSERT_TRUE(sock_->GetSSLInfo(&ssl_info));
   EXPECT_EQ(SSLInfo::HANDSHAKE_FULL, ssl_info.handshake_type);
+}
+
+TEST_F(SSLClientSocketTest, Tag) {
+  ASSERT_TRUE(StartTestServer(SpawnedTestServer::SSLOptions()));
+
+  TestNetLog log;
+  std::unique_ptr<StreamSocket> transport(
+      new TCPClientSocket(addr(), NULL, &log, NetLogSource()));
+
+  MockTaggingStreamSocket* tagging_sock =
+      new MockTaggingStreamSocket(std::move(transport));
+
+  // |sock| takes ownership of |tagging_sock|, but keep a
+  // non-owning pointer to it.
+  std::unique_ptr<SSLClientSocket> sock(CreateSSLClientSocket(
+      std::unique_ptr<StreamSocket>(tagging_sock),
+      spawned_test_server()->host_port_pair(), SSLConfig()));
+
+  EXPECT_EQ(tagging_sock->tag(), SocketTag());
+#if defined(OS_ANDROID)
+  SocketTag tag(0x12345678, 0x87654321);
+  sock->ApplySocketTag(tag);
+  EXPECT_EQ(tagging_sock->tag(), tag);
+#endif  // OS_ANDROID
 }
 
 }  // namespace net

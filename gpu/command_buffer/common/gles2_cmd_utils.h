@@ -13,14 +13,11 @@
 
 #include <limits>
 #include <string>
-#include <vector>
 
 #include "base/logging.h"
 #include "base/macros.h"
 #include "base/numerics/safe_math.h"
 #include "gpu/command_buffer/common/gles2_utils_export.h"
-#include "ui/gfx/geometry/size.h"
-#include "ui/gl/gpu_preference.h"
 
 namespace gpu {
 namespace gles2 {
@@ -56,13 +53,19 @@ inline bool SafeAddInt32(int32_t a, int32_t b, int32_t* dst) {
   return checked.IsValid();
 }
 
+// A 32-bit and 64-bit compatible way of converting a pointer to a
+// 32-bit usigned integer, suitable to be stored in a GLuint.
+inline uint32_t ToGLuint(const void* ptr) {
+  return static_cast<uint32_t>(reinterpret_cast<size_t>(ptr));
+}
+
 // Returns the address of the first byte after a struct.
 template <typename T>
 const volatile void* AddressAfterStruct(const volatile T& pod) {
   return reinterpret_cast<const volatile uint8_t*>(&pod) + sizeof(pod);
 }
 
-// Returns the address of the frst byte after the struct or NULL if size >
+// Returns the address of the frst byte after the struct or nullptr if size >
 // immediate_data_size.
 template <typename RETURN_TYPE, typename COMMAND_TYPE>
 RETURN_TYPE GetImmediateDataAs(const volatile COMMAND_TYPE& pod,
@@ -71,7 +74,7 @@ RETURN_TYPE GetImmediateDataAs(const volatile COMMAND_TYPE& pod,
   return (size <= immediate_data_size)
              ? static_cast<RETURN_TYPE>(
                    const_cast<volatile void*>(AddressAfterStruct(pod)))
-             : NULL;
+             : nullptr;
 }
 
 struct GLES2_UTILS_EXPORT PixelStoreParams {
@@ -169,6 +172,8 @@ class GLES2_UTILS_EXPORT GLES2Util {
       uint32_t* opt_padding);
 
   static size_t RenderbufferBytesPerPixel(int format);
+
+  static uint8_t StencilBitsPerPixel(int format);
 
   // Return the element's number of bytes.
   // For example, GL_FLOAT_MAT3 returns sizeof(GLfloat).
@@ -299,55 +304,6 @@ class GLES2_UTILS_EXPORT GLSLArrayName {
   std::string base_name_;
   int element_index_;
   DISALLOW_COPY_AND_ASSIGN(GLSLArrayName);
-};
-
-enum ContextType {
-  CONTEXT_TYPE_WEBGL1,
-  CONTEXT_TYPE_WEBGL2,
-  CONTEXT_TYPE_OPENGLES2,
-  CONTEXT_TYPE_OPENGLES3,
-  CONTEXT_TYPE_LAST = CONTEXT_TYPE_OPENGLES3
-};
-GLES2_UTILS_EXPORT bool IsWebGLContextType(ContextType context_type);
-GLES2_UTILS_EXPORT bool IsWebGL1OrES2ContextType(ContextType context_type);
-GLES2_UTILS_EXPORT bool IsWebGL2OrES3ContextType(ContextType context_type);
-
-enum ColorSpace {
-  COLOR_SPACE_UNSPECIFIED,
-  COLOR_SPACE_SRGB,
-  COLOR_SPACE_DISPLAY_P3,
-  COLOR_SPACE_LAST = COLOR_SPACE_DISPLAY_P3
-};
-
-struct GLES2_UTILS_EXPORT ContextCreationAttribHelper {
-  ContextCreationAttribHelper();
-  ContextCreationAttribHelper(const ContextCreationAttribHelper& other);
-
-  bool Parse(const std::vector<int32_t>& attribs);
-
-  gfx::Size offscreen_framebuffer_size;
-  gl::GpuPreference gpu_preference = gl::PreferIntegratedGpu;
-  // -1 if invalid or unspecified.
-  int32_t alpha_size = -1;
-  int32_t blue_size = -1;
-  int32_t green_size = -1;
-  int32_t red_size = -1;
-  int32_t depth_size = -1;
-  int32_t stencil_size = -1;
-  int32_t samples = -1;
-  int32_t sample_buffers = -1;
-  bool buffer_preserved = true;
-  bool bind_generates_resource = true;
-  bool fail_if_major_perf_caveat = false;
-  bool lose_context_when_out_of_memory = false;
-  bool should_use_native_gmb_for_backbuffer = false;
-  bool own_offscreen_surface = false;
-  bool single_buffer = false;
-  bool enable_oop_rasterization = false;
-  bool enable_swap_timestamps_if_supported = false;
-
-  ContextType context_type = CONTEXT_TYPE_OPENGLES2;
-  ColorSpace color_space = COLOR_SPACE_UNSPECIFIED;
 };
 
 }  // namespace gles2

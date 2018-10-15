@@ -121,7 +121,8 @@ class AudioInputController::AudioCallback
   void OnData(const AudioBus* source,
               base::TimeTicks capture_time,
               double volume) override {
-    TRACE_EVENT1("audio", "AC::OnData", "capture time", capture_time);
+    TRACE_EVENT1("audio", "AudioInputController::OnData", "capture time (ms)",
+                 (capture_time - base::TimeTicks()).InMillisecondsF());
 
     received_callback_ = true;
 
@@ -178,15 +179,13 @@ AudioInputController::AudioInputController(
     UserInputMonitor* user_input_monitor,
     const AudioParameters& params,
     StreamType type)
-    : creator_task_runner_(base::ThreadTaskRunnerHandle::Get()),
-      task_runner_(std::move(task_runner)),
+    : task_runner_(std::move(task_runner)),
       handler_(handler),
       stream_(nullptr),
       sync_writer_(sync_writer),
       type_(type),
       user_input_monitor_(user_input_monitor),
       weak_ptr_factory_(this) {
-  DCHECK(creator_task_runner_.get());
   DCHECK(handler_);
   DCHECK(sync_writer_);
 }
@@ -209,8 +208,9 @@ scoped_refptr<AudioInputController> AudioInputController::Create(
   DCHECK(audio_manager);
   DCHECK(sync_writer);
   DCHECK(event_handler);
+  DCHECK(params.IsValid());
 
-  if (!params.IsValid() || (params.channels() > kMaxInputChannels))
+  if (params.channels() > kMaxInputChannels)
     return nullptr;
 
   if (factory_) {
@@ -225,15 +225,17 @@ scoped_refptr<AudioInputController> AudioInputController::Create(
       audio_manager->GetTaskRunner(), event_handler, sync_writer,
       user_input_monitor, params, ParamsToStreamType(params)));
 
-  // Create and open a new audio input stream from the existing
-  // audio-device thread. Use the provided audio-input device.
-  if (!controller->task_runner_->PostTask(
-          FROM_HERE, base::BindOnce(&AudioInputController::DoCreate, controller,
-                                    base::Unretained(audio_manager), params,
-                                    device_id, enable_agc))) {
-    controller = nullptr;
+  if (controller->task_runner_->BelongsToCurrentThread()) {
+    controller->DoCreate(audio_manager, params, device_id, enable_agc);
+    return controller;
   }
 
+  // Create and open a new audio input stream from the existing
+  // audio-device thread. Use the provided audio-input device.
+  controller->task_runner_->PostTask(
+      FROM_HERE, base::BindOnce(&AudioInputController::DoCreate, controller,
+                                base::Unretained(audio_manager), params,
+                                device_id, enable_agc));
   return controller;
 }
 
@@ -262,25 +264,37 @@ scoped_refptr<AudioInputController> AudioInputController::CreateForStream(
       task_runner, event_handler, sync_writer, user_input_monitor,
       AudioParameters::UnavailableDeviceParams(), VIRTUAL));
 
-  if (!controller->task_runner_->PostTask(
-          FROM_HERE,
-          base::BindOnce(&AudioInputController::DoCreateForStream, controller,
-                         stream, /*enable_agc*/ false))) {
-    controller = nullptr;
+  if (controller->task_runner_->BelongsToCurrentThread()) {
+    controller->DoCreateForStream(stream, false /*enable_agc*/);
+    return controller;
   }
 
+  controller->task_runner_->PostTask(
+      FROM_HERE, base::BindOnce(&AudioInputController::DoCreateForStream,
+                                controller, stream, false /*enable_agc*/));
   return controller;
 }
 
 void AudioInputController::Record() {
-  DCHECK(creator_task_runner_->BelongsToCurrentThread());
+  DCHECK_CALLED_ON_VALID_SEQUENCE(owning_sequence_);
+
+  if (task_runner_->BelongsToCurrentThread()) {
+    DoRecord();
+    return;
+  }
+
   task_runner_->PostTask(FROM_HERE,
                          base::BindOnce(&AudioInputController::DoRecord, this));
 }
 
 void AudioInputController::Close(base::OnceClosure closed_task) {
-  DCHECK(!closed_task.is_null());
-  DCHECK(creator_task_runner_->BelongsToCurrentThread());
+  DCHECK_CALLED_ON_VALID_SEQUENCE(owning_sequence_);
+
+  if (task_runner_->BelongsToCurrentThread()) {
+    DCHECK(closed_task.is_null());
+    DoClose();
+    return;
+  }
 
   task_runner_->PostTaskAndReply(
       FROM_HERE, base::BindOnce(&AudioInputController::DoClose, this),
@@ -288,10 +302,30 @@ void AudioInputController::Close(base::OnceClosure closed_task) {
 }
 
 void AudioInputController::SetVolume(double volume) {
-  DCHECK(creator_task_runner_->BelongsToCurrentThread());
+  DCHECK_CALLED_ON_VALID_SEQUENCE(owning_sequence_);
+
+  if (task_runner_->BelongsToCurrentThread()) {
+    DoSetVolume(volume);
+    return;
+  }
+
   task_runner_->PostTask(
       FROM_HERE,
       base::BindOnce(&AudioInputController::DoSetVolume, this, volume));
+}
+
+void AudioInputController::SetOutputDeviceForAec(
+    const std::string& output_device_id) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(owning_sequence_);
+
+  if (task_runner_->BelongsToCurrentThread()) {
+    DoSetOutputDeviceForAec(output_device_id);
+    return;
+  }
+
+  task_runner_->PostTask(
+      FROM_HERE, base::BindOnce(&AudioInputController::DoSetOutputDeviceForAec,
+                                this, output_device_id));
 }
 
 void AudioInputController::DoCreate(AudioManager* audio_manager,
@@ -482,6 +516,13 @@ void AudioInputController::DoSetVolume(double volume) {
   stream_->SetVolume(max_volume_ * volume);
 }
 
+void AudioInputController::DoSetOutputDeviceForAec(
+    const std::string& output_device_id) {
+  DCHECK(task_runner_->BelongsToCurrentThread());
+  if (stream_)
+    stream_->SetOutputDeviceForAec(output_device_id);
+}
+
 void AudioInputController::DoLogAudioLevels(float level_dbfs,
                                             int microphone_volume_percent) {
 #if defined(AUDIO_POWER_MONITORING)
@@ -511,7 +552,6 @@ void AudioInputController::DoLogAudioLevels(float level_dbfs,
 
   UpdateSilenceState(level_dbfs < kSilenceThresholdDBFS);
 
-  UMA_HISTOGRAM_PERCENTAGE("Media.MicrophoneVolume", microphone_volume_percent);
   log_string = base::StringPrintf(
       "AIC::OnData: microphone volume=%d%%", microphone_volume_percent);
   if (microphone_volume_percent < kLowLevelMicrophoneLevelPercent)
@@ -642,7 +682,6 @@ void AudioInputController::CheckMutedState() {
   const bool new_state = stream_->IsMuted();
   if (new_state != is_muted_) {
     is_muted_ = new_state;
-    // We don't log OnMuted here, but leave that for AudioInputRendererHost.
     handler_->OnMuted(is_muted_);
   }
 }

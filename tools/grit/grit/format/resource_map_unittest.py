@@ -67,7 +67,6 @@ extern const size_t kTheRcHeaderSize;''', output)
 const GritResourceMap kTheRcHeader[] = {
   {"IDC_KLONKMENU", IDC_KLONKMENU},
   {"IDS_FIRSTPRESENT", IDS_FIRSTPRESENT},
-  {"IDS_MISSING", IDS_MISSING},
   {"IDS_LANGUAGESPECIFIC", IDS_LANGUAGESPECIFIC},
   {"IDS_THIRDPRESENT", IDS_THIRDPRESENT},
 };
@@ -82,10 +81,56 @@ const size_t kTheRcHeaderSize = arraysize(kTheRcHeader);''', output)
 const GritResourceMap kTheRcHeader[] = {
   {"grit/testdata/klonk.rc", IDC_KLONKMENU},
   {"abc", IDS_FIRSTPRESENT},
-  {"def", IDS_MISSING},
   {"ghi", IDS_LANGUAGESPECIFIC},
-  {"jkl", IDS_LANGUAGESPECIFIC},
   {"mno", IDS_THIRDPRESENT},
+};
+const size_t kTheRcHeaderSize = arraysize(kTheRcHeader);''', output)
+
+  def testGzippedMapHeaderAndFileSource(self):
+    grd = util.ParseGrdForUnittest('''\
+        <outputs>
+          <output type="rc_header" filename="the_rc_header.h" />
+          <output type="gzipped_resource_map_header"
+                  filename="gzipped_resource_map_header.h" />
+        </outputs>
+        <release seq="3">
+          <structures first_id="300">
+            <structure type="menu" name="IDC_KLONKMENU" compress="gzip"
+                       file="grit\\testdata\\klonk.rc" encoding="utf-16" />
+          </structures>
+          <includes first_id="10000">
+            <include type="foo" file="abc" name="IDS_FIRSTPRESENT"
+                     compress="" />
+            <if expr="False">
+              <include type="foo" file="def" name="IDS_MISSING"
+                       compress="garbage" />
+            </if>
+         </includes>
+        </release>''', run_gatherers=True)
+    formatter = resource_map.GetFormatter('gzipped_resource_map_header')
+    output = util.StripBlankLinesAndComments(''.join(formatter(grd, 'en', '.')))
+    self.assertEqual('''\
+#include <stddef.h>
+#ifndef GZIPPED_GRIT_RESOURCE_MAP_STRUCT_
+#define GZIPPED_GRIT_RESOURCE_MAP_STRUCT_
+struct GzippedGritResourceMap {
+  const char* name;
+  int value;
+  bool gzipped;
+};
+#endif // GZIPPED_GRIT_RESOURCE_MAP_STRUCT_
+extern const GzippedGritResourceMap kTheRcHeader[];
+extern const size_t kTheRcHeaderSize;''', output)
+    formatter = resource_map.GetFormatter('gzipped_resource_file_map_source')
+    output = util.StripBlankLinesAndComments(''.join(formatter(grd, 'en', '.')))
+    self.assertEqual('''\
+#include "gzipped_resource_map_header.h"
+#include <stddef.h>
+#include "base/macros.h"
+#include "the_rc_header.h"
+const GzippedGritResourceMap kTheRcHeader[] = {
+  {"grit/testdata/klonk.rc", IDC_KLONKMENU, true},
+  {"abc", IDS_FIRSTPRESENT, false},
 };
 const size_t kTheRcHeaderSize = arraysize(kTheRcHeader);''', output)
 
@@ -129,7 +174,7 @@ const size_t kTheRcHeaderSize = arraysize(kTheRcHeader);''', output)
                          file="xyz.png" />
             </if>
          </structures>
-        </release>''', run_gatherers=True, output_all_resource_defines=False)
+        </release>''', run_gatherers=True)
     output = util.StripBlankLinesAndComments(''.join(
         resource_map.GetFormatter('resource_map_header')(grd, 'en', '.')))
     self.assertEqual('''\
@@ -208,7 +253,7 @@ const size_t kTheRcHeaderSize = arraysize(kTheRcHeader);''', output)
               <include type="foo" file="xyz" name="IDS_LAST" />
             </if>
          </includes>
-        </release>''', run_gatherers=True, output_all_resource_defines=False)
+        </release>''', run_gatherers=True)
     output = util.StripBlankLinesAndComments(''.join(
         resource_map.GetFormatter('resource_map_header')(grd, 'en', '.')))
     self.assertEqual('''\
@@ -280,7 +325,8 @@ const size_t kTheRcHeaderSize = arraysize(kTheRcHeader);''', output)
               </message>
             </if>
           </messages>
-        </release>''', run_gatherers=True, output_all_resource_defines=False)
+        </release>''', run_gatherers=True)
+    grd.InitializeIds()
     output = util.StripBlankLinesAndComments(''.join(
         resource_map.GetFormatter('resource_map_header')(grd, 'en', '.')))
     self.assertEqual('''\

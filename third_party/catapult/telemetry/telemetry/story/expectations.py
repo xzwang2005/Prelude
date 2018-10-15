@@ -4,6 +4,8 @@
 
 import logging
 
+from telemetry.core import os_version as os_version_module
+
 
 class StoryExpectations(object):
   """An object that contains disabling expectations for benchmarks and stories.
@@ -53,16 +55,20 @@ class StoryExpectations(object):
           logging.critical(
               'Unable to map expectation in file to TestCondition')
           raise
+
+        # Test Expectations with multiple conditions are treated as logical
+        # and and require all conditions to be met for disabling to occur.
+        # By design, StoryExpectations treats lists as logical or so we must
+        # construct TestConditions using the logical and helper class.
+        # TODO(): Consider refactoring TestConditions to be logical or.
         conditions_str = '+'.join(expectation.conditions)
-        self.DisableStory(
-            story,
-            # Test Expectations with multiple conditions are treated as logical
-            # and and require all conditions to be met for disabling to occur.
-            # By design, StoryExpectations treats lists as logical or so we must
-            # construct TestConditions using the logical and helper class.
-            # TODO(): Consider refactoring TestConditions to be logical or.
-            [_TestConditionLogicalAndConditions(conditions, conditions_str)],
-            expectation.reason)
+        composite_condition = _TestConditionLogicalAndConditions(
+            conditions, conditions_str)
+
+        if story == '*':
+          self.DisableBenchmark([composite_condition], expectation.reason)
+        else:
+          self.DisableStory(story, [composite_condition], expectation.reason)
     finally:
       self._Freeze()
 
@@ -91,7 +97,6 @@ class StoryExpectations(object):
 
   def _Freeze(self):
     self._frozen = True
-    self._disabled_platforms = tuple(self._disabled_platforms)
 
 
   @property
@@ -114,7 +119,6 @@ class StoryExpectations(object):
       conditions: List of _TestCondition subclasses.
       reason: Reason for disabling the benchmark.
     """
-    assert reason, 'A reason for disabling must be given.'
     assert not self._frozen, ('Cannot disable benchmark on a frozen '
                               'StoryExpectation object.')
     for condition in conditions:
@@ -133,7 +137,7 @@ class StoryExpectations(object):
         if condition.ShouldDisable(platform, finder_options):
           logging.info('Benchmark permanently disabled on %s due to %s.',
                        condition, reason)
-          return reason
+          return reason if reason is not None else 'No reason given'
     return None
 
   def DisableStory(self, story_name, conditions, reason):
@@ -147,10 +151,9 @@ class StoryExpectations(object):
       conditions: List of _TestCondition subclasses.
       reason: Reason for disabling the story.
     """
-    assert reason, 'A reason for disabling must be given.'
     # TODO(rnephew): Remove http check when old stories that use urls as names
     # are removed.
-    if not story_name.startswith('http'):
+    if not (story_name.startswith('http') or '.html' in story_name):
       # Decrease to 50 after we shorten names of existing tests.
       assert len(story_name) < 75, (
           "Story name exceeds limit of 75 characters. This limit is in place to"
@@ -182,7 +185,7 @@ class StoryExpectations(object):
         if condition.ShouldDisable(platform, finder_options):
           logging.info('%s is disabled on %s due to %s.',
                        story.name, condition, reason)
-          return reason
+          return reason if reason is not None else 'No reason given'
     return None
 
 
@@ -244,7 +247,7 @@ class _TestConditionByAndroidModel(_TestCondition):
 class _TestConditionAndroidWebview(_TestCondition):
   def ShouldDisable(self, platform, finder_options):
     return (platform.GetOSName() == 'android' and
-            finder_options.browser_type == 'android-webview')
+            finder_options.browser_type.startswith('android-webview'))
 
   def __str__(self):
     return 'Android Webview'
@@ -252,7 +255,7 @@ class _TestConditionAndroidWebview(_TestCondition):
 class _TestConditionAndroidNotWebview(_TestCondition):
   def ShouldDisable(self, platform, finder_options):
     return (platform.GetOSName() == 'android' and not
-            finder_options.browser_type == 'android-webview')
+            finder_options.browser_type.startswith('android-webview'))
 
   def __str__(self):
     return 'Android but not webview'
@@ -270,6 +273,20 @@ class _TestConditionByMacVersion(_TestCondition):
     if platform.GetOSName() != 'mac':
       return False
     return platform.GetOSVersionDetailString().startswith(self._version)
+
+
+class _TestConditionByWinVersion(_TestCondition):
+  def __init__(self, version, name):
+    self._version = version
+    self._name = name
+
+  def __str__(self):
+    return self._name
+
+  def ShouldDisable(self, platform, finder_options):
+    if platform.GetOSName() != 'win':
+      return False
+    return platform.GetOSVersionName() == self._version
 
 
 class _TestConditionLogicalAndConditions(_TestCondition):
@@ -301,6 +318,8 @@ class _TestConditionLogicalOrConditions(_TestCondition):
 ALL = _AllTestCondition()
 ALL_MAC = _TestConditionByPlatformList(['mac'], 'Mac')
 ALL_WIN = _TestConditionByPlatformList(['win'], 'Win')
+WIN_7 = _TestConditionByWinVersion(os_version_module.WIN7, 'Win 7')
+WIN_10 = _TestConditionByWinVersion(os_version_module.WIN10, 'Win 10')
 ALL_LINUX = _TestConditionByPlatformList(['linux'], 'Linux')
 ALL_CHROMEOS = _TestConditionByPlatformList(['chromeos'], 'ChromeOS')
 ALL_ANDROID = _TestConditionByPlatformList(['android'], 'Android')
@@ -318,9 +337,12 @@ ANDROID_NEXUS6 = _TestConditionLogicalOrConditions(
     [_ANDROID_NEXUS6, _ANDROID_NEXUS6AOSP], 'Nexus 6')
 ANDROID_NEXUS6P = _TestConditionByAndroidModel('Nexus 6P')
 ANDROID_NEXUS7 = _TestConditionByAndroidModel('Nexus 7')
-ANDROID_ONE = _TestConditionByAndroidModel(
-    'W6210', 'Cherry Mobile Android One')
+ANDROID_GO = _TestConditionByAndroidModel('gobo', 'Android Go')
+ANDROID_ONE = _TestConditionByAndroidModel('W6210', 'Android One')
 ANDROID_SVELTE = _TestConditionAndroidSvelte()
+ANDROID_LOW_END = _TestConditionLogicalOrConditions(
+    [ANDROID_GO, ANDROID_SVELTE, ANDROID_ONE], 'Android Low End')
+ANDROID_PIXEL2 = _TestConditionByAndroidModel('Pixel 2')
 ANDROID_WEBVIEW = _TestConditionAndroidWebview()
 ANDROID_NOT_WEBVIEW = _TestConditionAndroidNotWebview()
 # MAC_10_11 Includes:
@@ -336,11 +358,16 @@ ANDROID_NEXUS5X_WEBVIEW = _TestConditionLogicalAndConditions(
 
 EXPECTATION_NAME_MAP = {
     'All': ALL,
+    'Android_Go': ANDROID_GO,
+    'Android_One': ANDROID_ONE,
     'Android_Svelte': ANDROID_SVELTE,
+    'Android_Low_End': ANDROID_LOW_END,
     'Android_Webview': ANDROID_WEBVIEW,
     'Android_but_not_webview': ANDROID_NOT_WEBVIEW,
     'Mac': ALL_MAC,
     'Win': ALL_WIN,
+    'Win_7': WIN_7,
+    'Win_10': WIN_10,
     'Linux': ALL_LINUX,
     'ChromeOS': ALL_CHROMEOS,
     'Android': ALL_ANDROID,
@@ -351,7 +378,7 @@ EXPECTATION_NAME_MAP = {
     'Nexus_6': ANDROID_NEXUS6,
     'Nexus_6P': ANDROID_NEXUS6P,
     'Nexus_7': ANDROID_NEXUS7,
-    'Cherry_Mobile_Android_One': ANDROID_ONE,
+    'Pixel_2': ANDROID_PIXEL2,
     'Mac_10.11': MAC_10_11,
     'Mac_10.12': MAC_10_12,
     'Nexus6_Webview': ANDROID_NEXUS6_WEBVIEW,

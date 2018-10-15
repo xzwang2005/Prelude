@@ -5,8 +5,8 @@
  * found in the LICENSE file.
  */
 
-#include "SampleCode.h"
-#include "SkView.h"
+#include "Sample.h"
+#include "SkBitmap.h"
 #include "SkBlurMask.h"
 #include "SkCanvas.h"
 #include "SkCornerPathEffect.h"
@@ -16,7 +16,7 @@
 #include "SkRandom.h"
 #include "SkRegion.h"
 #include "SkShader.h"
-#include "SkUtils.h"
+#include "SkUTF.h"
 #include "SkColorPriv.h"
 #include "SkColorFilter.h"
 #include "SkTime.h"
@@ -32,15 +32,14 @@ static void setNamedTypeface(SkPaint* paint, const char name[]) {
 
 static uint16_t gBG[] = { 0xFFFF, 0xCCCF, 0xCCCF, 0xFFFF };
 
-class XfermodesBlurView : public SampleView {
+class XfermodesBlurView : public Sample {
     SkBitmap    fBG;
     SkBitmap    fSrcB, fDstB;
 
     void draw_mode(SkCanvas* canvas, SkBlendMode mode, int alpha, SkScalar x, SkScalar y) {
         SkPaint p;
-        p.setMaskFilter(SkBlurMaskFilter::Make(kNormal_SkBlurStyle,
-                                               SkBlurMask::ConvertRadiusToSigma(5),
-                                               SkBlurMaskFilter::kNone_BlurFlag));
+        p.setMaskFilter(SkMaskFilter::MakeBlur(kNormal_SkBlurStyle,
+                                               SkBlurMask::ConvertRadiusToSigma(5)));
 
         SkScalar ww = SkIntToScalar(W);
         SkScalar hh = SkIntToScalar(H);
@@ -72,10 +71,9 @@ public:
     }
 
 protected:
-    // overrides from SkEventSink
-    virtual bool onQuery(SkEvent* evt) {
-        if (SampleCode::TitleQ(*evt)) {
-            SampleCode::TitleR(evt, "XfermodesBlur");
+    virtual bool onQuery(Sample::Event* evt) {
+        if (Sample::TitleQ(*evt)) {
+            Sample::TitleR(evt, "XfermodesBlur");
             return true;
         }
         return this->INHERITED::onQuery(evt);
@@ -90,7 +88,7 @@ protected:
             paint.setTextSize(50);
             paint.setTypeface(SkTypeface::MakeFromName("Arial Unicode MS", SkFontStyle()));
             char buffer[10];
-            size_t len = SkUTF8_FromUnichar(0x8500, buffer);
+            size_t len = SkUTF::ToUTF8(0x8500, buffer);
             canvas->drawText(buffer, len, 40, 40, paint);
             return;
         }
@@ -173,10 +171,9 @@ protected:
     }
 
 private:
-    typedef SampleView INHERITED;
+    typedef Sample INHERITED;
 };
 
 //////////////////////////////////////////////////////////////////////////////
 
-static SkView* MyFactory() { return new XfermodesBlurView; }
-static SkViewRegister reg(MyFactory);
+DEF_SAMPLE( return new XfermodesBlurView(); )

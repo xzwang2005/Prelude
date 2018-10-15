@@ -40,6 +40,10 @@ class VIZ_COMMON_EXPORT SurfaceId {
                       const LocalSurfaceId& local_surface_id)
       : frame_sink_id_(frame_sink_id), local_surface_id_(local_surface_id) {}
 
+  static constexpr SurfaceId MaxSequenceId(const FrameSinkId& frame_sink_id) {
+    return SurfaceId(frame_sink_id, LocalSurfaceId::MaxSequenceId());
+  }
+
   bool is_valid() const {
     return frame_sink_id_.is_valid() && local_surface_id_.is_valid();
   }
@@ -54,6 +58,13 @@ class VIZ_COMMON_EXPORT SurfaceId {
   const LocalSurfaceId& local_surface_id() const { return local_surface_id_; }
 
   std::string ToString() const;
+
+  // Returns whether this SurfaceId was generated after |other|.
+  bool IsNewerThan(const SurfaceId& other) const;
+
+  // Compare this SurfaceId with |other| and returns the difference between the
+  // parent sequence numbers plus the difference between child sequence numbers.
+  uint32_t ManhattanDistanceTo(const SurfaceId& other) const;
 
   bool operator==(const SurfaceId& other) const {
     return frame_sink_id_ == other.frame_sink_id_ &&

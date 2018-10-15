@@ -21,7 +21,7 @@ const char src_simple[] = "function foo() { var x = 2 * a() + b; }";
 
 struct ScannerTestHelper {
   ScannerTestHelper() = default;
-  ScannerTestHelper(ScannerTestHelper&& other)
+  ScannerTestHelper(ScannerTestHelper&& other) V8_NOEXCEPT
       : unicode_cache(std::move(other.unicode_cache)),
         stream(std::move(other.stream)),
         scanner(std::move(other.scanner)) {}
@@ -29,7 +29,6 @@ struct ScannerTestHelper {
   std::unique_ptr<UnicodeCache> unicode_cache;
   std::unique_ptr<Utf16CharacterStream> stream;
   std::unique_ptr<Scanner> scanner;
-  int use_counts[v8::Isolate::kUseCounterFeatureCount];
 
   Scanner* operator->() const { return scanner.get(); }
   Scanner* get() const { return scanner.get(); }
@@ -39,12 +38,9 @@ ScannerTestHelper make_scanner(const char* src) {
   ScannerTestHelper helper;
   helper.unicode_cache = std::unique_ptr<UnicodeCache>(new UnicodeCache);
   helper.stream = ScannerStream::ForTesting(src);
-  for (int i = 0; i < v8::Isolate::kUseCounterFeatureCount; i++) {
-    helper.use_counts[i] = 0;
-  }
   helper.scanner = std::unique_ptr<Scanner>(
-      new Scanner(helper.unicode_cache.get(), helper.use_counts));
-  helper.scanner->Initialize(helper.stream.get(), false);
+      new Scanner(helper.unicode_cache.get(), helper.stream.get(), false));
+  helper.scanner->Initialize();
   return helper;
 }
 

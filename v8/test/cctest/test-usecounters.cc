@@ -60,29 +60,25 @@ TEST(AssigmentExpressionLHSIsCall) {
   use_counts[v8::Isolate::kAssigmentExpressionLHSIsCallInStrict] = 0;
 }
 
-TEST(LabeledExpressionStatement) {
+TEST(AtomicsWakeAndAtomicsNotify) {
   v8::Isolate* isolate = CcTest::isolate();
   v8::HandleScope scope(isolate);
   LocalContext env;
   int use_counts[v8::Isolate::kUseCounterFeatureCount] = {};
   global_use_counts = use_counts;
+  i::FLAG_harmony_sharedarraybuffer = true;
   CcTest::isolate()->SetUseCounterCallback(MockUseCounterCallback);
 
-  CompileRun("typeof a");
-  CHECK_EQ(0, use_counts[v8::Isolate::kLabeledExpressionStatement]);
+  CompileRun("Atomics.wake(new Int32Array(new SharedArrayBuffer(16)), 0);");
+  CHECK_EQ(1, use_counts[v8::Isolate::kAtomicsWake]);
+  CHECK_EQ(0, use_counts[v8::Isolate::kAtomicsNotify]);
 
-  CompileRun("foo: null");
-  CHECK_EQ(1, use_counts[v8::Isolate::kLabeledExpressionStatement]);
+  use_counts[v8::Isolate::kAtomicsWake] = 0;
+  use_counts[v8::Isolate::kAtomicsNotify] = 0;
 
-  CompileRun("foo: bar: baz: undefined");
-  CHECK_EQ(2, use_counts[v8::Isolate::kLabeledExpressionStatement]);
-
-  CompileRun(
-      "foo: if (false);"
-      "bar: { }"
-      "baz: switch (false) { }"
-      "bat: do { } while (false);");
-  CHECK_EQ(2, use_counts[v8::Isolate::kLabeledExpressionStatement]);
+  CompileRun("Atomics.notify(new Int32Array(new SharedArrayBuffer(16)), 0);");
+  CHECK_EQ(0, use_counts[v8::Isolate::kAtomicsWake]);
+  CHECK_EQ(1, use_counts[v8::Isolate::kAtomicsNotify]);
 }
 
 }  // namespace test_usecounters

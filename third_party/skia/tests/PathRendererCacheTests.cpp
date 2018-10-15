@@ -7,14 +7,14 @@
 
 #include "Test.h"
 
-#include "SkPath.h"
-
-#if SK_SUPPORT_GPU
 #include "GrClip.h"
 #include "GrContext.h"
 #include "GrContextPriv.h"
 #include "GrResourceCache.h"
+#include "GrShape.h"
 #include "GrSoftwarePathRenderer.h"
+#include "GrStyle.h"
+#include "SkPath.h"
 #include "effects/GrPorterDuffXferProcessor.h"
 #include "ops/GrTessellatingPathRenderer.h"
 
@@ -76,12 +76,12 @@ static void test_path(skiatest::Reporter* reporter,
                       GrStyle style = GrStyle(SkStrokeRec::kFill_InitStyle)) {
     sk_sp<GrContext> ctx = GrContext::MakeMock(nullptr);
     // The cache needs to be big enough that nothing gets flushed, or our expectations can be wrong
-    ctx->setResourceCacheLimits(100, 1000000);
-    GrResourceCache* cache = ctx->getResourceCache();
+    ctx->setResourceCacheLimits(100, 8000000);
+    GrResourceCache* cache = ctx->contextPriv().getResourceCache();
 
-    sk_sp<GrRenderTargetContext> rtc(ctx->makeDeferredRenderTargetContext(
-            SkBackingFit::kApprox, 800, 800, kRGBA_8888_GrPixelConfig, nullptr, 0,
-            GrMipMapped::kNo, kTopLeft_GrSurfaceOrigin));
+    sk_sp<GrRenderTargetContext> rtc(ctx->contextPriv().makeDeferredRenderTargetContext(
+            SkBackingFit::kApprox, 800, 800, kRGBA_8888_GrPixelConfig, nullptr, 1, GrMipMapped::kNo,
+            kTopLeft_GrSurfaceOrigin));
     if (!rtc) {
         return;
     }
@@ -132,7 +132,7 @@ DEF_GPUTEST(TessellatingPathRendererCacheTest, reporter, /* options */) {
 // Test that deleting the original path invalidates the textures cached by the SW path renderer
 DEF_GPUTEST(SoftwarePathRendererCacheTest, reporter, /* options */) {
     auto createPR = [](GrContext* ctx) {
-        return new GrSoftwarePathRenderer(ctx->resourceProvider(), true);
+        return new GrSoftwarePathRenderer(ctx->contextPriv().proxyProvider(), true);
     };
 
     // Software path renderer creates a mask texture, but also renders with a non-AA rect, which
@@ -150,5 +150,3 @@ DEF_GPUTEST(SoftwarePathRendererCacheTest, reporter, /* options */) {
     test_path(reporter, create_concave_path, createPR, kExpectedResources, GrAAType::kCoverage,
               style);
 }
-
-#endif

@@ -42,7 +42,7 @@ class V8_EXPORT_PRIVATE JumpTableTargetOffsets final {
     void UpdateAndAdvanceToValid();
 
     const BytecodeArrayAccessor* accessor_;
-    Handle<Object> current_;
+    Smi* current_;
     int index_;
     int table_offset_;
     int table_end_;
@@ -70,6 +70,8 @@ class V8_EXPORT_PRIVATE BytecodeArrayAccessor {
 
   void SetOffset(int offset);
 
+  void ApplyDebugBreak();
+
   Bytecode current_bytecode() const;
   int current_bytecode_size() const;
   int current_offset() const { return bytecode_offset_; }
@@ -83,14 +85,15 @@ class V8_EXPORT_PRIVATE BytecodeArrayAccessor {
   uint32_t GetUnsignedImmediateOperand(int operand_index) const;
   int32_t GetImmediateOperand(int operand_index) const;
   uint32_t GetIndexOperand(int operand_index) const;
+  FeedbackSlot GetSlotOperand(int operand_index) const;
   uint32_t GetRegisterCountOperand(int operand_index) const;
   Register GetRegisterOperand(int operand_index) const;
   int GetRegisterOperandRange(int operand_index) const;
   Runtime::FunctionId GetRuntimeIdOperand(int operand_index) const;
   Runtime::FunctionId GetIntrinsicIdOperand(int operand_index) const;
   uint32_t GetNativeContextIndexOperand(int operand_index) const;
-  Handle<Object> GetConstantAtIndex(int offset) const;
-  Handle<Object> GetConstantForIndexOperand(int operand_index) const;
+  Object* GetConstantAtIndex(int offset) const;
+  Object* GetConstantForIndexOperand(int operand_index) const;
 
   // Returns the absolute offset of the branch target at the current bytecode.
   // It is an error to call this method if the bytecode is not for a jump or
@@ -130,4 +133,4 @@ class V8_EXPORT_PRIVATE BytecodeArrayAccessor {
 }  // namespace internal
 }  // namespace v8
 
-#endif  // V8_INTERPRETER_BYTECODE_GRAPH_ACCESSOR_H_
+#endif  // V8_INTERPRETER_BYTECODE_ARRAY_ACCESSOR_H_

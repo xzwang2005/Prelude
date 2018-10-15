@@ -17,31 +17,32 @@ class GrMtlGpu;
 class GrMtlTexture : public GrTexture {
 public:
     static sk_sp<GrMtlTexture> CreateNewTexture(GrMtlGpu*, SkBudgeted budgeted,
-                                                const GrSurfaceDesc&, int mipLevels);
+                                                const GrSurfaceDesc&,
+                                                MTLTextureDescriptor*,
+                                                GrMipMapsStatus);
 
     static sk_sp<GrMtlTexture> MakeWrappedTexture(GrMtlGpu*, const GrSurfaceDesc&,
-                                                  GrWrapOwnership);
+                                                  id<MTLTexture>);
 
     ~GrMtlTexture() override;
 
     id<MTLTexture> mtlTexture() const { return fTexture; }
 
-    GrBackendObject getTextureHandle() const override;
+    GrBackendTexture getBackendTexture() const override;
 
     void textureParamsModified() override {}
 
     bool reallocForMipmap(GrMtlGpu* gpu, uint32_t mipLevels);
 
-    void setRelease(GrTexture::ReleaseProc proc, GrTexture::ReleaseCtx ctx) override {
+    void setRelease(sk_sp<GrReleaseProcHelper> releaseHelper) override {
         // Since all MTLResources are inherently ref counted, we can call the Release proc when we
         // delete the GrMtlTexture without worry of the MTLTexture getting deleted before it is done
         // on the GPU.
-        fReleaseProc = proc;
-        fReleaseCtx = ctx;
+        fReleaseHelper = std::move(releaseHelper);
     }
 
 protected:
-    GrMtlTexture(GrMtlGpu*, const GrSurfaceDesc&);
+    GrMtlTexture(GrMtlGpu*, const GrSurfaceDesc&, id<MTLTexture>, GrMipMapsStatus);
 
     GrMtlGpu* getMtlGpu() const;
 
@@ -58,13 +59,14 @@ protected:
 
 private:
     enum Wrapped { kWrapped };
-    GrMtlTexture(GrMtlGpu*, SkBudgeted, const GrSurfaceDesc&, id<MTLTexture>, GrMipMapsStatus);
-   // GrMtlTexture(GrMtlGpu*, Wrapped, const GrSurfaceDesc&, GrMtlImage::Wrapped wrapped);
+    GrMtlTexture(GrMtlGpu*, SkBudgeted, const GrSurfaceDesc&, id<MTLTexture>,
+                 GrMipMapsStatus);
+
+    GrMtlTexture(GrMtlGpu*, Wrapped, const GrSurfaceDesc&, id<MTLTexture>, GrMipMapsStatus);
 
     id<MTLTexture> fTexture;
 
-    ReleaseProc fReleaseProc = nullptr;
-    ReleaseCtx fReleaseCtx = nullptr;
+    sk_sp<GrReleaseProcHelper>        fReleaseHelper;
 
     typedef GrTexture INHERITED;
 };

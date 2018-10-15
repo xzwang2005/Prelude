@@ -108,8 +108,8 @@ func (common *CommonConfig) Flags() []cli.Flag {
 	return append(common.certConfig.Flags(),
 		cli.StringFlag{
 			Name:        "host",
-			Value:       "",
-			Usage:       "IP address to bind all servers to. Defaults to 127.0.0.1 if not specified.",
+			Value:       "localhost",
+			Usage:       "IP address to bind all servers to. Defaults to localhost if not specified.",
 			Destination: &common.host,
 		},
 		cli.IntFlag{
@@ -161,12 +161,16 @@ func (common *CommonConfig) CheckArgs(c *cli.Context) error {
 	if err != nil {
 		return fmt.Errorf("error opening cert or key files: %v", err)
 	}
+
+	return nil
+}
+
+func (common *CommonConfig) ProcessInjectedScripts(timeSeedMs int64) error {
 	if common.injectScripts != "" {
 		for _, scriptFile := range strings.Split(common.injectScripts, ",") {
 			log.Printf("Loading script from %v\n", scriptFile)
-			// Replace {{WPR_TIME_SEED_TIMESTAMP}} with current timestamp.
-			current_time_ms := time.Now().Unix() * 1000
-			replacements := map[string]string{"{{WPR_TIME_SEED_TIMESTAMP}}": strconv.FormatInt(current_time_ms, 10)}
+			// Replace {{WPR_TIME_SEED_TIMESTAMP}} with the time seed.
+			replacements := map[string]string{"{{WPR_TIME_SEED_TIMESTAMP}}": strconv.FormatInt(timeSeedMs, 10)}
 			si, err := webpagereplay.NewScriptInjectorFromFile(scriptFile, replacements)
 			if err != nil {
 				return fmt.Errorf("error opening script %s: %v", scriptFile, err)
@@ -208,8 +212,8 @@ func (r *RootCACommand) Flags() []cli.Flag {
 		})
 }
 
-func getListener(port int) (net.Listener, error) {
-	addr, err := net.ResolveTCPAddr("tcp", fmt.Sprintf("localhost:%d", port))
+func getListener(host string, port int) (net.Listener, error) {
+	addr, err := net.ResolveTCPAddr("tcp", fmt.Sprintf("%v:%d", host, port))
 	if err != nil {
 		return nil, err
 	}
@@ -235,6 +239,7 @@ func (ln tcpKeepAliveListener) Accept() (c net.Conn, err error) {
 func startServers(tlsconfig *tls.Config, httpHandler, httpsHandler http.Handler, common *CommonConfig) {
 	type Server struct {
 		Scheme string
+		Host   string
 		Port   int
 		*http.Server
 	}
@@ -244,6 +249,7 @@ func startServers(tlsconfig *tls.Config, httpHandler, httpsHandler http.Handler,
 	if common.httpPort > -1 {
 		servers = append(servers, &Server{
 			Scheme: "http",
+			Host:   common.host,
 			Port:   common.httpPort,
 			Server: &http.Server{
 				Addr:    fmt.Sprintf("%v:%v", common.host, common.httpPort),
@@ -254,6 +260,7 @@ func startServers(tlsconfig *tls.Config, httpHandler, httpsHandler http.Handler,
 	if common.httpsPort > -1 {
 		servers = append(servers, &Server{
 			Scheme: "https",
+			Host:   common.host,
 			Port:   common.httpsPort,
 			Server: &http.Server{
 				Addr:      fmt.Sprintf("%v:%v", common.host, common.httpsPort),
@@ -265,6 +272,7 @@ func startServers(tlsconfig *tls.Config, httpHandler, httpsHandler http.Handler,
 	if common.httpSecureProxyPort > -1 {
 		servers = append(servers, &Server{
 			Scheme: "https",
+			Host:   common.host,
 			Port:   common.httpSecureProxyPort,
 			Server: &http.Server{
 				Addr:      fmt.Sprintf("%v:%v", common.host, common.httpSecureProxyPort),
@@ -277,17 +285,18 @@ func startServers(tlsconfig *tls.Config, httpHandler, httpsHandler http.Handler,
 	for _, s := range servers {
 		s := s
 		go func() {
+			var ln net.Listener
 			var err error
 			switch s.Scheme {
 			case "http":
-				ln, err := getListener(s.Port)
+				ln, err = getListener(s.Host, s.Port)
 				if err != nil {
 					break
 				}
 				logServeStarted(s.Scheme, ln)
 				err = s.Serve(tcpKeepAliveListener{ln.(*net.TCPListener)})
 			case "https":
-				ln, err := getListener(s.Port)
+				ln, err = getListener(s.Host, s.Port)
 				if err != nil {
 					break
 				}
@@ -335,6 +344,13 @@ func (r *RecordCommand) Run(c *cli.Context) {
 		os.Exit(0)
 	}()
 
+	timeSeedMs := time.Now().Unix() * 1000
+	if err := r.common.ProcessInjectedScripts(timeSeedMs); err != nil {
+		log.Printf("Error processing injected scripts: %v", err)
+		os.Exit(1)
+	}
+	archive.DeterministicTimeSeedMs = timeSeedMs
+
 	httpHandler := webpagereplay.NewRecordingProxy(archive, "http", r.common.transformers)
 	httpsHandler := webpagereplay.NewRecordingProxy(archive, "https", r.common.transformers)
 	tlsconfig, err := webpagereplay.RecordTLSConfig(r.common.root_cert, archive)
@@ -347,12 +363,26 @@ func (r *RecordCommand) Run(c *cli.Context) {
 
 func (r *ReplayCommand) Run(c *cli.Context) {
 	archiveFileName := c.Args().First()
+	log.Printf("Loading archive file from %s\n", archiveFileName)
 	archive, err := webpagereplay.OpenArchive(archiveFileName)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error opening archive file: %v", err)
 		os.Exit(1)
 	}
 	log.Printf("Opened archive %s", archiveFileName)
+
+	timeSeedMs := archive.DeterministicTimeSeedMs
+	if timeSeedMs == 0 {
+		// The time seed hasn't been set in the archive. Time seeds used to not be
+		// stored in the archive, so this is expected to happen when loading old
+		// archives. Just revert to the previous behavior: use the current time as
+		// the seed.
+		timeSeedMs = time.Now().Unix() * 1000
+	}
+	if err := r.common.ProcessInjectedScripts(timeSeedMs); err != nil {
+		log.Printf("Error processing injected scripts: %v", err)
+		os.Exit(1)
+	}
 
 	if r.rulesFile != "" {
 		t, err := webpagereplay.NewRuleBasedTransformer(r.rulesFile)

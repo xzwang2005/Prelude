@@ -21,9 +21,6 @@ public:
     ~GLTestContext() override;
 
     virtual GrBackend backend() override { return kOpenGL_GrBackend; }
-    virtual GrBackendContext backendContext() override {
-        return reinterpret_cast<GrBackendContext>(fGL.get());
-    }
 
     bool isValid() const { return SkToBool(this->gl()); }
 
@@ -83,7 +80,7 @@ protected:
     /*
      * Methods that sublcasses must call from their constructors and destructors.
      */
-    void init(const GrGLInterface *, std::unique_ptr<FenceSync> = nullptr);
+    void init(sk_sp<const GrGLInterface>, std::unique_ptr<FenceSync> = nullptr);
 
     void teardown() override;
 

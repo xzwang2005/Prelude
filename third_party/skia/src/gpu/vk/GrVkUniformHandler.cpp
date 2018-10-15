@@ -18,6 +18,17 @@
 // https://www.khronos.org/registry/vulkan/specs/1.0-wsi_extensions/html/vkspec.html#interfaces-resources-layout
 uint32_t grsltype_to_alignment_mask(GrSLType type) {
     switch(type) {
+        case kByte_GrSLType: // fall through
+        case kUByte_GrSLType:
+            return 0x0;
+        case kByte2_GrSLType: // fall through
+        case kUByte2_GrSLType:
+            return 0x1;
+        case kByte3_GrSLType: // fall through
+        case kByte4_GrSLType:
+        case kUByte3_GrSLType:
+        case kUByte4_GrSLType:
+            return 0x3;
         case kShort_GrSLType: // fall through
         case kUShort_GrSLType:
             return 0x1;
@@ -66,12 +77,8 @@ uint32_t grsltype_to_alignment_mask(GrSLType type) {
         case kVoid_GrSLType:
         case kBool_GrSLType:
         case kTexture2DSampler_GrSLType:
-        case kITexture2DSampler_GrSLType:
         case kTextureExternalSampler_GrSLType:
         case kTexture2DRectSampler_GrSLType:
-        case kBufferSampler_GrSLType:
-        case kTexture2D_GrSLType:
-        case kSampler_GrSLType:
             break;
     }
     SK_ABORT("Unexpected type");
@@ -81,6 +88,22 @@ uint32_t grsltype_to_alignment_mask(GrSLType type) {
 /** Returns the size in bytes taken up in vulkanbuffers for GrSLTypes. */
 static inline uint32_t grsltype_to_vk_size(GrSLType type) {
     switch(type) {
+        case kByte_GrSLType:
+            return sizeof(int8_t);
+        case kByte2_GrSLType:
+            return 2 * sizeof(int8_t);
+        case kByte3_GrSLType:
+            return 3 * sizeof(int8_t);
+        case kByte4_GrSLType:
+            return 4 * sizeof(int8_t);
+        case kUByte_GrSLType:
+            return sizeof(uint8_t);
+        case kUByte2_GrSLType:
+            return 2 * sizeof(uint8_t);
+        case kUByte3_GrSLType:
+            return 3 * sizeof(uint8_t);
+        case kUByte4_GrSLType:
+            return 4 * sizeof(uint8_t);
         case kShort_GrSLType:
             return sizeof(int16_t);
         case kShort2_GrSLType:
@@ -136,12 +159,8 @@ static inline uint32_t grsltype_to_vk_size(GrSLType type) {
         case kVoid_GrSLType:
         case kBool_GrSLType:
         case kTexture2DSampler_GrSLType:
-        case kITexture2DSampler_GrSLType:
         case kTextureExternalSampler_GrSLType:
         case kTexture2DRectSampler_GrSLType:
-        case kBufferSampler_GrSLType:
-        case kTexture2D_GrSLType:
-        case kSampler_GrSLType:
             break;
     }
     SK_ABORT("Unexpected type");
@@ -203,7 +222,7 @@ GrGLSLUniformHandler::UniformHandle GrVkUniformHandler::internalAddUniformArray(
     // uniform view matrix, they should upload the view matrix in their setData along with regular
     // uniforms.
     char prefix = 'u';
-    if ('u' == name[0]) {
+    if ('u' == name[0] || !strncmp(name, GR_NO_MANGLE_PREFIX, strlen(GR_NO_MANGLE_PREFIX))) {
         prefix = '\0';
     }
     fProgramBuilder->nameVariable(uni.fVariable.accessName(), prefix, name, mangleName);
@@ -237,7 +256,7 @@ GrGLSLUniformHandler::UniformHandle GrVkUniformHandler::internalAddUniformArray(
 
 GrGLSLUniformHandler::SamplerHandle GrVkUniformHandler::addSampler(uint32_t visibility,
                                                                    GrSwizzle swizzle,
-                                                                   GrSLType type,
+                                                                   GrTextureType type,
                                                                    GrSLPrecision precision,
                                                                    const char* name) {
     SkASSERT(name && strlen(name));
@@ -250,8 +269,7 @@ GrGLSLUniformHandler::SamplerHandle GrVkUniformHandler::addSampler(uint32_t visi
     fProgramBuilder->nameVariable(&mangleName, prefix, name, true);
 
     UniformInfo& info = fSamplers.push_back();
-    SkASSERT(GrSLTypeIsCombinedSamplerType(type));
-    info.fVariable.setType(type);
+    info.fVariable.setType(GrSLCombinedSamplerTypeForTextureType(type));
     info.fVariable.setTypeModifier(GrShaderVar::kUniform_TypeModifier);
     info.fVariable.setPrecision(precision);
     info.fVariable.setName(mangleName);
@@ -265,32 +283,6 @@ GrGLSLUniformHandler::SamplerHandle GrVkUniformHandler::addSampler(uint32_t visi
     return GrGLSLUniformHandler::SamplerHandle(fSamplers.count() - 1);
 }
 
-GrGLSLUniformHandler::TexelBufferHandle GrVkUniformHandler::addTexelBuffer(uint32_t visibility,
-                                                                           GrSLPrecision precision,
-                                                                           const char* name) {
-    SkASSERT(name && strlen(name));
-    SkDEBUGCODE(static const uint32_t kVisMask = kVertex_GrShaderFlag |
-                                                 kGeometry_GrShaderFlag |
-                                                 kFragment_GrShaderFlag);
-    SkASSERT(0 == (~kVisMask & visibility));
-    SkASSERT(0 != visibility);
-    SkString mangleName;
-    char prefix = 'u';
-    fProgramBuilder->nameVariable(&mangleName, prefix, name, true);
-
-    UniformInfo& info = fTexelBuffers.push_back();
-    info.fVariable.setType(kBufferSampler_GrSLType);
-    info.fVariable.setTypeModifier(GrShaderVar::kUniform_TypeModifier);
-    info.fVariable.setPrecision(precision);
-    info.fVariable.setName(mangleName);
-    SkString layoutQualifier;
-    layoutQualifier.appendf("set=%d, binding=%d", kTexelBufferDescSet, fTexelBuffers.count()- 1);
-    info.fVariable.addLayoutQualifier(layoutQualifier.c_str());
-    info.fVisibility = visibility;
-    info.fUBOffset = 0;
-    return GrGLSLUniformHandler::TexelBufferHandle(fTexelBuffers.count() - 1);
-}
-
 void GrVkUniformHandler::appendUniformDecls(GrShaderFlags visibility, SkString* out) const {
     SkASSERT(kVertex_GrShaderFlag == visibility ||
              kGeometry_GrShaderFlag == visibility ||
@@ -301,14 +293,6 @@ void GrVkUniformHandler::appendUniformDecls(GrShaderFlags visibility, SkString* 
         SkASSERT(sampler.fVariable.getType() == kTexture2DSampler_GrSLType);
         if (visibility == sampler.fVisibility) {
             sampler.fVariable.appendDecl(fProgramBuilder->shaderCaps(), out);
-            out->append(";\n");
-        }
-    }
-
-    for (int i = 0; i < fTexelBuffers.count(); ++i) {
-        const UniformInfo& texelBuffer = fTexelBuffers[i];
-        if (visibility == texelBuffer.fVisibility) {
-            texelBuffer.fVariable.appendDecl(fProgramBuilder->shaderCaps(), out);
             out->append(";\n");
         }
     }

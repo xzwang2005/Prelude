@@ -18,7 +18,8 @@
 #include "base/run_loop.h"
 #include "base/sequenced_task_runner.h"
 #include "base/synchronization/waitable_event.h"
-#include "base/test/sequenced_worker_pool_owner.h"
+#include "base/task/post_task.h"
+#include "base/test/scoped_task_environment.h"
 #include "base/test/test_mock_time_task_runner.h"
 #include "base/threading/platform_thread.h"
 #include "base/threading/sequenced_task_runner_handle.h"
@@ -111,9 +112,9 @@ class OneShotTimerTester : public OneShotTimerTesterBase {
 
     // Run() will be invoked on |task_runner| but |run_loop_|'s QuitClosure
     // needs to run on this thread (where the MessageLoop lives).
-    quit_closure_ = Bind(IgnoreResult(&SequencedTaskRunner::PostTask),
-                         SequencedTaskRunnerHandle::Get(), FROM_HERE,
-                         run_loop_.QuitClosure());
+    quit_closure_ = BindOnce(IgnoreResult(&SequencedTaskRunner::PostTask),
+                             SequencedTaskRunnerHandle::Get(), FROM_HERE,
+                             run_loop_.QuitClosure());
   }
 
   // Blocks until Run() executes and confirms that Run() didn't fire before
@@ -134,11 +135,11 @@ class OneShotTimerTester : public OneShotTimerTesterBase {
   void Run() override {
     OnRun();
     OneShotTimerTesterBase::Run();
-    quit_closure_.Run();
+    std::move(quit_closure_).Run();
   }
 
   RunLoop run_loop_;
-  Closure quit_closure_;
+  OnceClosure quit_closure_;
 
   DISALLOW_COPY_AND_ASSIGN(OneShotTimerTester);
 };
@@ -434,13 +435,12 @@ TEST(TimerTest, OneShotTimer_CustomTaskRunner) {
 TEST(TimerTest, OneShotTimerWithTickClock) {
   scoped_refptr<TestMockTimeTaskRunner> task_runner(
       new TestMockTimeTaskRunner(Time::Now(), TimeTicks::Now()));
-  std::unique_ptr<TickClock> tick_clock(task_runner->GetMockTickClock());
   MessageLoop message_loop;
   message_loop.SetTaskRunner(task_runner);
   Receiver receiver;
-  OneShotTimer timer(tick_clock.get());
+  OneShotTimer timer(task_runner->GetMockTickClock());
   timer.Start(FROM_HERE, TimeDelta::FromSeconds(1),
-              Bind(&Receiver::OnCalled, Unretained(&receiver)));
+              BindOnce(&Receiver::OnCalled, Unretained(&receiver)));
   task_runner->FastForwardBy(TimeDelta::FromSeconds(1));
   EXPECT_TRUE(receiver.WasCalled());
 }
@@ -476,14 +476,13 @@ TEST(TimerTest, RepeatingTimerZeroDelay_Cancel) {
 TEST(TimerTest, RepeatingTimerWithTickClock) {
   scoped_refptr<TestMockTimeTaskRunner> task_runner(
       new TestMockTimeTaskRunner(Time::Now(), TimeTicks::Now()));
-  std::unique_ptr<TickClock> tick_clock(task_runner->GetMockTickClock());
   MessageLoop message_loop;
   message_loop.SetTaskRunner(task_runner);
   Receiver receiver;
   const int expected_times_called = 10;
-  RepeatingTimer timer(tick_clock.get());
+  RepeatingTimer timer(task_runner->GetMockTickClock());
   timer.Start(FROM_HERE, TimeDelta::FromSeconds(1),
-              Bind(&Receiver::OnCalled, Unretained(&receiver)));
+              BindRepeating(&Receiver::OnCalled, Unretained(&receiver)));
   task_runner->FastForwardBy(TimeDelta::FromSeconds(expected_times_called));
   timer.Stop();
   EXPECT_EQ(expected_times_called, receiver.TimesCalled());
@@ -517,12 +516,11 @@ TEST(TimerTest, DelayTimer_Deleted) {
 TEST(TimerTest, DelayTimerWithTickClock) {
   scoped_refptr<TestMockTimeTaskRunner> task_runner(
       new TestMockTimeTaskRunner(Time::Now(), TimeTicks::Now()));
-  std::unique_ptr<TickClock> tick_clock(task_runner->GetMockTickClock());
   MessageLoop message_loop;
   message_loop.SetTaskRunner(task_runner);
   Receiver receiver;
   DelayTimer timer(FROM_HERE, TimeDelta::FromSeconds(1), &receiver,
-                   &Receiver::OnCalled, tick_clock.get());
+                   &Receiver::OnCalled, task_runner->GetMockTickClock());
   task_runner->FastForwardBy(TimeDelta::FromMilliseconds(999));
   EXPECT_FALSE(receiver.WasCalled());
   timer.Reset();
@@ -567,7 +565,7 @@ class OneShotSelfOwningTimerTester
     // Start timer with long delay in order to test the timer getting destroyed
     // while a timer task is still pending.
     timer_.Start(FROM_HERE, TimeDelta::FromDays(1),
-                 base::Bind(&OneShotSelfOwningTimerTester::Run, this));
+                 BindOnce(&OneShotSelfOwningTimerTester::Run, this));
   }
 
  private:
@@ -605,20 +603,21 @@ void TimerTestCallback() {
 TEST(TimerTest, NonRepeatIsRunning) {
   {
     MessageLoop loop;
-    Timer timer(false, false);
+    OneShotTimer timer;
     EXPECT_FALSE(timer.IsRunning());
-    timer.Start(FROM_HERE, TimeDelta::FromDays(1), Bind(&TimerTestCallback));
+    timer.Start(FROM_HERE, TimeDelta::FromDays(1),
+                BindOnce(&TimerTestCallback));
     EXPECT_TRUE(timer.IsRunning());
     timer.Stop();
     EXPECT_FALSE(timer.IsRunning());
-    EXPECT_TRUE(timer.user_task().is_null());
   }
 
   {
-    Timer timer(true, false);
+    RetainingOneShotTimer timer;
     MessageLoop loop;
     EXPECT_FALSE(timer.IsRunning());
-    timer.Start(FROM_HERE, TimeDelta::FromDays(1), Bind(&TimerTestCallback));
+    timer.Start(FROM_HERE, TimeDelta::FromDays(1),
+                BindRepeating(&TimerTestCallback));
     EXPECT_TRUE(timer.IsRunning());
     timer.Stop();
     EXPECT_FALSE(timer.IsRunning());
@@ -629,21 +628,21 @@ TEST(TimerTest, NonRepeatIsRunning) {
 }
 
 TEST(TimerTest, NonRepeatMessageLoopDeath) {
-  Timer timer(false, false);
+  OneShotTimer timer;
   {
     MessageLoop loop;
     EXPECT_FALSE(timer.IsRunning());
-    timer.Start(FROM_HERE, TimeDelta::FromDays(1), Bind(&TimerTestCallback));
+    timer.Start(FROM_HERE, TimeDelta::FromDays(1),
+                BindOnce(&TimerTestCallback));
     EXPECT_TRUE(timer.IsRunning());
   }
   EXPECT_FALSE(timer.IsRunning());
-  EXPECT_TRUE(timer.user_task().is_null());
 }
 
 TEST(TimerTest, RetainRepeatIsRunning) {
   MessageLoop loop;
-  Timer timer(FROM_HERE, TimeDelta::FromDays(1), Bind(&TimerTestCallback),
-              true);
+  RepeatingTimer timer(FROM_HERE, TimeDelta::FromDays(1),
+                       BindRepeating(&TimerTestCallback));
   EXPECT_FALSE(timer.IsRunning());
   timer.Reset();
   EXPECT_TRUE(timer.IsRunning());
@@ -655,8 +654,8 @@ TEST(TimerTest, RetainRepeatIsRunning) {
 
 TEST(TimerTest, RetainNonRepeatIsRunning) {
   MessageLoop loop;
-  Timer timer(FROM_HERE, TimeDelta::FromDays(1), Bind(&TimerTestCallback),
-              false);
+  RetainingOneShotTimer timer(FROM_HERE, TimeDelta::FromDays(1),
+                              BindRepeating(&TimerTestCallback));
   EXPECT_FALSE(timer.IsRunning());
   timer.Reset();
   EXPECT_TRUE(timer.IsRunning());
@@ -694,12 +693,12 @@ TEST(TimerTest, ContinuationStopStart) {
   {
     ClearAllCallbackHappened();
     MessageLoop loop;
-    Timer timer(false, false);
+    OneShotTimer timer;
     timer.Start(FROM_HERE, TimeDelta::FromMilliseconds(10),
-                Bind(&SetCallbackHappened1));
+                BindOnce(&SetCallbackHappened1));
     timer.Stop();
     timer.Start(FROM_HERE, TimeDelta::FromMilliseconds(40),
-                Bind(&SetCallbackHappened2));
+                BindOnce(&SetCallbackHappened2));
     RunLoop().Run();
     EXPECT_FALSE(g_callback_happened1);
     EXPECT_TRUE(g_callback_happened2);
@@ -710,12 +709,12 @@ TEST(TimerTest, ContinuationReset) {
   {
     ClearAllCallbackHappened();
     MessageLoop loop;
-    Timer timer(false, false);
+    OneShotTimer timer;
     timer.Start(FROM_HERE, TimeDelta::FromMilliseconds(10),
-                Bind(&SetCallbackHappened1));
+                BindOnce(&SetCallbackHappened1));
     timer.Reset();
-    // Since Reset happened before task ran, the user_task must not be cleared:
-    ASSERT_FALSE(timer.user_task().is_null());
+    // // Since Reset happened before task ran, the user_task must not be
+    // cleared: ASSERT_FALSE(timer.user_task().is_null());
     RunLoop().Run();
     EXPECT_TRUE(g_callback_happened1);
   }
@@ -723,23 +722,14 @@ TEST(TimerTest, ContinuationReset) {
 
 namespace {
 
-const size_t kNumWorkerThreads = 3;
-
-// Fixture for tests requiring a worker pool. Includes a WaitableEvent so
-// that cases may Wait() on one thread and Signal() (explicitly, or implicitly
-// via helper methods) on another.
+// Fixture for tests requiring ScopedTaskEnvironment. Includes a WaitableEvent
+// so that cases may Wait() on one thread and Signal() (explicitly, or
+// implicitly via helper methods) on another.
 class TimerSequenceTest : public testing::Test {
  public:
   TimerSequenceTest()
       : event_(WaitableEvent::ResetPolicy::AUTOMATIC,
                WaitableEvent::InitialState::NOT_SIGNALED) {}
-
-  void SetUp() override {
-    pool1_owner_.reset(
-        new SequencedWorkerPoolOwner(kNumWorkerThreads, "test1"));
-    pool2_owner_.reset(
-        new SequencedWorkerPoolOwner(kNumWorkerThreads, "test2"));
-  }
 
   // Block until Signal() is called on another thread.
   void Wait() { event_.Wait(); }
@@ -747,16 +737,17 @@ class TimerSequenceTest : public testing::Test {
   void Signal() { event_.Signal(); }
 
   // Helper to augment a task with a subsequent call to Signal().
-  Closure TaskWithSignal(const Closure& task) {
-    return Bind(&TimerSequenceTest::RunTaskAndSignal, Unretained(this), task);
+  OnceClosure TaskWithSignal(OnceClosure task) {
+    return BindOnce(&TimerSequenceTest::RunTaskAndSignal, Unretained(this),
+                    std::move(task));
   }
 
   // Create the timer.
   void CreateTimer() { timer_.reset(new OneShotTimer); }
 
   // Schedule an event on the timer.
-  void StartTimer(TimeDelta delay, const Closure& task) {
-    timer_->Start(FROM_HERE, delay, task);
+  void StartTimer(TimeDelta delay, OnceClosure task) {
+    timer_->Start(FROM_HERE, delay, std::move(task));
   }
 
   void SetTaskRunnerForTimer(scoped_refptr<SequencedTaskRunner> task_runner) {
@@ -780,26 +771,14 @@ class TimerSequenceTest : public testing::Test {
   // Delete the timer.
   void DeleteTimer() { timer_.reset(); }
 
- protected:
-  const scoped_refptr<SequencedWorkerPool>& pool1() {
-    return pool1_owner_->pool();
-  }
-  const scoped_refptr<SequencedWorkerPool>& pool2() {
-    return pool2_owner_->pool();
-  }
-
  private:
-  void RunTaskAndSignal(const Closure& task) {
-    task.Run();
+  void RunTaskAndSignal(OnceClosure task) {
+    std::move(task).Run();
     Signal();
   }
 
+  base::test::ScopedTaskEnvironment scoped_task_environment_;
   WaitableEvent event_;
-
-  MessageLoop message_loop_;
-  std::unique_ptr<SequencedWorkerPoolOwner> pool1_owner_;
-  std::unique_ptr<SequencedWorkerPoolOwner> pool2_owner_;
-
   std::unique_ptr<OneShotTimer> timer_;
 
   DISALLOW_COPY_AND_ASSIGN(TimerSequenceTest);
@@ -807,9 +786,9 @@ class TimerSequenceTest : public testing::Test {
 
 }  // namespace
 
-TEST_F(TimerSequenceTest, OneShotTimerTaskOnPoolThread) {
+TEST_F(TimerSequenceTest, OneShotTimerTaskOnPoolSequence) {
   scoped_refptr<SequencedTaskRunner> task_runner =
-      pool1()->GetSequencedTaskRunner(pool1()->GetSequenceToken());
+      base::CreateSequencedTaskRunnerWithTraits({});
 
   base::RunLoop run_loop_;
 
@@ -819,9 +798,9 @@ TEST_F(TimerSequenceTest, OneShotTimerTaskOnPoolThread) {
   // Task will execute on a pool thread.
   SetTaskRunnerForTimer(task_runner);
   StartTimer(TimeDelta::FromMilliseconds(1),
-             Bind(IgnoreResult(&SequencedTaskRunner::PostTask),
-                  SequencedTaskRunnerHandle::Get(), FROM_HERE,
-                  run_loop_.QuitClosure()));
+             BindOnce(IgnoreResult(&SequencedTaskRunner::PostTask),
+                      SequencedTaskRunnerHandle::Get(), FROM_HERE,
+                      run_loop_.QuitClosure()));
 
   // Spin the loop so that the delayed task fires on it, which will forward it
   // to |task_runner|. And since the Timer's task is one that posts back to this
@@ -832,95 +811,98 @@ TEST_F(TimerSequenceTest, OneShotTimerTaskOnPoolThread) {
   DeleteTimer();
 }
 
-TEST_F(TimerSequenceTest, OneShotTimerUsedOnPoolThread) {
+TEST_F(TimerSequenceTest, OneShotTimerUsedOnPoolSequence) {
   scoped_refptr<SequencedTaskRunner> task_runner =
-      pool1()->GetSequencedTaskRunner(pool1()->GetSequenceToken());
+      base::CreateSequencedTaskRunnerWithTraits({});
 
   // Timer is created on this thread.
   CreateTimer();
 
   // Task will be scheduled from a pool thread.
   task_runner->PostTask(
-      FROM_HERE, BindOnce(&TimerSequenceTest::StartTimer, Unretained(this),
-                          TimeDelta::FromMilliseconds(1),
-                          Bind(&TimerSequenceTest::Signal, Unretained(this))));
+      FROM_HERE,
+      BindOnce(&TimerSequenceTest::StartTimer, Unretained(this),
+               TimeDelta::FromMilliseconds(1),
+               BindOnce(&TimerSequenceTest::Signal, Unretained(this))));
   Wait();
 
   // Timer must be destroyed on pool thread, too.
-  task_runner->PostTask(
-      FROM_HERE,
-      TaskWithSignal(Bind(&TimerSequenceTest::DeleteTimer, Unretained(this))));
+  task_runner->PostTask(FROM_HERE,
+                        TaskWithSignal(BindOnce(&TimerSequenceTest::DeleteTimer,
+                                                Unretained(this))));
   Wait();
 }
 
-TEST_F(TimerSequenceTest, OneShotTimerTwoPoolsAbandonTask) {
+TEST_F(TimerSequenceTest, OneShotTimerTwoSequencesAbandonTask) {
   scoped_refptr<SequencedTaskRunner> task_runner1 =
-      pool1()->GetSequencedTaskRunner(pool1()->GetSequenceToken());
+      base::CreateSequencedTaskRunnerWithTraits({});
   scoped_refptr<SequencedTaskRunner> task_runner2 =
-      pool2()->GetSequencedTaskRunner(pool2()->GetSequenceToken());
+      base::CreateSequencedTaskRunnerWithTraits({});
 
-  // Create timer on pool #1.
+  // Create timer on sequence #1.
+  task_runner1->PostTask(
+      FROM_HERE, TaskWithSignal(BindOnce(&TimerSequenceTest::CreateTimer,
+                                         Unretained(this))));
+  Wait();
+
+  // And tell it to execute on a different sequence (#2).
   task_runner1->PostTask(
       FROM_HERE,
-      TaskWithSignal(Bind(&TimerSequenceTest::CreateTimer, Unretained(this))));
+      TaskWithSignal(BindOnce(&TimerSequenceTest::SetTaskRunnerForTimer,
+                              Unretained(this), task_runner2)));
   Wait();
 
-  // And tell it to execute on a different pool (#2).
-  task_runner1->PostTask(
-      FROM_HERE, TaskWithSignal(Bind(&TimerSequenceTest::SetTaskRunnerForTimer,
-                                     Unretained(this), task_runner2)));
-  Wait();
-
-  // Task will be scheduled from pool #1.
+  // Task will be scheduled from sequence #1.
   task_runner1->PostTask(
       FROM_HERE, BindOnce(&TimerSequenceTest::StartTimer, Unretained(this),
-                          TimeDelta::FromHours(1), Bind(&DoNothing)));
+                          TimeDelta::FromHours(1), DoNothing().Once()));
 
-  // Abandon task - must be called from scheduling pool (#1).
+  // Abandon task - must be called from scheduling sequence (#1).
   task_runner1->PostTask(
-      FROM_HERE,
-      TaskWithSignal(Bind(&TimerSequenceTest::AbandonTask, Unretained(this))));
+      FROM_HERE, TaskWithSignal(BindOnce(&TimerSequenceTest::AbandonTask,
+                                         Unretained(this))));
   Wait();
 
-  // Timer must be destroyed on the pool it was scheduled from (#1).
+  // Timer must be destroyed on the sequence it was scheduled from (#1).
   task_runner1->PostTask(
-      FROM_HERE,
-      TaskWithSignal(Bind(&TimerSequenceTest::DeleteTimer, Unretained(this))));
+      FROM_HERE, TaskWithSignal(BindOnce(&TimerSequenceTest::DeleteTimer,
+                                         Unretained(this))));
   Wait();
 }
 
-TEST_F(TimerSequenceTest, OneShotTimerUsedAndTaskedOnDifferentPools) {
+TEST_F(TimerSequenceTest, OneShotTimerUsedAndTaskedOnDifferentSequences) {
   scoped_refptr<SequencedTaskRunner> task_runner1 =
-      pool1()->GetSequencedTaskRunner(pool1()->GetSequenceToken());
+      base::CreateSequencedTaskRunnerWithTraits({});
   scoped_refptr<SequencedTaskRunner> task_runner2 =
-      pool2()->GetSequencedTaskRunner(pool2()->GetSequenceToken());
+      base::CreateSequencedTaskRunnerWithTraits({});
 
-  // Create timer on pool #1.
+  // Create timer on sequence #1.
+  task_runner1->PostTask(
+      FROM_HERE, TaskWithSignal(BindOnce(&TimerSequenceTest::CreateTimer,
+                                         Unretained(this))));
+  Wait();
+
+  // And tell it to execute on a different sequence (#2).
   task_runner1->PostTask(
       FROM_HERE,
-      TaskWithSignal(Bind(&TimerSequenceTest::CreateTimer, Unretained(this))));
+      TaskWithSignal(BindOnce(&TimerSequenceTest::SetTaskRunnerForTimer,
+                              Unretained(this), task_runner2)));
   Wait();
 
-  // And tell it to execute on a different pool (#2).
-  task_runner1->PostTask(
-      FROM_HERE, TaskWithSignal(Bind(&TimerSequenceTest::SetTaskRunnerForTimer,
-                                     Unretained(this), task_runner2)));
-  Wait();
-
-  // Task will be scheduled from pool #1.
+  // Task will be scheduled from sequence #1.
   task_runner1->PostTask(
       FROM_HERE,
       BindOnce(&TimerSequenceTest::StartTimer, Unretained(this),
                TimeDelta::FromMilliseconds(1),
-               TaskWithSignal(Bind(&TimerSequenceTest::VerifyAffinity,
-                                   Unretained(task_runner2.get())))));
+               TaskWithSignal(BindOnce(&TimerSequenceTest::VerifyAffinity,
+                                       Unretained(task_runner2.get())))));
 
   Wait();
 
-  // Timer must be destroyed on the pool it was scheduled from (#1).
+  // Timer must be destroyed on the sequence it was scheduled from (#1).
   task_runner1->PostTask(
-      FROM_HERE,
-      TaskWithSignal(Bind(&TimerSequenceTest::DeleteTimer, Unretained(this))));
+      FROM_HERE, TaskWithSignal(BindOnce(&TimerSequenceTest::DeleteTimer,
+                                         Unretained(this))));
   Wait();
 }
 

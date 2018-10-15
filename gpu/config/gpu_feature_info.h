@@ -27,6 +27,22 @@ enum GpuFeatureStatus {
   kGpuFeatureStatusMax
 };
 
+enum AntialiasingMode {
+  kAntialiasingModeUnspecified,
+  kAntialiasingModeNone,
+  kAntialiasingModeMSAAImplicitResolve,
+  kAntialiasingModeMSAAExplicitResolve,
+  kAntialiasingModeScreenSpaceAntialiasing,
+};
+
+struct GPU_EXPORT WebglPreferences {
+  AntialiasingMode anti_aliasing_mode = kAntialiasingModeUnspecified;
+  uint32_t msaa_sample_count = 8;
+  // WebGL-specific numeric limits.
+  uint32_t max_active_webgl_contexts = 0;
+  uint32_t max_active_webgl_contexts_on_worker = 0;
+};
+
 struct GPU_EXPORT GpuFeatureInfo {
   GpuFeatureInfo();
   GpuFeatureInfo(const GpuFeatureInfo&);
@@ -37,6 +53,9 @@ struct GPU_EXPORT GpuFeatureInfo {
   void ApplyToGLContext(gl::GLContext* context) const;
 
   bool IsWorkaroundEnabled(int32_t workaround) const;
+
+  // Return true if GpuFeatureInfo is computed.
+  bool IsInitialized() const;
 
   GpuFeatureInfo& operator=(const GpuFeatureInfo&);
   GpuFeatureInfo& operator=(GpuFeatureInfo&&);
@@ -49,6 +68,12 @@ struct GPU_EXPORT GpuFeatureInfo {
   std::vector<int32_t> enabled_gpu_driver_bug_workarounds;
   // Disabled extensions separated by whitespaces.
   std::string disabled_extensions;
+  // Disabled WebGL extensions separated by whitespaces.
+  std::string disabled_webgl_extensions;
+  // Preferences for webgl.
+  WebglPreferences webgl_preferences;
+  // Applied gpu blacklist entry indices.
+  std::vector<uint32_t> applied_gpu_blacklist_entries;
   // Applied gpu driver bug list entry indices.
   std::vector<uint32_t> applied_gpu_driver_bug_list_entries;
 };

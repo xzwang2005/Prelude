@@ -33,13 +33,17 @@
 #include "base/files/file_util.h"
 #include "base/files/scoped_file.h"
 #include "base/logging.h"
+#include "base/metrics/histogram_macros.h"
 #include "base/posix/eintr_wrapper.h"
 #include "base/process/process.h"
 #include "base/process/process_metrics.h"
 #include "base/strings/stringprintf.h"
 #include "base/synchronization/waitable_event.h"
 #include "base/threading/platform_thread.h"
+#include "base/threading/scoped_blocking_call.h"
 #include "base/threading/thread_restrictions.h"
+#include "base/time/time.h"
+#include "base/trace_event/trace_event.h"
 #include "build/build_config.h"
 
 #if defined(OS_LINUX) || defined(OS_AIX)
@@ -297,6 +301,7 @@ Process LaunchProcess(const CommandLine& cmdline,
 
 Process LaunchProcess(const std::vector<std::string>& argv,
                       const LaunchOptions& options) {
+  TRACE_EVENT0("base", "LaunchProcess");
 #if defined(OS_MACOSX)
   if (FeatureList::IsEnabled(kMacLaunchProcessPosixSpawn)) {
     // TODO(rsesek): Do this unconditionally. There is one user for each of
@@ -335,6 +340,7 @@ Process LaunchProcess(const std::vector<std::string>& argv,
   }
 
   pid_t pid;
+  base::TimeTicks before_fork = TimeTicks::Now();
 #if defined(OS_LINUX) || defined(OS_AIX)
   if (options.clone_flags) {
     // Signal handling in this function assumes the creation of a new
@@ -361,13 +367,18 @@ Process LaunchProcess(const std::vector<std::string>& argv,
 
   // Always restore the original signal mask in the parent.
   if (pid != 0) {
+    base::TimeTicks after_fork = TimeTicks::Now();
     SetSignalMask(orig_sigmask);
+
+    base::TimeDelta fork_time = after_fork - before_fork;
+    UMA_HISTOGRAM_TIMES("MPArch.ForkTime", fork_time);
   }
 
   if (pid < 0) {
     DPLOG(ERROR) << "fork";
     return Process();
-  } else if (pid == 0) {
+  }
+  if (pid == 0) {
     // Child process
 
     // DANGER: no calls to malloc or locks are allowed from now on:
@@ -508,7 +519,7 @@ Process LaunchProcess(const std::vector<std::string>& argv,
     if (options.wait) {
       // While this isn't strictly disk IO, waiting for another process to
       // finish is the sort of thing ThreadRestrictions is trying to prevent.
-      base::AssertBlockingAllowed();
+      ScopedBlockingCall scoped_blocking_call(BlockingType::MAY_BLOCK);
       pid_t ret = HANDLE_EINTR(waitpid(pid, nullptr, 0));
       DPCHECK(ret > 0);
     }
@@ -539,7 +550,7 @@ static bool GetAppOutputInternal(
     std::string* output,
     bool do_search_path,
     int* exit_code) {
-  base::AssertBlockingAllowed();
+  ScopedBlockingCall scoped_blocking_call(BlockingType::MAY_BLOCK);
   // exit_code must be supplied so calling function can determine success.
   DCHECK(exit_code);
   *exit_code = EXIT_FAILURE;

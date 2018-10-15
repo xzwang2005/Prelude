@@ -9,7 +9,9 @@ should be delegated to a higher level (ex. DeviceUtils).
 """
 
 import collections
-import distutils.version
+# pylint: disable=import-error
+# pylint: disable=no-name-in-module
+import distutils.version as du_version
 import errno
 import logging
 import os
@@ -39,8 +41,10 @@ _ADB_VERSION_RE = re.compile(r'Android Debug Bridge version (\d+\.\d+\.\d+)')
 _EMULATOR_RE = re.compile(r'^emulator-[0-9]+$')
 _DEVICE_NOT_FOUND_RE = re.compile(r"error: device '(?P<serial>.+)' not found")
 _READY_STATE = 'device'
-_VERITY_DISABLE_RE = re.compile(r'Verity (already )?disabled')
-_VERITY_ENABLE_RE = re.compile(r'Verity (already )?enabled')
+_VERITY_DISABLE_RE = re.compile(r'(V|v)erity (is )?(already )?disabled'
+                                r'|Successfully disabled verity')
+_VERITY_ENABLE_RE = re.compile(r'(V|v)erity (is )?(already )?enabled'
+                               r'|Successfully enabled verity')
 _WAITING_FOR_DEVICE_RE = re.compile(r'- waiting for device -')
 
 
@@ -422,8 +426,8 @@ class AdbWrapper(object):
     """
     VerifyLocalFileExists(local)
 
-    if (distutils.version.LooseVersion(self.Version()) <
-        distutils.version.LooseVersion('1.0.36')):
+    if (du_version.LooseVersion(self.Version()) <
+        du_version.LooseVersion('1.0.36')):
 
       # Different versions of adb handle pushing a directory to an existing
       # directory differently.
@@ -479,6 +483,19 @@ class AdbWrapper(object):
           cmd,
           'File pulled from the device did not arrive on the host: %s' % local,
           device_serial=str(self))
+
+  def StartShell(self, cmd):
+    """Starts a subprocess on the device and returns a handle to the process.
+
+    Args:
+      args: A sequence of program arguments. The executable to run is the first
+        item in the sequence.
+
+    Returns:
+      An instance of subprocess.Popen associated with the live process.
+    """
+    return cmd_helper.StartCmd(
+        self._BuildAdbCmd(['shell'] + cmd, self._device_serial))
 
   def Shell(self, command, expect_status=0, timeout=DEFAULT_TIMEOUT,
             retries=DEFAULT_RETRIES):
@@ -671,8 +688,8 @@ class AdbWrapper(object):
     Returns:
       The output of adb forward --list as a string.
     """
-    if (distutils.version.LooseVersion(self.Version()) >=
-        distutils.version.LooseVersion('1.0.36')):
+    if (du_version.LooseVersion(self.Version()) >=
+        du_version.LooseVersion('1.0.36')):
       # Starting in 1.0.36, this can occasionally fail with a protocol fault.
       # As this interrupts all connections with all devices, we instead just
       # return an empty list. This may give clients an inaccurate result, but

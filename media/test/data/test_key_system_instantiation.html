@@ -4,7 +4,7 @@
       // Since promises run asynchronously, use the pages title to keep track
       // of the result.
       function setResultInTitle(title) {
-        if (title == "" || title == "success" ||
+        if (title == "" || title == "success" || title == "TypeError" ||
             title == "Unsupported keySystem or supportedConfigurations.") {
           document.title = title;
         } else {
@@ -18,7 +18,7 @@
       // if they match, an error message if they don't.
       function verifyCapabilitiesAreEqual(actual, expected) {
         if (actual.length != expected.length)
-          return "mismatched lengths";
+          return "mismatched lengths; not all capabilities are supported";
         for (var i = 0; i < actual.length; i++) {
           // Only compare |contentType|. Other properties are ignored.
           if (actual[i].contentType !== expected[i].contentType)
@@ -31,7 +31,7 @@
       // Calls navigator.requestMediaKeySystemAccess() using the supplied codec
       // lists, and then verifies the result. Sets page title when done.
       function requestMediaKeySystemAccessAndVerifyConfiguration(
-          keySystem, initDataType, audioCodecList, videoCodecList,
+          keySystem, initDataType, audioCapabilities, videoCapabilities, 
           sessionType) {
         var configuration = {
             initDataTypes: [initDataType],
@@ -39,15 +39,11 @@
             videoCapabilities: [],
             sessionTypes: [sessionType]
         };
-        if (audioCodecList !== null) {
-          for (entry of audioCodecList) {
-            configuration.audioCapabilities.push({contentType: entry});
-          };
+        if (audioCapabilities !== null) {
+          configuration.audioCapabilities = audioCapabilities;
         }
-        if (videoCodecList !== null) {
-          for (entry of videoCodecList) {
-            configuration.videoCapabilities.push({contentType: entry});
-          };
+        if (videoCapabilities !== null) {
+          configuration.videoCapabilities = videoCapabilities;
         }
         // This is using promises which will run asynchronously.
         navigator.requestMediaKeySystemAccess(keySystem, [configuration])
@@ -63,7 +59,7 @@
                                  ", expected " + initDataType);
                 return;
               }
-              if (audioCodecList !== null) {
+              if (audioCapabilities !== null) {
                 var result =
                     verifyCapabilitiesAreEqual(allowedConfig.audioCapabilities,
                                             configuration.audioCapabilities);
@@ -75,7 +71,7 @@
                 setResultInTitle("audioCapabilities set when none expected");
                 return;
               }
-              if (videoCodecList !== null) {
+              if (videoCapabilities !== null) {
                 setResultInTitle(
                     verifyCapabilitiesAreEqual(allowedConfig.videoCapabilities,
                                             configuration.videoCapabilities));
@@ -86,14 +82,16 @@
               }
               setResultInTitle("success");
             })
-            .catch(function(err) { setResultInTitle(err.message); });
+            .catch(function(err) {
+              setResultInTitle((err.name == 'TypeError') ? err.name : err.message);
+            });
       };
 
       function checkKeySystemWithMediaMimeType(keySystem, initDataType,
-          audioCodecList, videoCodecList, sessionType) {
+          audioCapabilities, videoCapabilities, sessionType) {
         setResultInTitle("");
         requestMediaKeySystemAccessAndVerifyConfiguration(keySystem,
-            initDataType, audioCodecList, videoCodecList, sessionType);
+            initDataType, audioCapabilities, videoCapabilities, sessionType);
       };
     </script>
   </body>

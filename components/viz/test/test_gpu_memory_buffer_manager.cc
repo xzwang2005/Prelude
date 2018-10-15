@@ -8,7 +8,6 @@
 #include <stdint.h>
 
 #include "base/logging.h"
-#include "base/memory/ptr_util.h"
 #include "base/numerics/safe_conversions.h"
 #include "ui/gfx/buffer_format_util.h"
 #include "ui/gfx/gpu_memory_buffer.h"
@@ -64,11 +63,15 @@ class GpuMemoryBufferImpl : public gfx::GpuMemoryBuffer {
     return base::checked_cast<int>(gfx::RowSizeForBufferFormat(
         size_.width(), format_, static_cast<int>(plane)));
   }
+  gfx::GpuMemoryBufferType GetType() const override {
+    return gfx::SHARED_MEMORY_BUFFER;
+  }
   gfx::GpuMemoryBufferId GetId() const override { return id_; }
-  gfx::GpuMemoryBufferHandle GetHandle() const override {
+  gfx::GpuMemoryBufferHandle CloneHandle() const override {
     gfx::GpuMemoryBufferHandle handle;
     handle.type = gfx::SHARED_MEMORY_BUFFER;
-    handle.handle = shared_memory_->handle();
+    handle.handle =
+        base::SharedMemory::DuplicateHandle(shared_memory_->handle());
     handle.offset = base::checked_cast<uint32_t>(offset_);
     handle.stride = base::checked_cast<int32_t>(stride_);
     return handle;
@@ -76,6 +79,11 @@ class GpuMemoryBufferImpl : public gfx::GpuMemoryBuffer {
   ClientBuffer AsClientBuffer() override {
     return reinterpret_cast<ClientBuffer>(this);
   }
+  void OnMemoryDump(
+      base::trace_event::ProcessMemoryDump* pmd,
+      const base::trace_event::MemoryAllocatorDumpGuid& buffer_dump_guid,
+      uint64_t tracing_process_id,
+      int importance) const override {}
 
  private:
   TestGpuMemoryBufferManager* manager_;
@@ -110,12 +118,20 @@ class GpuMemoryBufferFromClient : public gfx::GpuMemoryBuffer {
     return client_buffer_->stride(plane);
   }
   gfx::GpuMemoryBufferId GetId() const override { return id_; }
-  gfx::GpuMemoryBufferHandle GetHandle() const override {
-    return client_buffer_->GetHandle();
+  gfx::GpuMemoryBufferType GetType() const override {
+    return client_buffer_->GetType();
+  }
+  gfx::GpuMemoryBufferHandle CloneHandle() const override {
+    return client_buffer_->CloneHandle();
   }
   ClientBuffer AsClientBuffer() override {
     return client_buffer_->AsClientBuffer();
   }
+  void OnMemoryDump(
+      base::trace_event::ProcessMemoryDump* pmd,
+      const base::trace_event::MemoryAllocatorDumpGuid& buffer_dump_guid,
+      uint64_t tracing_process_id,
+      int importance) const override {}
 
  private:
   TestGpuMemoryBufferManager* manager_;

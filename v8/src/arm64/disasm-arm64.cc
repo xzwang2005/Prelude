@@ -968,7 +968,7 @@ void DisassemblingDecoder::VisitFPCompare(Instruction* instr) {
 
   switch (instr->Mask(FPCompareMask)) {
     case FCMP_s_zero:
-    case FCMP_d_zero: form = form_zero;  // Fall through.
+    case FCMP_d_zero: form = form_zero; V8_FALLTHROUGH;
     case FCMP_s:
     case FCMP_d: mnemonic = "fcmp"; break;
     default: form = "(FPCompare)";
@@ -1243,6 +1243,11 @@ void DisassemblingDecoder::VisitSystem(Instruction* instr) {
     switch (instr->ImmHint()) {
       case NOP: {
         mnemonic = "nop";
+        form = nullptr;
+        break;
+      }
+      case CSDB: {
+        mnemonic = "csdb";
         form = nullptr;
         break;
       }
@@ -3327,12 +3332,10 @@ void DisassemblingDecoder::AppendRegisterNameToOutput(const CPURegister& reg) {
     }
   }
 
-  if (reg.IsVRegister() || !(reg.Aliases(csp) || reg.Aliases(xzr))) {
+  if (reg.IsVRegister() || !(reg.Aliases(sp) || reg.Aliases(xzr))) {
     // Filter special registers
     if (reg.IsX() && (reg.code() == 27)) {
       AppendToOutput("cp");
-    } else if (reg.IsX() && (reg.code() == 28)) {
-      AppendToOutput("jssp");
     } else if (reg.IsX() && (reg.code() == 29)) {
       AppendToOutput("fp");
     } else if (reg.IsX() && (reg.code() == 30)) {
@@ -3341,9 +3344,9 @@ void DisassemblingDecoder::AppendRegisterNameToOutput(const CPURegister& reg) {
       // A core or scalar/vector register: [wx]0 - 30, [bhsdq]0 - 31.
       AppendToOutput("%c%d", reg_char, reg.code());
     }
-  } else if (reg.Aliases(csp)) {
-    // Disassemble w31/x31 as stack pointer wcsp/csp.
-    AppendToOutput("%s", reg.Is64Bits() ? "csp" : "wcsp");
+  } else if (reg.Aliases(sp)) {
+    // Disassemble w31/x31 as stack pointer wsp/sp.
+    AppendToOutput("%s", reg.Is64Bits() ? "sp" : "wsp");
   } else {
     // Disassemble w31/x31 as zero register wzr/xzr.
     AppendToOutput("%czr", reg_char);
@@ -3693,7 +3696,7 @@ int DisassemblingDecoder::SubstituteImmediateField(Instruction* instr,
             vm_index = (vm_index << 1) | instr->NEONM();
           }
           AppendToOutput("%d", vm_index);
-          return strlen("IVByElemIndex");
+          return static_cast<int>(strlen("IVByElemIndex"));
         }
         case 'I': {  // INS element.
           if (strncmp(format, "IVInsIndex", strlen("IVInsIndex")) == 0) {
@@ -3706,15 +3709,17 @@ int DisassemblingDecoder::SubstituteImmediateField(Instruction* instr,
               rn_index = imm4 >> tz;
               if (strncmp(format, "IVInsIndex1", strlen("IVInsIndex1")) == 0) {
                 AppendToOutput("%d", rd_index);
-                return strlen("IVInsIndex1");
+                return static_cast<int>(strlen("IVInsIndex1"));
               } else if (strncmp(format, "IVInsIndex2",
                                  strlen("IVInsIndex2")) == 0) {
                 AppendToOutput("%d", rn_index);
-                return strlen("IVInsIndex2");
+                return static_cast<int>(strlen("IVInsIndex2"));
               }
             }
             return 0;
           }
+          UNIMPLEMENTED();
+          return 0;
         }
         case 'L': {  // IVLSLane[0123] - suffix indicates access size shift.
           AppendToOutput("%d", instr->NEONLSIndex(format[8] - '0'));
@@ -3725,16 +3730,16 @@ int DisassemblingDecoder::SubstituteImmediateField(Instruction* instr,
               0) {
             AppendToOutput("#0x%" PRIx32 " (%.4f)", instr->ImmNEONabcdefgh(),
                            instr->ImmNEONFP32());
-            return strlen("IVMIImmFPSingle");
+            return static_cast<int>(strlen("IVMIImmFPSingle"));
           } else if (strncmp(format, "IVMIImmFPDouble",
                              strlen("IVMIImmFPDouble")) == 0) {
             AppendToOutput("#0x%" PRIx32 " (%.4f)", instr->ImmNEONabcdefgh(),
                            instr->ImmNEONFP64());
-            return strlen("IVMIImmFPDouble");
+            return static_cast<int>(strlen("IVMIImmFPDouble"));
           } else if (strncmp(format, "IVMIImm8", strlen("IVMIImm8")) == 0) {
             uint64_t imm8 = instr->ImmNEONabcdefgh();
             AppendToOutput("#0x%" PRIx64, imm8);
-            return strlen("IVMIImm8");
+            return static_cast<int>(strlen("IVMIImm8"));
           } else if (strncmp(format, "IVMIImm", strlen("IVMIImm")) == 0) {
             uint64_t imm8 = instr->ImmNEONabcdefgh();
             uint64_t imm = 0;
@@ -3744,19 +3749,19 @@ int DisassemblingDecoder::SubstituteImmediateField(Instruction* instr,
               }
             }
             AppendToOutput("#0x%" PRIx64, imm);
-            return strlen("IVMIImm");
+            return static_cast<int>(strlen("IVMIImm"));
           } else if (strncmp(format, "IVMIShiftAmt1",
                              strlen("IVMIShiftAmt1")) == 0) {
             int cmode = instr->NEONCmode();
             int shift_amount = 8 * ((cmode >> 1) & 3);
             AppendToOutput("#%d", shift_amount);
-            return strlen("IVMIShiftAmt1");
+            return static_cast<int>(strlen("IVMIShiftAmt1"));
           } else if (strncmp(format, "IVMIShiftAmt2",
                              strlen("IVMIShiftAmt2")) == 0) {
             int cmode = instr->NEONCmode();
             int shift_amount = 8 << (cmode & 1);
             AppendToOutput("#%d", shift_amount);
-            return strlen("IVMIShiftAmt2");
+            return static_cast<int>(strlen("IVMIShiftAmt2"));
           } else {
             UNIMPLEMENTED();
             return 0;
@@ -3838,7 +3843,8 @@ int DisassemblingDecoder::SubstituteShiftField(Instruction* instr,
   switch (format[1]) {
     case 'D': {  // NDP.
       DCHECK(instr->ShiftDP() != ROR);
-    }  // Fall through.
+      V8_FALLTHROUGH;
+    }
     case 'L': {  // NLo.
       if (instr->ImmDPShift() != 0) {
         const char* shift_type[] = {"lsl", "lsr", "asr", "ror"};
@@ -3911,7 +3917,7 @@ int DisassemblingDecoder::SubstituteBranchTargetField(Instruction* instr,
     case 'e': offset = instr->ImmTestBranch(); break;
     default: UNREACHABLE();
   }
-  offset <<= kInstructionSizeLog2;
+  offset <<= kInstrSizeLog2;
   char sign = '+';
   if (offset < 0) {
     sign = '-';
@@ -4100,21 +4106,15 @@ class BufferDisassembler : public v8::internal::DisassemblingDecoder {
   v8::internal::Vector<char> out_buffer_;
 };
 
-Disassembler::Disassembler(const NameConverter& converter)
-    : converter_(converter) {}
-
-
-Disassembler::~Disassembler() { USE(converter_); }
-
-
 int Disassembler::InstructionDecode(v8::internal::Vector<char> buffer,
                                     byte* instr) {
+  USE(converter_);  // avoid unused field warning
   v8::internal::Decoder<v8::internal::DispatchingDecoderVisitor> decoder;
   BufferDisassembler disasm(buffer);
   decoder.AppendVisitor(&disasm);
 
   decoder.Decode(reinterpret_cast<v8::internal::Instruction*>(instr));
-  return v8::internal::kInstructionSize;
+  return v8::internal::kInstrSize;
 }
 
 
@@ -4123,13 +4123,13 @@ int Disassembler::ConstantPoolSizeAt(byte* instr) {
       reinterpret_cast<v8::internal::Instruction*>(instr));
 }
 
-
-void Disassembler::Disassemble(FILE* file, byte* start, byte* end) {
+void Disassembler::Disassemble(FILE* file, byte* start, byte* end,
+                               UnimplementedOpcodeAction) {
   v8::internal::Decoder<v8::internal::DispatchingDecoderVisitor> decoder;
   v8::internal::PrintDisassembler disasm(file);
   decoder.AppendVisitor(&disasm);
 
-  for (byte* pc = start; pc < end; pc += v8::internal::kInstructionSize) {
+  for (byte* pc = start; pc < end; pc += v8::internal::kInstrSize) {
     decoder.Decode(reinterpret_cast<v8::internal::Instruction*>(pc));
   }
 }

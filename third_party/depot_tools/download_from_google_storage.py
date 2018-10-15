@@ -21,6 +21,11 @@ import time
 import subprocess2
 
 
+# Env vars that tempdir can be gotten from; minimally, this
+# needs to match python's tempfile module and match normal
+# unix standards.
+_TEMPDIR_ENV_VARS = ('TMPDIR', 'TEMP', 'TMP')
+
 GSUTIL_DEFAULT_PATH = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), 'gsutil.py')
 # Maps sys.platform to what we actually want to call them.
@@ -29,6 +34,8 @@ PLATFORM_MAPPING = {
     'darwin': 'mac',
     'linux2': 'linux',
     'win32': 'win',
+    'aix6': 'aix',
+    'aix7': 'aix',
 }
 
 
@@ -54,13 +61,18 @@ def GetNormalizedPlatform():
 # Common utilities
 class Gsutil(object):
   """Call gsutil with some predefined settings.  This is a convenience object,
-  and is also immutable."""
+  and is also immutable.
+
+  HACK: This object is used directly by the external script
+    `<depot_tools>/win_toolchain/get_toolchain_if_necessary.py`
+  """
 
   MAX_TRIES = 5
   RETRY_BASE_DELAY = 5.0
   RETRY_DELAY_MULTIPLE = 1.3
+  VPYTHON = 'vpython.bat' if GetNormalizedPlatform() == 'win32' else 'vpython'
 
-  def __init__(self, path, boto_path=None, timeout=None, version='4.26'):
+  def __init__(self, path, boto_path=None, timeout=None, version='4.28'):
     if not os.path.exists(path):
       raise FileNotFoundError('GSUtil not found in %s' % path)
     self.path = path
@@ -77,15 +89,18 @@ class Gsutil(object):
       env['AWS_CREDENTIAL_FILE'] = self.boto_path
       env['BOTO_CONFIG'] = self.boto_path
 
+    if PLATFORM_MAPPING[sys.platform] != 'win':
+      env.update((x, "/tmp") for x in _TEMPDIR_ENV_VARS)
+
     return env
 
   def call(self, *args):
-    cmd = [sys.executable, self.path, '--force-version', self.version]
+    cmd = [self.VPYTHON, self.path, '--force-version', self.version]
     cmd.extend(args)
     return subprocess2.call(cmd, env=self.get_sub_env(), timeout=self.timeout)
 
   def check_call(self, *args):
-    cmd = [sys.executable, self.path, '--force-version', self.version]
+    cmd = [self.VPYTHON, self.path, '--force-version', self.version]
     cmd.extend(args)
     ((out, err), code) = subprocess2.communicate(
         cmd,
@@ -143,9 +158,8 @@ def get_sha1(filename):
 
 # Download-specific code starts here
 
-def enumerate_work_queue(input_filename, work_queue, directory,
-                         recursive, ignore_errors, output, sha1_file,
-                         auto_platform):
+def enumerate_input(input_filename, directory, recursive, ignore_errors, output,
+                    sha1_file, auto_platform):
   if sha1_file:
     if not os.path.exists(input_filename):
       if not ignore_errors:
@@ -154,18 +168,17 @@ def enumerate_work_queue(input_filename, work_queue, directory,
     with open(input_filename, 'rb') as f:
       sha1_match = re.match('^([A-Za-z0-9]{40})$', f.read(1024).rstrip())
       if sha1_match:
-        work_queue.put((sha1_match.groups(1)[0], output))
-        return 1
+        yield (sha1_match.groups(1)[0], output)
+        return
     if not ignore_errors:
       raise InvalidFileError('No sha1 sum found in %s.' % input_filename)
     print >> sys.stderr, 'No sha1 sum found in %s.' % input_filename
-    return 0
+    return
 
   if not directory:
-    work_queue.put((input_filename, output))
-    return 1
+    yield (input_filename, output)
+    return
 
-  work_queue_size = 0
   for root, dirs, files in os.walk(input_filename):
     if not recursive:
       for item in dirs[:]:
@@ -194,14 +207,11 @@ def enumerate_work_queue(input_filename, work_queue, directory,
         with open(full_path, 'rb') as f:
           sha1_match = re.match('^([A-Za-z0-9]{40})$', f.read(1024).rstrip())
         if sha1_match:
-          work_queue.put(
-              (sha1_match.groups(1)[0], full_path.replace('.sha1', '')))
-          work_queue_size += 1
+          yield (sha1_match.groups(1)[0], full_path.replace('.sha1', ''))
         else:
           if not ignore_errors:
             raise InvalidFileError('No sha1 sum found in %s.' % filename)
           print >> sys.stderr, 'No sha1 sum found in %s.' % filename
-  return work_queue_size
 
 
 def _validate_tar_file(tar, prefix):
@@ -209,13 +219,15 @@ def _validate_tar_file(tar, prefix):
     """Returns false if the tarinfo is something we explicitly forbid."""
     if tarinfo.issym() or tarinfo.islnk():
       return False
-    if '..' in tarinfo.name or not tarinfo.name.startswith(prefix):
+    if ('../' in tarinfo.name or
+        '..\\' in tarinfo.name or
+        not tarinfo.name.startswith(prefix)):
       return False
     return True
   return all(map(_validate, tar.getmembers()))
 
 def _downloader_worker_thread(thread_num, q, force, base_url,
-                              gsutil, out_q, ret_codes, verbose, extract,
+                              gsutil, out_q, ret_codes, _verbose, extract,
                               delete=True):
   while True:
     input_sha1_sum, output_filename = q.get()
@@ -228,7 +240,7 @@ def _downloader_worker_thread(thread_num, q, force, base_url,
                   thread_num, output_filename))
         ret_codes.put((1, '%s is not a tar.gz archive.' % (output_filename)))
         continue
-      extract_dir = output_filename[0:len(output_filename)-7]
+      extract_dir = output_filename[:-len('.tar.gz')]
     if os.path.exists(output_filename) and not force:
       if not extract or os.path.exists(extract_dir):
         if get_sha1(output_filename) == input_sha1_sum:
@@ -339,9 +351,57 @@ class PrinterThread(threading.Thread):
       print line
 
 
+def _data_exists(input_sha1_sum, output_filename, extract):
+  """Returns True if the data exists locally and matches the sha1.
+
+  This conservatively returns False for error cases.
+
+  Args:
+    input_sha1_sum: Expected sha1 stored on disk.
+    output_filename: The file to potentially download later. Its sha1 will be
+        compared to input_sha1_sum.
+    extract: Wheather or not a downloaded file should be extracted. If the file
+        is not extracted, this just compares the sha1 of the file. If the file
+        is to be extracted, this only compares the sha1 of the target archive if
+        the target directory already exists. The content of the target directory
+        is not checked.
+  """
+  extract_dir = None
+  if extract:
+    if not output_filename.endswith('.tar.gz'):
+      # This will cause an error later. Conservativly return False to not bail
+      # out too early.
+      return False
+    extract_dir = output_filename[:-len('.tar.gz')]
+  if os.path.exists(output_filename):
+    if not extract or os.path.exists(extract_dir):
+      if get_sha1(output_filename) == input_sha1_sum:
+        return True
+  return False
+
+
 def download_from_google_storage(
     input_filename, base_url, gsutil, num_threads, directory, recursive,
     force, output, ignore_errors, sha1_file, verbose, auto_platform, extract):
+
+  # Tuples of sha1s and paths.
+  input_data = list(enumerate_input(
+      input_filename, directory, recursive, ignore_errors, output, sha1_file,
+      auto_platform))
+
+  # Sequentially check for the most common case and see if we can bail out
+  # early before making any slow calls to gsutil.
+  if not force and all(
+      _data_exists(sha1, path, extract) for sha1, path in input_data):
+    return 0
+
+  # Call this once to ensure gsutil's update routine is called only once. Only
+  # needs to be done if we'll process input data in parallel, which can lead to
+  # a race in gsutil's self-update on the first call. Note, this causes a
+  # network call, therefore any fast bailout should be done before this point.
+  if len(input_data) > 1:
+    gsutil.check_call('version')
+
   # Start up all the worker threads.
   all_threads = []
   download_start = time.time()
@@ -361,10 +421,9 @@ def download_from_google_storage(
   printer_thread.daemon = True
   printer_thread.start()
 
-  # Enumerate our work queue.
-  work_queue_size = enumerate_work_queue(
-      input_filename, work_queue, directory, recursive,
-      ignore_errors, output, sha1_file, auto_platform)
+  # Populate our work queue.
+  for sha1, path in input_data:
+    work_queue.put((sha1, path))
   for _ in all_threads:
     work_queue.put((None, None))  # Used to tell worker threads to stop.
 
@@ -384,7 +443,7 @@ def download_from_google_storage(
   # Only print summary if any work was done.
   if printer_thread.did_print_anything:
     print 'Downloading %d files took %1f second(s)' % (
-        work_queue_size, time.time() - download_start)
+        len(input_data), time.time() - download_start)
   return max_ret_code
 
 
@@ -488,7 +547,6 @@ def main(args):
   else:
     parser.error('gsutil not found in %s, bad depot_tools checkout?' %
                  GSUTIL_DEFAULT_PATH)
-  gsutil.check_call('version')  # Call this once to ensure it exists.
 
   # Passing in -g/--config will run our copy of GSUtil, then quit.
   if options.config:
@@ -496,6 +554,7 @@ def main(args):
     print 'If you do not have a project ID, enter "0" when asked for one.'
     print '===End note from depot_tools==='
     print
+    gsutil.check_call('version')
     return gsutil.call('config')
 
   if not args:

@@ -11,9 +11,7 @@
 #include "GrGpuResource.h"
 #include "GrGpuResourceCacheAccess.h"
 #include "GrGpuResourcePriv.h"
-#include "GrResourceCache.h"
 #include "GrResourceKey.h"
-#include "GrTextureProxy.h"
 #include "SkMessageBus.h"
 #include "SkRefCnt.h"
 #include "SkTArray.h"
@@ -22,12 +20,17 @@
 #include "SkTMultiMap.h"
 
 class GrCaps;
+class GrProxyProvider;
 class SkString;
 class SkTraceMemoryDump;
 
 struct GrGpuResourceFreedMessage {
     GrGpuResource* fResource;
     uint32_t fOwningUniqueID;
+    bool shouldSend(uint32_t inboxID) const {
+        // The inbox's ID is the unique ID of the owning GrContext.
+        return inboxID == fOwningUniqueID;
+    }
 };
 
 /**
@@ -49,32 +52,23 @@ struct GrGpuResourceFreedMessage {
  */
 class GrResourceCache {
 public:
-    GrResourceCache(const GrCaps* caps, uint32_t contextUniqueID);
+    GrResourceCache(const GrCaps*, uint32_t contextUniqueID);
     ~GrResourceCache();
 
     // Default maximum number of budgeted resources in the cache.
     static const int    kDefaultMaxCount            = 2 * (1 << 12);
     // Default maximum number of bytes of gpu memory of budgeted resources in the cache.
     static const size_t kDefaultMaxSize             = 96 * (1 << 20);
-    // Default number of external flushes a budgeted resources can go unused in the cache before it
-    // is purged. Using a value <= 0 disables this feature. This will be removed once Chrome
-    // starts using time-based purging.
-    static const int    kDefaultMaxUnusedFlushes =
-            1  * /* flushes per frame */
-            60 * /* fps */
-            30;  /* seconds */
 
     /** Used to access functionality needed by GrGpuResource for lifetime management. */
     class ResourceAccess;
     ResourceAccess resourceAccess();
 
-    /**
-     * Sets the cache limits in terms of number of resources, max gpu memory byte size, and number
-     * of external GrContext flushes that a resource can be unused before it is evicted. The latter
-     * value is a suggestion and there is no promise that a resource will be purged immediately
-     * after it hasn't been used in maxUnusedFlushes flushes.
-     */
-    void setLimits(int count, size_t bytes, int maxUnusedFlushes = kDefaultMaxUnusedFlushes);
+    /** Unique ID of the owning GrContext. */
+    uint32_t contextUniqueID() const { return fContextUniqueID; }
+
+    /** Sets the cache limits in terms of number of resources and max gpu memory byte size. */
+    void setLimits(int count, size_t bytes);
 
     /**
      * Returns the number of resources.
@@ -157,78 +151,6 @@ public:
         return resource;
     }
 
-    ///////////////////////////////////////////////////////////////////////////
-    // TextureProxies & GrUniqueKeys
-    //
-    // The four GrResourceCache methods assignUniqueKeyToProxy, adoptUniqueKeyFromSurface,
-    // findPorxyByUniqueKey, and findOrCreateProxyByUniqueKey drive the behavior of uniqueKeys on
-    // proxies.
-    //
-    // assignUniqueKeyToProxy does the following:
-    //    if the proxy is wrapped, it sets the texture & proxy keys & adds the proxy to the hash
-    //    if the proxy is deferred, it just set the unique key on the proxy & adds it to the hash
-    //
-    //    Note that when a deferred proxy with a unique key is instantiated, its unique key will be
-    //    pushed to the backing resource.
-    //
-    //    Futher note, a proxy can only receive a unique key once. It can be removed if Ganesh
-    //    determines that the key will never be used again but, in that case, the proxy should
-    //    never receive another key.
-    //
-    // adoptUniqueKeyFromSurface does the following:
-    //    takes in a GrSurface which must have a valid unique key. It sets the proxy's key to match
-    //    the surface and adds the proxy to the hash.
-    //
-    // findProxyByUniqueKey does the following:
-    //    looks in the UniqueKeyProxy hash table to see if there is already a proxy w/ the key and
-    //    returns the proxy. If it fails it will return null.
-    //
-    // findOrCreateProxyByUniqueKey does the following:
-    //    first calls findProxyByUniqueKey to see if a proxy already exists with the key
-    //    failing that it looks in the ResourceCache to see there is a texture with that key
-    //       if so, it will wrap the texture in a proxy, add the proxy to the hash and return it
-    //    failing that it will return null
-
-    /*
-     * Associate the provided proxy with the provided unique key.
-     */
-    void assignUniqueKeyToProxy(const GrUniqueKey&, GrTextureProxy*);
-
-    /*
-     * Sets the unique key of the provided proxy to the unique key of the surface. The surface must
-     * have a valid unique key.
-     */
-    void adoptUniqueKeyFromSurface(GrTextureProxy* proxy, const GrSurface*);
-
-    /**
-     * Find a texture proxy that is associated with the provided unique key. It will not look for a
-     * GrSurface that has the unique key.
-     */
-    sk_sp<GrTextureProxy> findProxyByUniqueKey(const GrUniqueKey&, GrSurfaceOrigin);
-
-    /**
-     * Find a texture proxy that is associated with the provided unique key. If not proxy is found,
-     * try to find a resources that is associated with the unique key and create a proxy that wraps
-     * it.
-     */
-    sk_sp<GrTextureProxy> findOrCreateProxyByUniqueKey(const GrUniqueKey&, GrSurfaceOrigin);
-
-    /**
-     * Either the proxy attached to the unique key is being deleted (in which case we
-     * don't want it cluttering up the hash table) or the client has indicated that
-     * it will never refer to the unique key again. In either case, remove the key
-     * from the hash table.
-     * Note: this does not, by itself, alter unique key attached to the underlying GrTexture.
-     */
-    void processInvalidProxyUniqueKey(const GrUniqueKey&);
-
-    /**
-     * Same as above, but you must pass in a GrTextureProxy to save having to search for it. The
-     * GrUniqueKey of the proxy must be valid and it must match the passed in key. This function
-     * also gives the option to invalidate the GrUniqueKey on the underlying GrTexture.
-     */
-    void processInvalidProxyUniqueKey(const GrUniqueKey&, GrTextureProxy*, bool invalidateSurface);
-
     /**
      * Query whether a unique key exists in the cache.
      */
@@ -241,7 +163,12 @@ public:
     void purgeAsNeeded();
 
     /** Purges all resources that don't have external owners. */
-    void purgeAllUnlocked();
+    void purgeAllUnlocked() { this->purgeUnlockedResources(false); }
+
+    // Purge unlocked resources. If 'scratchResourcesOnly' is true the purgeable resources
+    // containing persistent data are spared. If it is false then all purgeable resources will
+    // be deleted.
+    void purgeUnlockedResources(bool scratchResourcesOnly);
 
     /** Purge all resources not used since the passed in time. */
     void purgeResourcesNotUsedSince(GrStdSteadyClock::time_point);
@@ -262,13 +189,7 @@ public:
 
     /** Returns true if the cache would like a flush to occur in order to make more resources
         purgeable. */
-    bool requestsFlush() const { return fRequestFlush; }
-
-    enum FlushType {
-        kExternal,
-        kCacheRequested,
-    };
-    void notifyFlushOccurred(FlushType);
+    bool requestsFlush() const { return this->overBudget() && !fPurgeableQueue.count(); }
 
     /** Maintain a ref to this resource until we receive a GrGpuResourceFreedMessage. */
     void insertCrossContextGpuResource(GrGpuResource* resource);
@@ -324,7 +245,7 @@ public:
     // Enumerates all cached resources and dumps their details to traceMemoryDump.
     void dumpMemoryStatistics(SkTraceMemoryDump* traceMemoryDump) const;
 
-    int numUniqueKeyProxies_TestOnly() const;
+    void setProxyProvider(GrProxyProvider* proxyProvider) { fProxyProvider = proxyProvider; }
 
 private:
     ///////////////////////////////////////////////////////////////////////////
@@ -333,7 +254,6 @@ private:
     void insertResource(GrGpuResource*);
     void removeResource(GrGpuResource*);
     void notifyCntReachedZero(GrGpuResource*, uint32_t flags);
-    void didChangeGpuMemorySize(const GrGpuResource*, size_t oldSize);
     void changeUniqueKey(GrGpuResource*, const GrUniqueKey&);
     void removeUniqueKey(GrGpuResource*);
     void willRemoveScratchKey(const GrGpuResource*);
@@ -380,13 +300,6 @@ private:
     };
     typedef SkTDynamicHash<GrGpuResource, GrUniqueKey, UniqueHashTraits> UniqueHash;
 
-    struct UniquelyKeyedProxyHashTraits {
-        static const GrUniqueKey& GetKey(const GrTextureProxy& p) { return p.getUniqueKey(); }
-
-        static uint32_t Hash(const GrUniqueKey& key) { return key.hash(); }
-    };
-    typedef SkTDynamicHash<GrTextureProxy, GrUniqueKey, UniquelyKeyedProxyHashTraits> UniquelyKeyedProxyHash;
-
     static bool CompareTimestamp(GrGpuResource* const& a, GrGpuResource* const& b) {
         return a->cacheAccess().timestamp() < b->cacheAccess().timestamp();
     }
@@ -400,6 +313,7 @@ private:
     typedef SkTDPQueue<GrGpuResource*, CompareTimestamp, AccessResourceIndex> PurgeableQueue;
     typedef SkTDArray<GrGpuResource*> ResourceArray;
 
+    GrProxyProvider*                    fProxyProvider;
     // Whenever a resource is added to the cache or the result of a cache lookup, fTimestamp is
     // assigned as the resource's timestamp and then incremented. fPurgeableQueue orders the
     // purgeable resources by this value, and thus is used to purge resources in LRU order.
@@ -411,14 +325,10 @@ private:
     ScratchMap                          fScratchMap;
     // This holds all resources that have unique keys.
     UniqueHash                          fUniqueHash;
-    // This holds the texture proxies that have unique keys. The resourceCache does not get a ref
-    // on these proxies but they must send a message to the resourceCache when they are deleted.
-    UniquelyKeyedProxyHash              fUniquelyKeyedProxies;
 
     // our budget, used in purgeAsNeeded()
     int                                 fMaxCount;
     size_t                              fMaxBytes;
-    int                                 fMaxUnusedFlushes;
 
 #if GR_CACHE_STATS
     int                                 fHighWaterCount;
@@ -436,11 +346,10 @@ private:
     size_t                              fBudgetedBytes;
     size_t                              fPurgeableBytes;
 
-    bool                                fRequestFlush;
-    uint32_t                            fExternalFlushCnt;
-
     InvalidUniqueKeyInbox               fInvalidUniqueKeyInbox;
     FreedGpuResourceInbox               fFreedGpuResourceInbox;
+
+    SkTDArray<GrGpuResource*>           fResourcesWaitingForFreeMsg;
 
     uint32_t                            fContextUniqueID;
 
@@ -487,13 +396,6 @@ private:
      */
     void notifyCntReachedZero(GrGpuResource* resource, uint32_t flags) {
         fCache->notifyCntReachedZero(resource, flags);
-    }
-
-    /**
-     * Called by GrGpuResources when their sizes change.
-     */
-    void didChangeGpuMemorySize(const GrGpuResource* resource, size_t oldSize) {
-        fCache->didChangeGpuMemorySize(resource, oldSize);
     }
 
     /**

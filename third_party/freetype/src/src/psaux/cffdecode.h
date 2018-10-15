@@ -1,19 +1,19 @@
-/***************************************************************************/
-/*                                                                         */
-/*  cffdecode.h                                                            */
-/*                                                                         */
-/*    PostScript CFF (Type 2) decoding routines (specification).           */
-/*                                                                         */
-/*  Copyright 2017 by                                                      */
-/*  David Turner, Robert Wilhelm, and Werner Lemberg.                      */
-/*                                                                         */
-/*  This file is part of the FreeType project, and may only be used,       */
-/*  modified, and distributed under the terms of the FreeType project      */
-/*  license, LICENSE.TXT.  By continuing to use, modify, or distribute     */
-/*  this file you indicate that you have read the license and              */
-/*  understand and accept it fully.                                        */
-/*                                                                         */
-/***************************************************************************/
+/****************************************************************************
+ *
+ * cffdecode.h
+ *
+ *   PostScript CFF (Type 2) decoding routines (specification).
+ *
+ * Copyright 2017-2018 by
+ * David Turner, Robert Wilhelm, and Werner Lemberg.
+ *
+ * This file is part of the FreeType project, and may only be used,
+ * modified, and distributed under the terms of the FreeType project
+ * license, LICENSE.TXT.  By continuing to use, modify, or distribute
+ * this file you indicate that you have read the license and
+ * understand and accept it fully.
+ *
+ */
 
 
 #ifndef CFFDECODE_H_
@@ -21,6 +21,7 @@
 
 
 #include <ft2build.h>
+#include FT_INTERNAL_POSTSCRIPT_AUX_H
 
 
 FT_BEGIN_HEADER

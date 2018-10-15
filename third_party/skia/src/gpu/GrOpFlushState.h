@@ -12,6 +12,7 @@
 #include "GrAppliedClip.h"
 #include "GrBufferAllocPool.h"
 #include "GrDeferredUpload.h"
+#include "GrUninstantiateProxyTracker.h"
 #include "SkArenaAlloc.h"
 #include "SkArenaAllocList.h"
 #include "ops/GrMeshDrawOp.h"
@@ -24,7 +25,7 @@ class GrResourceProvider;
 /** Tracks the state across all the GrOps (really just the GrDrawOps) in a GrOpList flush. */
 class GrOpFlushState final : public GrDeferredUploadTarget, public GrMeshDrawOp::Target {
 public:
-    GrOpFlushState(GrGpu*, GrResourceProvider*);
+    GrOpFlushState(GrGpu*, GrResourceProvider*, GrTokenTracker*);
 
     ~GrOpFlushState() final { this->reset(); }
 
@@ -48,7 +49,7 @@ public:
 
     /** Additional data required on a per-op basis when executing GrOps. */
     struct OpArgs {
-        GrRenderTarget* renderTarget() const { return fProxy->priv().peekRenderTarget(); }
+        GrRenderTarget* renderTarget() const { return fProxy->peekRenderTarget(); }
 
         GrOp* fOp;
         // TODO: do we still need the dst proxy here?
@@ -67,12 +68,17 @@ public:
 
     /** Overrides of GrDeferredUploadTarget. */
 
+    const GrTokenTracker* tokenTracker() final { return fTokenTracker; }
     GrDeferredUploadToken addInlineUpload(GrDeferredTextureUploadFn&&) final;
     GrDeferredUploadToken addASAPUpload(GrDeferredTextureUploadFn&&) final;
 
     /** Overrides of GrMeshDrawOp::Target. */
-
-    void draw(const GrGeometryProcessor*, const GrPipeline*, const GrMesh&) final;
+    void draw(sk_sp<const GrGeometryProcessor>,
+              const GrPipeline*,
+              const GrPipeline::FixedDynamicState*,
+              const GrPipeline::DynamicStateArrays*,
+              const GrMesh[],
+              int meshCnt) final;
     void* makeVertexSpace(size_t vertexSize, int vertexCount, const GrBuffer**,
                           int* startVertex) final;
     uint16_t* makeIndexSpace(int indexCount, const GrBuffer**, int* startIndex) final;
@@ -88,6 +94,16 @@ public:
     GrDeferredUploadTarget* deferredUploadTarget() final { return this; }
     const GrCaps& caps() const final;
     GrResourceProvider* resourceProvider() const final { return fResourceProvider; }
+
+    GrGlyphCache* glyphCache() const final;
+
+    // At this point we know we're flushing so full access to the GrAtlasManager is required (and
+    // permissible).
+    GrAtlasManager* atlasManager() const final;
+
+    GrUninstantiateProxyTracker* uninstantiateProxyTracker() {
+        return &fUninstantiateProxyTracker;
+    }
 
 private:
     /** GrMeshDrawOp::Target override. */
@@ -105,10 +121,14 @@ private:
     // that share a geometry processor into a Draw is that it allows the Gpu object to setup
     // the shared state once and then issue draws for each mesh.
     struct Draw {
+        ~Draw();
+        sk_sp<const GrGeometryProcessor> fGeometryProcessor;
+        const GrPipeline* fPipeline = nullptr;
+        const GrPipeline::FixedDynamicState* fFixedDynamicState;
+        const GrPipeline::DynamicStateArrays* fDynamicStateArrays;
+        const GrMesh* fMeshes = nullptr;
         int fMeshCnt = 0;
-        GrPendingProgramElement<const GrGeometryProcessor> fGeometryProcessor;
-        const GrPipeline* fPipeline;
-        uint32_t fOpID;
+        uint32_t fOpID = SK_InvalidUniqueID;
     };
 
     // Storage for ops' pipelines, draws, and inline uploads.
@@ -119,12 +139,9 @@ private:
     GrIndexBufferAllocPool fIndexPool;
 
     // Data stored on behalf of the ops being flushed.
-    SkArenaAllocList<GrDeferredTextureUploadFn> fAsapUploads;
+    SkArenaAllocList<GrDeferredTextureUploadFn> fASAPUploads;
     SkArenaAllocList<InlineUpload> fInlineUploads;
     SkArenaAllocList<Draw> fDraws;
-    // TODO: These should go in the arena. However, GrGpuCommandBuffer and other classes currently
-    // accept contiguous arrays of meshes.
-    SkSTArray<16, GrMesh> fMeshes;
 
     // All draws we store have an implicit draw token. This is the draw token for the first draw
     // in fDraws.
@@ -136,12 +153,15 @@ private:
 
     GrGpu* fGpu;
     GrResourceProvider* fResourceProvider;
+    GrTokenTracker* fTokenTracker;
     GrGpuCommandBuffer* fCommandBuffer = nullptr;
 
     // Variables that are used to track where we are in lists as ops are executed
     SkArenaAllocList<Draw>::Iter fCurrDraw;
-    int fCurrMesh;
     SkArenaAllocList<InlineUpload>::Iter fCurrUpload;
+
+    // Used to track the proxies that need to be uninstantiated after we finish a flush
+    GrUninstantiateProxyTracker fUninstantiateProxyTracker;
 };
 
 #endif

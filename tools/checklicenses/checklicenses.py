@@ -168,6 +168,8 @@ PATH_SPECIFIC_WHITELISTED_LICENSES = {
         'UNKNOWN',
     ],
 
+    # TODO(tkent): Remove this entry after the move is completed.
+    # crbug.com/622551
     'third_party/WebKit': [
         'UNKNOWN',
     ],
@@ -179,6 +181,10 @@ PATH_SPECIFIC_WHITELISTED_LICENSES = {
 
     # http://code.google.com/p/angleproject/issues/detail?id=217
     'third_party/angle': [
+        'UNKNOWN',
+    ],
+
+    'third_party/blink': [
         'UNKNOWN',
     ],
 
@@ -427,14 +433,16 @@ PATH_SPECIFIC_WHITELISTED_LICENSES = {
         'UNKNOWN',
     ],
 
+    # The following files have a special license.
+    'third_party/libovr/src': [
+        'UNKNOWN',
+    ],
+
     # The following files lack license headers, but are trivial.
     'third_party/libusb/src/libusb/os/poll_posix.h': [
         'UNKNOWN',
     ],
 
-    'third_party/libvpx/source': [  # http://crbug.com/98319
-        'UNKNOWN',
-    ],
     'third_party/libxml': [
         'UNKNOWN',
     ],
@@ -444,13 +452,10 @@ PATH_SPECIFIC_WHITELISTED_LICENSES = {
     'third_party/lzma_sdk': [
         'UNKNOWN',
     ],
-    'third_party/mesa/src': [
-        'GPL (v2)',
-        'GPL (v3 or later)',
-        'MIT/X11 (BSD like) GPL (v3 or later) with Bison parser exception',
-        'UNKNOWN',  # http://crbug.com/98450
-    ],
     'third_party/modp_b64': [
+        'UNKNOWN',
+    ],
+    'third_party/nvml': [
         'UNKNOWN',
     ],
     # Missing license headers in openh264 sources: https://github.com/cisco/openh264/issues/2233
@@ -459,9 +464,6 @@ PATH_SPECIFIC_WHITELISTED_LICENSES = {
     ],
     'third_party/openmax_dl/dl' : [
         'Khronos Group',
-    ],
-    'third_party/opus/src/autogen.sh' : [  # https://trac.xiph.org/ticket/2253#ticket
-        'UNKNOWN',
     ],
     'third_party/boringssl': [
         # There are some files in BoringSSL which came from OpenSSL and have no
@@ -601,6 +603,10 @@ PATH_SPECIFIC_WHITELISTED_LICENSES = {
         'UNKNOWN',
     ],
     'tools/gyp/test': [
+        'UNKNOWN',
+    ],
+    # Perf test data from Google Maps team. Not shipped.
+    'tools/perf/page_sets/maps_perf_test': [
         'UNKNOWN',
     ],
     'tools/python/google/__init__.py': [

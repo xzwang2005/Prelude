@@ -19,13 +19,12 @@ def _AddDirToPythonPath(*path_parts):
 
 
 _AddDirToPythonPath(CATAPULT_PATH, 'common', 'py_utils')
-_AddDirToPythonPath(CATAPULT_THIRD_PARTY_PATH, 'mock')
 _AddDirToPythonPath(CATAPULT_THIRD_PARTY_PATH, 'pyfakefs')
 _AddDirToPythonPath(CATAPULT_THIRD_PARTY_PATH, 'zipfile')
 _AddDirToPythonPath(DEPENDENCY_MANAGER_PATH)
 
 
-# pylint: disable=unused-import
+# pylint: disable=unused-import,wrong-import-position
 from .archive_info import ArchiveInfo
 from .base_config import BaseConfig
 from .cloud_storage_info import CloudStorageInfo

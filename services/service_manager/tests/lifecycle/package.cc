@@ -7,14 +7,13 @@
 
 #include "base/bind.h"
 #include "base/macros.h"
-#include "base/memory/ptr_util.h"
 #include "base/run_loop.h"
 #include "mojo/public/cpp/bindings/binding_set.h"
 #include "services/service_manager/public/c/main.h"
 #include "services/service_manager/public/cpp/binder_registry.h"
 #include "services/service_manager/public/cpp/service_context.h"
 #include "services/service_manager/public/cpp/service_runner.h"
-#include "services/service_manager/public/interfaces/service_factory.mojom.h"
+#include "services/service_manager/public/mojom/service_factory.mojom.h"
 #include "services/service_manager/tests/lifecycle/app_client.h"
 #include "services/service_manager/tests/lifecycle/lifecycle_unittest.mojom.h"
 
@@ -115,8 +114,10 @@ class Package : public service_manager::ForwardingService,
   }
 
   // service_manager::mojom::ServiceFactory:
-  void CreateService(service_manager::mojom::ServiceRequest request,
-                     const std::string& name) override {
+  void CreateService(
+      service_manager::mojom::ServiceRequest request,
+      const std::string& name,
+      service_manager::mojom::PIDReceiverPtr pid_receiver) override {
     ++service_manager_connection_refcount_;
     int id = next_id_++;
     std::unique_ptr<service_manager::ServiceContext> context =
@@ -146,7 +147,7 @@ class Package : public service_manager::ForwardingService,
     contexts_.erase(it);
     id_to_context_.erase(id_it);
     if (contexts_.empty() && base::RunLoop::IsRunningOnCurrentThread())
-      base::RunLoop::QuitCurrentWhenIdleDeprecated();
+      context()->QuitNow();
   }
 
   service_manager::test::AppClient app_client_;

@@ -28,7 +28,7 @@ class InspectorRuntime(object):
     Raises:
       exceptions.EvaluateException
       exceptions.WebSocketDisconnected
-      websocket.WebSocketException
+      inspector_websocket.WebSocketException
       socket.error
     """
     request = {
@@ -61,7 +61,7 @@ class InspectorRuntime(object):
 
     Raises:
       exceptions.WebSocketDisconnected
-      websocket.WebSocketException
+      inspector_websocket.WebSocketException
       socket.error
     """
     if not self._contexts_enabled:
@@ -71,12 +71,24 @@ class InspectorRuntime(object):
                                             timeout=30)
     return self._all_context_ids
 
+  def Crash(self, context_id, timeout):
+    request = {
+        'method': 'Page.crash',
+    }
+    if context_id is not None:
+      self.EnableAllContexts()
+      request['params']['contextId'] = context_id
+    res = self._inspector_websocket.SyncRequest(request, timeout)
+    if 'error' in res:
+      raise exceptions.EvaluateException(res['error']['message'])
+    return res
+
   def RunInspectorCommand(self, command, timeout):
     """Runs an inspector command.
 
     Raises:
       exceptions.WebSocketDisconnected
-      websocket.WebSocketException
+      inspector_websocket.WebSocketException
       socket.error
     """
     res = self._inspector_websocket.SyncRequest(command, timeout)

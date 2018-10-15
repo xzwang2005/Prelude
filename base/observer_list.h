@@ -8,13 +8,16 @@
 #include <stddef.h>
 
 #include <algorithm>
+#include <iterator>
 #include <limits>
+#include <utility>
 #include <vector>
 
 #include "base/gtest_prod_util.h"
 #include "base/logging.h"
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
+#include "base/observer_list_internal.h"
 #include "base/stl_util.h"
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -87,13 +90,39 @@ enum class ObserverListPolicy {
 };
 
 // When check_empty is true, assert that the list is empty on destruction.
-template <class ObserverType, bool check_empty = false>
-class ObserverList
-    : public SupportsWeakPtr<ObserverList<ObserverType, check_empty>> {
+// When allow_reentrancy is false, iterating throught the list while already in
+// the iteration loop will result in DCHECK failure.
+// TODO(oshima): Change the default to non reentrant. https://crbug.com/812109
+template <class ObserverType,
+          bool check_empty = false,
+          bool allow_reentrancy = true,
+          class ObserverStorageType = internal::CheckedObserverAdapter>
+class ObserverList : public SupportsWeakPtr<ObserverList<ObserverType,
+                                                         check_empty,
+                                                         allow_reentrancy,
+                                                         ObserverStorageType>> {
  public:
+  // Allow declaring an ObserverList<...>::Unchecked that replaces the default
+  // ObserverStorageType to use raw pointers. This is required to support legacy
+  // observers that do not inherit from CheckedObserver. The majority of new
+  // code should not use this, but it may be suited for performance-critical
+  // situations to avoid overheads of a CHECK(). Note the type can't be chosen
+  // based on ObserverType's definition because ObserverLists are often declared
+  // in headers using a forward-declare of ObserverType.
+  using Unchecked = ObserverList<ObserverType,
+                                 check_empty,
+                                 allow_reentrancy,
+                                 internal::UncheckedObserverAdapter>;
+
   // An iterator class that can be used to access the list of observers.
   class Iter {
    public:
+    using iterator_category = std::forward_iterator_tag;
+    using value_type = ObserverType;
+    using difference_type = ptrdiff_t;
+    using pointer = ObserverType*;
+    using reference = ObserverType&;
+
     Iter() : index_(0), max_index_(0) {}
 
     explicit Iter(const ObserverList* list)
@@ -103,6 +132,7 @@ class ObserverList
                          ? std::numeric_limits<size_t>::max()
                          : list->observers_.size()) {
       DCHECK(list_);
+      DCHECK(allow_reentrancy || !list_->live_iterator_count_);
       EnsureValidIndex();
       ++list_->live_iterator_count_;
     }
@@ -147,6 +177,12 @@ class ObserverList
       return *this;
     }
 
+    Iter operator++(int) {
+      Iter it(*this);
+      ++(*this);
+      return it;
+    }
+
     ObserverType* operator->() const {
       ObserverType* const current = GetCurrent();
       DCHECK(current);
@@ -160,20 +196,22 @@ class ObserverList
     }
 
    private:
-    FRIEND_TEST_ALL_PREFIXES(ObserverListTest, BasicStdIterator);
-    FRIEND_TEST_ALL_PREFIXES(ObserverListTest, StdIteratorRemoveFront);
+    friend class ObserverListTestBase;
 
     ObserverType* GetCurrent() const {
       DCHECK(list_);
       DCHECK_LT(index_, clamped_max_index());
-      return list_->observers_[index_];
+      return ObserverStorageType::template Get<ObserverType>(
+          list_->observers_[index_]);
     }
 
     void EnsureValidIndex() {
       DCHECK(list_);
       const size_t max_index = clamped_max_index();
-      while (index_ < max_index && !list_->observers_[index_])
+      while (index_ < max_index &&
+             list_->observers_[index_].IsMarkedForRemoval()) {
         ++index_;
+      }
     }
 
     size_t clamped_max_index() const {
@@ -193,6 +231,7 @@ class ObserverList
 
   using iterator = Iter;
   using const_iterator = Iter;
+  using value_type = ObserverType;
 
   const_iterator begin() const {
     // An optimization: do not involve weak pointers for empty list.
@@ -201,7 +240,7 @@ class ObserverList
 
   const_iterator end() const { return const_iterator(); }
 
-  ObserverList() {}
+  ObserverList() = default;
   explicit ObserverList(ObserverListPolicy policy) : policy_(policy) {}
 
   ~ObserverList() {
@@ -222,20 +261,22 @@ class ObserverList
       NOTREACHED() << "Observers can only be added once!";
       return;
     }
-    observers_.push_back(obs);
+    observers_.emplace_back(ObserverStorageType(obs));
   }
 
   // Removes the given observer from this list. Does nothing if this observer is
   // not in this list.
   void RemoveObserver(const ObserverType* obs) {
     DCHECK(obs);
-    const auto it = std::find(observers_.begin(), observers_.end(), obs);
+    const auto it =
+        std::find_if(observers_.begin(), observers_.end(),
+                     [obs](const auto& o) { return o.IsEqual(obs); });
     if (it == observers_.end())
       return;
 
     DCHECK_GE(live_iterator_count_, 0);
     if (live_iterator_count_) {
-      *it = nullptr;
+      it->MarkForRemoval();
     } else {
       observers_.erase(it);
     }
@@ -243,14 +284,22 @@ class ObserverList
 
   // Determine whether a particular observer is in the list.
   bool HasObserver(const ObserverType* obs) const {
-    return ContainsValue(observers_, obs);
+    // Client code passing null could be confused by the treatment of observers
+    // removed mid-iteration. TODO(https://crbug.com/876588): This should
+    // probably DCHECK, but some client code currently does pass null.
+    if (obs == nullptr)
+      return false;
+    return std::find_if(observers_.begin(), observers_.end(),
+                        [obs](const auto& o) { return o.IsEqual(obs); }) !=
+           observers_.end();
   }
 
   // Removes all the observers from this list.
   void Clear() {
     DCHECK_GE(live_iterator_count_, 0);
     if (live_iterator_count_) {
-      std::fill(observers_.begin(), observers_.end(), nullptr);
+      for (auto& observer : observers_)
+        observer.MarkForRemoval();
     } else {
       observers_.clear();
     }
@@ -259,13 +308,12 @@ class ObserverList
   bool might_have_observers() const { return !observers_.empty(); }
 
  private:
-  // Compacts list of observers by removing null pointers.
+  // Compacts list of observers by removing those marked for removal.
   void Compact() {
-    observers_.erase(std::remove(observers_.begin(), observers_.end(), nullptr),
-                     observers_.end());
+    EraseIf(observers_, [](const auto& o) { return o.IsMarkedForRemoval(); });
   }
 
-  std::vector<ObserverType*> observers_;
+  std::vector<ObserverStorageType> observers_;
 
   // Number of active iterators referencing this ObserverList.
   //
@@ -277,6 +325,9 @@ class ObserverList
 
   DISALLOW_COPY_AND_ASSIGN(ObserverList);
 };
+
+template <class ObserverType, bool check_empty = false>
+using ReentrantObserverList = ObserverList<ObserverType, check_empty, true>;
 
 }  // namespace base
 

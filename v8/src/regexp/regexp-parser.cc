@@ -7,11 +7,12 @@
 #include <vector>
 
 #include "src/char-predicates-inl.h"
-#include "src/factory.h"
+#include "src/heap/factory.h"
 #include "src/isolate.h"
 #include "src/objects-inl.h"
 #include "src/ostreams.h"
 #include "src/regexp/jsregexp.h"
+#include "src/regexp/property-sequences.h"
 #include "src/utils.h"
 
 #ifdef V8_INTL_SUPPORT
@@ -285,7 +286,7 @@ RegExpTree* RegExpParser::ParseDisjunction() {
         }
 
         RegExpCharacterClass* cc =
-            new (zone()) RegExpCharacterClass(ranges, builder->flags());
+            new (zone()) RegExpCharacterClass(zone(), ranges, builder->flags());
         builder->AddCharacterClass(cc);
         break;
       }
@@ -332,8 +333,8 @@ RegExpTree* RegExpParser::ParseDisjunction() {
                 new (zone()) ZoneList<CharacterRange>(2, zone());
             CharacterRange::AddClassEscape(
                 c, ranges, unicode() && builder->ignore_case(), zone());
-            RegExpCharacterClass* cc =
-                new (zone()) RegExpCharacterClass(ranges, builder->flags());
+            RegExpCharacterClass* cc = new (zone())
+                RegExpCharacterClass(zone(), ranges, builder->flags());
             builder->AddCharacterClass(cc);
             break;
           }
@@ -342,20 +343,25 @@ RegExpTree* RegExpParser::ParseDisjunction() {
             uc32 p = Next();
             Advance(2);
             if (unicode()) {
-              if (FLAG_harmony_regexp_property) {
-                ZoneList<CharacterRange>* ranges =
-                    new (zone()) ZoneList<CharacterRange>(2, zone());
-                if (!ParsePropertyClass(ranges, p == 'P')) {
-                  return ReportError(CStrVector("Invalid property name"));
+              ZoneList<CharacterRange>* ranges =
+                  new (zone()) ZoneList<CharacterRange>(2, zone());
+              std::vector<char> name_1, name_2;
+              if (ParsePropertyClassName(&name_1, &name_2)) {
+                if (AddPropertyClassRange(ranges, p == 'P', name_1, name_2)) {
+                  RegExpCharacterClass* cc = new (zone())
+                      RegExpCharacterClass(zone(), ranges, builder->flags());
+                  builder->AddCharacterClass(cc);
+                  break;
                 }
-                RegExpCharacterClass* cc =
-                    new (zone()) RegExpCharacterClass(ranges, builder->flags());
-                builder->AddCharacterClass(cc);
-              } else {
-                // With /u, no identity escapes except for syntax characters
-                // are allowed. Otherwise, all identity escapes are allowed.
-                return ReportError(CStrVector("Invalid escape"));
+                if (p == 'p' && name_2.empty()) {
+                  RegExpTree* sequence = GetPropertySequence(name_1);
+                  if (sequence != nullptr) {
+                    builder->AddAtom(sequence);
+                    break;
+                  }
+                }
               }
+              return ReportError(CStrVector("Invalid property name"));
             } else {
               builder->AddCharacter(p);
             }
@@ -399,8 +405,8 @@ RegExpTree* RegExpParser::ParseDisjunction() {
               Advance(2);
               break;
             }
+            V8_FALLTHROUGH;
           }
-          // Fall through.
           case '0': {
             Advance();
             if (unicode() && Next() >= '0' && Next() <= '9') {
@@ -477,23 +483,22 @@ RegExpTree* RegExpParser::ParseDisjunction() {
               builder->AddCharacter('u');
             } else {
               // With /u, invalid escapes are not treated as identity escapes.
-              return ReportError(CStrVector("Invalid unicode escape"));
+              return ReportError(CStrVector("Invalid Unicode escape"));
             }
             break;
           }
           case 'k':
             // Either an identity escape or a named back-reference.  The two
             // interpretations are mutually exclusive: '\k' is interpreted as
-            // an identity escape for non-unicode patterns without named
+            // an identity escape for non-Unicode patterns without named
             // capture groups, and as the beginning of a named back-reference
             // in all other cases.
-            if (FLAG_harmony_regexp_named_captures &&
-                (unicode() || HasNamedCaptures())) {
+            if (unicode() || HasNamedCaptures()) {
               Advance(2);
               ParseNamedBackReference(builder, state CHECK_FAILED);
               break;
             }
-          // Fall through.
+            V8_FALLTHROUGH;
           default:
             Advance();
             // With /u, no identity escapes except for syntax characters
@@ -511,14 +516,14 @@ RegExpTree* RegExpParser::ParseDisjunction() {
         int dummy;
         bool parsed = ParseIntervalQuantifier(&dummy, &dummy CHECK_FAILED);
         if (parsed) return ReportError(CStrVector("Nothing to repeat"));
-        // Fall through.
+        V8_FALLTHROUGH;
       }
       case '}':
       case ']':
         if (unicode()) {
           return ReportError(CStrVector("Lone quantifier brackets"));
         }
-      // Fall through.
+        V8_FALLTHROUGH;
       default:
         builder->AddUnicodeCharacter(current());
         Advance();
@@ -678,13 +683,10 @@ RegExpParser::RegExpParserState* RegExpParser::ParseOpenParenthesis(
           subexpr_type = NEGATIVE_LOOKAROUND;
           break;
         }
-        if (FLAG_harmony_regexp_named_captures) {
-          is_named_capture = true;
-          has_named_captures_ = true;
-          Advance();
-          break;
-        }
-      // Fall through.
+        is_named_capture = true;
+        has_named_captures_ = true;
+        Advance();
+        break;
       default:
         ReportError(CStrVector("Invalid group"));
         return nullptr;
@@ -765,7 +767,6 @@ void RegExpParser::ScanForCaptures() {
           // * or a named capture '(?<'.
           //
           // Of these, only named captures are capturing groups.
-          if (!FLAG_harmony_regexp_named_captures) break;
 
           Advance();
           if (current() != '<') break;
@@ -830,8 +831,6 @@ static void push_code_unit(ZoneVector<uc16>* v, uint32_t code_unit) {
 }
 
 const ZoneVector<uc16>* RegExpParser::ParseCaptureGroupName() {
-  DCHECK(FLAG_harmony_regexp_named_captures);
-
   ZoneVector<uc16>* name =
       new (zone()->New(sizeof(ZoneVector<uc16>))) ZoneVector<uc16>(zone());
 
@@ -879,7 +878,6 @@ const ZoneVector<uc16>* RegExpParser::ParseCaptureGroupName() {
 
 bool RegExpParser::CreateNamedCaptureAtIndex(const ZoneVector<uc16>* name,
                                              int index) {
-  DCHECK(FLAG_harmony_regexp_named_captures);
   DCHECK(0 < index && index <= captures_started_);
   DCHECK_NOT_NULL(name);
 
@@ -1255,7 +1253,12 @@ bool LookupSpecialPropertyValueName(const char* name,
                                     ZoneList<CharacterRange>* result,
                                     bool negate, Zone* zone) {
   if (NameEquals(name, "Any")) {
-    if (!negate) result->Add(CharacterRange::Everything(), zone);
+    if (negate) {
+      // Leave the list of character ranges empty, since the negation of 'Any'
+      // is the empty set.
+    } else {
+      result->Add(CharacterRange::Everything(), zone);
+    }
   } else if (NameEquals(name, "ASCII")) {
     result->Add(negate ? CharacterRange::Range(0x80, String::kMaxCodePoint)
                        : CharacterRange::Range(0x0, 0x7F),
@@ -1299,6 +1302,9 @@ bool IsSupportedBinaryProperty(UProperty property) {
     case UCHAR_EMOJI_MODIFIER_BASE:
     case UCHAR_EMOJI_MODIFIER:
     case UCHAR_EMOJI_PRESENTATION:
+#if U_ICU_VERSION_MAJOR_NUM >= 62
+    case UCHAR_EXTENDED_PICTOGRAPHIC:
+#endif
     case UCHAR_EXTENDER:
     case UCHAR_GRAPHEME_BASE:
     case UCHAR_GRAPHEME_EXTEND:
@@ -1336,10 +1342,25 @@ bool IsSupportedBinaryProperty(UProperty property) {
   return false;
 }
 
+bool IsUnicodePropertyValueCharacter(char c) {
+  // https://tc39.github.io/proposal-regexp-unicode-property-escapes/
+  //
+  // Note that using this to validate each parsed char is quite conservative.
+  // A possible alternative solution would be to only ensure the parsed
+  // property name/value candidate string does not contain '\0' characters and
+  // let ICU lookups trigger the final failure.
+  if ('a' <= c && c <= 'z') return true;
+  if ('A' <= c && c <= 'Z') return true;
+  if ('0' <= c && c <= '9') return true;
+  return (c == '_');
+}
+
 }  // anonymous namespace
 
-bool RegExpParser::ParsePropertyClass(ZoneList<CharacterRange>* result,
-                                      bool negate) {
+bool RegExpParser::ParsePropertyClassName(std::vector<char>* name_1,
+                                          std::vector<char>* name_2) {
+  DCHECK(name_1->empty());
+  DCHECK(name_2->empty());
   // Parse the property class as follows:
   // - In \p{name}, 'name' is interpreted
   //   - either as a general category property value name.
@@ -1348,49 +1369,58 @@ bool RegExpParser::ParsePropertyClass(ZoneList<CharacterRange>* result,
   //   and 'value' is interpreted as one of the available property value names.
   // - Aliases in PropertyAlias.txt and PropertyValueAlias.txt can be used.
   // - Loose matching is not applied.
-  std::vector<char> first_part;
-  std::vector<char> second_part;
   if (current() == '{') {
     // Parse \p{[PropertyName=]PropertyNameValue}
     for (Advance(); current() != '}' && current() != '='; Advance()) {
+      if (!IsUnicodePropertyValueCharacter(current())) return false;
       if (!has_next()) return false;
-      first_part.push_back(static_cast<char>(current()));
+      name_1->push_back(static_cast<char>(current()));
     }
     if (current() == '=') {
       for (Advance(); current() != '}'; Advance()) {
+        if (!IsUnicodePropertyValueCharacter(current())) return false;
         if (!has_next()) return false;
-        second_part.push_back(static_cast<char>(current()));
+        name_2->push_back(static_cast<char>(current()));
       }
-      second_part.push_back(0);  // null-terminate string.
+      name_2->push_back(0);  // null-terminate string.
     }
   } else {
     return false;
   }
   Advance();
-  first_part.push_back(0);  // null-terminate string.
+  name_1->push_back(0);  // null-terminate string.
 
-  if (second_part.empty()) {
+  DCHECK(name_1->size() - 1 == std::strlen(name_1->data()));
+  DCHECK(name_2->empty() || name_2->size() - 1 == std::strlen(name_2->data()));
+  return true;
+}
+
+bool RegExpParser::AddPropertyClassRange(ZoneList<CharacterRange>* add_to,
+                                         bool negate,
+                                         const std::vector<char>& name_1,
+                                         const std::vector<char>& name_2) {
+  if (name_2.empty()) {
     // First attempt to interpret as general category property value name.
-    const char* name = first_part.data();
+    const char* name = name_1.data();
     if (LookupPropertyValueName(UCHAR_GENERAL_CATEGORY_MASK, name, negate,
-                                result, zone())) {
+                                add_to, zone())) {
       return true;
     }
     // Interpret "Any", "ASCII", and "Assigned".
-    if (LookupSpecialPropertyValueName(name, result, negate, zone())) {
+    if (LookupSpecialPropertyValueName(name, add_to, negate, zone())) {
       return true;
     }
     // Then attempt to interpret as binary property name with value name 'Y'.
     UProperty property = u_getPropertyEnum(name);
     if (!IsSupportedBinaryProperty(property)) return false;
     if (!IsExactPropertyAlias(name, property)) return false;
-    return LookupPropertyValueName(property, negate ? "N" : "Y", false, result,
+    return LookupPropertyValueName(property, negate ? "N" : "Y", false, add_to,
                                    zone());
   } else {
     // Both property name and value name are specified. Attempt to interpret
     // the property name as enumerated property.
-    const char* property_name = first_part.data();
-    const char* value_name = second_part.data();
+    const char* property_name = name_1.data();
+    const char* value_name = name_2.data();
     UProperty property = u_getPropertyEnum(property_name);
     if (!IsExactPropertyAlias(property_name, property)) return false;
     if (property == UCHAR_GENERAL_CATEGORY) {
@@ -1400,16 +1430,91 @@ bool RegExpParser::ParsePropertyClass(ZoneList<CharacterRange>* result,
                property != UCHAR_SCRIPT_EXTENSIONS) {
       return false;
     }
-    return LookupPropertyValueName(property, value_name, negate, result,
+    return LookupPropertyValueName(property, value_name, negate, add_to,
                                    zone());
   }
 }
 
+RegExpTree* RegExpParser::GetPropertySequence(const std::vector<char>& name_1) {
+  if (!FLAG_harmony_regexp_sequence) return nullptr;
+  const char* name = name_1.data();
+  const uc32* sequence_list = nullptr;
+  JSRegExp::Flags flags = JSRegExp::kUnicode;
+  if (NameEquals(name, "Emoji_Flag_Sequence")) {
+    sequence_list = UnicodePropertySequences::kEmojiFlagSequences;
+  } else if (NameEquals(name, "Emoji_Tag_Sequence")) {
+    sequence_list = UnicodePropertySequences::kEmojiTagSequences;
+  } else if (NameEquals(name, "Emoji_ZWJ_Sequence")) {
+    sequence_list = UnicodePropertySequences::kEmojiZWJSequences;
+  }
+  if (sequence_list != nullptr) {
+    // TODO(yangguo): this creates huge regexp code. Alternative to this is
+    // to create a new operator that checks for these sequences at runtime.
+    RegExpBuilder builder(zone(), flags);
+    while (true) {                   // Iterate through list of sequences.
+      while (*sequence_list != 0) {  // Iterate through sequence.
+        builder.AddUnicodeCharacter(*sequence_list);
+        sequence_list++;
+      }
+      sequence_list++;
+      if (*sequence_list == 0) break;
+      builder.NewAlternative();
+    }
+    return builder.ToRegExp();
+  }
+
+  if (NameEquals(name, "Emoji_Keycap_Sequence")) {
+    // https://unicode.org/reports/tr51/#def_emoji_keycap_sequence
+    // emoji_keycap_sequence := [0-9#*] \x{FE0F 20E3}
+    RegExpBuilder builder(zone(), flags);
+    ZoneList<CharacterRange>* prefix_ranges =
+        new (zone()) ZoneList<CharacterRange>(2, zone());
+    prefix_ranges->Add(CharacterRange::Range('0', '9'), zone());
+    prefix_ranges->Add(CharacterRange::Singleton('#'), zone());
+    prefix_ranges->Add(CharacterRange::Singleton('*'), zone());
+    builder.AddCharacterClass(
+        new (zone()) RegExpCharacterClass(zone(), prefix_ranges, flags));
+    builder.AddCharacter(0xFE0F);
+    builder.AddCharacter(0x20E3);
+    return builder.ToRegExp();
+  } else if (NameEquals(name, "Emoji_Modifier_Sequence")) {
+    // https://unicode.org/reports/tr51/#def_emoji_modifier_sequence
+    // emoji_modifier_sequence := emoji_modifier_base emoji_modifier
+    RegExpBuilder builder(zone(), flags);
+    ZoneList<CharacterRange>* modifier_base_ranges =
+        new (zone()) ZoneList<CharacterRange>(2, zone());
+    LookupPropertyValueName(UCHAR_EMOJI_MODIFIER_BASE, "Y", false,
+                            modifier_base_ranges, zone());
+    builder.AddCharacterClass(
+        new (zone()) RegExpCharacterClass(zone(), modifier_base_ranges, flags));
+    ZoneList<CharacterRange>* modifier_ranges =
+        new (zone()) ZoneList<CharacterRange>(2, zone());
+    LookupPropertyValueName(UCHAR_EMOJI_MODIFIER, "Y", false, modifier_ranges,
+                            zone());
+    builder.AddCharacterClass(
+        new (zone()) RegExpCharacterClass(zone(), modifier_ranges, flags));
+    return builder.ToRegExp();
+  }
+
+  return nullptr;
+}
+
 #else  // V8_INTL_SUPPORT
 
-bool RegExpParser::ParsePropertyClass(ZoneList<CharacterRange>* result,
-                                      bool negate) {
+bool RegExpParser::ParsePropertyClassName(std::vector<char>* name_1,
+                                          std::vector<char>* name_2) {
   return false;
+}
+
+bool RegExpParser::AddPropertyClassRange(ZoneList<CharacterRange>* add_to,
+                                         bool negate,
+                                         const std::vector<char>& name_1,
+                                         const std::vector<char>& name_2) {
+  return false;
+}
+
+RegExpTree* RegExpParser::GetPropertySequence(const std::vector<char>& name) {
+  return nullptr;
 }
 
 #endif  // V8_INTL_SUPPORT
@@ -1491,7 +1596,7 @@ uc32 RegExpParser::ParseClassCharacterEscape() {
         Advance();
         return 0;
       }
-    // Fall through.
+      V8_FALLTHROUGH;
     case '1':
     case '2':
     case '3':
@@ -1574,10 +1679,12 @@ void RegExpParser::ParseClassEscape(ZoneList<CharacterRange>* ranges,
         return;
       case 'p':
       case 'P':
-        if (FLAG_harmony_regexp_property && unicode()) {
+        if (unicode()) {
           bool negate = Next() == 'P';
           Advance(2);
-          if (!ParsePropertyClass(ranges, negate)) {
+          std::vector<char> name_1, name_2;
+          if (!ParsePropertyClassName(&name_1, &name_2) ||
+              !AddPropertyClassRange(ranges, negate, name_1, name_2)) {
             ReportError(CStrVector("Invalid property name in character class"));
           }
           *is_class_escape = true;
@@ -1653,14 +1760,10 @@ RegExpTree* RegExpParser::ParseCharacterClass(const RegExpBuilder* builder) {
     return ReportError(CStrVector(kUnterminated));
   }
   Advance();
-  if (ranges->length() == 0) {
-    ranges->Add(CharacterRange::Everything(), zone());
-    is_negated = !is_negated;
-  }
   RegExpCharacterClass::CharacterClassFlags character_class_flags;
   if (is_negated) character_class_flags = RegExpCharacterClass::NEGATED;
-  return new (zone())
-      RegExpCharacterClass(ranges, builder->flags(), character_class_flags);
+  return new (zone()) RegExpCharacterClass(zone(), ranges, builder->flags(),
+                                           character_class_flags);
 }
 
 
@@ -1680,7 +1783,7 @@ bool RegExpParser::ParseRegExp(Isolate* isolate, Zone* zone,
     DCHECK(tree != nullptr);
     DCHECK(result->error.is_null());
     if (FLAG_trace_regexp_parser) {
-      OFStream os(stdout);
+      StdoutStream os;
       tree->Print(os, zone);
       os << "\n";
     }
@@ -1834,7 +1937,8 @@ void RegExpBuilder::AddCharacterClass(RegExpCharacterClass* cc) {
 
 void RegExpBuilder::AddCharacterClassForDesugaring(uc32 c) {
   AddTerm(new (zone()) RegExpCharacterClass(
-      CharacterRange::List(zone(), CharacterRange::Singleton(c)), flags_));
+      zone(), CharacterRange::List(zone(), CharacterRange::Singleton(c)),
+      flags_));
 }
 
 
@@ -1965,8 +2069,14 @@ bool RegExpBuilder::AddQuantifierToAtom(
   } else if (terms_.length() > 0) {
     DCHECK(last_added_ == ADD_ATOM);
     atom = terms_.RemoveLast();
-    // With /u, lookarounds are not quantifiable.
-    if (unicode() && atom->IsLookaround()) return false;
+    if (atom->IsLookaround()) {
+      // With /u, lookarounds are not quantifiable.
+      if (unicode()) return false;
+      // Lookbehinds are not quantifiable.
+      if (atom->AsLookaround()->type() == RegExpLookaround::LOOKBEHIND) {
+        return false;
+      }
+    }
     if (atom->max_match() == 0) {
       // Guaranteed to only match an empty string.
       LAST(ADD_TERM);

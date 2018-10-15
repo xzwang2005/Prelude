@@ -8,6 +8,7 @@
 #include "src/api.h"
 #include "src/base/logging.h"
 #include "src/identity-map.h"
+#include "src/maybe-handles.h"
 #include "src/objects-inl.h"
 
 namespace v8 {
@@ -16,12 +17,9 @@ namespace internal {
 // Handles should be trivially copyable so that they can be efficiently passed
 // by value. If they are not trivially copyable, they cannot be passed in
 // registers.
-static_assert(IS_TRIVIALLY_COPYABLE(HandleBase),
-              "HandleBase should be trivially copyable");
-static_assert(IS_TRIVIALLY_COPYABLE(Handle<Object>),
-              "Handle<Object> should be trivially copyable");
-static_assert(IS_TRIVIALLY_COPYABLE(MaybeHandle<Object>),
-              "MaybeHandle<Object> should be trivially copyable");
+ASSERT_TRIVIALLY_COPYABLE(HandleBase);
+ASSERT_TRIVIALLY_COPYABLE(Handle<Object>);
+ASSERT_TRIVIALLY_COPYABLE(MaybeHandle<Object>);
 
 #ifdef DEBUG
 bool HandleBase::IsDereferenceAllowed(DereferenceCheckMode mode) const {
@@ -29,12 +27,15 @@ bool HandleBase::IsDereferenceAllowed(DereferenceCheckMode mode) const {
   Object* object = *location_;
   if (object->IsSmi()) return true;
   HeapObject* heap_object = HeapObject::cast(object);
-  Heap* heap = heap_object->GetHeap();
+  Isolate* isolate;
+  if (!Isolate::FromWritableHeapObject(heap_object, &isolate)) return true;
+  Heap* heap = isolate->heap();
   Object** roots_array_start = heap->roots_array_start();
   if (roots_array_start <= location_ &&
-      location_ < roots_array_start + Heap::kStrongRootListLength &&
+      location_ < roots_array_start +
+                      static_cast<int>(RootIndex::kStrongRootListLength) &&
       heap->RootCanBeTreatedAsConstant(
-          static_cast<Heap::RootListIndex>(location_ - roots_array_start))) {
+          static_cast<RootIndex>(location_ - roots_array_start))) {
     return true;
   }
   if (!AllowHandleDereference::IsAllowed()) return false;
@@ -44,7 +45,7 @@ bool HandleBase::IsDereferenceAllowed(DereferenceCheckMode mode) const {
     if (heap_object->IsCell()) return true;
     if (heap_object->IsMap()) return true;
     if (heap_object->IsInternalizedString()) return true;
-    return !heap->isolate()->IsDeferredHandle(location_);
+    return !isolate->IsDeferredHandle(location_);
   }
   return true;
 }
@@ -110,7 +111,7 @@ void HandleScope::DeleteExtensions(Isolate* isolate) {
 void HandleScope::ZapRange(Object** start, Object** end) {
   DCHECK_LE(end - start, kHandleBlockSize);
   for (Object** p = start; p != end; p++) {
-    *reinterpret_cast<Address*>(p) = kHandleZapValue;
+    *reinterpret_cast<Address*>(p) = static_cast<Address>(kHandleZapValue);
   }
 }
 #endif
@@ -160,7 +161,7 @@ Object** CanonicalHandleScope::Lookup(Object* object) {
     int index = root_index_map_->Lookup(HeapObject::cast(object));
     if (index != RootIndexMap::kInvalidRootIndex) {
       return isolate_->heap()
-          ->root_handle(static_cast<Heap::RootListIndex>(index))
+          ->root_handle(static_cast<RootIndex>(index))
           .location();
     }
   }
@@ -179,7 +180,8 @@ DeferredHandleScope::DeferredHandleScope(Isolate* isolate)
   HandleScopeData* data = impl_->isolate()->handle_scope_data();
   Object** new_next = impl_->GetSpareOrNewBlock();
   Object** new_limit = &new_next[kHandleBlockSize];
-  // Check that at least one HandleScope exists, see the class description.
+  // Check that at least one HandleScope with at least one Handle in it exists,
+  // see the class description.
   DCHECK(!impl_->blocks()->empty());
   // Check that we are not in a SealedHandleScope.
   DCHECK(data->limit == &impl_->blocks()->back()[kHandleBlockSize]);

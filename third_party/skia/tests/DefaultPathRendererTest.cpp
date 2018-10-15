@@ -5,19 +5,32 @@
  * found in the LICENSE file.
  */
 
-#include "Test.h"
+#include "SkTypes.h"
 
-#if SK_SUPPORT_GPU
 #include "GrClip.h"
+#include "GrColor.h"
+#include "GrContext.h"
+#include "GrContextFactory.h"
+#include "GrContextOptions.h"
+#include "GrContextPriv.h"
+#include "GrFragmentProcessor.h"
+#include "GrPaint.h"
 #include "GrRenderTargetContext.h"
 #include "GrStyle.h"
 #include "GrTypesPriv.h"
-
+#include "SkBitmap.h"
+#include "SkColor.h"
+#include "SkColorSpace.h"
+#include "SkImageInfo.h"
+#include "SkMatrix.h"
+#include "SkPath.h"
+#include "SkRect.h"
+#include "SkRefCnt.h"
+#include "SkStrokeRec.h"
+#include "Test.h"
 #include "effects/GrConstColorProcessor.h"
 
-static void allow_default_and_msaa(GrContextOptions* options) {
-    options->fGpuPathRenderers = GpuPathRenderers::kMSAA;
-}
+#include <utility>
 
 static void only_allow_default(GrContextOptions* options) {
     options->fGpuPathRenderers = GpuPathRenderers::kNone;
@@ -67,11 +80,13 @@ static void run_test(GrContext* ctx, skiatest::Reporter* reporter) {
     GrStyle style(SkStrokeRec::kFill_InitStyle);
 
     {
-        auto rtc =  ctx->makeDeferredRenderTargetContext(SkBackingFit::kApprox,
+        auto rtc =  ctx->contextPriv().makeDeferredRenderTargetContext(
+                                                         SkBackingFit::kApprox,
                                                          kBigSize/2+1, kBigSize/2+1,
                                                          kRGBA_8888_GrPixelConfig, nullptr);
 
-        rtc->clear(nullptr, GrColorPackRGBA(0x0, 0x0, 0x0, 0xFF), true);
+        rtc->clear(nullptr, GrColorPackRGBA(0x0, 0x0, 0x0, 0xFF),
+                   GrRenderTargetContext::CanClearFullscreen::kYes);
 
         GrPaint paint;
 
@@ -86,10 +101,12 @@ static void run_test(GrContext* ctx, skiatest::Reporter* reporter) {
     }
 
     {
-        auto rtc = ctx->makeDeferredRenderTargetContext(SkBackingFit::kExact, kBigSize, kBigSize,
+        auto rtc = ctx->contextPriv().makeDeferredRenderTargetContext(
+                                                        SkBackingFit::kExact, kBigSize, kBigSize,
                                                         kRGBA_8888_GrPixelConfig, nullptr);
 
-        rtc->clear(nullptr, GrColorPackRGBA(0x0, 0x0, 0x0, 0xFF), true);
+        rtc->clear(nullptr, GrColorPackRGBA(0x0, 0x0, 0x0, 0xFF),
+                   GrRenderTargetContext::CanClearFullscreen::kYes);
 
         GrPaint paint;
 
@@ -120,17 +137,3 @@ DEF_GPUTEST_FOR_CONTEXTS(GrDefaultPathRendererTest,
 
     run_test(ctx, reporter);
 }
-
-DEF_GPUTEST_FOR_CONTEXTS(GrMSAAPathRendererTest,
-                         sk_gpu_test::GrContextFactory::IsRenderingContext,
-                         reporter, ctxInfo, allow_default_and_msaa) {
-    GrContext* ctx = ctxInfo.grContext();
-
-    if (!ctx->caps()->sampleShadingSupport()) {   // The MSAAPathRenderer requires this
-        return;
-    }
-
-    run_test(ctx, reporter);
-}
-
-#endif

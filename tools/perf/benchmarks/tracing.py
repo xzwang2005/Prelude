@@ -5,7 +5,6 @@
 from core import perf_benchmark
 
 from telemetry import benchmark
-from telemetry import story
 from telemetry.timeline import chrome_trace_category_filter
 from telemetry.timeline import chrome_trace_config
 from telemetry.web_perf import timeline_based_measurement
@@ -13,7 +12,7 @@ from telemetry.web_perf import timeline_based_measurement
 import page_sets
 
 
-@benchmark.Owner(emails=['ssid@chromium.org'])
+@benchmark.Info(emails=['ssid@chromium.org'])
 class TracingWithBackgroundMemoryInfra(perf_benchmark.PerfBenchmark):
   """Measures the overhead of background memory-infra dumps"""
   page_set = page_sets.Top10PageSet
@@ -33,9 +32,3 @@ class TracingWithBackgroundMemoryInfra(perf_benchmark.PerfBenchmark):
   @classmethod
   def Name(cls):
     return 'tracing.tracing_with_background_memory_infra'
-
-  def GetExpectations(self):
-    class StoryExpectations(story.expectations.StoryExpectations):
-      def SetExpectations(self):
-        pass
-    return StoryExpectations()

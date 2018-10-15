@@ -6,85 +6,37 @@
  */
 
 #include "SkColorSpace.h"
-#include "SkColorSpace_Base.h"
-#include "SkColorSpace_XYZ.h"
 #include "SkColorSpacePriv.h"
-#include "SkPoint3.h"
+#include "SkData.h"
+#include "SkOpts.h"
+#include "../../third_party/skcms/skcms.h"
+
+// TODO: this is kind of ridiculous
+static_assert(sizeof(SkColorSpace) == 45*4, "");
 
 bool SkColorSpacePrimaries::toXYZD50(SkMatrix44* toXYZ_D50) const {
-    if (!is_zero_to_one(fRX) || !is_zero_to_one(fRY) ||
-        !is_zero_to_one(fGX) || !is_zero_to_one(fGY) ||
-        !is_zero_to_one(fBX) || !is_zero_to_one(fBY) ||
-        !is_zero_to_one(fWX) || !is_zero_to_one(fWY))
-    {
+    skcms_Matrix3x3 toXYZ;
+    if (!skcms_PrimariesToXYZD50(fRX, fRY, fGX, fGY, fBX, fBY, fWX, fWY, &toXYZ)) {
         return false;
     }
-
-    // First, we need to convert xy values (primaries) to XYZ.
-    SkMatrix primaries;
-    primaries.setAll(             fRX,              fGX,              fBX,
-                                  fRY,              fGY,              fBY,
-                     1.0f - fRX - fRY, 1.0f - fGX - fGY, 1.0f - fBX - fBY);
-    SkMatrix primariesInv;
-    if (!primaries.invert(&primariesInv)) {
-        return false;
-    }
-
-    // Assumes that Y is 1.0f.
-    SkVector3 wXYZ = SkVector3::Make(fWX / fWY, 1.0f, (1.0f - fWX - fWY) / fWY);
-    SkVector3 XYZ;
-    XYZ.fX = primariesInv[0] * wXYZ.fX + primariesInv[1] * wXYZ.fY + primariesInv[2] * wXYZ.fZ;
-    XYZ.fY = primariesInv[3] * wXYZ.fX + primariesInv[4] * wXYZ.fY + primariesInv[5] * wXYZ.fZ;
-    XYZ.fZ = primariesInv[6] * wXYZ.fX + primariesInv[7] * wXYZ.fY + primariesInv[8] * wXYZ.fZ;
-    SkMatrix toXYZ;
-    toXYZ.setAll(XYZ.fX,   0.0f,   0.0f,
-                   0.0f, XYZ.fY,   0.0f,
-                   0.0f,   0.0f, XYZ.fZ);
-    toXYZ.postConcat(primaries);
-
-    // Now convert toXYZ matrix to toXYZD50.
-    SkVector3 wXYZD50 = SkVector3::Make(0.96422f, 1.0f, 0.82521f);
-
-    // Calculate the chromatic adaptation matrix.  We will use the Bradford method, thus
-    // the matrices below.  The Bradford method is used by Adobe and is widely considered
-    // to be the best.
-    SkMatrix mA, mAInv;
-    mA.setAll(+0.8951f, +0.2664f, -0.1614f,
-              -0.7502f, +1.7135f, +0.0367f,
-              +0.0389f, -0.0685f, +1.0296f);
-    mAInv.setAll(+0.9869929f, -0.1470543f, +0.1599627f,
-                 +0.4323053f, +0.5183603f, +0.0492912f,
-                 -0.0085287f, +0.0400428f, +0.9684867f);
-
-    SkVector3 srcCone;
-    srcCone.fX = mA[0] * wXYZ.fX + mA[1] * wXYZ.fY + mA[2] * wXYZ.fZ;
-    srcCone.fY = mA[3] * wXYZ.fX + mA[4] * wXYZ.fY + mA[5] * wXYZ.fZ;
-    srcCone.fZ = mA[6] * wXYZ.fX + mA[7] * wXYZ.fY + mA[8] * wXYZ.fZ;
-    SkVector3 dstCone;
-    dstCone.fX = mA[0] * wXYZD50.fX + mA[1] * wXYZD50.fY + mA[2] * wXYZD50.fZ;
-    dstCone.fY = mA[3] * wXYZD50.fX + mA[4] * wXYZD50.fY + mA[5] * wXYZD50.fZ;
-    dstCone.fZ = mA[6] * wXYZD50.fX + mA[7] * wXYZD50.fY + mA[8] * wXYZD50.fZ;
-
-    SkMatrix DXToD50;
-    DXToD50.setIdentity();
-    DXToD50[0] = dstCone.fX / srcCone.fX;
-    DXToD50[4] = dstCone.fY / srcCone.fY;
-    DXToD50[8] = dstCone.fZ / srcCone.fZ;
-    DXToD50.postConcat(mAInv);
-    DXToD50.preConcat(mA);
-
-    toXYZ.postConcat(DXToD50);
-    toXYZ_D50->set3x3(toXYZ[0], toXYZ[3], toXYZ[6],
-                      toXYZ[1], toXYZ[4], toXYZ[7],
-                      toXYZ[2], toXYZ[5], toXYZ[8]);
+    toXYZ_D50->set3x3RowMajorf(&toXYZ.vals[0][0]);
     return true;
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 
-SkColorSpace_Base::SkColorSpace_Base(sk_sp<SkData> profileData)
-    : fProfileData(std::move(profileData))
-{}
+SkColorSpace::SkColorSpace(SkGammaNamed gammaNamed,
+                           const SkColorSpaceTransferFn* transferFn,
+                           const SkMatrix44& toXYZD50)
+        : fGammaNamed(gammaNamed)
+        , fToXYZD50(toXYZD50)
+        , fToXYZD50Hash(SkOpts::hash_fn(toXYZD50.values(), 16 * sizeof(SkMScalar), 0))
+        , fFromXYZD50(SkMatrix44::kUninitialized_Constructor) {
+    SkASSERT(fGammaNamed != kNonStandard_SkGammaNamed || transferFn);
+    if (transferFn) {
+        fTransferFn = *transferFn;
+    }
+}
 
 /**
  *  Checks if our toXYZ matrix is a close match to a known color gamut.
@@ -111,22 +63,17 @@ static bool xyz_almost_equal(const SkMatrix44& toXYZD50, const float* standard) 
            color_space_almost_equal(toXYZD50.getFloat(3, 3), 1.0f);
 }
 
-sk_sp<SkColorSpace> SkColorSpace_Base::MakeRGB(SkGammaNamed gammaNamed, const SkMatrix44& toXYZD50)
+sk_sp<SkColorSpace> SkColorSpace::MakeRGB(SkGammaNamed gammaNamed, const SkMatrix44& toXYZD50)
 {
     switch (gammaNamed) {
         case kSRGB_SkGammaNamed:
             if (xyz_almost_equal(toXYZD50, gSRGB_toXYZD50)) {
-                return SkColorSpace_Base::MakeNamed(kSRGB_Named);
-            }
-            break;
-        case k2Dot2Curve_SkGammaNamed:
-            if (xyz_almost_equal(toXYZD50, gAdobeRGB_toXYZD50)) {
-                return SkColorSpace_Base::MakeNamed(kAdobeRGB_Named);
+                return SkColorSpace::MakeSRGB();
             }
             break;
         case kLinear_SkGammaNamed:
             if (xyz_almost_equal(toXYZD50, gSRGB_toXYZD50)) {
-                return SkColorSpace_Base::MakeNamed(kSRGBLinear_Named);
+                return SkColorSpace::MakeSRGBLinear();
             }
             break;
         case kNonStandard_SkGammaNamed:
@@ -136,15 +83,15 @@ sk_sp<SkColorSpace> SkColorSpace_Base::MakeRGB(SkGammaNamed gammaNamed, const Sk
             break;
     }
 
-    return sk_sp<SkColorSpace>(new SkColorSpace_XYZ(gammaNamed, toXYZD50));
+    return sk_sp<SkColorSpace>(new SkColorSpace(gammaNamed, nullptr, toXYZD50));
 }
 
 sk_sp<SkColorSpace> SkColorSpace::MakeRGB(RenderTargetGamma gamma, const SkMatrix44& toXYZD50) {
     switch (gamma) {
         case kLinear_RenderTargetGamma:
-            return SkColorSpace_Base::MakeRGB(kLinear_SkGammaNamed, toXYZD50);
+            return SkColorSpace::MakeRGB(kLinear_SkGammaNamed, toXYZD50);
         case kSRGB_RenderTargetGamma:
-            return SkColorSpace_Base::MakeRGB(kSRGB_SkGammaNamed, toXYZD50);
+            return SkColorSpace::MakeRGB(kSRGB_SkGammaNamed, toXYZD50);
         default:
             return nullptr;
     }
@@ -157,29 +104,18 @@ sk_sp<SkColorSpace> SkColorSpace::MakeRGB(const SkColorSpaceTransferFn& coeffs,
     }
 
     if (is_almost_srgb(coeffs)) {
-        return SkColorSpace::MakeRGB(kSRGB_RenderTargetGamma, toXYZD50);
+        return SkColorSpace::MakeRGB(kSRGB_SkGammaNamed, toXYZD50);
     }
 
     if (is_almost_2dot2(coeffs)) {
-        return SkColorSpace_Base::MakeRGB(k2Dot2Curve_SkGammaNamed, toXYZD50);
+        return SkColorSpace::MakeRGB(k2Dot2Curve_SkGammaNamed, toXYZD50);
     }
 
     if (is_almost_linear(coeffs)) {
-        return SkColorSpace_Base::MakeRGB(kLinear_SkGammaNamed, toXYZD50);
+        return SkColorSpace::MakeRGB(kLinear_SkGammaNamed, toXYZD50);
     }
 
-    void* memory = sk_malloc_throw(sizeof(SkGammas) + sizeof(SkColorSpaceTransferFn));
-    sk_sp<SkGammas> gammas = sk_sp<SkGammas>(new (memory) SkGammas(3));
-    SkColorSpaceTransferFn* fn = SkTAddOffset<SkColorSpaceTransferFn>(memory, sizeof(SkGammas));
-    *fn = coeffs;
-    SkGammas::Data data;
-    data.fParamOffset = 0;
-    for (int channel = 0; channel < 3; ++channel) {
-        gammas->fType[channel] = SkGammas::Type::kParam_Type;
-        gammas->fData[channel] = data;
-    }
-    return sk_sp<SkColorSpace>(new SkColorSpace_XYZ(kNonStandard_SkGammaNamed,
-                                                    std::move(gammas), toXYZD50, nullptr));
+    return sk_sp<SkColorSpace>(new SkColorSpace(kNonStandard_SkGammaNamed, &coeffs, toXYZD50));
 }
 
 sk_sp<SkColorSpace> SkColorSpace::MakeRGB(RenderTargetGamma gamma, Gamut gamut) {
@@ -194,68 +130,61 @@ sk_sp<SkColorSpace> SkColorSpace::MakeRGB(const SkColorSpaceTransferFn& coeffs, 
     return SkColorSpace::MakeRGB(coeffs, toXYZD50);
 }
 
-static SkColorSpace* singleton_colorspace(SkGammaNamed gamma, const float to_xyz[9]) {
-    SkMatrix44 m44(SkMatrix44::kUninitialized_Constructor);
-    m44.set3x3RowMajorf(to_xyz);
-    (void)m44.getType();  // Force typemask to be computed to avoid races.
-    return new SkColorSpace_XYZ(gamma, m44);
-}
-
-static SkColorSpace* adobe_rgb() {
-    static SkColorSpace* cs = singleton_colorspace(k2Dot2Curve_SkGammaNamed, gAdobeRGB_toXYZD50);
-    return cs;
-}
-static SkColorSpace* srgb() {
-    static SkColorSpace* cs = singleton_colorspace(kSRGB_SkGammaNamed, gSRGB_toXYZD50);
-    return cs;
-}
-static SkColorSpace* srgb_linear() {
-    static SkColorSpace* cs = singleton_colorspace(kLinear_SkGammaNamed, gSRGB_toXYZD50);
-    return cs;
-}
-
-sk_sp<SkColorSpace> SkColorSpace_Base::MakeNamed(Named named) {
-    switch (named) {
-        case kSRGB_Named:       return sk_ref_sp(srgb());
-        case kAdobeRGB_Named:   return sk_ref_sp(adobe_rgb());
-        case kSRGBLinear_Named: return sk_ref_sp(srgb_linear());
-        default: break;
+class SkColorSpaceSingletonFactory {
+public:
+    static SkColorSpace* Make(SkGammaNamed gamma, const float to_xyz[9]) {
+        SkMatrix44 m44(SkMatrix44::kUninitialized_Constructor);
+        m44.set3x3RowMajorf(to_xyz);
+        (void)m44.getType();  // Force typemask to be computed to avoid races.
+        return new SkColorSpace(gamma, nullptr, m44);
     }
-    return nullptr;
+};
+
+SkColorSpace* sk_srgb_singleton() {
+    static SkColorSpace* cs = SkColorSpaceSingletonFactory::Make(kSRGB_SkGammaNamed,
+                                                                 gSRGB_toXYZD50);
+    return cs;
+}
+SkColorSpace* sk_srgb_linear_singleton() {
+    static SkColorSpace* cs = SkColorSpaceSingletonFactory::Make(kLinear_SkGammaNamed,
+                                                                 gSRGB_toXYZD50);
+    return cs;
 }
 
 sk_sp<SkColorSpace> SkColorSpace::MakeSRGB() {
-    return SkColorSpace_Base::MakeNamed(SkColorSpace_Base::kSRGB_Named);
+    return sk_ref_sp(sk_srgb_singleton());
 }
 
 sk_sp<SkColorSpace> SkColorSpace::MakeSRGBLinear() {
-    return SkColorSpace_Base::MakeNamed(SkColorSpace_Base::kSRGBLinear_Named);
+    return sk_ref_sp(sk_srgb_linear_singleton());
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 
-SkColorSpace::Type SkColorSpace::type() const {
-    SkMatrix44  m(SkMatrix44::kUninitialized_Constructor);
-    if (this->toXYZD50(&m)) {
-        return m.isScale() ? kGray_Type : kRGB_Type;
+bool SkColorSpace::isNumericalTransferFn(SkColorSpaceTransferFn* coeffs) const {
+    switch (fGammaNamed) {
+        case kSRGB_SkGammaNamed:
+            *coeffs = gSRGB_TransferFn;
+            break;
+        case k2Dot2Curve_SkGammaNamed:
+            *coeffs = g2Dot2_TransferFn;
+            break;
+        case kLinear_SkGammaNamed:
+            *coeffs = gLinear_TransferFn;
+            break;
+        case kNonStandard_SkGammaNamed:
+            *coeffs = fTransferFn;
+            break;
+        default:
+            SkDEBUGFAIL("Unknown named gamma");
+            return false;
     }
-    return as_CSB(this)->onIsCMYK() ? kCMYK_Type : kRGB_Type;
-}
 
-bool SkColorSpace::gammaCloseToSRGB() const {
-    return as_CSB(this)->onGammaCloseToSRGB();
-}
-
-bool SkColorSpace::gammaIsLinear() const {
-    return as_CSB(this)->onGammaIsLinear();
-}
-
-bool SkColorSpace::isNumericalTransferFn(SkColorSpaceTransferFn* fn) const {
-    return as_CSB(this)->onIsNumericalTransferFn(fn);
+    return true;
 }
 
 bool SkColorSpace::toXYZD50(SkMatrix44* toXYZD50) const {
-    const SkMatrix44* matrix = as_CSB(this)->toXYZD50();
+    const SkMatrix44* matrix = this->toXYZD50();
     if (matrix) {
         *toXYZD50 = *matrix;
         return true;
@@ -264,14 +193,56 @@ bool SkColorSpace::toXYZD50(SkMatrix44* toXYZD50) const {
     return false;
 }
 
+const SkMatrix44* SkColorSpace::fromXYZD50() const {
+    fFromXYZOnce([this] {
+        if (!fToXYZD50.invert(&fFromXYZD50)) {
+            // If a client gives us a dst gamut with a transform that we can't invert, we will
+            // simply give them back a transform to sRGB gamut.
+            SkMatrix44 srgbToxyzD50(SkMatrix44::kUninitialized_Constructor);
+            srgbToxyzD50.set3x3RowMajorf(gSRGB_toXYZD50);
+            srgbToxyzD50.invert(&fFromXYZD50);
+        }
+    });
+    return &fFromXYZD50;
+}
+
 bool SkColorSpace::isSRGB() const {
-    return srgb() == this;
+    return sk_srgb_singleton() == this;
+}
+
+sk_sp<SkColorSpace> SkColorSpace::makeLinearGamma() const {
+    if (this->gammaIsLinear()) {
+        return sk_ref_sp(const_cast<SkColorSpace*>(this));
+    }
+    return SkColorSpace::MakeRGB(kLinear_SkGammaNamed, fToXYZD50);
+}
+
+sk_sp<SkColorSpace> SkColorSpace::makeSRGBGamma() const {
+    if (this->gammaCloseToSRGB()) {
+        return sk_ref_sp(const_cast<SkColorSpace*>(this));
+    }
+    return SkColorSpace::MakeRGB(kSRGB_SkGammaNamed, fToXYZD50);
+}
+
+sk_sp<SkColorSpace> SkColorSpace::makeColorSpin() const {
+    SkMatrix44 spin(SkMatrix44::kUninitialized_Constructor);
+    spin.set3x3(0, 1, 0, 0, 0, 1, 1, 0, 0);
+    spin.postConcat(fToXYZD50);
+    (void)spin.getType();  // Pre-cache spin matrix type to avoid races in future getType() calls.
+    return sk_sp<SkColorSpace>(new SkColorSpace(fGammaNamed, &fTransferFn, spin));
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 
 enum Version {
     k0_Version, // Initial version, header + flags for matrix and profile
+};
+
+enum NamedColorSpace {
+    kSRGB_NamedColorSpace,
+    // No longer a singleton, preserved to support reading data from branches m65 and older
+    kAdobeRGB_NamedColorSpace,
+    kSRGBLinear_NamedColorSpace,
 };
 
 struct ColorSpaceHeader {
@@ -289,6 +260,7 @@ struct ColorSpaceHeader {
      *  If kICC_Flag is set, we will write an ICC profile after the header.
      *  The ICC profile will be written as a uint32 size, followed immediately
      *  by the data (padded to 4 bytes).
+     *  DEPRECATED / UNUSED
      */
     static constexpr uint8_t kICC_Flag        = 1 << 1;
 
@@ -306,7 +278,7 @@ struct ColorSpaceHeader {
         SkASSERT(k0_Version == version);
         header.fVersion = (uint8_t) version;
 
-        SkASSERT(named <= SkColorSpace_Base::kSRGBLinear_Named);
+        SkASSERT(named <= kSRGBLinear_NamedColorSpace);
         header.fNamed = (uint8_t) named;
 
         SkASSERT(gammaNamed <= kNonStandard_SkGammaNamed);
@@ -324,99 +296,61 @@ struct ColorSpaceHeader {
 };
 
 size_t SkColorSpace::writeToMemory(void* memory) const {
-    // Start by trying the serialization fast path.  If we haven't saved ICC profile data,
-    // we must have a profile that we can serialize easily.
-    if (!as_CSB(this)->fProfileData) {
-        // Profile data is mandatory for A2B0 color spaces.
-        SkASSERT(SkColorSpace_Base::Type::kXYZ == as_CSB(this)->type());
-        const SkColorSpace_XYZ* thisXYZ = static_cast<const SkColorSpace_XYZ*>(this);
-        // If we have a named profile, only write the enum.
-        const SkGammaNamed gammaNamed = thisXYZ->gammaNamed();
-        if (this == srgb()) {
-            if (memory) {
-                *((ColorSpaceHeader*) memory) = ColorSpaceHeader::Pack(
-                        k0_Version, SkColorSpace_Base::kSRGB_Named, gammaNamed, 0);
-            }
-            return sizeof(ColorSpaceHeader);
-        } else if (this == adobe_rgb()) {
-            if (memory) {
-                *((ColorSpaceHeader*) memory) = ColorSpaceHeader::Pack(
-                        k0_Version, SkColorSpace_Base::kAdobeRGB_Named, gammaNamed, 0);
-            }
-            return sizeof(ColorSpaceHeader);
-        } else if (this == srgb_linear()) {
-            if (memory) {
-                *((ColorSpaceHeader*) memory) = ColorSpaceHeader::Pack(
-                        k0_Version, SkColorSpace_Base::kSRGBLinear_Named, gammaNamed, 0);
-            }
-            return sizeof(ColorSpaceHeader);
+    // If we have a named profile, only write the enum.
+    const SkGammaNamed gammaNamed = this->gammaNamed();
+    if (this == sk_srgb_singleton()) {
+        if (memory) {
+            *((ColorSpaceHeader*) memory) = ColorSpaceHeader::Pack(
+                    k0_Version, kSRGB_NamedColorSpace, gammaNamed, 0);
         }
+        return sizeof(ColorSpaceHeader);
+    } else if (this == sk_srgb_linear_singleton()) {
+        if (memory) {
+            *((ColorSpaceHeader*) memory) = ColorSpaceHeader::Pack(
+                    k0_Version, kSRGBLinear_NamedColorSpace, gammaNamed, 0);
+        }
+        return sizeof(ColorSpaceHeader);
+    }
 
-        // If we have a named gamma, write the enum and the matrix.
-        switch (gammaNamed) {
-            case kSRGB_SkGammaNamed:
-            case k2Dot2Curve_SkGammaNamed:
-            case kLinear_SkGammaNamed: {
-                if (memory) {
-                    *((ColorSpaceHeader*) memory) =
-                            ColorSpaceHeader::Pack(k0_Version, 0, gammaNamed,
-                                                   ColorSpaceHeader::kMatrix_Flag);
-                    memory = SkTAddOffset<void>(memory, sizeof(ColorSpaceHeader));
-                    thisXYZ->toXYZD50()->as3x4RowMajorf((float*) memory);
-                }
-                return sizeof(ColorSpaceHeader) + 12 * sizeof(float);
+    // If we have a named gamma, write the enum and the matrix.
+    switch (gammaNamed) {
+        case kSRGB_SkGammaNamed:
+        case k2Dot2Curve_SkGammaNamed:
+        case kLinear_SkGammaNamed: {
+            if (memory) {
+                *((ColorSpaceHeader*) memory) =
+                        ColorSpaceHeader::Pack(k0_Version, 0, gammaNamed,
+                                                ColorSpaceHeader::kMatrix_Flag);
+                memory = SkTAddOffset<void>(memory, sizeof(ColorSpaceHeader));
+                this->toXYZD50()->as3x4RowMajorf((float*) memory);
             }
-            default: {
-                const SkGammas* gammas = thisXYZ->gammas();
-                SkASSERT(gammas);
-                SkASSERT(gammas->isParametric(0));
-                SkASSERT(gammas->isParametric(1));
-                SkASSERT(gammas->isParametric(2));
-                SkASSERT(gammas->data(0) == gammas->data(1));
-                SkASSERT(gammas->data(0) == gammas->data(2));
+            return sizeof(ColorSpaceHeader) + 12 * sizeof(float);
+        }
+        default: {
+            SkColorSpaceTransferFn transferFn;
+            SkAssertResult(this->isNumericalTransferFn(&transferFn));
 
-                if (memory) {
-                    *((ColorSpaceHeader*) memory) =
-                            ColorSpaceHeader::Pack(k0_Version, 0, thisXYZ->fGammaNamed,
-                                                   ColorSpaceHeader::kTransferFn_Flag);
-                    memory = SkTAddOffset<void>(memory, sizeof(ColorSpaceHeader));
+            if (memory) {
+                *((ColorSpaceHeader*) memory) =
+                        ColorSpaceHeader::Pack(k0_Version, 0, gammaNamed,
+                                                ColorSpaceHeader::kTransferFn_Flag);
+                memory = SkTAddOffset<void>(memory, sizeof(ColorSpaceHeader));
 
-                    *(((float*) memory) + 0) = gammas->params(0).fA;
-                    *(((float*) memory) + 1) = gammas->params(0).fB;
-                    *(((float*) memory) + 2) = gammas->params(0).fC;
-                    *(((float*) memory) + 3) = gammas->params(0).fD;
-                    *(((float*) memory) + 4) = gammas->params(0).fE;
-                    *(((float*) memory) + 5) = gammas->params(0).fF;
-                    *(((float*) memory) + 6) = gammas->params(0).fG;
-                    memory = SkTAddOffset<void>(memory, 7 * sizeof(float));
+                *(((float*) memory) + 0) = transferFn.fA;
+                *(((float*) memory) + 1) = transferFn.fB;
+                *(((float*) memory) + 2) = transferFn.fC;
+                *(((float*) memory) + 3) = transferFn.fD;
+                *(((float*) memory) + 4) = transferFn.fE;
+                *(((float*) memory) + 5) = transferFn.fF;
+                *(((float*) memory) + 6) = transferFn.fG;
+                memory = SkTAddOffset<void>(memory, 7 * sizeof(float));
 
-                    thisXYZ->fToXYZD50.as3x4RowMajorf((float*) memory);
-                }
-
-                return sizeof(ColorSpaceHeader) + 19 * sizeof(float);
+                this->toXYZD50()->as3x4RowMajorf((float*) memory);
             }
+
+            return sizeof(ColorSpaceHeader) + 19 * sizeof(float);
         }
     }
-
-    // Otherwise, serialize the ICC data.
-    size_t profileSize = as_CSB(this)->fProfileData->size();
-    if (SkAlign4(profileSize) != (uint32_t) SkAlign4(profileSize)) {
-        return 0;
-    }
-
-    if (memory) {
-        *((ColorSpaceHeader*) memory) = ColorSpaceHeader::Pack(k0_Version, 0,
-                                                               kNonStandard_SkGammaNamed,
-                                                               ColorSpaceHeader::kICC_Flag);
-        memory = SkTAddOffset<void>(memory, sizeof(ColorSpaceHeader));
-
-        *((uint32_t*) memory) = (uint32_t) SkAlign4(profileSize);
-        memory = SkTAddOffset<void>(memory, sizeof(uint32_t));
-
-        memcpy(memory, as_CSB(this)->fProfileData->data(), profileSize);
-        memset(SkTAddOffset<void>(memory, profileSize), 0, SkAlign4(profileSize) - profileSize);
-    }
-    return sizeof(ColorSpaceHeader) + sizeof(uint32_t) + SkAlign4(profileSize);
 }
 
 sk_sp<SkData> SkColorSpace::serialize() const {
@@ -439,7 +373,14 @@ sk_sp<SkColorSpace> SkColorSpace::Deserialize(const void* data, size_t length) {
     data = SkTAddOffset<const void>(data, sizeof(ColorSpaceHeader));
     length -= sizeof(ColorSpaceHeader);
     if (0 == header.fFlags) {
-        return SkColorSpace_Base::MakeNamed((SkColorSpace_Base::Named) header.fNamed);
+        switch ((NamedColorSpace)header.fNamed) {
+            case kSRGB_NamedColorSpace:
+                return SkColorSpace::MakeSRGB();
+            case kSRGBLinear_NamedColorSpace:
+                return SkColorSpace::MakeSRGBLinear();
+            case kAdobeRGB_NamedColorSpace:
+                return SkColorSpace::MakeRGB(g2Dot2_TransferFn, SkColorSpace::kAdobeRGB_Gamut);
+        }
     }
 
     switch ((SkGammaNamed) header.fGammaNamed) {
@@ -452,7 +393,7 @@ sk_sp<SkColorSpace> SkColorSpace::Deserialize(const void* data, size_t length) {
 
             SkMatrix44 toXYZ(SkMatrix44::kUninitialized_Constructor);
             toXYZ.set3x4RowMajorf((const float*) data);
-            return SkColorSpace_Base::MakeRGB((SkGammaNamed) header.fGammaNamed, toXYZ);
+            return SkColorSpace::MakeRGB((SkGammaNamed) header.fGammaNamed, toXYZ);
         }
         default:
             break;
@@ -460,18 +401,8 @@ sk_sp<SkColorSpace> SkColorSpace::Deserialize(const void* data, size_t length) {
 
     switch (header.fFlags) {
         case ColorSpaceHeader::kICC_Flag: {
-            if (length < sizeof(uint32_t)) {
-                return nullptr;
-            }
-
-            uint32_t profileSize = *((uint32_t*) data);
-            data = SkTAddOffset<const void>(data, sizeof(uint32_t));
-            length -= sizeof(uint32_t);
-            if (length < profileSize) {
-                return nullptr;
-            }
-
-            return MakeICC(data, profileSize);
+            // Deprecated and unsupported code path
+            return nullptr;
         }
         case ColorSpaceHeader::kTransferFn_Flag: {
             if (length < 19 * sizeof(float)) {
@@ -506,37 +437,22 @@ bool SkColorSpace::Equals(const SkColorSpace* src, const SkColorSpace* dst) {
         return false;
     }
 
-    SkData* srcData = as_CSB(src)->fProfileData.get();
-    SkData* dstData = as_CSB(dst)->fProfileData.get();
-    if (srcData || dstData) {
-        if (srcData && dstData) {
-            return srcData->size() == dstData->size() &&
-                   0 == memcmp(srcData->data(), dstData->data(), srcData->size());
-        }
-
+    if (src->gammaNamed() != dst->gammaNamed()) {
         return false;
     }
 
-    // profiles are mandatory for A2B0 color spaces
-    SkASSERT(as_CSB(src)->type() == SkColorSpace_Base::Type::kXYZ);
-    const SkColorSpace_XYZ* srcXYZ = static_cast<const SkColorSpace_XYZ*>(src);
-    const SkColorSpace_XYZ* dstXYZ = static_cast<const SkColorSpace_XYZ*>(dst);
-
-    if (srcXYZ->gammaNamed() != dstXYZ->gammaNamed()) {
-        return false;
-    }
-
-    switch (srcXYZ->gammaNamed()) {
+    switch (src->gammaNamed()) {
         case kSRGB_SkGammaNamed:
         case k2Dot2Curve_SkGammaNamed:
         case kLinear_SkGammaNamed:
-            if (srcXYZ->toXYZD50Hash() == dstXYZ->toXYZD50Hash()) {
-                SkASSERT(*srcXYZ->toXYZD50() == *dstXYZ->toXYZD50() && "Hash collision");
+            if (src->toXYZD50Hash() == dst->toXYZD50Hash()) {
+                SkASSERT(*src->toXYZD50() == *dst->toXYZD50() && "Hash collision");
                 return true;
             }
             return false;
         default:
             // It is unlikely that we will reach this case.
+            // TODO: Simplify this case now that color spaces have one representation.
             sk_sp<SkData> serializedSrcData = src->serialize();
             sk_sp<SkData> serializedDstData = dst->serialize();
             return serializedSrcData->size() == serializedDstData->size() &&
@@ -575,7 +491,7 @@ SkColorSpaceTransferFn SkColorSpaceTransferFn::invert() const {
     // find inverse for the other segment (if possible)
     if (transfer_fn_almost_equal(0.f, fA) || transfer_fn_almost_equal(0.f, fG)) {
         // otherwise assume it should be 1 as it is the top segment
-        // as you can't invert the constant functions y = b^g + c, or y = 1 + c
+        // as you can't invert the constant functions y = b^g + e, or y = 1 + e
         inv.fG = 1.f;
         inv.fE = 1.f;
     } else {

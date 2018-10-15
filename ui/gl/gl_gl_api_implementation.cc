@@ -6,7 +6,6 @@
 
 #include <vector>
 
-#include "base/memory/ptr_util.h"
 #include "base/stl_util.h"
 #include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
@@ -31,21 +30,8 @@ static bool g_debug_bindings_enabled = false;
 
 namespace {
 
-static inline GLenum GetInternalFormat(const GLVersionInfo* version,
-                                       GLenum internal_format) {
-  if (!version->is_es) {
-    if (internal_format == GL_BGRA_EXT || internal_format == GL_BGRA8_EXT)
-      return GL_RGBA8;
-  }
-  if (version->is_es3 && version->is_mesa) {
-    // Mesa bug workaround: Mipmapping does not work when using GL_BGRA_EXT
-    if (internal_format == GL_BGRA_EXT)
-      return GL_RGBA;
-  }
-  return internal_format;
-}
-
-// TODO(epenner): Could the above function be merged into this and removed?
+// TODO(epenner): Could the above function be merged into GetInternalFormat and
+// removed?
 static inline GLenum GetTexInternalFormat(const GLVersionInfo* version,
                                           GLenum internal_format,
                                           GLenum format,
@@ -59,6 +45,9 @@ static inline GLenum GetTexInternalFormat(const GLVersionInfo* version,
       switch (type) {
         case GL_UNSIGNED_BYTE:
           gl_internal_format = GL_R8_EXT;
+          break;
+        case GL_UNSIGNED_SHORT:
+          gl_internal_format = GL_R16_EXT;
           break;
         case GL_HALF_FLOAT_OES:
           gl_internal_format = GL_R16F_EXT;
@@ -88,25 +77,6 @@ static inline GLenum GetTexInternalFormat(const GLVersionInfo* version,
           break;
       }
       return gl_internal_format;
-    }
-  }
-
-  if (type == GL_FLOAT && version->is_angle && version->is_es &&
-      version->major_version == 2) {
-    // It's possible that the texture is using a sized internal format, and
-    // ANGLE exposing GLES2 API doesn't support those.
-    // TODO(oetuaho@nvidia.com): Remove these conversions once ANGLE has the
-    // support.
-    // http://code.google.com/p/angleproject/issues/detail?id=556
-    switch (format) {
-      case GL_RGBA:
-        gl_internal_format = GL_RGBA;
-        break;
-      case GL_RGB:
-        gl_internal_format = GL_RGB;
-        break;
-      default:
-        break;
     }
   }
 
@@ -240,6 +210,19 @@ static inline GLenum GetPixelType(const GLVersionInfo* version,
 }
 
 }  // anonymous namespace
+
+GLenum GetInternalFormat(const GLVersionInfo* version, GLenum internal_format) {
+  if (!version->is_es) {
+    if (internal_format == GL_BGRA_EXT || internal_format == GL_BGRA8_EXT)
+      return GL_RGBA8;
+  }
+  if (version->is_es3 && version->is_mesa) {
+    // Mesa bug workaround: Mipmapping does not work when using GL_BGRA_EXT
+    if (internal_format == GL_BGRA_EXT)
+      return GL_RGBA;
+  }
+  return internal_format;
+}
 
 void InitializeStaticGLBindingsGL() {
   g_current_gl_context_tls = new base::ThreadLocalPointer<CurrentGL>;

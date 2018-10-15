@@ -60,4 +60,3 @@ class GPU_EXPORT DebugMarkerManager {
 }  // namespace gpu
 
 #endif  // GPU_COMMAND_BUFFER_SERVICE_DEBUG_MARKER_MANAGER_H_
-

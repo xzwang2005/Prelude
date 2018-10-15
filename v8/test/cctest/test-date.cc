@@ -44,7 +44,7 @@ class DateCacheMock: public DateCache {
       : local_offset_(local_offset), rules_(rules), rules_count_(rules_count) {}
 
  protected:
-  virtual int GetDaylightSavingsOffsetFromOS(int64_t time_sec) {
+  int GetDaylightSavingsOffsetFromOS(int64_t time_sec) override {
     int days = DaysFromTime(time_sec * 1000);
     int time_in_day_sec = TimeInDay(time_sec * 1000, days) / 1000;
     int year, month, day;
@@ -53,9 +53,8 @@ class DateCacheMock: public DateCache {
     return rule == nullptr ? 0 : rule->offset_sec * 1000;
   }
 
-
-  virtual int GetLocalOffsetFromOS() {
-    return local_offset_;
+  int GetLocalOffsetFromOS(int64_t time_sec, bool is_utc) override {
+    return local_offset_ + GetDaylightSavingsOffsetFromOS(time_sec);
   }
 
  private:
@@ -113,8 +112,7 @@ static void CheckDST(int64_t time) {
   Isolate* isolate = CcTest::i_isolate();
   DateCache* date_cache = isolate->date_cache();
   int64_t actual = date_cache->ToLocal(time);
-  int64_t expected = time + date_cache->GetLocalOffsetFromOS() +
-                     date_cache->GetDaylightSavingsOffsetFromOS(time / 1000);
+  int64_t expected = time + date_cache->GetLocalOffsetFromOS(time, true);
   CHECK_EQ(actual, expected);
 }
 

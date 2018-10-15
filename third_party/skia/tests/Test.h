@@ -8,22 +8,11 @@
 #define skiatest_Test_DEFINED
 
 #include "../tools/Registry.h"
+#include "GrContextFactory.h"
 #include "SkClipOpPriv.h"
 #include "SkString.h"
 #include "SkTraceEvent.h"
 #include "SkTypes.h"
-
-#if SK_SUPPORT_GPU
-#include "GrContextFactory.h"
-#else
-namespace sk_gpu_test {
-class GrContextFactory;
-class ContextInfo;
-class GLTestContext;
-}  // namespace sk_gpu_test
-class GrContext;
-struct GrContextOptions;
-#endif
 
 namespace skiatest {
 
@@ -123,7 +112,7 @@ typedef sk_tools::Registry<Test> TestRegistry;
         ...
         REPORTER_ASSERT(reporter, x == 15);
         ...
-        REPORTER_ASSERT_MESSAGE(reporter, x == 15, "x should be 15");
+        REPORTER_ASSERT(reporter, x == 15, "x should be 15");
         ...
         if (x != 15) {
             ERRORF(reporter, "x should be 15, but is %d", x);
@@ -133,17 +122,14 @@ typedef sk_tools::Registry<Test> TestRegistry;
     }
 */
 
-#if SK_SUPPORT_GPU
 using GrContextFactoryContextType = sk_gpu_test::GrContextFactory::ContextType;
-#else
-using GrContextFactoryContextType = int;
-#endif
 
 typedef void GrContextTestFn(Reporter*, const sk_gpu_test::ContextInfo&);
 typedef bool GrContextTypeFilterFn(GrContextFactoryContextType);
 
 extern bool IsGLContextType(GrContextFactoryContextType);
 extern bool IsVulkanContextType(GrContextFactoryContextType);
+extern bool IsMetalContextType(GrContextFactoryContextType);
 extern bool IsRenderingGLContextType(GrContextFactoryContextType);
 extern bool IsNullGLContextType(GrContextFactoryContextType);
 void RunWithGPUTestContexts(GrContextTestFn*, GrContextTypeFilterFn*, Reporter*,
@@ -171,18 +157,11 @@ private:
 
 }  // namespace skiatest
 
-#define REPORTER_ASSERT(r, cond)                  \
-    do {                                          \
-        if (!(cond)) {                            \
-            REPORT_FAILURE(r, #cond, SkString()); \
-        }                                         \
-    } while (0)
-
-#define REPORTER_ASSERT_MESSAGE(r, cond, message)        \
-    do {                                                 \
-        if (!(cond)) {                                   \
-            REPORT_FAILURE(r, #cond, SkString(message)); \
-        }                                                \
+#define REPORTER_ASSERT(r, cond, ...)                              \
+    do {                                                           \
+        if (!(cond)) {                                             \
+            REPORT_FAILURE(r, #cond, SkStringPrintf(__VA_ARGS__)); \
+        }                                                          \
     } while (0)
 
 #define ERRORF(r, ...)                                      \
@@ -235,11 +214,14 @@ private:
 #define DEF_GPUTEST_FOR_VULKAN_CONTEXT(name, reporter, context_info)                        \
         DEF_GPUTEST_FOR_CONTEXTS(name, &skiatest::IsVulkanContextType,                      \
                                  reporter, context_info, nullptr)
+#define DEF_GPUTEST_FOR_METAL_CONTEXT(name, reporter, context_info)                         \
+        DEF_GPUTEST_FOR_CONTEXTS(name, &skiatest::IsMetalContextType,                       \
+                                 reporter, context_info, nullptr)
 
 #define REQUIRE_PDF_DOCUMENT(TEST_NAME, REPORTER)                          \
     do {                                                                   \
         SkDynamicMemoryWStream testStream;                                 \
-        sk_sp<SkDocument> testDoc(SkDocument::MakePDF(&testStream));       \
+        sk_sp<SkDocument> testDoc(SkPDF::MakeDocument(&testStream));       \
         if (!testDoc) {                                                    \
             INFOF(REPORTER, "PDF disabled; %s test skipped.", #TEST_NAME); \
             return;                                                        \

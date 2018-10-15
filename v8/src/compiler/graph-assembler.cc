@@ -26,8 +26,14 @@ Node* GraphAssembler::Int32Constant(int32_t value) {
   return jsgraph()->Int32Constant(value);
 }
 
-Node* GraphAssembler::UniqueInt32Constant(int32_t value) {
-  return graph()->NewNode(common()->Int32Constant(value));
+Node* GraphAssembler::Int64Constant(int64_t value) {
+  return jsgraph()->Int64Constant(value);
+}
+
+Node* GraphAssembler::UniqueIntPtrConstant(intptr_t value) {
+  return graph()->NewNode(
+      machine()->Is64() ? common()->Int64Constant(value)
+                        : common()->Int32Constant(static_cast<int32_t>(value)));
 }
 
 Node* GraphAssembler::SmiConstant(int32_t value) {
@@ -86,10 +92,13 @@ CHECKED_ASSEMBLER_MACH_BINOP_LIST(CHECKED_BINOP_DEF)
 #undef CHECKED_BINOP_DEF
 
 Node* GraphAssembler::Float64RoundDown(Node* value) {
-  if (machine()->Float64RoundDown().IsSupported()) {
-    return graph()->NewNode(machine()->Float64RoundDown().op(), value);
-  }
-  return nullptr;
+  CHECK(machine()->Float64RoundDown().IsSupported());
+  return graph()->NewNode(machine()->Float64RoundDown().op(), value);
+}
+
+Node* GraphAssembler::Float64RoundTruncate(Node* value) {
+  CHECK(machine()->Float64RoundTruncate().IsSupported());
+  return graph()->NewNode(machine()->Float64RoundTruncate().op(), value);
 }
 
 Node* GraphAssembler::Projection(int index, Node* value) {
@@ -134,6 +143,11 @@ Node* GraphAssembler::DebugBreak() {
                                             current_effect_, current_control_);
 }
 
+Node* GraphAssembler::Unreachable() {
+  return current_effect_ = graph()->NewNode(common()->Unreachable(),
+                                            current_effect_, current_control_);
+}
+
 Node* GraphAssembler::Store(StoreRepresentation rep, Node* object, Node* offset,
                             Node* value) {
   return current_effect_ =
@@ -145,6 +159,28 @@ Node* GraphAssembler::Load(MachineType rep, Node* object, Node* offset) {
   return current_effect_ =
              graph()->NewNode(machine()->Load(rep), object, offset,
                               current_effect_, current_control_);
+}
+
+Node* GraphAssembler::StoreUnaligned(MachineRepresentation rep, Node* object,
+                                     Node* offset, Node* value) {
+  Operator const* const op =
+      (rep == MachineRepresentation::kWord8 ||
+       machine()->UnalignedStoreSupported(rep))
+          ? machine()->Store(StoreRepresentation(rep, kNoWriteBarrier))
+          : machine()->UnalignedStore(rep);
+  return current_effect_ = graph()->NewNode(op, object, offset, value,
+                                            current_effect_, current_control_);
+}
+
+Node* GraphAssembler::LoadUnaligned(MachineType rep, Node* object,
+                                    Node* offset) {
+  Operator const* const op =
+      (rep.representation() == MachineRepresentation::kWord8 ||
+       machine()->UnalignedLoadSupported(rep.representation()))
+          ? machine()->Load(rep)
+          : machine()->UnalignedLoad(rep);
+  return current_effect_ = graph()->NewNode(op, object, offset, current_effect_,
+                                            current_control_);
 }
 
 Node* GraphAssembler::Retain(Node* buffer) {
@@ -164,25 +200,34 @@ Node* GraphAssembler::ToNumber(Node* value) {
                               value, NoContextConstant(), current_effect_);
 }
 
-Node* GraphAssembler::DeoptimizeIf(DeoptimizeReason reason, Node* condition,
-                                   Node* frame_state) {
-  return current_control_ = current_effect_ = graph()->NewNode(
-             common()->DeoptimizeIf(DeoptimizeKind::kEager, reason), condition,
-             frame_state, current_effect_, current_control_);
+Node* GraphAssembler::BitcastWordToTagged(Node* value) {
+  return current_effect_ =
+             graph()->NewNode(machine()->BitcastWordToTagged(), value,
+                              current_effect_, current_control_);
 }
 
-Node* GraphAssembler::DeoptimizeIfNot(DeoptimizeKind kind,
-                                      DeoptimizeReason reason, Node* condition,
-                                      Node* frame_state) {
-  return current_control_ = current_effect_ = graph()->NewNode(
-             common()->DeoptimizeUnless(kind, reason), condition, frame_state,
-             current_effect_, current_control_);
+Node* GraphAssembler::Word32PoisonOnSpeculation(Node* value) {
+  return current_effect_ =
+             graph()->NewNode(machine()->Word32PoisonOnSpeculation(), value,
+                              current_effect_, current_control_);
 }
 
-Node* GraphAssembler::DeoptimizeIfNot(DeoptimizeReason reason, Node* condition,
-                                      Node* frame_state) {
-  return DeoptimizeIfNot(DeoptimizeKind::kEager, reason, condition,
-                         frame_state);
+Node* GraphAssembler::DeoptimizeIf(DeoptimizeReason reason,
+                                   VectorSlotPair const& feedback,
+                                   Node* condition, Node* frame_state) {
+  return current_control_ = current_effect_ = graph()->NewNode(
+             common()->DeoptimizeIf(DeoptimizeKind::kEager, reason, feedback),
+             condition, frame_state, current_effect_, current_control_);
+}
+
+Node* GraphAssembler::DeoptimizeIfNot(DeoptimizeReason reason,
+                                      VectorSlotPair const& feedback,
+                                      Node* condition, Node* frame_state,
+                                      IsSafetyCheck is_safety_check) {
+  return current_control_ = current_effect_ = graph()->NewNode(
+             common()->DeoptimizeUnless(DeoptimizeKind::kEager, reason,
+                                        feedback, is_safety_check),
+             condition, frame_state, current_effect_, current_control_);
 }
 
 void GraphAssembler::Branch(Node* condition, GraphAssemblerLabel<0u>* if_true,
@@ -230,10 +275,11 @@ Operator const* GraphAssembler::ToNumberOperator() {
     Callable callable =
         Builtins::CallableFor(jsgraph()->isolate(), Builtins::kToNumber);
     CallDescriptor::Flags flags = CallDescriptor::kNoFlags;
-    CallDescriptor* desc = Linkage::GetStubCallDescriptor(
-        jsgraph()->isolate(), graph()->zone(), callable.descriptor(), 0, flags,
+    auto call_descriptor = Linkage::GetStubCallDescriptor(
+        graph()->zone(), callable.descriptor(),
+        callable.descriptor().GetStackParameterCount(), flags,
         Operator::kEliminatable);
-    to_number_operator_.set(common()->Call(desc));
+    to_number_operator_.set(common()->Call(call_descriptor));
   }
   return to_number_operator_.get();
 }

@@ -8,11 +8,12 @@
 #ifndef Window_unix_DEFINED
 #define Window_unix_DEFINED
 
-#include <X11/Xlib.h>
-#include <GL/glx.h>
 #include "../Window.h"
 #include "SkChecksum.h"
 #include "SkTDynamicHash.h"
+
+#include <GL/glx.h>
+#include <X11/Xlib.h>
 
 typedef Window XWindow;
 
@@ -20,13 +21,14 @@ namespace sk_app {
 
 class Window_unix : public Window {
 public:
-    Window_unix() : Window()
-                  , fDisplay(nullptr)
-                  , fWindow(0)
-                  , fGC(nullptr)
-                  , fFBConfig(nullptr)
-                  , fVisualInfo(nullptr)
-                  , fMSAASampleCount(0) {}
+    Window_unix()
+            : Window()
+            , fDisplay(nullptr)
+            , fWindow(0)
+            , fGC(nullptr)
+            , fFBConfig(nullptr)
+            , fVisualInfo(nullptr)
+            , fMSAASampleCount(1) {}
     ~Window_unix() override { this->closeWindow(); }
 
     bool initWindow(Display* display);

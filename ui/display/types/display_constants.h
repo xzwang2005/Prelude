@@ -13,15 +13,22 @@ namespace display {
 // before display IDs are known.
 constexpr int64_t kInvalidDisplayId = -1;
 
+// Display ID that represents a valid display to be used when there's no actual
+// display connected.
+constexpr int64_t kDefaultDisplayId = 0xFF;
+
 // Display ID for a virtual display assigned to a unified desktop.
 constexpr int64_t kUnifiedDisplayId = -10;
+
+// Invalid year of manufacture of the display.
+constexpr int32_t kInvalidYearOfManufacture = -1;
 
 // Used to describe the state of a multi-display configuration.
 enum MultipleDisplayState {
   MULTIPLE_DISPLAY_STATE_INVALID,
   MULTIPLE_DISPLAY_STATE_HEADLESS,
   MULTIPLE_DISPLAY_STATE_SINGLE,
-  MULTIPLE_DISPLAY_STATE_DUAL_MIRROR,
+  MULTIPLE_DISPLAY_STATE_DUAL_MIRROR,     // TODO(crbug.com/774795) Rename this.
   MULTIPLE_DISPLAY_STATE_MULTI_EXTENDED,  // 2+ displays in extended mode.
 };
 

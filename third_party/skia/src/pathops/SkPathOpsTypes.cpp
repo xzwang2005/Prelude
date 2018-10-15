@@ -103,6 +103,7 @@ static bool less_or_equal_ulps(float a, float b, int epsilon) {
     return aBits < bBits + epsilon;
 }
 
+#ifndef SKOTTIE_HACK
 // equality using the same error term as between
 bool AlmostBequalUlps(float a, float b) {
     const int UlpsEpsilon = 2;
@@ -120,7 +121,10 @@ bool AlmostDequalUlps(float a, float b) {
 }
 
 bool AlmostDequalUlps(double a, double b) {
-    return AlmostDequalUlps(SkDoubleToScalar(a), SkDoubleToScalar(b));
+    if (fabs(a) < SK_ScalarMax && fabs(b) < SK_ScalarMax) {
+        return AlmostDequalUlps(SkDoubleToScalar(a), SkDoubleToScalar(b));
+    }
+    return fabs(a - b) / SkTMax(fabs(a), fabs(b)) < FLT_EPSILON * 16;
 }
 
 bool AlmostEqualUlps(float a, float b) {
@@ -224,6 +228,7 @@ double SkDCubeRoot(double x) {
     }
     return result;
 }
+#endif
 
 SkOpGlobalState::SkOpGlobalState(SkOpContourHead* head,
                                  SkArenaAlloc* allocator

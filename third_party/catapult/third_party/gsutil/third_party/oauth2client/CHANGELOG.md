@@ -1,5 +1,244 @@
 # CHANGELOG
 
+## v4.1.2
+
+**Note**: oauth2client is deprecated. No more features will be added to the
+libraries and the core team is turning down support. We recommend you use
+[google-auth](https://google-auth.readthedocs.io) and [oauthlib](http://oauthlib.readthedocs.io/).
+
+Bug fixes:
+* Fix packaging issue had erroneously installed the test package. (#688)
+
+## v4.1.1
+
+**Note**: oauth2client is deprecated. No more features will be added to the
+libraries and the core team is turning down support. We recommend you use
+[google-auth](https://google-auth.readthedocs.io) and [oauthlib](http://oauthlib.readthedocs.io/).
+
+New features:
+* Allow passing prompt='consent' via the flow_from_clientsecrets. (#717)
+
+## v4.1.0
+
+**Note**: oauth2client is now deprecated. No more features will be added to the
+libraries and the core team is turning down support. We recommend you use
+[google-auth](https://google-auth.readthedocs.io) and [oauthlib](http://oauthlib.readthedocs.io/).
+
+New features:
+* Allow customizing the GCE metadata service address via an env var. (#704)
+* Store original encoded and signed identity JWT in OAuth2Credentials. (#680)
+* Use jsonpickle in django contrib, if available. (#676)
+
+Bug fixes:
+* Typo fixes. (#668, #697)
+* Remove b64 padding from PKCE values, per RFC7636. (#683)
+* Include LICENSE in Manifest.in. (#694)
+* Fix tests and CI. (#705, #712, #713)
+* Escape callback error code in flask_util. (#710)
+
+## v4.0.0
+
+New features:
+* New Django samples. (#636)
+* Add support for RFC7636 PKCE. (#588)
+* Release as a universal wheel. (#665)
+
+Bug fixes:
+* Fix django authorization redirect by correctly checking validity of credentials. (#651)
+* Correct query loss when using parse_qsl to dict. (#622)
+* Switch django models from pickle to jsonpickle. (#614)
+* Support new MIDDLEWARE Django 1.10 setting. (#623)
+* Remove usage of os.environ.setdefault. (#621)
+* Handle missing storage files correctly. (#576)
+* Try to revoke token with POST when getting a 405. (#662)
+
+Internal changes:
+* Use transport module for GCE environment check. (#612)
+* Remove __author__ lines and add contributors.md. (#627)
+* Clean up imports. (#625)
+* Use transport.request in tests. (#607)
+* Drop unittest2 dependency (#610)
+* Remove backslash line continuations. (#608)
+* Use transport helpers in system tests. (#606)
+* Clean up usage of HTTP mocks in tests. (#605)
+* Remove all uses of MagicMock. (#598)
+* Migrate test runner to pytest. (#569)
+* Merge util.py and _helpers.py. (#579)
+* Remove httplib2 imports from non-transport modules. (#577)
+
+Breaking changes:
+* Drop Python 3.3 support. (#603)
+* Drop Python 2.6 support. (#590)
+* Remove multistore_file. (#589)
+
+## v3.0.0
+
+* Populate `token_expiry` for GCE credentials. (#473)
+* Move GCE metadata interface to a separate module. (#520)
+* Populate `scopes` for GCE credentials. (#524)
+* Fix Python 3.5 compatibility. (#531)
+* Add `oauth2client.contrib.sqlalchemy`, a SQLAlchemy-based credential store. (#527)
+* Improve error when an invalid client secret is provided. (#530)
+* Add `oauth2client.contrib.multiprocess_storage`. This supersedes the functionality in `oauth2client.contrib.multistore_file`. (#504)
+* Pull httplib2 usage into a separate transport module. (#559, #561)
+* Refactor all django-related code into `oauth2client.contrib.django_util`. Add `DjangoORMStorage`, remove `FlowField`. (#546)
+* Fix application default credentials resolution order. (#570)
+* Add configurable timeout for GCE metadata server check. (#571)
+* Add warnings when using deprecated `approval_prompt='force'`. (#572)
+* Add deprecation warning to `oauth2client.contrib.multistore_file`. (#574)
+* (Hygiene) PEP8 compliance and various style fixes (#537, #540, #552, #562)
+* (Hygiene) Remove duplicated exception classes in `oauth2client.contrib.appengine`. (#533)
+
+NOTE: The next major release of oauth2client (v4.0.0) will remove the `oauth2client.contrib.multistore_file` module.
+
+## v2.2.0
+
+* Added support to override `token_uri` and `revoke_uri` in `oauth2client.service_account.ServiceAccountCredentials`. (#510)
+* `oauth2client.contrib.multistore_file` now handles `OSError` in addition to `IOError` because Windows may raise `OSError` where other platforms will raise `IOError`.
+* `oauth2client.contrib.django_util` and `oauth2client.contrib.django_orm` have been updated to support Django 1.8 - 1.10. Versions of Django below 1.8 will not work with these modules.
+
+## v2.1.0
+
+* Add basic support for JWT access credentials. (#503)
+* Fix `oauth2client.client.DeviceFlowInfo` to use UTC instead of the system timezone when calculating code expiration.
+
+## v2.0.2
+
+* Fix issue where `flask_util.UserOAuth2.required` would accept expired credentials (#452).
+* Fix issue where `flask_util` would fill the session with `Flow` objects (#498).
+* Fix issue with Python 3 binary strings in `Flow.step2_exchange` (#446).
+* Improve test coverage to 100%.
+
+## v2.0.1
+
+* Making scopes optional on Google Compute Engine `AppAssertionCredentials`
+  and adding a warning that GCE won't honor scopes (#419)
+* Adding common `sign_blob()` to service account types and a
+  `service_account_email` property. (#421)
+* Improving error message in P12 factory
+  `ServiceAccountCredentials.from_p12_keyfile` when pyOpenSSL is
+  missing. (#424)
+* Allowing default flags in `oauth2client.tools.run_flow()`
+  rather than forcing users to create a dummy argparser (#426)
+* Removing `oauth2client.util.dict_to_tuple_key()` from public
+  interface (#429)
+* Adding `oauth2client.contrib._appengine_ndb` helper module
+  for `oauth2client.contrib.appengine` and moving most code that
+  uses the `ndb` library into the helper (#434)
+* Fix error in `django_util` sample code (#438)
+
+## v2.0.0-post1
+
+* Fix Google Compute Engine breakage (#411, breakage introduced in #387) that
+  made it impossible to obtain access tokens
+* Implement `ServiceAccountCredentials.from_p12_keyfile_buffer()`
+  to allow passing a file-like object in addition to the factory
+  constructor that uses a filename directly (#413)
+* Implement `ServiceAccountCredentials.create_delegated()`
+  to allow upgrading a credential to one that acts on behalf
+  of a given subject (#420)
+
+## v2.0.0
+
+* Add django_util (#332)
+* Avoid OAuth2Credentials `id_token` going out of sync after a token
+  refresh (#337)
+* Move to a `contrib` sub-package code not considered a core part of
+  the library (#346, #353, #370, #375, #376, #382)
+* Add `token_expiry` to `devshell` credentials (#372)
+* Move `Storage` locking into a base class (#379)
+* Added dictionary storage (#380)
+* Added `to_json` and `from_json` methods to all `Credentials`
+  classes (#385)
+* Fall back to read-only credentials on EACCES errors (#389)
+* Coalesced the two `ServiceAccountCredentials`
+  classes (#395, #396, #397, #398, #400)
+
+### Special Note About `ServiceAccountCredentials`:
+-------------------------------------------------
+
+For JSON keys, you can create a credential via
+
+```py
+from oauth2client.service_account import ServiceAccountCredentials
+credentials = ServiceAccountCredentials.from_json_keyfile_name(
+    key_file_name, scopes=[...])
+```
+
+You can still rely on
+
+```py
+from oauth2client.client import GoogleCredentials
+credentials = GoogleCredentials.get_application_default()
+```
+
+returning these credentials when you set the `GOOGLE_APPLICATION_CREDENTIALS`
+environment variable.
+
+For `.p12` keys, construct via
+
+```py
+credentials = ServiceAccountCredentials.from_p12_keyfile(
+    service_account_email, key_file_name, scopes=[...])
+```
+
+though we urge you to use JSON keys (rather than `.p12` keys) if you can.
+
+This is equivalent to the previous method
+
+```py
+# PRE-oauth2client 2.0.0 EXAMPLE CODE!
+from oauth2client.client import SignedJwtAssertionCredentials
+
+with open(key_file_name, 'rb') as key_file:
+    private_key = key_file.read()
+
+credentials = SignedJwtAssertionCredentials(
+    service_account_email, private_key, scope=[...])
+```
+
+## v1.5.2
+
+* Add access token refresh error class that includes HTTP status (#310)
+* Python3 compatibility fixes for Django (#316, #318)
+* Fix incremental auth in flask_util (#322)
+* Fall back to credential refresh on EDEADLK in multistore_file (#336)
+
+## v1.5.1
+
+* Fix bad indent in `tools.run_flow()` (#301, bug was
+  introduced when switching from 2 space indents to 4)
+
+## v1.5.0
+
+* Fix (more like clarify) `bytes` / `str` handling in crypto
+  methods. (#203, #250, #272)
+* Replacing `webapp` with `webapp2` in `oauth2client.appengine` (#217)
+* Added optional `state` parameter to
+  `step1_get_authorize_url`. (#219 and #222)
+* Added `flask_util` module that provides a Flask extension to aid
+  with using OAuth2 web server flow. This provides the same functionality
+  as the `appengine.webapp2` OAuth2Decorator, but will work with any Flask
+  application regardless of hosting environment. (#226, #273)
+* Track scopes used on credentials objects (#230)
+* Moving docs to [readthedocs.org][1] (#237, #238, #244)
+* Removing `old_run` module. Was deprecated July 2, 2013. (#285)
+* Avoid proxies when querying for GCE metadata (to check if
+  running on GCE) (#114, #293)
+
+[1]: https://readthedocs.org/
+
+## v1.4.12
+
+* Fix OS X flaky test failure (#189).
+* Fix broken OpenSSL import (#191).
+* Remove `@util.positional` from wrapped request in `Credentials.authorize()`
+  (#196, #197).
+* Changing pinned dependencies to `>=` (#200, #204).
+* Support client authentication using `Authorization` header (#206).
+* Clarify environment check in case where GAE imports succeed but GAE services
+  aren't available (#208).
+
 ## v1.4.11
 
 * Better environment detection with Managed VMs.

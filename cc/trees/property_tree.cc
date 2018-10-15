@@ -9,6 +9,7 @@
 
 #include "base/logging.h"
 #include "base/memory/ptr_util.h"
+#include "base/numerics/checked_math.h"
 #include "base/trace_event/trace_event_argument.h"
 #include "cc/layers/layer_impl.h"
 #include "cc/trees/clip_node.h"
@@ -373,9 +374,19 @@ gfx::Vector2dF StickyPositionOffset(TransformTree* tree, TransformNode* node) {
     scroll_position -= transform_node->snap_amount;
   }
 
-  gfx::RectF clip(
-      scroll_position,
-      gfx::SizeF(property_trees.scroll_tree.container_bounds(scroll_node->id)));
+  gfx::RectF clip = constraint.constraint_box_rect;
+  clip.Offset(scroll_position.x(), scroll_position.y());
+
+  // The clip region may need to be offset by the outer viewport bounds, e.g. if
+  // the top bar hides/shows. Position sticky should never attach to the inner
+  // viewport since it shouldn't be affected by pinch-zoom.
+  DCHECK(!scroll_node->scrolls_inner_viewport);
+  if (scroll_node->scrolls_outer_viewport) {
+    clip.set_width(clip.width() +
+                   property_trees.outer_viewport_container_bounds_delta().x());
+    clip.set_height(clip.height() +
+                    property_trees.outer_viewport_container_bounds_delta().y());
+  }
 
   gfx::Vector2dF ancestor_sticky_box_offset;
   if (sticky_data->nearest_node_shifting_sticky_box !=
@@ -938,33 +949,82 @@ void EffectTree::TakeCopyRequestsAndTransformToSurface(
   DCHECK(effect_node->has_render_surface);
   DCHECK(effect_node->has_copy_request);
 
-  auto range = copy_requests_.equal_range(node_id);
-  for (auto it = range.first; it != range.second; ++it)
-    requests->push_back(std::move(it->second));
-  copy_requests_.erase(range.first, range.second);
-
-  for (auto& it : *requests) {
-    if (!it->has_area())
-      continue;
-
-    // The area needs to be transformed from the space of content that draws to
-    // the surface to the space of the surface itself.
-    int destination_id = effect_node->transform_id;
-    int source_id;
-    if (effect_node->parent_id != EffectTree::kInvalidNodeId) {
-      // For non-root surfaces, transform only by sub-layer scale.
-      source_id = destination_id;
-    } else {
-      // The root surface doesn't have the notion of sub-layer scale, but
-      // instead has a similar notion of transforming from the space of the root
-      // layer to the space of the screen.
-      DCHECK_EQ(kRootNodeId, destination_id);
-      source_id = TransformTree::kContentsRootNodeId;
-    }
-    gfx::Transform transform;
-    property_trees()->GetToTarget(source_id, node_id, &transform);
-    it->set_area(MathUtil::MapEnclosingClippedRect(transform, it->area()));
+  // The area needs to be transformed from the space of content that draws to
+  // the surface to the space of the surface itself.
+  int destination_id = effect_node->transform_id;
+  int source_id;
+  if (effect_node->parent_id != EffectTree::kInvalidNodeId) {
+    // For non-root surfaces, transform only by sub-layer scale.
+    source_id = destination_id;
+  } else {
+    // The root surface doesn't have the notion of sub-layer scale, but instead
+    // has a similar notion of transforming from the space of the root layer to
+    // the space of the screen.
+    DCHECK_EQ(kRootNodeId, destination_id);
+    source_id = TransformTree::kContentsRootNodeId;
   }
+  gfx::Transform transform;
+  property_trees()->GetToTarget(source_id, node_id, &transform);
+
+  // Move each CopyOutputRequest out of |copy_requests_| and into |requests|,
+  // adjusting the source area and scale ratio of each. If the transform is
+  // something other than a straightforward translate+scale, the copy requests
+  // will be dropped.
+  auto range = copy_requests_.equal_range(node_id);
+  if (transform.IsPositiveScaleOrTranslation()) {
+    // Transform a vector in content space to surface space to determine how the
+    // scale ratio of each CopyOutputRequest should be adjusted. Since the scale
+    // ratios are provided integer coordinates, the basis vector determines the
+    // precision w.r.t. the fractional part of the Transform's scale factors.
+    constexpr gfx::Vector2d kContentVector(1024, 1024);
+    gfx::RectF surface_rect(0, 0, kContentVector.x(), kContentVector.y());
+    transform.TransformRect(&surface_rect);
+
+    for (auto it = range.first; it != range.second; ++it) {
+      viz::CopyOutputRequest* const request = it->second.get();
+      if (request->has_area()) {
+        request->set_area(
+            MathUtil::MapEnclosingClippedRect(transform, request->area()));
+      }
+
+      // Only adjust the scale ratio if the request specifies one, or if it
+      // specifies a result selection. Otherwise, the requestor is expecting a
+      // copy of the exact source pixels. If the adjustment to the scale ratio
+      // would produce out-of-range values, drop the copy request.
+      if (request->is_scaled() || request->has_result_selection()) {
+        float scale_from_x_f = request->scale_from().x() * surface_rect.width();
+        float scale_from_y_f =
+            request->scale_from().y() * surface_rect.height();
+        if (std::isnan(scale_from_x_f) ||
+            !base::IsValueInRangeForNumericType<int>(scale_from_x_f) ||
+            std::isnan(scale_from_y_f) ||
+            !base::IsValueInRangeForNumericType<int>(scale_from_y_f)) {
+          continue;
+        }
+        int scale_to_x = request->scale_to().x();
+        int scale_to_y = request->scale_to().y();
+        if (!base::CheckMul(scale_to_x, kContentVector.x())
+                 .AssignIfValid(&scale_to_x) ||
+            !base::CheckMul(scale_to_y, kContentVector.y())
+                 .AssignIfValid(&scale_to_y)) {
+          continue;
+        }
+        int scale_from_x = gfx::ToRoundedInt(scale_from_x_f);
+        int scale_from_y = gfx::ToRoundedInt(scale_from_y_f);
+        if (scale_from_x <= 0 || scale_from_y <= 0 || scale_to_x <= 0 ||
+            scale_to_y <= 0) {
+          // Transformed scaling ratio became illegal. Drop the request to
+          // provide an empty response.
+          continue;
+        }
+        request->SetScaleRatio(gfx::Vector2d(scale_from_x, scale_from_y),
+                               gfx::Vector2d(scale_to_x, scale_to_y));
+      }
+
+      requests->push_back(std::move(it->second));
+    }
+  }
+  copy_requests_.erase(range.first, range.second);
 }
 
 bool EffectTree::HasCopyRequests() const {
@@ -1112,6 +1172,21 @@ bool EffectTree::CreateOrReuseRenderSurfaces(
   return render_surfaces_changed;
 }
 
+bool EffectTree::ClippedHitTestRegionIsRectangle(int effect_id) const {
+  const EffectNode* effect_node = Node(effect_id);
+  for (; effect_node->id != kContentsRootNodeId;
+       effect_node = Node(effect_node->target_id)) {
+    gfx::Transform to_target;
+    if (!property_trees()->GetToTarget(effect_node->transform_id,
+                                       effect_node->target_id, &to_target) ||
+        !to_target.Preserves2dAxisAlignment())
+      return false;
+    if (effect_node->mask_layer_id != Layer::INVALID_ID)
+      return false;
+  }
+  return true;
+}
+
 void TransformTree::UpdateNodeAndAncestorsHaveIntegerTranslations(
     TransformNode* node,
     TransformNode* parent_node) {
@@ -1192,6 +1267,14 @@ void ScrollTree::CopyCompleteTreeState(const ScrollTree& other) {
   synced_scroll_offset_map_ = other.synced_scroll_offset_map_;
 }
 #endif
+
+ScrollNode* ScrollTree::FindNodeFromElementId(ElementId id) {
+  auto iterator = property_trees()->element_id_to_scroll_node_index.find(id);
+  if (iterator == property_trees()->element_id_to_scroll_node_index.end())
+    return nullptr;
+
+  return Node(iterator->second);
+}
 
 const ScrollNode* ScrollTree::FindNodeFromElementId(ElementId id) const {
   auto iterator = property_trees()->element_id_to_scroll_node_index.find(id);
@@ -1339,6 +1422,18 @@ const SyncedScrollOffset* ScrollTree::GetSyncedScrollOffset(
   return it != synced_scroll_offset_map_.end() ? it->second.get() : nullptr;
 }
 
+gfx::Vector2dF ScrollTree::ClampScrollToMaxScrollOffset(
+    ScrollNode* node,
+    LayerTreeImpl* layer_tree_impl) {
+  gfx::ScrollOffset old_offset = current_scroll_offset(node->element_id);
+  gfx::ScrollOffset clamped_offset =
+      ClampScrollOffsetToLimits(old_offset, *node);
+  gfx::Vector2dF delta = clamped_offset.DeltaFrom(old_offset);
+  if (!delta.IsZero())
+    ScrollBy(node, delta, layer_tree_impl);
+  return delta;
+}
+
 const gfx::ScrollOffset ScrollTree::current_scroll_offset(ElementId id) const {
   if (property_trees()->is_main_thread) {
     ScrollOffsetMap::const_iterator it = scroll_offset_map_.find(id);
@@ -1347,6 +1442,33 @@ const gfx::ScrollOffset ScrollTree::current_scroll_offset(ElementId id) const {
   return GetSyncedScrollOffset(id)
              ? GetSyncedScrollOffset(id)->Current(property_trees()->is_active)
              : gfx::ScrollOffset();
+}
+
+const gfx::ScrollOffset ScrollTree::GetPixelSnappedScrollOffset(
+    int scroll_node_id) const {
+  const ScrollNode* scroll_node = Node(scroll_node_id);
+  DCHECK(scroll_node);
+  gfx::ScrollOffset offset = current_scroll_offset(scroll_node->element_id);
+
+  const TransformNode* transform_node =
+      property_trees()->transform_tree.Node(scroll_node->transform_id);
+  DCHECK(offset == transform_node->scroll_offset)
+      << "Transform node scroll offset does not match the actual offset, this "
+         "means the snapped_amount calculation will be incorrect";
+
+  if (transform_node->scrolls) {
+    // If necessary perform a update for this node to ensure snap amount is
+    // accurate. This method is used by scroll timeline, so it is possible for
+    // it to get called before transform tree has gone through a full update
+    // cycle so this node snap amount may be stale.
+    if (transform_node->needs_local_transform_update)
+      property_trees()->transform_tree.UpdateTransforms(transform_node->id);
+
+    offset.set_x(offset.x() - transform_node->snap_amount.x());
+    offset.set_y(offset.y() - transform_node->snap_amount.y());
+  }
+
+  return offset;
 }
 
 gfx::ScrollOffset ScrollTree::PullDeltaForMainThread(

@@ -10,6 +10,7 @@
 
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
+#include "base/optional.h"
 #include "base/threading/thread_checker.h"
 #include "base/time/time.h"
 #include "base/timer/timer.h"
@@ -86,9 +87,29 @@ class MEDIA_EXPORT PaintCanvasVideoRenderer {
   // |level|, |internal_format|, |type| specify target texture |texture|.
   // The format of |video_frame| must be VideoFrame::NATIVE_TEXTURE.
   // |context_3d| has a GrContext that may be used during the copy.
-  // CorrectLastImageDimensions() insures that the source texture will be
+  // CorrectLastImageDimensions() ensures that the source texture will be
   // cropped to |visible_rect|. Returns true on success.
   bool CopyVideoFrameTexturesToGLTexture(
+      const Context3D& context_3d,
+      gpu::gles2::GLES2Interface* destination_gl,
+      const scoped_refptr<VideoFrame>& video_frame,
+      unsigned int target,
+      unsigned int texture,
+      unsigned int internal_format,
+      unsigned int format,
+      unsigned int type,
+      int level,
+      bool premultiply_alpha,
+      bool flip_y);
+
+  // Copy the CPU-side YUV contents of |video_frame| to texture |texture| in
+  // context |destination_gl|.
+  // |level|, |internal_format|, |type| specify target texture |texture|.
+  // The format of |video_frame| must be mappable.
+  // |context_3d| has a GrContext that may be used during the copy.
+  // CorrectLastImageDimensions() ensures that the source texture will be
+  // cropped to |visible_rect|. Returns true on success.
+  bool CopyVideoFrameYUVDataToGLTexture(
       const Context3D& context_3d,
       gpu::gles2::GLES2Interface* destination_gl,
       const scoped_refptr<VideoFrame>& video_frame,
@@ -160,8 +181,10 @@ class MEDIA_EXPORT PaintCanvasVideoRenderer {
 
   // Last image used to draw to the canvas.
   cc::PaintImage last_image_;
-  // Timestamp of the videoframe used to generate |last_image_|.
-  base::TimeDelta last_timestamp_ = media::kNoTimestamp;
+
+  // VideoFrame::unique_id() of the videoframe used to generate |last_image_|.
+  base::Optional<int> last_id_;
+
   // If |last_image_| is not used for a while, it's deleted to save memory.
   base::DelayTimer last_image_deleting_timer_;
   // Stable paint image id to provide to draw image calls.

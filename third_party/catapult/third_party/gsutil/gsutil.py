@@ -46,6 +46,11 @@ if not GSUTIL_DIR:
 THIRD_PARTY_DIR = os.path.join(GSUTIL_DIR, 'third_party')
 
 
+# Flag for whether or not an import wrapper is used to measure time taken for
+# individual imports.
+MEASURING_TIME_ACTIVE = False
+
+
 # Filter out "module was already imported" warnings that get printed after we
 # add our bundled version of modules to the Python path.
 warnings.filterwarnings('ignore', category=UserWarning,
@@ -58,6 +63,9 @@ warnings.filterwarnings('ignore', category=UserWarning,
 # the directory under third_party and the second element is the subdirectory
 # that needs to be added to sys.path.
 THIRD_PARTY_LIBS = [
+    ('argcomplete', ''),  # For tab-completion (gcloud installs only).
+    ('mock', ''),  # mock and dependencies must be before boto.
+    ('funcsigs', ''),  # mock dependency
     ('oauth2client', ''),  # oauth2client and dependencies must be before boto.
     ('pyasn1', ''),  # oauth2client dependency
     ('pyasn1-modules', ''),  # oauth2client dependency
@@ -65,8 +73,9 @@ THIRD_PARTY_LIBS = [
     ('apitools', ''),
     ('boto', ''),
     ('gcs-oauth2-boto-plugin', ''),
+    ('fasteners', ''), # oauth2client and apitools dependency
+    ('monotonic', ''), # fasteners dependency
     ('httplib2', 'python2'),
-    ('protorpc', ''),
     ('python-gflags', ''),
     ('retry-decorator', ''),
     ('six', ''),
@@ -87,14 +96,13 @@ THIRD_PARTY_DIR = os.path.join(GSUTIL_DIR, 'third_party')
 
 CRCMOD_PATH = os.path.join(THIRD_PARTY_DIR, 'crcmod', 'python2')
 CRCMOD_OSX_PATH = os.path.join(THIRD_PARTY_DIR, 'crcmod_osx')
-
 try:
   # pylint: disable=g-import-not-at-top
   import crcmod
 except ImportError:
-  crcmod = None
-
-if not UsingCrcmodExtension(crcmod):
+  # Note: the bundled crcmod module under THIRD_PARTY_DIR does not include its
+  # compiled C extension, but we still add it to sys.path because other parts of
+  # gsutil assume that at least the core crcmod module will be available.
   local_crcmod_path = (CRCMOD_OSX_PATH
                        if 'darwin' in str(sys.platform).lower()
                        else CRCMOD_PATH)

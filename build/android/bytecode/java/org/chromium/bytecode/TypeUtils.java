@@ -22,7 +22,6 @@ import java.util.Map;
 class TypeUtils {
     static final String ASSERTION_ERROR = "java/lang/AssertionError";
     static final String ASSET_MANAGER = "android/content/res/AssetManager";
-    static final String BASE_CHROMIUM_APPLICATION = "org/chromium/base/BaseChromiumApplication";
     static final String BUILD_HOOKS = "org/chromium/build/BuildHooks";
     static final String BUILD_HOOKS_ANDROID = "org/chromium/build/BuildHooksAndroid";
     static final String CONFIGURATION = "android/content/res/Configuration";
@@ -31,12 +30,13 @@ class TypeUtils {
     static final String DISPLAY_LEAK_ACTIVITY =
             "com/squareup/leakcanary/internal/DisplayLeakActivity";
     static final String RESOURCES = "android/content/res/Resources";
+    static final String STRING = "java/lang/String";
     static final String THEME = "android/content/res/Resources$Theme";
+
     static final String BOOLEAN = "Z";
     static final String INT = "I";
     static final String VOID = "V";
     private static final Map<String, Type> PRIMITIVE_DESCRIPTORS;
-
     static {
         PRIMITIVE_DESCRIPTORS = new HashMap<>();
         PRIMITIVE_DESCRIPTORS.put(Type.BOOLEAN_TYPE.toString(), Type.BOOLEAN_TYPE);

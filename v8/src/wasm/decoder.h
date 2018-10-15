@@ -11,7 +11,7 @@
 #include "src/base/compiler-specific.h"
 #include "src/flags.h"
 #include "src/signature.h"
-#include "src/utils.h"
+#include "src/v8memory.h"
 #include "src/wasm/wasm-result.h"
 #include "src/zone/zone-containers.h"
 
@@ -45,16 +45,23 @@ class Decoder {
   enum TraceFlag : bool { kTrace = true, kNoTrace = false };
 
   Decoder(const byte* start, const byte* end, uint32_t buffer_offset = 0)
-      : start_(start), pc_(start), end_(end), buffer_offset_(buffer_offset) {}
+      : Decoder(start, start, end, buffer_offset) {}
+  explicit Decoder(const Vector<const byte> bytes, uint32_t buffer_offset = 0)
+      : Decoder(bytes.start(), bytes.start() + bytes.length(), buffer_offset) {}
   Decoder(const byte* start, const byte* pc, const byte* end,
           uint32_t buffer_offset = 0)
-      : start_(start), pc_(pc), end_(end), buffer_offset_(buffer_offset) {}
+      : start_(start), pc_(pc), end_(end), buffer_offset_(buffer_offset) {
+    DCHECK_LE(start, pc);
+    DCHECK_LE(pc, end);
+    DCHECK_EQ(static_cast<uint32_t>(end - start), end - start);
+  }
 
-  virtual ~Decoder() {}
+  virtual ~Decoder() = default;
 
   inline bool validate_size(const byte* pc, uint32_t length, const char* msg) {
     DCHECK_LE(start_, pc);
-    if (V8_UNLIKELY(pc + length > end_)) {
+    DCHECK_LE(pc, end_);
+    if (V8_UNLIKELY(length > static_cast<uint32_t>(end_ - pc))) {
       error(pc, msg);
       return false;
     }
@@ -161,16 +168,12 @@ class Decoder {
 
   // Check that at least {size} bytes exist between {pc_} and {end_}.
   bool checkAvailable(uint32_t size) {
-    uintptr_t pc_overflow_value = std::numeric_limits<uintptr_t>::max() - size;
-    if ((uintptr_t)pc_ > pc_overflow_value) {
-      errorf(pc_, "reading %u bytes would underflow/overflow", size);
-      return false;
-    } else if (pc_ < start_ || end_ < (pc_ + size)) {
+    DCHECK_LE(pc_, end_);
+    if (V8_UNLIKELY(size > static_cast<uint32_t>(end_ - pc_))) {
       errorf(pc_, "expected %u bytes, fell off end", size);
       return false;
-    } else {
-      return true;
     }
+    return true;
   }
 
   void error(const char* msg) { errorf(pc_, "%s", msg); }
@@ -227,6 +230,8 @@ class Decoder {
 
   // Resets the boundaries of this decoder.
   void Reset(const byte* start, const byte* end, uint32_t buffer_offset = 0) {
+    DCHECK_LE(start, end);
+    DCHECK_EQ(static_cast<uint32_t>(end - start), end - start);
     start_ = start;
     pc_ = start;
     end_ = end;
@@ -245,6 +250,7 @@ class Decoder {
 
   const byte* start() const { return start_; }
   const byte* pc() const { return pc_; }
+  uint32_t position() const { return static_cast<uint32_t>(pc_ - start_); }
   uint32_t pc_offset() const {
     return static_cast<uint32_t>(pc_ - start_) + buffer_offset_;
   }
@@ -274,7 +280,7 @@ class Decoder {
     } else if (!validate_size(pc, sizeof(IntType), msg)) {
       return IntType{0};
     }
-    return ReadLittleEndianValue<IntType>(pc);
+    return ReadLittleEndianValue<IntType>(reinterpret_cast<Address>(pc));
   }
 
   template <typename IntType>
@@ -311,7 +317,8 @@ class Decoder {
     static_assert(byte_index < kMaxLength, "invalid template instantiation");
     constexpr int shift = byte_index * 7;
     constexpr bool is_last_byte = byte_index == kMaxLength - 1;
-    const bool at_end = validate && pc >= end_;
+    DCHECK_LE(pc, end_);
+    const bool at_end = validate && pc == end_;
     byte b = 0;
     if (!at_end) {
       DCHECK_LT(pc, end_);
@@ -366,27 +373,6 @@ class Decoder {
     }
     return result;
   }
-};
-
-// Reference to a string in the wire bytes.
-class WireBytesRef {
- public:
-  WireBytesRef() : WireBytesRef(0, 0) {}
-  WireBytesRef(uint32_t offset, uint32_t length)
-      : offset_(offset), length_(length) {
-    DCHECK_IMPLIES(offset_ == 0, length_ == 0);
-    DCHECK_LE(offset_, offset_ + length_);  // no uint32_t overflow.
-  }
-
-  uint32_t offset() const { return offset_; }
-  uint32_t length() const { return length_; }
-  uint32_t end_offset() const { return offset_ + length_; }
-  bool is_empty() const { return length_ == 0; }
-  bool is_set() const { return offset_ != 0; }
-
- private:
-  uint32_t offset_;
-  uint32_t length_;
 };
 
 #undef TRACE

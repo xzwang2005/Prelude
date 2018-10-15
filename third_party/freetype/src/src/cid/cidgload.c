@@ -1,19 +1,19 @@
-/***************************************************************************/
-/*                                                                         */
-/*  cidgload.c                                                             */
-/*                                                                         */
-/*    CID-keyed Type1 Glyph Loader (body).                                 */
-/*                                                                         */
-/*  Copyright 1996-2017 by                                                 */
-/*  David Turner, Robert Wilhelm, and Werner Lemberg.                      */
-/*                                                                         */
-/*  This file is part of the FreeType project, and may only be used,       */
-/*  modified, and distributed under the terms of the FreeType project      */
-/*  license, LICENSE.TXT.  By continuing to use, modify, or distribute     */
-/*  this file you indicate that you have read the license and              */
-/*  understand and accept it fully.                                        */
-/*                                                                         */
-/***************************************************************************/
+/****************************************************************************
+ *
+ * cidgload.c
+ *
+ *   CID-keyed Type1 Glyph Loader (body).
+ *
+ * Copyright 1996-2018 by
+ * David Turner, Robert Wilhelm, and Werner Lemberg.
+ *
+ * This file is part of the FreeType project, and may only be used,
+ * modified, and distributed under the terms of the FreeType project
+ * license, LICENSE.TXT.  By continuing to use, modify, or distribute
+ * this file you indicate that you have read the license and
+ * understand and accept it fully.
+ *
+ */
 
 
 #include <ft2build.h>
@@ -26,19 +26,19 @@
 
 #include FT_INTERNAL_POSTSCRIPT_AUX_H
 #include FT_INTERNAL_CFF_TYPES_H
-#include FT_TYPE1_DRIVER_H
+#include FT_DRIVER_H
 
 #include "ciderrs.h"
 
 
-  /*************************************************************************/
-  /*                                                                       */
-  /* The macro FT_COMPONENT is used in trace mode.  It is an implicit      */
-  /* parameter of the FT_TRACE() and FT_ERROR() macros, used to print/log  */
-  /* messages during execution.                                            */
-  /*                                                                       */
+  /**************************************************************************
+   *
+   * The macro FT_COMPONENT is used in trace mode.  It is an implicit
+   * parameter of the FT_TRACE() and FT_ERROR() macros, used to print/log
+   * messages during execution.
+   */
 #undef  FT_COMPONENT
-#define FT_COMPONENT  trace_cidgload
+#define FT_COMPONENT  cidgload
 
 
   FT_CALLBACK_DEF( FT_Error )
@@ -178,7 +178,7 @@
       /* choose which renderer to use */
 #ifdef T1_CONFIG_OPTION_OLD_ENGINE
       if ( ( (PS_Driver)FT_FACE_DRIVER( face ) )->hinting_engine ==
-               FT_T1_HINTING_FREETYPE                               ||
+               FT_HINTING_FREETYPE                                  ||
            decoder->builder.metrics_only                            )
         error = psaux->t1_decoder_funcs->parse_charstrings_old(
                   decoder,

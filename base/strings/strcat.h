@@ -11,6 +11,13 @@
 #include "base/compiler_specific.h"
 #include "base/containers/span.h"
 #include "base/strings/string_piece.h"
+#include "build/build_config.h"
+
+#if defined(OS_WIN)
+// Guard against conflict with Win32 API StrCat macro:
+// check StrCat wasn't and will not be redefined.
+#define StrCat StrCat
+#endif
 
 namespace base {
 

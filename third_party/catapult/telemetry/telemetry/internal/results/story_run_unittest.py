@@ -8,10 +8,8 @@ from telemetry.internal.results import story_run
 from telemetry.story import shared_state
 from telemetry.story import story_set
 from telemetry import story as story_module
-from telemetry.value import failure
 from telemetry.value import improvement_direction
 from telemetry.value import scalar
-from telemetry.value import skip
 
 
 # pylint: disable=abstract-method
@@ -34,42 +32,49 @@ class StoryRunTest(unittest.TestCase):
 
   def testStoryRunFailed(self):
     run = story_run.StoryRun(self.stories[0])
-    run.AddValue(failure.FailureValue.FromMessage(self.stories[0], 'test'))
+    run.SetFailed('abc')
     self.assertFalse(run.ok)
     self.assertTrue(run.failed)
     self.assertFalse(run.skipped)
+    self.assertEquals(run.failure_str, 'abc')
 
     run = story_run.StoryRun(self.stories[0])
     run.AddValue(scalar.ScalarValue(
         self.stories[0], 'a', 's', 1,
         improvement_direction=improvement_direction.UP))
-    run.AddValue(failure.FailureValue.FromMessage(self.stories[0], 'test'))
+    run.SetFailed('something is wrong')
     self.assertFalse(run.ok)
     self.assertTrue(run.failed)
     self.assertFalse(run.skipped)
+    self.assertEquals(run.failure_str, 'something is wrong')
 
   def testStoryRunSkipped(self):
     run = story_run.StoryRun(self.stories[0])
-    run.AddValue(failure.FailureValue.FromMessage(self.stories[0], 'test'))
-    run.AddValue(skip.SkipValue(self.stories[0], 'test'))
+    run.SetFailed('oops')
+    run.Skip('test', is_expected=True)
     self.assertFalse(run.ok)
     self.assertFalse(run.failed)
     self.assertTrue(run.skipped)
+    self.assertEquals(run.expected, 'SKIP')
+    self.assertEquals(run.failure_str, 'oops')
 
     run = story_run.StoryRun(self.stories[0])
     run.AddValue(scalar.ScalarValue(
         self.stories[0], 'a', 's', 1,
         improvement_direction=improvement_direction.UP))
-    run.AddValue(skip.SkipValue(self.stories[0], 'test'))
+    run.Skip('test', is_expected=False)
     self.assertFalse(run.ok)
     self.assertFalse(run.failed)
     self.assertTrue(run.skipped)
+    self.assertEquals(run.expected, 'PASS')
+    self.assertEquals(run.failure_str, None)
 
   def testStoryRunSucceeded(self):
     run = story_run.StoryRun(self.stories[0])
     self.assertTrue(run.ok)
     self.assertFalse(run.failed)
     self.assertFalse(run.skipped)
+    self.assertEquals(run.failure_str, None)
 
     run = story_run.StoryRun(self.stories[0])
     run.AddValue(scalar.ScalarValue(
@@ -78,3 +83,4 @@ class StoryRunTest(unittest.TestCase):
     self.assertTrue(run.ok)
     self.assertFalse(run.failed)
     self.assertFalse(run.skipped)
+    self.assertEquals(run.failure_str, None)

@@ -4,6 +4,7 @@
 
 import("//build/buildflag_header.gni")
 import("//testing/test.gni")
+import("//testing/libfuzzer/fuzzer_test.gni")
 import("features.gni")
 
 if (is_android) {
@@ -75,7 +76,7 @@ component("url") {
   # ICU support.
   if (use_platform_icu_alternatives) {
     if (is_android) {
-      sources += [ "url_canon_icu_alternatives_android.cc" ]
+      sources += [ "url_idna_icu_alternatives_android.cc" ]
       deps += [
         ":url_features",
         ":url_java",
@@ -84,7 +85,7 @@ component("url") {
         "//base/third_party/dynamic_annotations",
       ]
     } else if (is_ios) {
-      sources += [ "url_canon_icu_alternatives_ios.mm" ]
+      sources += [ "url_idna_icu_alternatives_ios.mm" ]
     } else {
       assert(false,
              "ICU alternative is not implemented for platform: " + target_os)
@@ -94,6 +95,7 @@ component("url") {
     sources += [
       "url_canon_icu.cc",
       "url_canon_icu.h",
+      "url_idna_icu.cc",
     ]
     deps += [ "//third_party/icu" ]
   }
@@ -136,7 +138,7 @@ test("url_unittests") {
   ]
 
   if (!is_ios) {
-    sources += [ "mojo/url_gurl_struct_traits_unittest.cc" ]
+    sources += [ "mojom/url_gurl_mojom_traits_unittest.cc" ]
   }
 
   if (use_platform_icu_alternatives) {
@@ -167,9 +169,20 @@ test("url_unittests") {
 
   if (!is_ios) {
     deps += [
-      "//mojo/edk/system",
-      "//mojo/edk/test:test_support",
-      "//url/mojo:test_url_mojom_gurl",
+      "//mojo/core/embedder",
+      "//url/mojom:test_url_mojom_gurl",
     ]
   }
+}
+
+fuzzer_test("gurl_fuzzer") {
+  sources = [
+    "gurl_fuzzer.cc",
+  ]
+  deps = [
+    ":url",
+    "//base",
+    "//base:i18n",
+  ]
+  dict = "gurl_fuzzer.dict"
 }

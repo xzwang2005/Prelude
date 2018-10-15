@@ -83,6 +83,7 @@ class MockBeginFrameObserver : public BeginFrameObserver {
   MOCK_METHOD1(OnBeginFrame, void(const BeginFrameArgs&));
   MOCK_CONST_METHOD0(LastUsedBeginFrameArgs, const BeginFrameArgs&());
   MOCK_METHOD1(OnBeginFrameSourcePausedChanged, void(bool));
+  MOCK_CONST_METHOD0(WantsAnimateOnlyBeginFrames, bool());
 
   virtual void AsValueInto(base::trace_event::TracedValue* dict) const;
 
@@ -91,7 +92,7 @@ class MockBeginFrameObserver : public BeginFrameObserver {
   static const BeginFrameArgs kDefaultBeginFrameArgs;
 
   MockBeginFrameObserver();
-  virtual ~MockBeginFrameObserver();
+  ~MockBeginFrameObserver() override;
 
   BeginFrameArgs last_begin_frame_args;
   ::testing::Sequence sequence;

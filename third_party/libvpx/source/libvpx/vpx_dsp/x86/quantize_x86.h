@@ -8,11 +8,13 @@
  *  be found in the AUTHORS file in the root of the source tree.
  */
 
+#ifndef VPX_VPX_DSP_X86_QUANTIZE_X86_H_
+#define VPX_VPX_DSP_X86_QUANTIZE_X86_H_
+
 #include <emmintrin.h>
 
 #include "./vpx_config.h"
 #include "vpx/vpx_integer.h"
-#include "vpx_dsp/x86/bitdepth_conversion_sse2.h"
 
 static INLINE void load_b_values(const int16_t *zbin_ptr, __m128i *zbin,
                                  const int16_t *round_ptr, __m128i *round,
@@ -76,3 +78,5 @@ static INLINE int16_t accumulate_eob(__m128i eob) {
   eob = _mm_max_epi16(eob, eob_shuffled);
   return _mm_extract_epi16(eob, 1);
 }
+
+#endif  // VPX_VPX_DSP_X86_QUANTIZE_X86_H_

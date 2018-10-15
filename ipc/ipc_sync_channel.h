@@ -9,6 +9,7 @@
 #include <string>
 #include <vector>
 
+#include "base/component_export.h"
 #include "base/containers/circular_deque.h"
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
@@ -32,7 +33,6 @@ class SyncHandleRegistry;
 
 namespace IPC {
 
-class ChannelFactory;
 class SyncMessage;
 
 // This is similar to ChannelProxy, with the added feature of supporting sending
@@ -69,7 +69,7 @@ class SyncMessage;
 // is more than this object.  If the message loop goes away while this object
 // is running and it's used to send a message, then it will use the invalid
 // message loop pointer to proxy it to the ipc thread.
-class IPC_EXPORT SyncChannel : public ChannelProxy {
+class COMPONENT_EXPORT(IPC) SyncChannel : public ChannelProxy {
  public:
   enum RestrictDispatchGroup {
     kRestrictDispatchGroup_None = 0,
@@ -81,14 +81,6 @@ class IPC_EXPORT SyncChannel : public ChannelProxy {
   static std::unique_ptr<SyncChannel> Create(
       const IPC::ChannelHandle& channel_handle,
       IPC::Channel::Mode mode,
-      Listener* listener,
-      const scoped_refptr<base::SingleThreadTaskRunner>& ipc_task_runner,
-      const scoped_refptr<base::SingleThreadTaskRunner>& listener_task_runner,
-      bool create_pipe_now,
-      base::WaitableEvent* shutdown_event);
-
-  static std::unique_ptr<SyncChannel> Create(
-      std::unique_ptr<ChannelFactory> factory,
       Listener* listener,
       const scoped_refptr<base::SingleThreadTaskRunner>& ipc_task_runner,
       const scoped_refptr<base::SingleThreadTaskRunner>& listener_task_runner,

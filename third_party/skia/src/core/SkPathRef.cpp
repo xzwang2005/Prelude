@@ -5,13 +5,25 @@
  * found in the LICENSE file.
  */
 
+#include "SkPathRef.h"
+
 #include "SkBuffer.h"
 #include "SkNx.h"
 #include "SkOnce.h"
 #include "SkPath.h"
-#include "SkPathRef.h"
 #include "SkPathPriv.h"
 #include "SkSafeMath.h"
+#include "SkTo.h"
+
+// Conic weights must be 0 < weight <= finite
+static bool validate_conic_weights(const SkScalar weights[], int count) {
+    for (int i = 0; i < count; ++i) {
+        if (weights[i] <= 0 || !SkScalarIsFinite(weights[i])) {
+            return false;
+        }
+    }
+    return true;
+}
 
 //////////////////////////////////////////////////////////////////////////////
 SkPathRef::Editor::Editor(sk_sp<SkPathRef>* pathRef,
@@ -29,6 +41,46 @@ SkPathRef::Editor::Editor(sk_sp<SkPathRef>* pathRef,
     fPathRef->callGenIDChangeListeners();
     fPathRef->fGenerationID = 0;
     SkDEBUGCODE(sk_atomic_inc(&fPathRef->fEditorsAttached);)
+}
+
+// Sort of like makeSpace(0) but the the additional requirement that we actively shrink the
+// allocations to just fit the current needs. makeSpace() will only grow, but never shrinks.
+//
+void SkPath::shrinkToFit() {
+    const size_t kMinFreeSpaceForShrink = 8;    // just made up a small number
+
+    if (fPathRef->fFreeSpace <= kMinFreeSpaceForShrink) {
+        return;
+    }
+
+    if (fPathRef->unique()) {
+        int pointCount = fPathRef->fPointCnt;
+        int verbCount = fPathRef->fVerbCnt;
+
+        size_t ptsSize = sizeof(SkPoint) * pointCount;
+        size_t vrbSize = sizeof(uint8_t) * verbCount;
+        size_t minSize = ptsSize + vrbSize;
+
+        void* newAlloc = sk_malloc_canfail(minSize);
+        if (!newAlloc) {
+            return; // couldn't allocate the smaller buffer, but that's ok
+        }
+
+        sk_careful_memcpy(newAlloc, fPathRef->fPoints, ptsSize);
+        sk_careful_memcpy((char*)newAlloc + minSize - vrbSize, fPathRef->verbsMemBegin(), vrbSize);
+
+        sk_free(fPathRef->fPoints);
+        fPathRef->fPoints = static_cast<SkPoint*>(newAlloc);
+        fPathRef->fVerbs = (uint8_t*)newAlloc + minSize;
+        fPathRef->fFreeSpace = 0;
+        fPathRef->fConicWeights.shrinkToFit();
+    } else {
+        sk_sp<SkPathRef> pr(new SkPathRef);
+        pr->copy(*fPathRef, 0, 0);
+        fPathRef = std::move(pr);
+    }
+
+    SkDEBUGCODE(fPathRef->validate();)
 }
 
 //////////////////////////////////////////////////////////////////////////////
@@ -189,6 +241,34 @@ void SkPathRef::CreateTransformedCopy(sk_sp<SkPathRef>* dst,
     SkDEBUGCODE((*dst)->validate();)
 }
 
+static bool validate_verb_sequence(const uint8_t verbs[], int vCount) {
+    // verbs are stored backwards, but we need to visit them in logical order to determine if
+    // they form a valid sequence.
+
+    bool needsMoveTo = true;
+    bool invalidSequence = false;
+
+    for (int i = vCount - 1; i >= 0; --i) {
+        switch (verbs[i]) {
+            case SkPath::kMove_Verb:
+                needsMoveTo = false;
+                break;
+            case SkPath::kLine_Verb:
+            case SkPath::kQuad_Verb:
+            case SkPath::kConic_Verb:
+            case SkPath::kCubic_Verb:
+                invalidSequence |= needsMoveTo;
+                break;
+            case SkPath::kClose_Verb:
+                needsMoveTo = true;
+                break;
+            default:
+                return false;   // unknown verb
+        }
+    }
+    return !invalidSequence;
+}
+
 // Given the verb array, deduce the required number of pts and conics,
 // or if an invalid verb is encountered, return false.
 static bool deduce_pts_conics(const uint8_t verbs[], int vCount, int* ptCountPtr,
@@ -239,7 +319,6 @@ SkPathRef* SkPathRef::CreateFromBuffer(SkRBuffer* buffer) {
     }
 
     ref->fIsFinite = (packed >> kIsFinite_SerializationShift) & 1;
-    uint8_t segmentMask = (packed >> kSegmentMask_SerializationShift) & 0xF;
 
     int32_t verbCount, pointCount, conicCount;
     if (!buffer->readU32(&(ref->fGenerationID)) ||
@@ -285,8 +364,14 @@ SkPathRef* SkPathRef::CreateFromBuffer(SkRBuffer* buffer) {
     // Check that the verbs are valid, and imply the correct number of pts and conics
     {
         int pCount, cCount;
+        if (!validate_verb_sequence(ref->verbsMemBegin(), ref->countVerbs())) {
+            return nullptr;
+        }
         if (!deduce_pts_conics(ref->verbsMemBegin(), ref->countVerbs(), &pCount, &cCount) ||
             pCount != ref->countPoints() || cCount != ref->fConicWeights.count()) {
+            return nullptr;
+        }
+        if (!validate_conic_weights(ref->fConicWeights.begin(), ref->fConicWeights.count())) {
             return nullptr;
         }
         // Check that the bounds match the serialized bounds.
@@ -294,12 +379,13 @@ SkPathRef* SkPathRef::CreateFromBuffer(SkRBuffer* buffer) {
         if (ComputePtBounds(&bounds, *ref) != SkToBool(ref->fIsFinite) || bounds != ref->fBounds) {
             return nullptr;
         }
+
+        // call this after validate_verb_sequence, since it relies on valid verbs
+        ref->fSegmentMask = ref->computeSegmentMask();
     }
 
     ref->fBoundsIsDirty = false;
 
-    // resetToSize clears fSegmentMask and fIsOval
-    ref->fSegmentMask = segmentMask;
     return ref.release();
 }
 
@@ -380,6 +466,8 @@ void SkPathRef::writeToBuffer(SkWBuffer* buffer) const {
     // and fIsFinite are computed.
     const SkRect& bounds = this->getBounds();
 
+    // We store fSegmentMask for older readers, but current readers can't trust it, so they
+    // don't read it.
     int32_t packed = ((fIsFinite & 1) << kIsFinite_SerializationShift) |
                      (fSegmentMask << kSegmentMask_SerializationShift);
     buffer->write32(packed);
@@ -428,6 +516,20 @@ void SkPathRef::copy(const SkPathRef& ref,
     SkDEBUGCODE(this->validate();)
 }
 
+unsigned SkPathRef::computeSegmentMask() const {
+    const uint8_t* verbs = this->verbsMemBegin();
+    unsigned mask = 0;
+    for (int i = this->countVerbs() - 1; i >= 0; --i) {
+        switch (verbs[i]) {
+            case SkPath::kLine_Verb:  mask |= SkPath::kLine_SegmentMask; break;
+            case SkPath::kQuad_Verb:  mask |= SkPath::kQuad_SegmentMask; break;
+            case SkPath::kConic_Verb: mask |= SkPath::kConic_SegmentMask; break;
+            case SkPath::kCubic_Verb: mask |= SkPath::kCubic_SegmentMask; break;
+            default: break;
+        }
+    }
+    return mask;
+}
 
 void SkPathRef::interpolate(const SkPathRef& ending, SkScalar weight, SkPathRef* out) const {
     const SkScalar* inValues = &ending.getPoints()->fX;
@@ -451,11 +553,9 @@ SkPoint* SkPathRef::growForRepeatedVerb(int /*SkPath::Verb*/ verb,
 
     SkDEBUGCODE(this->validate();)
     int pCnt;
-    bool dirtyAfterEdit = true;
     switch (verb) {
         case SkPath::kMove_Verb:
             pCnt = numVbs;
-            dirtyAfterEdit = false;
             break;
         case SkPath::kLine_Verb:
             fSegmentMask |= SkPath::kLine_SegmentMask;
@@ -476,7 +576,6 @@ SkPoint* SkPathRef::growForRepeatedVerb(int /*SkPath::Verb*/ verb,
         case SkPath::kClose_Verb:
             SkDEBUGFAIL("growForRepeatedVerb called for kClose_Verb");
             pCnt = 0;
-            dirtyAfterEdit = false;
             break;
         case SkPath::kDone_Verb:
             SkDEBUGFAIL("growForRepeatedVerb called for kDone");
@@ -484,7 +583,6 @@ SkPoint* SkPathRef::growForRepeatedVerb(int /*SkPath::Verb*/ verb,
         default:
             SkDEBUGFAIL("default should not be reached");
             pCnt = 0;
-            dirtyAfterEdit = false;
     }
 
     size_t space = numVbs * sizeof(uint8_t) + pCnt * sizeof (SkPoint);
@@ -503,14 +601,16 @@ SkPoint* SkPathRef::growForRepeatedVerb(int /*SkPath::Verb*/ verb,
         }
     }
 
-    fVerbCnt += numVbs;
-    fPointCnt += pCnt;
+    SkSafeMath safe;
+    fVerbCnt = safe.addInt(fVerbCnt, numVbs);
+    fPointCnt = safe.addInt(fPointCnt, pCnt);
+    if (!safe) {
+        SK_ABORT("cannot grow path");
+    }
     fFreeSpace -= space;
     fBoundsIsDirty = true;  // this also invalidates fIsFinite
-    if (dirtyAfterEdit) {
-        fIsOval = false;
-        fIsRRect = false;
-    }
+    fIsOval = false;
+    fIsRRect = false;
 
     if (SkPath::kConic_Verb == verb) {
         SkASSERT(weights);
@@ -524,38 +624,35 @@ SkPoint* SkPathRef::growForRepeatedVerb(int /*SkPath::Verb*/ verb,
 SkPoint* SkPathRef::growForVerb(int /* SkPath::Verb*/ verb, SkScalar weight) {
     SkDEBUGCODE(this->validate();)
     int pCnt;
-    bool dirtyAfterEdit = true;
+    unsigned mask = 0;
     switch (verb) {
         case SkPath::kMove_Verb:
             pCnt = 1;
-            dirtyAfterEdit = false;
             break;
         case SkPath::kLine_Verb:
-            fSegmentMask |= SkPath::kLine_SegmentMask;
+            mask = SkPath::kLine_SegmentMask;
             pCnt = 1;
             break;
         case SkPath::kQuad_Verb:
-            fSegmentMask |= SkPath::kQuad_SegmentMask;
+            mask = SkPath::kQuad_SegmentMask;
             pCnt = 2;
             break;
         case SkPath::kConic_Verb:
-            fSegmentMask |= SkPath::kConic_SegmentMask;
+            mask = SkPath::kConic_SegmentMask;
             pCnt = 2;
             break;
         case SkPath::kCubic_Verb:
-            fSegmentMask |= SkPath::kCubic_SegmentMask;
+            mask = SkPath::kCubic_SegmentMask;
             pCnt = 3;
             break;
         case SkPath::kClose_Verb:
             pCnt = 0;
-            dirtyAfterEdit = false;
             break;
         case SkPath::kDone_Verb:
             SkDEBUGFAIL("growForVerb called for kDone");
             // fall through
         default:
             SkDEBUGFAIL("default is not reached");
-            dirtyAfterEdit = false;
             pCnt = 0;
     }
     SkSafeMath safe;
@@ -570,12 +667,11 @@ SkPoint* SkPathRef::growForVerb(int /* SkPath::Verb*/ verb, SkScalar weight) {
     SkPoint* ret = fPoints + fPointCnt;
     fVerbCnt = newVerbCnt;
     fPointCnt = newPointCnt;
+    fSegmentMask |= mask;
     fFreeSpace -= space;
     fBoundsIsDirty = true;  // this also invalidates fIsFinite
-    if (dirtyAfterEdit) {
-        fIsOval = false;
-        fIsRRect = false;
-    }
+    fIsOval = false;
+    fIsRRect = false;
 
     if (SkPath::kConic_Verb == verb) {
         *fConicWeights.append() = weight;
@@ -603,22 +699,23 @@ uint32_t SkPathRef::genID() const {
     return fGenerationID;
 }
 
-void SkPathRef::addGenIDChangeListener(GenIDChangeListener* listener) {
+void SkPathRef::addGenIDChangeListener(sk_sp<GenIDChangeListener> listener) {
     if (nullptr == listener || this == gEmpty) {
-        delete listener;
         return;
     }
-    *fGenIDChangeListeners.append() = listener;
+    SkAutoMutexAcquire lock(fGenIDChangeListenersMutex);
+    *fGenIDChangeListeners.append() = listener.release();
 }
 
 // we need to be called *before* the genID gets changed or zerod
 void SkPathRef::callGenIDChangeListeners() {
+    SkAutoMutexAcquire lock(fGenIDChangeListenersMutex);
     for (int i = 0; i < fGenIDChangeListeners.count(); i++) {
         fGenIDChangeListeners[i]->onChange();
     }
 
     // Listeners get at most one shot, so whether these triggered or not, blow them away.
-    fGenIDChangeListeners.deleteAll();
+    fGenIDChangeListeners.unrefAll();
 }
 
 SkRRect SkPathRef::getRRect() const {
@@ -758,9 +855,6 @@ bool SkPathRef::isValid() const {
     if (nullptr == fPoints && 0 != fFreeSpace) {
         return false;
     }
-    if (nullptr == fPoints && 0 != fFreeSpace) {
-        return false;
-    }
     if (nullptr == fPoints && fPointCnt) {
         return false;
     }
@@ -818,38 +912,5 @@ bool SkPathRef::isValid() const {
             return false;
         }
     }
-
-#ifdef SK_DEBUG_PATH
-    uint32_t mask = 0;
-    for (int i = 0; i < fVerbCnt; ++i) {
-        switch (fVerbs[~i]) {
-            case SkPath::kMove_Verb:
-                break;
-            case SkPath::kLine_Verb:
-                mask |= SkPath::kLine_SegmentMask;
-                break;
-            case SkPath::kQuad_Verb:
-                mask |= SkPath::kQuad_SegmentMask;
-                break;
-            case SkPath::kConic_Verb:
-                mask |= SkPath::kConic_SegmentMask;
-                break;
-            case SkPath::kCubic_Verb:
-                mask |= SkPath::kCubic_SegmentMask;
-                break;
-            case SkPath::kClose_Verb:
-                break;
-            case SkPath::kDone_Verb:
-                SkDEBUGFAIL("Done verb shouldn't be recorded.");
-                break;
-            default:
-                SkDEBUGFAIL("Unknown Verb");
-                break;
-        }
-    }
-    if (mask != fSegmentMask) {
-        return false;
-    }
-#endif // SK_DEBUG_PATH
     return true;
 }

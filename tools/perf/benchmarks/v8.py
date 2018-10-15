@@ -4,37 +4,28 @@
 from core import perf_benchmark
 
 
-from measurements import v8_detached_context_age_in_gc
 import page_sets
 
-from telemetry import benchmark
 from telemetry import story
+from telemetry import benchmark
 from telemetry.timeline import chrome_trace_category_filter
 from telemetry.web_perf import timeline_based_measurement
 
 
-@benchmark.Owner(emails=['ulan@chromium.org'])
-class V8DetachedContextAgeInGC(perf_benchmark.PerfBenchmark):
-  """Measures the number of GCs needed to collect a detached context.
+@benchmark.Info(emails=['cbruni@chromium.org'])
+class V8Top25RuntimeStats(perf_benchmark.PerfBenchmark):
+  """Runtime Stats benchmark for a 25 top V8 web pages.
 
-  http://www.chromium.org/developers/design-documents/rendering-benchmarks"""
-  test = v8_detached_context_age_in_gc.V8DetachedContextAgeInGC
-  page_set = page_sets.PageReloadCasesPageSet
+  Designed to represent a mix between top websites and a set of pages that
+  have unique V8 characteristics.
+  """
+
+  SUPPORTED_PLATFORMS = [story.expectations.ALL_DESKTOP]
 
   @classmethod
   def Name(cls):
-    return 'v8.detached_context_age_in_gc'
+    return 'v8.runtime_stats.top_25'
 
-  def GetExpectations(self):
-    class StoryExpectations(story.expectations.StoryExpectations):
-      def SetExpectations(self):
-        self.DisableStory('Docs  (1 open document tab)',
-                          [story.expectations.ALL_WIN],
-                          'crbug.com/770982')
-    return StoryExpectations()
-
-
-class _Top25RuntimeStats(perf_benchmark.PerfBenchmark):
   def SetExtraBrowserOptions(self, options):
     options.AppendExtraBrowserArgs(
       '--enable-blink-features=BlinkRuntimeCallStats')
@@ -72,26 +63,5 @@ class _Top25RuntimeStats(perf_benchmark.PerfBenchmark):
     tbm_options.SetTimelineBasedMetrics(['runtimeStatsMetric'])
     return tbm_options
 
-
-@benchmark.Owner(emails=['cbruni@chromium.org'])
-class V8Top25RuntimeStats(_Top25RuntimeStats):
-  """Runtime Stats benchmark for a 25 top V8 web pages.
-
-  Designed to represent a mix between top websites and a set of pages that
-  have unique V8 characteristics.
-  """
-
-  @classmethod
-  def Name(cls):
-    return 'v8.runtime_stats.top_25'
-
   def CreateStorySet(self, options):
     return page_sets.V8Top25StorySet()
-
-  def GetExpectations(self):
-    class StoryExpectations(story.expectations.StoryExpectations):
-      def SetExpectations(self):
-        self.DisableBenchmark(
-            [story.expectations.ALL_ANDROID, story.expectations.ALL_WIN],
-            'crbug.com/664318')
-    return StoryExpectations()

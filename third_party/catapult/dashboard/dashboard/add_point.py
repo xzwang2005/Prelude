@@ -14,9 +14,10 @@ from google.appengine.api import datastore_errors
 from google.appengine.api import taskqueue
 from google.appengine.ext import ndb
 
-from dashboard import math_utils
 from dashboard import post_data_handler
 from dashboard.common import datastore_hooks
+from dashboard.common import histogram_helpers
+from dashboard.common import math_utils
 from dashboard.models import graph_data
 
 _TASK_QUEUE_NAME = 'new-points-queue'
@@ -140,7 +141,7 @@ class AddPointHandler(post_data_handler.PostDataHandler):
     logging.info('Received data: %s', data)
 
     try:
-      if type(data) is dict:
+      if isinstance(data, dict):
         if data.get('chart_data'):
           data = _DashboardJsonToRawRows(data)
           if not data:
@@ -165,6 +166,34 @@ class AddPointHandler(post_data_handler.PostDataHandler):
       self.ReportError(error.message, status=400)
 
 
+def _ValidateNameString(value, name):
+  if not value:
+    raise BadRequestError('No %s name given.' % name)
+  if not isinstance(value, basestring):
+    raise BadRequestError('Error: %s must be a string' % name)
+  if '/' in value:
+    raise BadRequestError('Illegal slash in %s' % name)
+
+
+def _ValidateDashboardJson(dash_json_dict):
+  assert isinstance(dash_json_dict, dict)
+  # A Dashboard JSON dict should at least have all charts coming from the
+  # same master, bot and rev. It can contain multiple charts, however.
+  _ValidateNameString(dash_json_dict.get('master'), 'master')
+  _ValidateNameString(dash_json_dict.get('bot'), 'bot')
+
+  if not dash_json_dict.get('point_id'):
+    raise BadRequestError('No point_id number given.')
+  if not dash_json_dict.get('chart_data'):
+    raise BadRequestError('No chart data given.')
+
+  charts = dash_json_dict.get('chart_data', {}).get('charts', {})
+
+  for _, v in charts.iteritems():
+    if not isinstance(v, dict):
+      raise BadRequestError('Expected be dict: %s' % str(v))
+
+
 def _DashboardJsonToRawRows(dash_json_dict):
   """Formats a Dashboard JSON dict as a list of row dicts.
 
@@ -182,17 +211,8 @@ def _DashboardJsonToRawRows(dash_json_dict):
     AssertionError: The given argument wasn't a dict.
     BadRequestError: The content of the input wasn't valid.
   """
-  assert type(dash_json_dict) is dict
-  # A Dashboard JSON dict should at least have all charts coming from the
-  # same master, bot and rev. It can contain multiple charts, however.
-  if not dash_json_dict.get('master'):
-    raise BadRequestError('No master name given.')
-  if not dash_json_dict.get('bot'):
-    raise BadRequestError('No bot name given.')
-  if not dash_json_dict.get('point_id'):
-    raise BadRequestError('No point_id number given.')
-  if not dash_json_dict.get('chart_data'):
-    raise BadRequestError('No chart data given.')
+  _ValidateDashboardJson(dash_json_dict)
+
   test_suite_name = _TestSuiteName(dash_json_dict)
 
   chart_data = dash_json_dict.get('chart_data', {})
@@ -241,12 +261,18 @@ def _TestSuiteName(dash_json_dict):
   present or it is None, the dashboard will fall back to using "benchmark_name"
   in the "chart_data" dict.
   """
+  name = None
   if dash_json_dict.get('test_suite_name'):
-    return dash_json_dict['test_suite_name']
-  try:
-    return dash_json_dict['chart_data']['benchmark_name']
-  except KeyError as e:
-    raise BadRequestError('Could not find test suite name. ' + e.message)
+    name = dash_json_dict['test_suite_name']
+  else:
+    try:
+      name = dash_json_dict['chart_data']['benchmark_name']
+    except KeyError as e:
+      raise BadRequestError('Could not find test suite name. ' + e.message)
+
+  _ValidateNameString(name, 'test_suite_name')
+
+  return name
 
 
 def _AddTasks(data):
@@ -363,7 +389,7 @@ def _FlattenTrace(test_suite_name, chart_name, trace_name, trace,
     tracing_uri = tracing_links[trace_name]['cloud_url'].replace('\\/', '/')
 
   story_name = trace_name
-  trace_name = EscapeName(trace_name)
+  trace_name = histogram_helpers.EscapeName(trace_name)
   if trace_name == 'summary':
     subtest_name = chart_name
   else:
@@ -451,18 +477,6 @@ def _ExtractValueAndError(trace):
 
 def _IsNumber(v):
   return isinstance(v, float) or isinstance(v, int) or isinstance(v, long)
-
-
-def EscapeName(name):
-  """Escapes a trace name so it can be stored in a row.
-
-  Args:
-    name: A string representing a name.
-
-  Returns:
-    An escaped version of the name.
-  """
-  return re.sub(r'[\:|=/#&,]', '_', name)
 
 
 def _GeomMeanAndStdDevFromHistogram(histogram):
@@ -576,10 +590,8 @@ def _ValidateMasterBotTest(master, bot, test):
   if len(test.split('/')) > graph_data.MAX_TEST_ANCESTORS:
     raise BadRequestError('Invalid test name: %s' % test)
 
-  # The master and bot names have just one part.
-  if '/' in master or '/' in bot:
-    raise BadRequestError('Illegal slash in master or bot name.')
-
+  _ValidateNameString(master, 'master')
+  _ValidateNameString(bot, 'bot')
   _ValidateTestPath('%s/%s/%s' % (master, bot, test))
 
 

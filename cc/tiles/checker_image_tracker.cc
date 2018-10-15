@@ -5,7 +5,6 @@
 #include "cc/tiles/checker_image_tracker.h"
 
 #include "base/bind.h"
-#include "base/memory/ptr_util.h"
 #include "base/metrics/histogram_macros.h"
 #include "base/stl_util.h"
 #include "base/trace_event/trace_event.h"
@@ -162,11 +161,6 @@ void CheckerImageTracker::ScheduleImageDecodeQueue(
     ImageDecodeQueue image_decode_queue) {
   TRACE_EVENT0(TRACE_DISABLED_BY_DEFAULT("cc.debug"),
                "CheckerImageTracker::ScheduleImageDecodeQueue");
-  // Only checker-imaged (async updated) images are decoded using the image
-  // decode service. If |enable_checker_imaging_| is false, no image should
-  // be checkered.
-  DCHECK(image_decode_queue.empty() || enable_checker_imaging_);
-
 #if DCHECK_IS_ON()
   // The decodes in the queue should be prioritized correctly.
   DecodeType type = DecodeType::kRaster;
@@ -214,8 +208,6 @@ void CheckerImageTracker::ClearTracker(bool can_clear_decode_policy_tracking) {
   // If the external inputs for deciding the decode policy for an image change,
   // they should be accompanied with an invalidation during paint.
   image_id_to_decode_.clear();
-
-  decoding_mode_map_.clear();
 
   if (can_clear_decode_policy_tracking) {
     image_async_decode_state_.clear();
@@ -279,9 +271,10 @@ bool CheckerImageTracker::ShouldCheckerImage(const DrawImage& draw_image,
                                              WhichTree tree) {
   const PaintImage& image = draw_image.paint_image();
   PaintImage::Id image_id = image.stable_id();
-  TRACE_EVENT1("cc", "CheckerImageTracker::ShouldCheckerImage", "image_id",
-               image_id);
+  TRACE_EVENT1("cc.debug", "CheckerImageTracker::ShouldCheckerImage",
+               "image_id", image_id);
 
+  // Checkering of all images is disabled.
   if (!enable_checker_imaging_)
     return false;
 
@@ -300,16 +293,21 @@ bool CheckerImageTracker::ShouldCheckerImage(const DrawImage& draw_image,
     return true;
   }
 
+  auto decoding_mode_it = decoding_mode_map_.find(image_id);
+  PaintImage::DecodingMode decoding_mode_hint =
+      decoding_mode_it == decoding_mode_map_.end()
+          ? PaintImage::DecodingMode::kUnspecified
+          : decoding_mode_it->second;
+
+  // We only checker images if the developer specifies async decoding mode.
+  if (decoding_mode_hint != PaintImage::DecodingMode::kAsync)
+    return false;
+
   auto insert_result = image_async_decode_state_.insert(
       std::pair<PaintImage::Id, DecodeState>(image_id, DecodeState()));
   auto it = insert_result.first;
   if (insert_result.second) {
     CheckerImagingDecision decision = CheckerImagingDecision::kCanChecker;
-    auto decoding_mode_it = decoding_mode_map_.find(image_id);
-    PaintImage::DecodingMode decoding_mode_hint =
-        decoding_mode_it == decoding_mode_map_.end()
-            ? PaintImage::DecodingMode::kUnspecified
-            : decoding_mode_it->second;
     // If the mode is sync, then don't checker this image.
     // TODO(vmpstr): Figure out if we should do something different in other
     // cases.

@@ -12,6 +12,7 @@
 #include "SkTypes.h"
 
 #include <dirent.h>
+#include <new>
 #include <stdio.h>
 #include <string.h>
 #include <sys/mman.h>
@@ -157,7 +158,7 @@ void SkOSFile::Iter::reset(const char path[], const char suffix[]) {
 #ifdef SK_BUILD_FOR_IOS
         // check bundle for directory
         if (!self.fDIR && ios_get_path_in_bundle(path, &self.fPath)) {
-            self.fDIR = ::opendir(path);
+            self.fDIR = ::opendir(self.fPath.c_str());
         }
 #endif
         self.fSuffix.set(suffix);

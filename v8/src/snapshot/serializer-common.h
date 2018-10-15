@@ -9,12 +9,14 @@
 #include "src/base/bits.h"
 #include "src/external-reference-table.h"
 #include "src/globals.h"
-#include "src/utils.h"
+#include "src/snapshot/references.h"
+#include "src/v8memory.h"
 #include "src/visitors.h"
 
 namespace v8 {
 namespace internal {
 
+class CallHandlerInfo;
 class Isolate;
 
 class ExternalReferenceEncoder {
@@ -22,13 +24,13 @@ class ExternalReferenceEncoder {
   class Value {
    public:
     explicit Value(uint32_t raw) : value_(raw) {}
+    Value() : value_(0) {}
     static uint32_t Encode(uint32_t index, bool is_from_api) {
       return Index::encode(index) | IsFromAPI::encode(is_from_api);
     }
 
     bool is_from_api() const { return IsFromAPI::decode(value_); }
     uint32_t index() const { return Index::decode(value_); }
-    uint32_t raw() const { return value_; }
 
    private:
     class Index : public BitField<uint32_t, 0, 31> {};
@@ -37,9 +39,10 @@ class ExternalReferenceEncoder {
   };
 
   explicit ExternalReferenceEncoder(Isolate* isolate);
-  ~ExternalReferenceEncoder();
+  ~ExternalReferenceEncoder();  // NOLINT (modernize-use-equals-default)
 
   Value Encode(Address key);
+  Maybe<Value> TryEncode(Address key);
 
   const char* NameOfAddress(Isolate* isolate, Address address) const;
 
@@ -103,8 +106,12 @@ class SerializerDeserializer : public RootVisitor {
   // No reservation for large object space necessary.
   // We also handle map space differenly.
   STATIC_ASSERT(MAP_SPACE == CODE_SPACE + 1);
+
+  // We do not support young generation large objects.
+  STATIC_ASSERT(LAST_SPACE == NEW_LO_SPACE);
+  STATIC_ASSERT(LAST_SPACE - 1 == LO_SPACE);
   static const int kNumberOfPreallocatedSpaces = CODE_SPACE + 1;
-  static const int kNumberOfSpaces = LAST_SPACE + 1;
+  static const int kNumberOfSpaces = LO_SPACE + 1;
 
  protected:
   static bool CanBeDeferred(HeapObject* o);
@@ -114,34 +121,56 @@ class SerializerDeserializer : public RootVisitor {
   void RestoreExternalReferenceRedirectors(
       const std::vector<CallHandlerInfo*>& call_handler_infos);
 
+#define UNUSED_SERIALIZER_BYTE_CODES(V) \
+  V(0x18)                               \
+  V(0x3d)                               \
+  V(0x3e)                               \
+  V(0x3f)                               \
+  V(0x58)                               \
+  V(0x59)                               \
+  V(0x5a)                               \
+  V(0x5b)                               \
+  V(0x5c)                               \
+  V(0x5d)                               \
+  V(0x5e)                               \
+  V(0x5f)                               \
+  V(0x67)                               \
+  V(0x76)                               \
+  V(0x78)                               \
+  V(0x79)                               \
+  V(0x7a)                               \
+  V(0x7b)                               \
+  V(0x7c)                               \
+  V(0x7d)
+
   // ---------- byte code range 0x00..0x7f ----------
   // Byte codes in this range represent Where, HowToCode and WhereToPoint.
   // Where the pointed-to object can be found:
   // The static assert below will trigger when the number of preallocated spaces
   // changed. If that happens, update the bytecode ranges in the comments below.
-  STATIC_ASSERT(5 == kNumberOfSpaces);
+  STATIC_ASSERT(6 == kNumberOfSpaces);
   enum Where {
-    // 0x00..0x04  Allocate new object, in specified space.
+    // 0x00..0x05  Allocate new object, in specified space.
     kNewObject = 0x00,
-    // 0x08..0x0c  Reference to previous object from space.
+    // 0x08..0x0d  Reference to previous object from space.
     kBackref = 0x08,
-    // 0x10..0x14  Reference to previous object from space after skip.
+    // 0x10..0x15  Reference to previous object from space after skip.
     kBackrefWithSkip = 0x10,
 
-    // 0x05       Root array item.
-    kRootArray = 0x05,
     // 0x06        Object in the partial snapshot cache.
     kPartialSnapshotCache = 0x06,
     // 0x07        External reference referenced by id.
     kExternalReference = 0x07,
 
-    // 0x0d        Object provided in the attached list.
-    kAttachedReference = 0x0d,
     // 0x0e        Builtin code referenced by index.
     kBuiltin = 0x0e,
+    // 0x16       Root array item.
+    kRootArray = 0x16,
+    // 0x17        Object provided in the attached list.
+    kAttachedReference = 0x17,
 
     // 0x0f        Misc, see below (incl. 0x2f, 0x4f, 0x6f).
-    // 0x15..0x1f  Misc, see below (incl. 0x35..0x3f, 0x55..0x5f, 0x75..0x7f).
+    // 0x18..0x1f  Misc, see below (incl. 0x38..0x3f, 0x58..0x5f, 0x78..0x7f).
   };
 
   static const int kWhereMask = 0x1f;
@@ -177,45 +206,38 @@ class SerializerDeserializer : public RootVisitor {
   static const int kNextChunk = 0x4f;
   // Deferring object content.
   static const int kDeferred = 0x6f;
-  // Alignment prefixes 0x15..0x17
-  static const int kAlignmentPrefix = 0x15;
+  // Alignment prefixes 0x19..0x1b
+  static const int kAlignmentPrefix = 0x19;
   // A tag emitted at strategic points in the snapshot to delineate sections.
   // If the deserializer does not find these at the expected moments then it
   // is an indication that the snapshot and the VM do not fit together.
   // Examine the build process for architecture, version or configuration
   // mismatches.
-  static const int kSynchronize = 0x18;
+  static const int kSynchronize = 0x1c;
   // Repeats of variable length.
-  static const int kVariableRepeat = 0x19;
+  static const int kVariableRepeat = 0x1d;
   // Raw data of variable length.
-  static const int kVariableRawCode = 0x1a;
-  static const int kVariableRawData = 0x1b;
 
   // Used for embedder-allocated backing stores for TypedArrays.
-  static const int kOffHeapBackingStore = 0x1c;
-
-  // 0x1d, 0x1e unused.
+  static const int kOffHeapBackingStore = 0x1e;
 
   // Used for embedder-provided serialization data for embedder fields.
   static const int kEmbedderFieldsData = 0x1f;
 
-  // Internal reference encoded as offsets of pc and target from code entry.
-  static const int kInternalReference = 0x35;
-  static const int kInternalReferenceEncoded = 0x36;
-
   // Used to encode external referenced provided through the API.
-  static const int kApiReference = 0x37;
+  static const int kApiReference = 0x38;
 
-  // 8 hot (recently seen or back-referenced) objects with optional skip.
-  static const int kNumberOfHotObjects = 8;
-  STATIC_ASSERT(kNumberOfHotObjects == HotObjectsList::kSize);
-  // 0x38..0x3f
-  static const int kHotObject = 0x38;
-  // 0x58..0x5f
-  static const int kHotObjectWithSkip = 0x58;
-  static const int kHotObjectMask = 0x07;
+  static const int kVariableRawCode = 0x39;
+  static const int kVariableRawData = 0x3a;
 
-  // 0x55..0x57, 0x75..0x7f unused.
+  static const int kInternalReference = 0x3b;
+  static const int kInternalReferenceEncoded = 0x3c;
+
+  // In-place weak references
+  static const int kWeakPrefix = 0x7e;
+
+  // Encodes an off-heap instruction stream target.
+  static const int kOffHeapTarget = 0x7f;
 
   // ---------- byte code range 0x80..0xff ----------
   // First 32 root array items.
@@ -239,7 +261,14 @@ class SerializerDeserializer : public RootVisitor {
   static const int kFixedRepeat = 0xe0;
   static const int kFixedRepeatStart = kFixedRepeat - 1;
 
-  // 0xf0..0xff unused.
+  // 8 hot (recently seen or back-referenced) objects with optional skip.
+  static const int kNumberOfHotObjects = 8;
+  STATIC_ASSERT(kNumberOfHotObjects == HotObjectsList::kSize);
+  // 0xf0..0xf7
+  static const int kHotObject = 0xf0;
+  // 0xf8..0xff
+  static const int kHotObjectWithSkip = 0xf8;
+  static const int kHotObjectMask = 0x07;
 
   // ---------- special values ----------
   static const int kAnyOldSpace = -1;
@@ -271,8 +300,10 @@ class SerializedData {
   SerializedData(byte* data, int size)
       : data_(data), size_(size), owns_data_(false) {}
   SerializedData() : data_(nullptr), size_(0), owns_data_(false) {}
-  SerializedData(SerializedData&& other)
-      : data_(other.data_), size_(other.size_), owns_data_(other.owns_data_) {
+  SerializedData(SerializedData&& other) V8_NOEXCEPT
+      : data_(other.data_),
+        size_(other.size_),
+        owns_data_(other.owns_data_) {
     // Ensure |other| will not attempt to destroy our data in destructor.
     other.owns_data_ = false;
   }
@@ -295,18 +326,17 @@ class SerializedData {
 
  protected:
   void SetHeaderValue(uint32_t offset, uint32_t value) {
-    WriteLittleEndianValue(data_ + offset, value);
+    WriteLittleEndianValue(reinterpret_cast<Address>(data_) + offset, value);
   }
 
   uint32_t GetHeaderValue(uint32_t offset) const {
-    return ReadLittleEndianValue<uint32_t>(data_ + offset);
+    return ReadLittleEndianValue<uint32_t>(reinterpret_cast<Address>(data_) +
+                                           offset);
   }
 
   void AllocateData(uint32_t size);
 
-  static uint32_t ComputeMagicNumber(Isolate* isolate) {
-    return ComputeMagicNumber(ExternalReferenceTable::instance(isolate));
-  }
+  static uint32_t ComputeMagicNumber(Isolate* isolate);
 
   void SetMagicNumber(Isolate* isolate) {
     SetHeaderValue(kMagicNumberOffset, ComputeMagicNumber(isolate));

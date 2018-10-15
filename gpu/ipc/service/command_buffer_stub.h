@@ -22,14 +22,14 @@
 #include "gpu/command_buffer/common/gpu_memory_allocation.h"
 #include "gpu/command_buffer/service/command_buffer_service.h"
 #include "gpu/command_buffer/service/context_group.h"
-#include "gpu/command_buffer/service/gles2_cmd_decoder.h"
+#include "gpu/command_buffer/service/decoder_client.h"
 #include "gpu/command_buffer/service/sequence_id.h"
-#include "gpu/gpu_export.h"
 #include "gpu/ipc/common/surface_handle.h"
-#include "gpu/ipc/service/gpu_memory_manager.h"
+#include "gpu/ipc/service/gpu_ipc_service_export.h"
 #include "ipc/ipc_listener.h"
 #include "ipc/ipc_sender.h"
 #include "ui/gfx/geometry/size.h"
+#include "ui/gfx/gpu_fence_handle.h"
 #include "ui/gfx/gpu_memory_buffer.h"
 #include "ui/gfx/swap_result.h"
 #include "ui/gl/gl_share_group.h"
@@ -41,23 +41,26 @@ struct GPUCreateCommandBufferConfig;
 struct GpuCommandBufferMsg_CreateImage_Params;
 
 namespace gpu {
+class DecoderContext;
 struct Mailbox;
 struct SyncToken;
 struct WaitForCommandState;
 class GpuChannel;
 class SyncPointClientState;
 
-class GPU_EXPORT CommandBufferStub
+class GPU_IPC_SERVICE_EXPORT CommandBufferStub
     : public IPC::Listener,
       public IPC::Sender,
       public CommandBufferServiceClient,
-      public gles2::GLES2DecoderClient,
+      public DecoderClient,
       public base::SupportsWeakPtr<CommandBufferStub> {
  public:
   class DestructionObserver {
    public:
     // Called in Destroy(), before the context/surface are released.
-    virtual void OnWillDestroyStub() = 0;
+    // If |have_context| is false, then the context cannot be made current, else
+    // it already is.
+    virtual void OnWillDestroyStub(bool have_context) = 0;
 
    protected:
     virtual ~DestructionObserver() = default;
@@ -78,7 +81,7 @@ class GPU_EXPORT CommandBufferStub
   virtual gpu::ContextResult Initialize(
       CommandBufferStub* share_group,
       const GPUCreateCommandBufferConfig& init_params,
-      std::unique_ptr<base::SharedMemory> shared_state_shm) = 0;
+      base::UnsafeSharedMemoryRegion shared_state_shm) = 0;
 
   // IPC::Listener implementation:
   bool OnMessageReceived(const IPC::Message& message) override;
@@ -90,13 +93,14 @@ class GPU_EXPORT CommandBufferStub
   CommandBatchProcessedResult OnCommandBatchProcessed() override;
   void OnParseError() override;
 
-  // GLES2DecoderClient implementation:
+  // DecoderClient implementation:
   void OnConsoleMessage(int32_t id, const std::string& message) override;
   void CacheShader(const std::string& key, const std::string& shader) override;
   void OnFenceSyncRelease(uint64_t release) override;
   bool OnWaitSyncToken(const SyncToken& sync_token) override;
   void OnDescheduleUntilFinished() override;
   void OnRescheduleAfterFinished() override;
+  void ScheduleGrContextCleanup() override;
 
   gles2::MemoryTracker* GetMemoryTracker() const;
 
@@ -106,7 +110,7 @@ class GPU_EXPORT CommandBufferStub
   // Whether there are commands in the buffer that haven't been processed.
   bool HasUnprocessedCommands();
 
-  gles2::GLES2Decoder* decoder() const { return decoder_.get(); }
+  DecoderContext* decoder_context() const { return decoder_context_.get(); }
   GpuChannel* channel() const { return channel_; }
 
   // Unique command buffer ID for this command buffer stub.
@@ -133,8 +137,14 @@ class GPU_EXPORT CommandBufferStub
                                size_t url_hash,
                                GpuChannel* channel);
 
-  gles2::MemoryTracker* CreateMemoryTracker(
+  std::unique_ptr<gles2::MemoryTracker> CreateMemoryTracker(
       const GPUCreateCommandBufferConfig init_params) const;
+
+  // Must be called during Initialize(). Takes ownership to co-ordinate
+  // teardown in Destroy().
+  void set_decoder_context(std::unique_ptr<DecoderContext> decoder_context) {
+    decoder_context_ = std::move(decoder_context);
+  }
 
   // The lifetime of objects of this class is managed by a GpuChannel. The
   // GpuChannels destroy all the CommandBufferStubs that they own when
@@ -152,7 +162,6 @@ class GPU_EXPORT CommandBufferStub
   bool use_virtualized_gl_context_;
 
   std::unique_ptr<CommandBufferService> command_buffer_;
-  std::unique_ptr<gles2::GLES2Decoder> decoder_;
 
   scoped_refptr<gl::GLSurface> surface_;
   scoped_refptr<SyncPointClientState> sync_point_client_state_;
@@ -163,19 +172,15 @@ class GPU_EXPORT CommandBufferStub
   const int32_t stream_id_;
   const int32_t route_id_;
 
-  base::Closure snapshot_requested_callback_;
-
  private:
-  GpuMemoryManager* GetMemoryManager() const;
-
   void Destroy();
 
   bool MakeCurrent();
 
   // Message handlers:
   void OnSetGetBuffer(int32_t shm_id);
-  void OnTakeFrontBuffer(const Mailbox& mailbox);
-  void OnReturnFrontBuffer(const Mailbox& mailbox, bool is_lost);
+  virtual void OnTakeFrontBuffer(const Mailbox& mailbox) = 0;
+  virtual void OnReturnFrontBuffer(const Mailbox& mailbox, bool is_lost) = 0;
   void OnGetState(IPC::Message* reply_message);
   void OnWaitForTokenInRange(int32_t start,
                              int32_t end,
@@ -184,12 +189,9 @@ class GPU_EXPORT CommandBufferStub
                                  int32_t start,
                                  int32_t end,
                                  IPC::Message* reply_message);
-  void OnAsyncFlush(int32_t put_offset,
-                    uint32_t flush_id,
-                    bool snapshot_requested);
+  void OnAsyncFlush(int32_t put_offset, uint32_t flush_id);
   void OnRegisterTransferBuffer(int32_t id,
-                                base::SharedMemoryHandle transfer_buffer,
-                                uint32_t size);
+                                base::UnsafeSharedMemoryRegion transfer_buffer);
   void OnDestroyTransferBuffer(int32_t id);
   void OnGetTransferBuffer(int32_t id, IPC::Message* reply_message);
 
@@ -198,10 +200,13 @@ class GPU_EXPORT CommandBufferStub
   void OnSignalSyncToken(const SyncToken& sync_token, uint32_t id);
   void OnSignalAck(uint32_t id);
   void OnSignalQuery(uint32_t query, uint32_t id);
+  void OnCreateGpuFenceFromHandle(uint32_t gpu_fence_id,
+                                  const gfx::GpuFenceHandle& handle);
+  void OnGetGpuFenceHandle(uint32_t gpu_fence_id);
 
   void OnWaitSyncTokenCompleted(const SyncToken& sync_token);
 
-  void OnCreateImage(const GpuCommandBufferMsg_CreateImage_Params& params);
+  void OnCreateImage(GpuCommandBufferMsg_CreateImage_Params params);
   void OnDestroyImage(int32_t id);
   void OnCreateStreamTexture(uint32_t texture_id,
                              int32_t stream_id,
@@ -226,9 +231,11 @@ class GPU_EXPORT CommandBufferStub
   static void SetContextGpuFeatureInfo(gl::GLContext* context,
                                        const GpuFeatureInfo& gpu_feature_info);
 
+  std::unique_ptr<DecoderContext> decoder_context_;
+
   uint32_t last_flush_id_;
 
-  base::ObserverList<DestructionObserver> destruction_observers_;
+  base::ObserverList<DestructionObserver>::Unchecked destruction_observers_;
 
   bool waiting_for_sync_point_;
 

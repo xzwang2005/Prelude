@@ -9,7 +9,6 @@
 #include <utility>
 
 #include "base/bind.h"
-#include "base/memory/ptr_util.h"
 #include "base/strings/string_split.h"
 #include "components/viz/service/display/overlay_strategy_fullscreen.h"
 #include "components/viz/service/display/overlay_strategy_single_on_top.h"
@@ -24,14 +23,14 @@ namespace {
 template <typename S>
 std::unique_ptr<OverlayProcessor::Strategy> MakeOverlayStrategy(
     CompositorOverlayCandidateValidatorOzone* capability_checker) {
-  return base::MakeUnique<S>(capability_checker);
+  return std::make_unique<S>(capability_checker);
 }
 
 }  // namespace
 
 // |overlay_candidates| is an object used to answer questions about possible
-// overlays configuarations.
-// |strategies_string| is a comma-separated string containing all the overaly
+// overlays configurations.
+// |strategies_string| is a comma-separated string containing all the overlay
 // strategies that should be returned by GetStrategies.
 // If |strategies_string| is empty "single-on-top,underlay" will be used as
 // default.
@@ -83,7 +82,7 @@ bool CompositorOverlayCandidateValidatorOzone::AllowDCLayerOverlays() {
 }
 
 void CompositorOverlayCandidateValidatorOzone::CheckOverlaySupport(
-    cc::OverlayCandidateList* surfaces) {
+    OverlayCandidateList* surfaces) {
   // SW mirroring copies out of the framebuffer, so we can't remove any
   // quads for overlaying, otherwise the output is incorrect.
   if (software_mirror_active_) {

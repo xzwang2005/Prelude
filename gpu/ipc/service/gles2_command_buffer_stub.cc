@@ -4,6 +4,7 @@
 
 #include "gpu/ipc/service/gles2_command_buffer_stub.h"
 
+#include <memory>
 #include <utility>
 
 #include "base/bind.h"
@@ -12,7 +13,6 @@
 #include "base/json/json_writer.h"
 #include "base/macros.h"
 #include "base/memory/memory_pressure_listener.h"
-#include "base/memory/ptr_util.h"
 #include "base/memory/shared_memory.h"
 #include "base/metrics/histogram_macros.h"
 #include "base/single_thread_task_runner.h"
@@ -22,6 +22,7 @@
 #include "gpu/command_buffer/common/constants.h"
 #include "gpu/command_buffer/common/gpu_memory_buffer_support.h"
 #include "gpu/command_buffer/common/mailbox.h"
+#include "gpu/command_buffer/common/swap_buffers_flags.h"
 #include "gpu/command_buffer/service/gl_context_virtual.h"
 #include "gpu/command_buffer/service/gl_state_restorer_impl.h"
 #include "gpu/command_buffer/service/image_manager.h"
@@ -37,8 +38,6 @@
 #include "gpu/ipc/service/gpu_channel_manager.h"
 #include "gpu/ipc/service/gpu_channel_manager_delegate.h"
 #include "gpu/ipc/service/gpu_memory_buffer_factory.h"
-#include "gpu/ipc/service/gpu_memory_manager.h"
-#include "gpu/ipc/service/gpu_memory_tracking.h"
 #include "gpu/ipc/service/gpu_watchdog_thread.h"
 #include "gpu/ipc/service/image_transport_surface.h"
 #include "ui/gl/gl_bindings.h"
@@ -72,6 +71,7 @@ GLES2CommandBufferStub::GLES2CommandBufferStub(
                         sequence_id,
                         stream_id,
                         route_id),
+      gles2_decoder_(nullptr),
       weak_ptr_factory_(this) {}
 
 GLES2CommandBufferStub::~GLES2CommandBufferStub() {}
@@ -79,13 +79,7 @@ GLES2CommandBufferStub::~GLES2CommandBufferStub() {}
 gpu::ContextResult GLES2CommandBufferStub::Initialize(
     CommandBufferStub* share_command_buffer_stub,
     const GPUCreateCommandBufferConfig& init_params,
-    std::unique_ptr<base::SharedMemory> shared_state_shm) {
-#if defined(OS_FUCHSIA)
-  // TODO(crbug.com/707031): Implement this.
-  NOTIMPLEMENTED();
-  LOG(ERROR) << "ContextResult::kFatalFailure: no fuchsia support";
-  return gpu::ContextResult::kFatalFailure;
-#else
+    base::UnsafeSharedMemoryRegion shared_state_shm) {
   TRACE_EVENT0("gpu", "GLES2CommandBufferStub::Initialize");
   FastSetActiveURL(active_url_, active_url_hash_, channel_);
 
@@ -97,8 +91,8 @@ gpu::ContextResult GLES2CommandBufferStub::Initialize(
     DCHECK(context_group_->bind_generates_resource() ==
            init_params.attribs.bind_generates_resource);
   } else {
-    scoped_refptr<gles2::FeatureInfo> feature_info =
-        new gles2::FeatureInfo(manager->gpu_driver_bug_workarounds());
+    scoped_refptr<gles2::FeatureInfo> feature_info = new gles2::FeatureInfo(
+        manager->gpu_driver_bug_workarounds(), manager->gpu_feature_info());
     gpu::GpuMemoryBufferFactory* gmb_factory =
         manager->gpu_memory_buffer_factory();
     context_group_ = new gles2::ContextGroup(
@@ -128,12 +122,7 @@ gpu::ContextResult GLES2CommandBufferStub::Initialize(
   use_virtualized_gl_context_ |= manager->mailbox_manager()->UsesSync();
 
   bool offscreen = (surface_handle_ == kNullSurfaceHandle);
-  gl::GLSurface* default_surface = manager->GetDefaultOffscreenSurface();
-  if (!default_surface) {
-    LOG(ERROR) << "ContextResult::kFatalFailure: "
-                  "Failed to create default offscreen surface.";
-    return gpu::ContextResult::kFatalFailure;
-  }
+  gl::GLSurface* default_surface = manager->default_offscreen_surface();
   // On low-spec Android devices, the default offscreen surface is
   // RGB565, but WebGL rendering contexts still ask for RGBA8888 mode.
   // That combination works for offscreen rendering, we can still use
@@ -166,8 +155,9 @@ gpu::ContextResult GLES2CommandBufferStub::Initialize(
 
   command_buffer_ = std::make_unique<CommandBufferService>(
       this, context_group_->transfer_buffer_manager());
-  decoder_.reset(gles2::GLES2Decoder::Create(
-      this, command_buffer_.get(), manager->outputter(), context_group_.get()));
+  gles2_decoder_ = gles2::GLES2Decoder::Create(
+      this, command_buffer_.get(), manager->outputter(), context_group_.get());
+  set_decoder_context(std::unique_ptr<DecoderContext>(gles2_decoder_));
 
   sync_point_client_state_ =
       channel_->sync_point_manager()->CreateSyncPointClientState(
@@ -211,14 +201,14 @@ gpu::ContextResult GLES2CommandBufferStub::Initialize(
     }
   } else {
     switch (init_params.attribs.color_space) {
-      case gles2::COLOR_SPACE_UNSPECIFIED:
+      case COLOR_SPACE_UNSPECIFIED:
         surface_format.SetColorSpace(
             gl::GLSurfaceFormat::COLOR_SPACE_UNSPECIFIED);
         break;
-      case gles2::COLOR_SPACE_SRGB:
+      case COLOR_SPACE_SRGB:
         surface_format.SetColorSpace(gl::GLSurfaceFormat::COLOR_SPACE_SRGB);
         break;
-      case gles2::COLOR_SPACE_DISPLAY_P3:
+      case COLOR_SPACE_DISPLAY_P3:
         surface_format.SetColorSpace(
             gl::GLSurfaceFormat::COLOR_SPACE_DISPLAY_P3);
         break;
@@ -241,7 +231,7 @@ gpu::ContextResult GLES2CommandBufferStub::Initialize(
     if (share_command_buffer_stub) {
       share_group_ = share_command_buffer_stub->share_group();
     } else {
-      share_group_ = new gl::GLShareGroup();
+      share_group_ = base::MakeRefCounted<gl::GLShareGroup>();
     }
   } else {
     // When using the validating command decoder, always use the global share
@@ -284,7 +274,7 @@ gpu::ContextResult GLES2CommandBufferStub::Initialize(
            gl::GetGLImplementation() == gl::kGLImplementationMockGL ||
            gl::GetGLImplementation() == gl::kGLImplementationStubGL);
     context = base::MakeRefCounted<GLContextVirtual>(
-        share_group_.get(), context.get(), decoder_->AsWeakPtr());
+        share_group_.get(), context.get(), gles2_decoder_->AsWeakPtr());
     if (!context->Initialize(surface_.get(),
                              GenerateGLContextAttribs(init_params.attribs,
                                                       context_group_.get()))) {
@@ -320,7 +310,8 @@ gpu::ContextResult GLES2CommandBufferStub::Initialize(
   }
 
   if (!context->GetGLStateRestorer()) {
-    context->SetGLStateRestorer(new GLStateRestorerImpl(decoder_->AsWeakPtr()));
+    context->SetGLStateRestorer(
+        new GLStateRestorerImpl(gles2_decoder_->AsWeakPtr()));
   }
 
   if (!context_group_->has_program_cache() &&
@@ -329,26 +320,28 @@ gpu::ContextResult GLES2CommandBufferStub::Initialize(
   }
 
   // Initialize the decoder with either the view or pbuffer GLContext.
-  auto result = decoder_->Initialize(surface_, context, offscreen,
-                                     gpu::gles2::DisallowedFeatures(),
-                                     init_params.attribs);
+  auto result = gles2_decoder_->Initialize(surface_, context, offscreen,
+                                           gpu::gles2::DisallowedFeatures(),
+                                           init_params.attribs);
   if (result != gpu::ContextResult::kSuccess) {
     DLOG(ERROR) << "Failed to initialize decoder.";
     return result;
   }
 
   if (manager->gpu_preferences().enable_gpu_service_logging) {
-    decoder_->set_log_commands(true);
+    gles2_decoder_->SetLogCommands(true);
   }
 
   const size_t kSharedStateSize = sizeof(CommandBufferSharedState);
-  if (!shared_state_shm->Map(kSharedStateSize)) {
+  base::WritableSharedMemoryMapping shared_state_mapping =
+      shared_state_shm.MapAt(0, kSharedStateSize);
+  if (!shared_state_mapping.IsValid()) {
     LOG(ERROR) << "ContextResult::kFatalFailure: "
                   "Failed to map shared state buffer.";
     return gpu::ContextResult::kFatalFailure;
   }
   command_buffer_->SetSharedStateBuffer(MakeBackingFromSharedMemory(
-      std::move(shared_state_shm), kSharedStateSize));
+      std::move(shared_state_shm), std::move(shared_state_mapping)));
 
   if (offscreen && !active_url_.is_empty())
     manager->delegate()->DidCreateOffscreenContext(active_url_);
@@ -372,7 +365,6 @@ gpu::ContextResult GLES2CommandBufferStub::Initialize(
   manager->delegate()->DidCreateContextSuccessfully();
   initialized_ = true;
   return gpu::ContextResult::kSuccess;
-#endif  // defined(OS_FUCHSIA)
 }
 
 #if defined(OS_WIN)
@@ -380,13 +372,15 @@ void GLES2CommandBufferStub::DidCreateAcceleratedSurfaceChildWindow(
     SurfaceHandle parent_window,
     SurfaceHandle child_window) {
   GpuChannelManager* gpu_channel_manager = channel_->gpu_channel_manager();
-  gpu_channel_manager->delegate()->SendAcceleratedSurfaceCreatedChildWindow(
-      parent_window, child_window);
+  gpu_channel_manager->delegate()->SendCreatedChildWindow(parent_window,
+                                                          child_window);
 }
 #endif
 
 void GLES2CommandBufferStub::DidSwapBuffersComplete(
     SwapBuffersCompleteParams params) {
+  params.swap_response.swap_id = pending_swap_completed_params_.front().swap_id;
+  pending_swap_completed_params_.pop_front();
   Send(new GpuCommandBufferMsg_SwapBuffersCompleted(route_id_, params));
 }
 
@@ -398,21 +392,17 @@ const GpuPreferences& GLES2CommandBufferStub::GetGpuPreferences() const {
   return context_group_->gpu_preferences();
 }
 
-void GLES2CommandBufferStub::SetSnapshotRequestedCallback(
-    const base::Closure& callback) {
-  snapshot_requested_callback_ = callback;
-}
-
-void GLES2CommandBufferStub::UpdateVSyncParameters(base::TimeTicks timebase,
-                                                   base::TimeDelta interval) {
-  Send(new GpuCommandBufferMsg_UpdateVSyncParameters(route_id_, timebase,
-                                                     interval));
-}
-
 void GLES2CommandBufferStub::BufferPresented(
-    uint64_t swap_id,
     const gfx::PresentationFeedback& feedback) {
-  Send(new GpuCommandBufferMsg_BufferPresented(route_id_, swap_id, feedback));
+  SwapBufferParams params = pending_presented_params_.front();
+  pending_presented_params_.pop_front();
+
+  if (params.flags & gpu::SwapBuffersFlags::kPresentationFeedback ||
+      (params.flags & gpu::SwapBuffersFlags::kVSyncParams &&
+       feedback.flags & gfx::PresentationFeedback::kVSync)) {
+    Send(new GpuCommandBufferMsg_BufferPresented(route_id_, params.swap_id,
+                                                 feedback));
+  }
 }
 
 void GLES2CommandBufferStub::AddFilter(IPC::MessageFilter* message_filter) {
@@ -421,6 +411,26 @@ void GLES2CommandBufferStub::AddFilter(IPC::MessageFilter* message_filter) {
 
 int32_t GLES2CommandBufferStub::GetRouteID() const {
   return route_id_;
+}
+
+void GLES2CommandBufferStub::OnTakeFrontBuffer(const Mailbox& mailbox) {
+  TRACE_EVENT0("gpu", "CommandBufferStub::OnTakeFrontBuffer");
+  if (!gles2_decoder_) {
+    LOG(ERROR) << "Can't take front buffer before initialization.";
+    return;
+  }
+
+  gles2_decoder_->TakeFrontBuffer(mailbox);
+}
+
+void GLES2CommandBufferStub::OnReturnFrontBuffer(const Mailbox& mailbox,
+                                                 bool is_lost) {
+  gles2_decoder_->ReturnFrontBuffer(mailbox, is_lost);
+}
+
+void GLES2CommandBufferStub::OnSwapBuffers(uint64_t swap_id, uint32_t flags) {
+  pending_swap_completed_params_.push_back({swap_id, flags});
+  pending_presented_params_.push_back({swap_id, flags});
 }
 
 }  // namespace gpu

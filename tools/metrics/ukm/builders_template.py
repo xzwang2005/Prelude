@@ -30,20 +30,21 @@ namespace builders {{
 #endif  // {file.guard_path}
 """,
 event_template="""
-class {event.name} : public ::ukm::internal::UkmEntryBuilderBase {{
+class {event.name} final : public ::ukm::internal::UkmEntryBuilderBase {{
  public:
-  {event.name}(ukm::SourceId source_id);
+  explicit {event.name}(ukm::SourceId source_id);
+  explicit {event.name}(base::UkmSourceId source_id);
   ~{event.name}() override;
 
   static const char kEntryName[];
-  static const uint64_t kEntryNameHash = UINT64_C({event.hash});
+  static constexpr uint64_t kEntryNameHash = UINT64_C({event.hash});
 
 {metric_code}
 }};
 """,
 metric_template="""
   static const char k{metric.name}Name[];
-  static const uint64_t k{metric.name}NameHash = UINT64_C({metric.hash});
+  static constexpr uint64_t k{metric.name}NameHash = UINT64_C({metric.hash});
   {event.name}& Set{metric.name}(int64_t value);
 """)
 
@@ -70,6 +71,10 @@ const char {event.name}::kEntryName[] = "{event.raw_name}";
   ::ukm::internal::UkmEntryBuilderBase(source_id, kEntryNameHash) {{
 }}
 
+{event.name}::{event.name}(base::UkmSourceId source_id) :
+  ::ukm::internal::UkmEntryBuilderBase(source_id, kEntryNameHash) {{
+}}
+
 {event.name}::~{event.name}() = default;
 
 {metric_code}
@@ -78,7 +83,7 @@ metric_template="""
 const char {event.name}::k{metric.name}Name[] = "{metric.raw_name}";
 
 {event.name}& {event.name}::Set{metric.name}(int64_t value) {{
-  AddMetric(k{metric.name}NameHash, value);
+  SetMetricInternal(k{metric.name}NameHash, value);
   return *this;
 }}
 """)

@@ -18,8 +18,7 @@ TestLayerAnimationDelegate::TestLayerAnimationDelegate()
       visibility_(true),
       brightness_(0.0f),
       grayscale_(0.0f),
-      color_(SK_ColorBLACK),
-      temperature_(0.0f) {
+      color_(SK_ColorBLACK) {
   CreateCcLayer();
 }
 
@@ -29,8 +28,7 @@ TestLayerAnimationDelegate::TestLayerAnimationDelegate(
       transform_(other.GetTransformForAnimation()),
       opacity_(other.GetOpacityForAnimation()),
       visibility_(other.GetVisibilityForAnimation()),
-      color_(SK_ColorBLACK),
-      temperature_(0.0f) {
+      color_(SK_ColorBLACK) {
   CreateCcLayer();
 }
 
@@ -49,6 +47,10 @@ void TestLayerAnimationDelegate::ExpectLastPropertyChangeReason(
   EXPECT_TRUE(last_property_change_reason_is_set_);
   EXPECT_EQ(last_property_change_reason_, reason);
   last_property_change_reason_is_set_ = false;
+}
+
+void TestLayerAnimationDelegate::SetFrameNumber(int frame_number) {
+  frame_number_ = frame_number;
 }
 
 void TestLayerAnimationDelegate::SetBoundsFromAnimation(
@@ -107,14 +109,6 @@ void TestLayerAnimationDelegate::SetColorFromAnimation(
   last_property_change_reason_is_set_ = true;
 }
 
-void TestLayerAnimationDelegate::SetTemperatureFromAnimation(
-    float temperature,
-    PropertyChangeReason reason) {
-  temperature_ = temperature;
-  last_property_change_reason_ = reason;
-  last_property_change_reason_is_set_ = true;
-}
-
 void TestLayerAnimationDelegate::ScheduleDrawForAnimation() {
 }
 
@@ -146,10 +140,6 @@ SkColor TestLayerAnimationDelegate::GetColorForAnimation() const {
   return color_;
 }
 
-float TestLayerAnimationDelegate::GetTemperatureFromAnimation() const {
-  return temperature_;
-}
-
 float TestLayerAnimationDelegate::GetDeviceScaleFactor() const {
   return 1.0f;
 }
@@ -173,7 +163,7 @@ TestLayerAnimationDelegate::GetThreadedAnimationDelegate() {
 }
 
 int TestLayerAnimationDelegate::GetFrameNumber() const {
-  return 0;
+  return frame_number_;
 }
 
 float TestLayerAnimationDelegate::GetRefreshRate() const {
@@ -186,9 +176,9 @@ void TestLayerAnimationDelegate::CreateCcLayer() {
 }
 
 void TestLayerThreadedAnimationDelegate::AddThreadedAnimation(
-    std::unique_ptr<cc::Animation> animation) {}
+    std::unique_ptr<cc::KeyframeModel> keyframe_model) {}
 
 void TestLayerThreadedAnimationDelegate::RemoveThreadedAnimation(
-    int animation_id) {}
+    int keyframe_model_id) {}
 
 }  // namespace ui

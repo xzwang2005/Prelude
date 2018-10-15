@@ -8,8 +8,8 @@
 #ifndef SKSL_SYMBOLTABLE
 #define SKSL_SYMBOLTABLE
 
-#include <memory>
 #include <unordered_map>
+#include <memory>
 #include <vector>
 #include "SkSLErrorReporter.h"
 #include "SkSLSymbol.h"

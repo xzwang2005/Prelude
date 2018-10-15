@@ -6,14 +6,16 @@
  * found in the LICENSE file.
  */
 
-#include <OpenGLES/ES2/gl.h>
 #include "../GLWindowContext.h"
-#include "SDL.h"
 #include "SkCanvas.h"
 #include "SkColorFilter.h"
 #include "WindowContextFactory_ios.h"
 #include "gl/GrGLInterface.h"
 #include "sk_tool_utils.h"
+
+#include <OpenGLES/ES2/gl.h>
+
+#include "SDL.h"
 
 using sk_app::DisplayParams;
 using sk_app::window_context_factory::IOSWindowInfo;
@@ -64,12 +66,7 @@ RasterWindowContext_ios::~RasterWindowContext_ios() {
 
 sk_sp<const GrGLInterface> RasterWindowContext_ios::onInitializeContext() {
     SkASSERT(fWindow);
-
-    fGLContext = SDL_GL_CreateContext(fWindow);
-    if (!fGLContext) {
-        SkDebugf("%s\n", SDL_GetError());
-        return nullptr;
-    }
+    SkASSERT(fGLContext);
 
     if (0 == SDL_GL_MakeCurrent(fWindow, fGLContext)) {
         glClearStencil(0);
@@ -79,6 +76,7 @@ sk_sp<const GrGLInterface> RasterWindowContext_ios::onInitializeContext() {
 
         SDL_GL_GetAttribute(SDL_GL_STENCIL_SIZE, &fStencilBits);
         SDL_GL_GetAttribute(SDL_GL_MULTISAMPLESAMPLES, &fSampleCount);
+        fSampleCount = SkTMax(fSampleCount, 1);
 
         SDL_GL_GetDrawableSize(fWindow, &fWidth, &fHeight);
         glViewport(0, 0, fWidth, fHeight);
@@ -90,16 +88,11 @@ sk_sp<const GrGLInterface> RasterWindowContext_ios::onInitializeContext() {
     SkImageInfo info = SkImageInfo::Make(fWidth, fHeight, fDisplayParams.fColorType,
                                          kPremul_SkAlphaType, fDisplayParams.fColorSpace);
     fBackbufferSurface = SkSurface::MakeRaster(info);
-    return sk_sp<const GrGLInterface>(GrGLCreateNativeInterface());
+    return GrGLMakeNativeInterface();
 }
 
 void RasterWindowContext_ios::onDestroyContext() {
-    if (!fWindow || !fGLContext) {
-        return;
-    }
     fBackbufferSurface.reset(nullptr);
-    SDL_GL_DeleteContext(fGLContext);
-    fGLContext = nullptr;
 }
 
 sk_sp<SkSurface> RasterWindowContext_ios::getBackbufferSurface() { return fBackbufferSurface; }

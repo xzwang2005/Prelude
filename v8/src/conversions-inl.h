@@ -43,9 +43,10 @@ inline unsigned int FastD2UI(double x) {
     x += k2Pow52;
     uint32_t result;
 #ifndef V8_TARGET_BIG_ENDIAN
-    Address mantissa_ptr = reinterpret_cast<Address>(&x);
+    void* mantissa_ptr = reinterpret_cast<void*>(&x);
 #else
-    Address mantissa_ptr = reinterpret_cast<Address>(&x) + kInt32Size;
+    void* mantissa_ptr =
+        reinterpret_cast<void*>(reinterpret_cast<Address>(&x) + kInt32Size);
 #endif
     // Copy least significant 32 bits of mantissa.
     memcpy(&result, mantissa_ptr, sizeof(result));
@@ -72,8 +73,10 @@ inline double DoubleToInteger(double x) {
 
 
 int32_t DoubleToInt32(double x) {
-  int32_t i = FastD2I(x);
-  if (FastI2D(i) == x) return i;
+  if ((std::isfinite(x)) && (x <= INT_MAX) && (x >= INT_MIN)) {
+    int32_t i = static_cast<int32_t>(x);
+    if (FastI2D(i) == x) return i;
+  }
   Double d(x);
   int exponent = d.Exponent();
   if (exponent < 0) {
@@ -86,21 +89,20 @@ int32_t DoubleToInt32(double x) {
 }
 
 bool DoubleToSmiInteger(double value, int* smi_int_value) {
-  if (IsMinusZero(value)) return false;
-  int i = FastD2IChecked(value);
-  if (value != i || !Smi::IsValid(i)) return false;
-  *smi_int_value = i;
+  if (!IsSmiDouble(value)) return false;
+  *smi_int_value = FastD2I(value);
+  DCHECK(Smi::IsValid(*smi_int_value));
   return true;
 }
 
 bool IsSmiDouble(double value) {
-  return !IsMinusZero(value) && value >= Smi::kMinValue &&
-         value <= Smi::kMaxValue && value == FastI2D(FastD2I(value));
+  return value >= Smi::kMinValue && value <= Smi::kMaxValue &&
+         !IsMinusZero(value) && value == FastI2D(FastD2I(value));
 }
 
 
 bool IsInt32Double(double value) {
-  return !IsMinusZero(value) && value >= kMinInt && value <= kMaxInt &&
+  return value >= kMinInt && value <= kMaxInt && !IsMinusZero(value) &&
          value == FastI2D(FastD2I(value));
 }
 
@@ -176,6 +178,21 @@ int64_t NumberToInt64(Object* number) {
     return std::numeric_limits<int64_t>::min();
   }
   return static_cast<int64_t>(d);
+}
+
+uint64_t PositiveNumberToUint64(Object* number) {
+  if (number->IsSmi()) {
+    int value = Smi::ToInt(number);
+    if (value <= 0) return 0;
+    return value;
+  }
+  DCHECK(number->IsHeapNumber());
+  double value = number->Number();
+  // Catch all values smaller than 1 and use the double-negation trick for NANs.
+  if (!(value >= 1)) return 0;
+  uint64_t max = std::numeric_limits<uint64_t>::max();
+  if (value < max) return static_cast<uint64_t>(value);
+  return max;
 }
 
 bool TryNumberToSize(Object* number, size_t* result) {

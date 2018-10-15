@@ -27,7 +27,7 @@ void TestLayerTreeHostBase::SetUp() {
   task_graph_runner_ = CreateTaskGraphRunner();
   host_impl_ = CreateHostImpl(CreateSettings(), &task_runner_provider_,
                               task_graph_runner_.get());
-  InitializeRenderer();
+  InitializeFrameSink();
   SetInitialTreePriority();
 }
 
@@ -54,16 +54,16 @@ TestLayerTreeHostBase::CreateTaskGraphRunner() {
   return base::WrapUnique(new TestTaskGraphRunner);
 }
 
-void TestLayerTreeHostBase::InitializeRenderer() {
+void TestLayerTreeHostBase::InitializeFrameSink() {
   host_impl_->SetVisible(true);
-  host_impl_->InitializeRenderer(layer_tree_frame_sink_.get());
+  host_impl_->InitializeFrameSink(layer_tree_frame_sink_.get());
 }
 
 void TestLayerTreeHostBase::ResetLayerTreeFrameSink(
     std::unique_ptr<LayerTreeFrameSink> layer_tree_frame_sink) {
   host_impl()->DidLoseLayerTreeFrameSink();
   host_impl()->SetVisible(true);
-  host_impl()->InitializeRenderer(layer_tree_frame_sink.get());
+  host_impl()->InitializeFrameSink(layer_tree_frame_sink.get());
   layer_tree_frame_sink_ = std::move(layer_tree_frame_sink);
 }
 
@@ -96,11 +96,14 @@ void TestLayerTreeHostBase::SetupPendingTree(
 void TestLayerTreeHostBase::SetupPendingTree(
     scoped_refptr<RasterSource> raster_source,
     const gfx::Size& tile_size,
-    const Region& invalidation) {
+    const Region& invalidation,
+    Layer::LayerMaskType mask_type) {
   host_impl()->CreatePendingTree();
   host_impl()->pending_tree()->PushPageScaleFromMainThread(1.f, 0.00001f,
                                                            100000.f);
   LayerTreeImpl* pending_tree = host_impl()->pending_tree();
+  pending_tree->SetDeviceViewportSize(
+      host_impl()->active_tree()->GetDeviceViewport().size());
   pending_tree->SetDeviceScaleFactor(
       host_impl()->active_tree()->device_scale_factor());
 
@@ -111,7 +114,20 @@ void TestLayerTreeHostBase::SetupPendingTree(
   if (!pending_root) {
     std::unique_ptr<LayerImpl> new_pending_root =
         LayerImpl::Create(pending_tree, root_id_);
-    pending_layer = FakePictureLayerImpl::Create(pending_tree, id_);
+    switch (mask_type) {
+      case Layer::LayerMaskType::NOT_MASK:
+        pending_layer = FakePictureLayerImpl::Create(pending_tree, id_);
+        break;
+      case Layer::LayerMaskType::SINGLE_TEXTURE_MASK:
+        pending_layer =
+            FakePictureLayerImpl::CreateSingleTextureMask(pending_tree, id_);
+        break;
+      case Layer::LayerMaskType::MULTI_TEXTURE_MASK:
+        pending_layer = FakePictureLayerImpl::CreateMask(pending_tree, id_);
+        break;
+      default:
+        NOTREACHED();
+    }
     if (!tile_size.IsEmpty())
       pending_layer->set_fixed_tile_size(tile_size);
     pending_layer->SetDrawsContent(true);

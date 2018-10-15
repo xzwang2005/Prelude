@@ -16,7 +16,7 @@
 #include "media/base/mime_util_internal.h"
 #include "media/base/video_codecs.h"
 #include "media/base/video_color_space.h"
-#include "media/media_features.h"
+#include "media/media_buildflags.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 #if defined(OS_ANDROID)
@@ -126,7 +126,8 @@ static MimeUtil::PlatformInfo VaryAllFields() {
 static bool HasHevcSupport() {
 #if BUILDFLAG(ENABLE_HEVC_DEMUXING)
 #if defined(OS_ANDROID)
-  return base::android::BuildInfo::GetInstance()->sdk_int() >= 21;
+  return base::android::BuildInfo::GetInstance()->sdk_int() >=
+         base::android::SDK_VERSION_LOLLIPOP;
 #else
   return true;
 #endif  // defined(OS_ANDROID)
@@ -325,10 +326,8 @@ TEST(MimeUtilTest, ParseAudioCodecString) {
   // Valid FLAC string with MP4. Neither decoding nor demuxing is proprietary.
   EXPECT_TRUE(ParseAudioCodecString("audio/mp4", "flac", &out_is_ambiguous,
                                     &out_codec));
-  if (kUsePropCodecs) {
-    EXPECT_FALSE(out_is_ambiguous);
-    EXPECT_EQ(kCodecFLAC, out_codec);
-  }
+  EXPECT_FALSE(out_is_ambiguous);
+  EXPECT_EQ(kCodecFLAC, out_codec);
 
   // Ambiguous AAC string.
   // TODO(chcunningha): This can probably be allowed. I think we treat all
@@ -436,6 +435,7 @@ TEST(IsCodecSupportedOnAndroidTest, EncryptedCodecBehavior) {
           // These codecs are never supported by the Android platform.
           case MimeUtil::INVALID_CODEC:
           case MimeUtil::AV1:
+          case MimeUtil::MPEG_H_AUDIO:
           case MimeUtil::THEORA:
             EXPECT_FALSE(result);
             break;
@@ -494,6 +494,7 @@ TEST(IsCodecSupportedOnAndroidTest, ClearCodecBehavior) {
         switch (codec) {
           // These codecs are never supported by the Android platform.
           case MimeUtil::INVALID_CODEC:
+          case MimeUtil::MPEG_H_AUDIO:
           case MimeUtil::THEORA:
           case MimeUtil::AV1:
             EXPECT_FALSE(result);

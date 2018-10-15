@@ -51,7 +51,7 @@ class EVENTS_EXPORT XEventDispatcher {
 class EVENTS_EXPORT X11EventSourceLibevent
     : public X11EventSourceDelegate,
       public PlatformEventSource,
-      public base::MessagePumpLibevent::Watcher {
+      public base::MessagePumpLibevent::FdWatcher {
  public:
   explicit X11EventSourceLibevent(XDisplay* display);
   ~X11EventSourceLibevent() override;
@@ -94,16 +94,16 @@ class EVENTS_EXPORT X11EventSourceLibevent
   void StopCurrentEventStream() override;
   void OnDispatcherListChanged() override;
 
-  // base::MessagePumpLibevent::Watcher:
+  // base::MessagePumpLibevent::FdWatcher:
   void OnFileCanReadWithoutBlocking(int fd) override;
   void OnFileCanWriteWithoutBlocking(int fd) override;
 
   X11EventSource event_source_;
 
   // Keep track of all XEventDispatcher to send XEvents directly to.
-  base::ObserverList<XEventDispatcher> dispatchers_xevent_;
+  base::ObserverList<XEventDispatcher>::Unchecked dispatchers_xevent_;
 
-  base::MessagePumpLibevent::FileDescriptorWatcher watcher_controller_;
+  base::MessagePumpLibevent::FdWatchController watcher_controller_;
   bool initialized_ = false;
 
   DISALLOW_COPY_AND_ASSIGN(X11EventSourceLibevent);

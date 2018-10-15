@@ -5,13 +5,13 @@
 #include "base/android/jni_android.h"
 
 #include <stddef.h>
+#include <sys/prctl.h>
 
 #include <map>
 
-#include "base/android/build_info.h"
+#include "base/android/java_exception_reporter.h"
 #include "base/android/jni_string.h"
-#include "base/android/jni_utils.h"
-#include "base/debug/debugging_flags.h"
+#include "base/debug/debugging_buildflags.h"
 #include "base/lazy_instance.h"
 #include "base/logging.h"
 #include "base/threading/thread_local.h"
@@ -31,6 +31,8 @@ base::LazyInstance<base::ThreadLocalPointer<void>>::Leaky
     g_stack_frame_pointer = LAZY_INSTANCE_INITIALIZER;
 #endif
 
+bool g_fatal_exception_occurred = false;
+
 }  // namespace
 
 namespace base {
@@ -38,9 +40,26 @@ namespace android {
 
 JNIEnv* AttachCurrentThread() {
   DCHECK(g_jvm);
-  JNIEnv* env = NULL;
-  jint ret = g_jvm->AttachCurrentThread(&env, NULL);
-  DCHECK_EQ(JNI_OK, ret);
+  JNIEnv* env = nullptr;
+  jint ret = g_jvm->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_2);
+  if (ret == JNI_EDETACHED || !env) {
+    JavaVMAttachArgs args;
+    args.version = JNI_VERSION_1_2;
+    args.group = nullptr;
+
+    // 16 is the maximum size for thread names on Android.
+    char thread_name[16];
+    int err = prctl(PR_GET_NAME, thread_name);
+    if (err < 0) {
+      DPLOG(ERROR) << "prctl(PR_GET_NAME)";
+      args.name = nullptr;
+    } else {
+      args.name = thread_name;
+    }
+
+    ret = g_jvm->AttachCurrentThread(&env, &args);
+    DCHECK_EQ(JNI_OK, ret);
+  }
   return env;
 }
 
@@ -124,25 +143,20 @@ ScopedJavaLocalRef<jclass> GetClass(JNIEnv* env, const char* class_name) {
 jclass LazyGetClass(
     JNIEnv* env,
     const char* class_name,
-    base::subtle::AtomicWord* atomic_class_id) {
-  static_assert(sizeof(subtle::AtomicWord) >= sizeof(jclass),
-                "AtomicWord can't be smaller than jclass");
-  subtle::AtomicWord value = base::subtle::Acquire_Load(atomic_class_id);
+    std::atomic<jclass>* atomic_class_id) {
+  const jclass value = std::atomic_load(atomic_class_id);
   if (value)
-    return reinterpret_cast<jclass>(value);
+    return value;
   ScopedJavaGlobalRef<jclass> clazz;
   clazz.Reset(GetClass(env, class_name));
-  subtle::AtomicWord null_aw = reinterpret_cast<subtle::AtomicWord>(NULL);
-  subtle::AtomicWord cas_result = base::subtle::Release_CompareAndSwap(
-      atomic_class_id,
-      null_aw,
-      reinterpret_cast<subtle::AtomicWord>(clazz.obj()));
-  if (cas_result == null_aw) {
+  jclass cas_result = nullptr;
+  if (std::atomic_compare_exchange_strong(atomic_class_id, &cas_result,
+                                          clazz.obj())) {
     // We intentionally leak the global ref since we now storing it as a raw
     // pointer in |atomic_class_id|.
     return clazz.Release();
   } else {
-    return reinterpret_cast<jclass>(cas_result);
+    return cas_result;
   }
 }
 
@@ -151,9 +165,10 @@ jmethodID MethodID::Get(JNIEnv* env,
                         jclass clazz,
                         const char* method_name,
                         const char* jni_signature) {
-  jmethodID id = type == TYPE_STATIC ?
-      env->GetStaticMethodID(clazz, method_name, jni_signature) :
-      env->GetMethodID(clazz, method_name, jni_signature);
+  auto get_method_ptr = type == MethodID::TYPE_STATIC ?
+      &JNIEnv::GetStaticMethodID :
+      &JNIEnv::GetMethodID;
+  jmethodID id = (env->*get_method_ptr)(clazz, method_name, jni_signature);
   if (base::android::ClearException(env) || !id) {
     LOG(FATAL) << "Failed to find " <<
         (type == TYPE_STATIC ? "static " : "") <<
@@ -170,15 +185,12 @@ jmethodID MethodID::LazyGet(JNIEnv* env,
                             jclass clazz,
                             const char* method_name,
                             const char* jni_signature,
-                            base::subtle::AtomicWord* atomic_method_id) {
-  static_assert(sizeof(subtle::AtomicWord) >= sizeof(jmethodID),
-                "AtomicWord can't be smaller than jMethodID");
-  subtle::AtomicWord value = base::subtle::Acquire_Load(atomic_method_id);
+                            std::atomic<jmethodID>* atomic_method_id) {
+  const jmethodID value = std::atomic_load(atomic_method_id);
   if (value)
-    return reinterpret_cast<jmethodID>(value);
+    return value;
   jmethodID id = MethodID::Get<type>(env, clazz, method_name, jni_signature);
-  base::subtle::Release_Store(
-      atomic_method_id, reinterpret_cast<subtle::AtomicWord>(id));
+  std::atomic_store(atomic_method_id, id);
   return id;
 }
 
@@ -193,11 +205,11 @@ template jmethodID MethodID::Get<MethodID::TYPE_INSTANCE>(
 
 template jmethodID MethodID::LazyGet<MethodID::TYPE_STATIC>(
     JNIEnv* env, jclass clazz, const char* method_name,
-    const char* jni_signature, base::subtle::AtomicWord* atomic_method_id);
+    const char* jni_signature, std::atomic<jmethodID>* atomic_method_id);
 
 template jmethodID MethodID::LazyGet<MethodID::TYPE_INSTANCE>(
     JNIEnv* env, jclass clazz, const char* method_name,
-    const char* jni_signature, base::subtle::AtomicWord* atomic_method_id);
+    const char* jni_signature, std::atomic<jmethodID>* atomic_method_id);
 
 bool HasException(JNIEnv* env) {
   return env->ExceptionCheck() != JNI_FALSE;
@@ -215,17 +227,22 @@ void CheckException(JNIEnv* env) {
   if (!HasException(env))
     return;
 
-  // Exception has been found, might as well tell breakpad about it.
   jthrowable java_throwable = env->ExceptionOccurred();
   if (java_throwable) {
     // Clear the pending exception, since a local reference is now held.
     env->ExceptionDescribe();
     env->ExceptionClear();
 
-    // Set the exception_string in BuildInfo so that breakpad can read it.
-    // RVO should avoid any extra copies of the exception string.
-    base::android::BuildInfo::GetInstance()->SetJavaExceptionInfo(
-        GetJavaExceptionInfo(env, java_throwable));
+    if (g_fatal_exception_occurred) {
+      // Another exception (probably OOM) occurred during GetJavaExceptionInfo.
+      base::android::SetJavaException(
+          "Java OOM'ed in exception handling, check logcat");
+    } else {
+      g_fatal_exception_occurred = true;
+      // RVO should avoid any extra copies of the exception string.
+      base::android::SetJavaException(
+          GetJavaExceptionInfo(env, java_throwable).c_str());
+    }
   }
 
   // Now, feel good about it and die.
@@ -253,6 +270,7 @@ std::string GetJavaExceptionInfo(JNIEnv* env, jthrowable java_throwable) {
   ScopedJavaLocalRef<jobject> bytearray_output_stream(env,
       env->NewObject(bytearray_output_stream_clazz.obj(),
                      bytearray_output_stream_constructor));
+  CheckException(env);
 
   // Create an instance of PrintStream.
   ScopedJavaLocalRef<jclass> printstream_clazz =
@@ -264,19 +282,19 @@ std::string GetJavaExceptionInfo(JNIEnv* env, jthrowable java_throwable) {
   ScopedJavaLocalRef<jobject> printstream(env,
       env->NewObject(printstream_clazz.obj(), printstream_constructor,
                      bytearray_output_stream.obj()));
+  CheckException(env);
 
   // Call Throwable.printStackTrace(PrintStream)
   env->CallVoidMethod(java_throwable, throwable_printstacktrace,
       printstream.obj());
+  CheckException(env);
 
   // Call ByteArrayOutputStream.toString()
   ScopedJavaLocalRef<jstring> exception_string(
       env, static_cast<jstring>(
           env->CallObjectMethod(bytearray_output_stream.obj(),
                                 bytearray_output_stream_tostring)));
-  if (ClearException(env)) {
-    return "Java OOM'd in exception handling, check logcat";
-  }
+  CheckException(env);
 
   return ConvertJavaStringToUTF8(exception_string);
 }

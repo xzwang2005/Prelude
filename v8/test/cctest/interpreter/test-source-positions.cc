@@ -4,7 +4,7 @@
 
 #include "src/v8.h"
 
-#include "src/api.h"
+#include "src/api-inl.h"
 #include "src/compiler/pipeline.h"
 #include "src/handles.h"
 #include "src/interpreter/bytecode-generator.h"
@@ -49,7 +49,7 @@ struct TestCaseData {
   const char* arguments() const { return arguments_; }
 
  private:
-  TestCaseData();
+  TestCaseData() = delete;
 
   const char* const script_;
   const char* const declaration_parameters_;
@@ -171,7 +171,7 @@ Handle<BytecodeArray> OptimizedBytecodeSourcePositionTester::MakeBytecode(
           .ToLocalChecked());
   Handle<JSFunction> function =
       Handle<JSFunction>::cast(v8::Utils::OpenHandle(*api_function));
-  return handle(function->shared()->bytecode_array());
+  return handle(function->shared()->GetBytecodeArray(), isolate_);
 }
 
 void OptimizedBytecodeSourcePositionTester::SetOptimizationFlags(

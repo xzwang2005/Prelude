@@ -57,7 +57,7 @@ class AllocationTraceNode {
 class AllocationTraceTree {
  public:
   AllocationTraceTree();
-  ~AllocationTraceTree();
+  ~AllocationTraceTree() = default;
   AllocationTraceNode* AddPathFromEnd(const Vector<unsigned>& path);
   AllocationTraceNode* root() { return &root_; }
   unsigned next_node_id() { return next_node_id_++; }
@@ -154,4 +154,4 @@ class AllocationTracker {
 }  // namespace internal
 }  // namespace v8
 
-#endif  // V8_ALLOCATION_TRACKER_H_
+#endif  // V8_PROFILER_ALLOCATION_TRACKER_H_

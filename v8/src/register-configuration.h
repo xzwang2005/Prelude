@@ -2,8 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifndef V8_COMPILER_REGISTER_CONFIGURATION_H_
-#define V8_COMPILER_REGISTER_CONFIGURATION_H_
+#ifndef V8_REGISTER_CONFIGURATION_H_
+#define V8_REGISTER_CONFIGURATION_H_
 
 #include "src/base/macros.h"
 #include "src/globals.h"
@@ -30,6 +30,12 @@ class V8_EXPORT_PRIVATE RegisterConfiguration {
 
   // Default RegisterConfigurations for the target architecture.
   static const RegisterConfiguration* Default();
+
+  // Register configuration with reserved masking register.
+  static const RegisterConfiguration* Poisoning();
+
+  // Register configuration with reserved root register on ia32.
+  static const RegisterConfiguration* PreserveRootIA32();
 
   static const RegisterConfiguration* RestrictGeneralRegisters(
       RegList registers);
@@ -99,7 +105,9 @@ class V8_EXPORT_PRIVATE RegisterConfiguration {
   bool IsAllocatableSimd128Code(int index) const {
     return ((1 << index) & allocatable_simd128_codes_mask_) != 0;
   }
+  const char* GetGeneralOrSpecialRegisterName(int code) const;
   const char* GetGeneralRegisterName(int code) const {
+    DCHECK_LT(code, num_general_registers_);
     return general_register_names_[code];
   }
   const char* GetFloatRegisterName(int code) const {
@@ -136,7 +144,7 @@ class V8_EXPORT_PRIVATE RegisterConfiguration {
   bool AreAliases(MachineRepresentation rep, int index,
                   MachineRepresentation other_rep, int other_index) const;
 
-  virtual ~RegisterConfiguration() {}
+  virtual ~RegisterConfiguration() = default;
 
  private:
   const int num_general_registers_;
@@ -165,4 +173,4 @@ class V8_EXPORT_PRIVATE RegisterConfiguration {
 }  // namespace internal
 }  // namespace v8
 
-#endif  // V8_COMPILER_REGISTER_CONFIGURATION_H_
+#endif  // V8_REGISTER_CONFIGURATION_H_

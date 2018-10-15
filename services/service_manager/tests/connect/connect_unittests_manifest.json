@@ -1,11 +1,15 @@
 {
   "name": "connect_unittests",
   "display_name": "Connect Unittests",
+  "options": {
+    "can_connect_to_other_services_as_any_user": true,
+    "can_connect_to_other_services_with_any_instance_name": true
+  },
   "interface_provider_specs": {
     "service_manager:connector": {
       "provides": {
         "connect_unittests:exposed_interface": [
-          "service_manager::test::mojom::ExposedInterface"
+          "service_manager.test.mojom.ExposedInterface"
         ]
       },
       "requires": {
@@ -25,10 +29,7 @@
           "connect_unittests:standalone_app",
           "connect_unittests:user_id_test"
         ],
-        "service_manager": [
-          "service_manager:instance_name",
-          "service_manager:user_id"
-        ]
+        "connect_test_singleton_app": []
       }
     }
   }

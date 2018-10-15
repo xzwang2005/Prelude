@@ -29,7 +29,7 @@ class PatternRewriter final : public AstVisitor<PatternRewriter> {
       Parser* parser, Block* block,
       const DeclarationDescriptor* declaration_descriptor,
       const Parser::DeclarationParsingResult::Declaration* declaration,
-      ZoneList<const AstRawString*>* names, bool* ok);
+      ZonePtrList<const AstRawString>* names, bool* ok);
 
   static void RewriteDestructuringAssignment(Parser* parser,
                                              RewritableExpression* to_rewrite,
@@ -108,7 +108,7 @@ class PatternRewriter final : public AstVisitor<PatternRewriter> {
   int value_beg_position_;
   Block* block_;
   const DeclarationDescriptor* descriptor_;
-  ZoneList<const AstRawString*>* names_;
+  ZonePtrList<const AstRawString>* names_;
   Expression* current_value_;
   int recursion_level_;
   bool* ok_;
@@ -119,7 +119,7 @@ class PatternRewriter final : public AstVisitor<PatternRewriter> {
 void Parser::DeclareAndInitializeVariables(
     Block* block, const DeclarationDescriptor* declaration_descriptor,
     const DeclarationParsingResult::Declaration* declaration,
-    ZoneList<const AstRawString*>* names, bool* ok) {
+    ZonePtrList<const AstRawString>* names, bool* ok) {
   PatternRewriter::DeclareAndInitializeVariables(
       this, block, declaration_descriptor, declaration, names, ok);
 }
@@ -140,7 +140,7 @@ void PatternRewriter::DeclareAndInitializeVariables(
     Parser* parser, Block* block,
     const DeclarationDescriptor* declaration_descriptor,
     const Parser::DeclarationParsingResult::Declaration* declaration,
-    ZoneList<const AstRawString*>* names, bool* ok) {
+    ZonePtrList<const AstRawString>* names, bool* ok) {
   DCHECK(block->ignore_completion_value());
 
   PatternRewriter rewriter(declaration_descriptor->scope, parser, BINDING);
@@ -195,7 +195,8 @@ void PatternRewriter::VisitVariableProxy(VariableProxy* pattern) {
   VariableProxy* proxy =
       factory()->NewVariableProxy(name, NORMAL_VARIABLE, pattern->position());
   Declaration* declaration;
-  if (descriptor_->mode == VAR && !descriptor_->scope->is_declaration_scope()) {
+  if (descriptor_->mode == VariableMode::kVar &&
+      !descriptor_->scope->is_declaration_scope()) {
     DCHECK(descriptor_->scope->is_block_scope() ||
            descriptor_->scope->is_with_scope());
     declaration = factory()->NewNestedVariableDeclaration(
@@ -261,7 +262,7 @@ void PatternRewriter::VisitVariableProxy(VariableProxy* pattern) {
   // For 'let' and 'const' declared variables the initialization always
   // assigns to the declared variable.
   // But for var declarations we need to do a new lookup.
-  if (descriptor_->mode == VAR) {
+  if (descriptor_->mode == VariableMode::kVar) {
     proxy = var_init_scope->NewUnresolved(factory(), name);
   } else {
     DCHECK_NOT_NULL(proxy);
@@ -367,14 +368,14 @@ void PatternRewriter::VisitObjectLiteral(ObjectLiteral* pattern,
                                          Variable** temp_var) {
   auto temp = *temp_var = CreateTempVar(current_value_);
 
-  ZoneList<Expression*>* rest_runtime_callargs = nullptr;
+  ZonePtrList<Expression>* rest_runtime_callargs = nullptr;
   if (pattern->has_rest_property()) {
     // non_rest_properties_count = pattern->properties()->length - 1;
     // args_length = 1 + non_rest_properties_count because we need to
     // pass temp as well to the runtime function.
     int args_length = pattern->properties()->length();
     rest_runtime_callargs =
-        new (zone()) ZoneList<Expression*>(args_length, zone());
+        new (zone()) ZonePtrList<Expression>(args_length, zone());
     rest_runtime_callargs->Add(factory()->NewVariableProxy(temp), zone());
   }
 
@@ -409,7 +410,7 @@ void PatternRewriter::VisitObjectLiteral(ObjectLiteral* pattern,
 
         if (property->is_computed_name()) {
           DCHECK(!key->IsPropertyName() || !key->IsNumberLiteral());
-          auto args = new (zone()) ZoneList<Expression*>(1, zone());
+          auto args = new (zone()) ZonePtrList<Expression>(1, zone());
           args->Add(key, zone());
           auto to_name_key = CreateTempVar(factory()->NewCallRuntime(
               Runtime::kToName, args, kNoSourcePosition));
@@ -445,6 +446,11 @@ void PatternRewriter::VisitArrayLiteral(ArrayLiteral* node,
   auto iterator = CreateTempVar(factory()->NewGetIterator(
       factory()->NewVariableProxy(temp), current_value_, IteratorType::kNormal,
       current_value_->position()));
+  auto next = CreateTempVar(factory()->NewProperty(
+      factory()->NewVariableProxy(iterator),
+      factory()->NewStringLiteral(ast_value_factory()->next_string(),
+                                  kNoSourcePosition),
+      kNoSourcePosition));
   auto done =
       CreateTempVar(factory()->NewBooleanLiteral(false, kNoSourcePosition));
   auto result = CreateTempVar();
@@ -525,7 +531,8 @@ void PatternRewriter::VisitArrayLiteral(ArrayLiteral* node,
       next_block->statements()->Add(
           factory()->NewExpressionStatement(
               parser_->BuildIteratorNextResult(
-                  factory()->NewVariableProxy(iterator), result,
+                  factory()->NewVariableProxy(iterator),
+                  factory()->NewVariableProxy(next), result,
                   IteratorType::kNormal, kNoSourcePosition),
               kNoSourcePosition),
           zone());
@@ -572,22 +579,28 @@ void PatternRewriter::VisitArrayLiteral(ArrayLiteral* node,
     // RecurseIntoSubpattern above.
 
     // let array = [];
+    // let index = 0;
     // while (!done) {
     //   done = true;  // If .next, .done or .value throws, don't close.
     //   result = IteratorNext(iterator);
     //   if (!result.done) {
-    //     %AppendElement(array, result.value);
+    //     StoreInArrayLiteral(array, index, result.value);
     //     done = false;
     //   }
+    //   index++;
     // }
 
     // let array = [];
     Variable* array;
     {
-      auto empty_exprs = new (zone()) ZoneList<Expression*>(0, zone());
+      auto empty_exprs = new (zone()) ZonePtrList<Expression>(0, zone());
       array = CreateTempVar(
           factory()->NewArrayLiteral(empty_exprs, kNoSourcePosition));
     }
+
+    // let index = 0;
+    Variable* index =
+        CreateTempVar(factory()->NewSmiLiteral(0, kNoSourcePosition));
 
     // done = true;
     Statement* set_done = factory()->NewExpressionStatement(
@@ -599,22 +612,22 @@ void PatternRewriter::VisitArrayLiteral(ArrayLiteral* node,
     // result = IteratorNext(iterator);
     Statement* get_next = factory()->NewExpressionStatement(
         parser_->BuildIteratorNextResult(factory()->NewVariableProxy(iterator),
+                                         factory()->NewVariableProxy(next),
                                          result, IteratorType::kNormal, nopos),
         nopos);
 
-    // %AppendElement(array, result.value);
-    Statement* append_element;
+    // StoreInArrayLiteral(array, index, result.value);
+    Statement* store;
     {
-      auto args = new (zone()) ZoneList<Expression*>(2, zone());
-      args->Add(factory()->NewVariableProxy(array), zone());
-      args->Add(factory()->NewProperty(
-                    factory()->NewVariableProxy(result),
-                    factory()->NewStringLiteral(
-                        ast_value_factory()->value_string(), nopos),
-                    nopos),
-                zone());
-      append_element = factory()->NewExpressionStatement(
-          factory()->NewCallRuntime(Runtime::kAppendElement, args, nopos),
+      auto value = factory()->NewProperty(
+          factory()->NewVariableProxy(result),
+          factory()->NewStringLiteral(ast_value_factory()->value_string(),
+                                      nopos),
+          nopos);
+      store = factory()->NewExpressionStatement(
+          factory()->NewStoreInArrayLiteral(factory()->NewVariableProxy(array),
+                                            factory()->NewVariableProxy(index),
+                                            value, nopos),
           nopos);
     }
 
@@ -625,8 +638,8 @@ void PatternRewriter::VisitArrayLiteral(ArrayLiteral* node,
             factory()->NewBooleanLiteral(false, nopos), nopos),
         nopos);
 
-    // if (!result.done) { #append_element; #unset_done }
-    Statement* maybe_append_and_unset_done;
+    // if (!result.done) { #store; #unset_done }
+    Statement* maybe_store_and_unset_done;
     {
       Expression* result_done =
           factory()->NewProperty(factory()->NewVariableProxy(result),
@@ -635,27 +648,39 @@ void PatternRewriter::VisitArrayLiteral(ArrayLiteral* node,
                                  nopos);
 
       Block* then = factory()->NewBlock(2, true);
-      then->statements()->Add(append_element, zone());
+      then->statements()->Add(store, zone());
       then->statements()->Add(unset_done, zone());
 
-      maybe_append_and_unset_done = factory()->NewIfStatement(
+      maybe_store_and_unset_done = factory()->NewIfStatement(
           factory()->NewUnaryOperation(Token::NOT, result_done, nopos), then,
           factory()->NewEmptyStatement(nopos), nopos);
+    }
+
+    // index++;
+    Statement* increment_index;
+    {
+      increment_index = factory()->NewExpressionStatement(
+          factory()->NewCountOperation(
+              Token::INC, false, factory()->NewVariableProxy(index), nopos),
+          nopos);
     }
 
     // while (!done) {
     //   #set_done;
     //   #get_next;
-    //   #maybe_append_and_unset_done;
+    //   #maybe_store_and_unset_done;
+    //   #increment_index;
     // }
-    WhileStatement* loop = factory()->NewWhileStatement(nullptr, nopos);
+    WhileStatement* loop =
+        factory()->NewWhileStatement(nullptr, nullptr, nopos);
     {
       Expression* condition = factory()->NewUnaryOperation(
           Token::NOT, factory()->NewVariableProxy(done), nopos);
-      Block* body = factory()->NewBlock(3, true);
+      Block* body = factory()->NewBlock(4, true);
       body->statements()->Add(set_done, zone());
       body->statements()->Add(get_next, zone());
-      body->statements()->Add(maybe_append_and_unset_done, zone());
+      body->statements()->Add(maybe_store_and_unset_done, zone());
+      body->statements()->Add(increment_index, zone());
       loop->Initialize(condition, body);
     }
 
@@ -756,12 +781,15 @@ NOT_A_PATTERN(ImportCallExpression)
 NOT_A_PATTERN(Literal)
 NOT_A_PATTERN(NativeFunctionLiteral)
 NOT_A_PATTERN(RegExpLiteral)
+NOT_A_PATTERN(ResolvedProperty)
 NOT_A_PATTERN(ReturnStatement)
 NOT_A_PATTERN(SloppyBlockFunctionStatement)
 NOT_A_PATTERN(Spread)
+NOT_A_PATTERN(StoreInArrayLiteral)
 NOT_A_PATTERN(SuperPropertyReference)
 NOT_A_PATTERN(SuperCallReference)
 NOT_A_PATTERN(SwitchStatement)
+NOT_A_PATTERN(TemplateLiteral)
 NOT_A_PATTERN(ThisFunction)
 NOT_A_PATTERN(Throw)
 NOT_A_PATTERN(TryCatchStatement)

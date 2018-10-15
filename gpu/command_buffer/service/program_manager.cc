@@ -25,12 +25,12 @@
 #include "base/time/time.h"
 #include "gpu/command_buffer/common/gles2_cmd_format.h"
 #include "gpu/command_buffer/common/gles2_cmd_utils.h"
+#include "gpu/command_buffer/service/decoder_context.h"
 #include "gpu/command_buffer/service/feature_info.h"
-#include "gpu/command_buffer/service/gles2_cmd_decoder.h"
-#include "gpu/command_buffer/service/gpu_preferences.h"
 #include "gpu/command_buffer/service/program_cache.h"
 #include "gpu/command_buffer/service/progress_reporter.h"
 #include "gpu/command_buffer/service/shader_manager.h"
+#include "gpu/config/gpu_preferences.h"
 #include "third_party/re2/src/re2/re2.h"
 #include "ui/gl/gl_version_info.h"
 
@@ -1306,7 +1306,7 @@ void Program::ExecuteProgramOutputBindCalls() {
 
 bool Program::Link(ShaderManager* manager,
                    Program::VaryingsPackingOption varyings_packing_option,
-                   GLES2DecoderClient* client) {
+                   DecoderClient* client) {
   ClearLinkStatus();
 
   if (!AttachedShadersExist()) {
@@ -1716,7 +1716,7 @@ const Program::UniformInfo*
     Program::GetUniformInfo(
         GLint index) const {
   if (static_cast<size_t>(index) >= uniform_infos_.size()) {
-    return NULL;
+    return nullptr;
   }
   return &uniform_infos_[index];
 }
@@ -1795,7 +1795,7 @@ bool Program::AttachShader(
   DCHECK(shader_manager);
   DCHECK(shader);
   int index = ShaderTypeToIndex(shader->shader_type());
-  if (attached_shaders_[index].get() != NULL) {
+  if (attached_shaders_[index].get() != nullptr) {
     return false;
   }
   attached_shaders_[index] = scoped_refptr<Shader>(shader);
@@ -1814,7 +1814,7 @@ void Program::DetachShader(
   DCHECK(shader_manager);
   DCHECK(shader);
   DCHECK(IsShaderAttached(shader));
-  attached_shaders_[ShaderTypeToIndex(shader->shader_type())] = NULL;
+  attached_shaders_[ShaderTypeToIndex(shader->shader_type())] = nullptr;
   shader_manager->UnuseShader(shader);
 }
 
@@ -1872,7 +1872,7 @@ bool Program::DetectAttribLocationBindingConflicts() const {
   std::set<GLint> location_binding_used;
   for (const auto& key_value : bind_attrib_location_map_) {
     // Find out if an attribute is statically used in this program's shaders.
-    const sh::Attribute* attrib = NULL;
+    const sh::Attribute* attrib = nullptr;
     const std::string* mapped_name = GetAttribMappedName(key_value.first);
     if (!mapped_name)
       continue;
@@ -1884,7 +1884,7 @@ bool Program::DetectAttribLocationBindingConflicts() const {
         if (attrib->staticUse)
           break;
         else
-          attrib = NULL;
+          attrib = nullptr;
       }
     }
     if (attrib) {
@@ -2586,7 +2586,7 @@ Program::~Program() {
       glDeleteProgram(service_id());
     }
     manager_->StopTracking(this);
-    manager_ = NULL;
+    manager_ = nullptr;
   }
 }
 
@@ -2644,7 +2644,7 @@ Program* ProgramManager::CreateProgram(
 
 Program* ProgramManager::GetProgram(GLuint client_id) {
   ProgramMap::iterator it = programs_.find(client_id);
-  return it != programs_.end() ? it->second.get() : NULL;
+  return it != programs_.end() ? it->second.get() : nullptr;
 }
 
 bool ProgramManager::GetClientId(GLuint service_id, GLuint* client_id) const {

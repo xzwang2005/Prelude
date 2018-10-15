@@ -8,6 +8,8 @@ import json
 import webapp2
 
 from dashboard.pinpoint.models import job as job_module
+from dashboard.common import utils
+
 
 _MAX_JOBS_TO_FETCH = 100
 _MAX_JOBS_TO_COUNT = 1000
@@ -17,23 +19,29 @@ class Jobs(webapp2.RequestHandler):
   """Shows an overview of recent anomalies for perf sheriffing."""
 
   def get(self):
-    result = self._GetJobs()
-    self.response.out.write(json.dumps(result))
+    self.response.out.write(
+        json.dumps(_GetJobs(self.request.get_all('o'))))
 
-  def _GetJobs(self):
+
+def _GetJobs(options):
+  user = utils.GetEmail()
+  if user:
+    query = job_module.Job.query(job_module.Job.user == user)
+  else:
     query = job_module.Job.query()
-    query = query.order(-job_module.Job.created)
-    job_future = query.fetch_async(limit=_MAX_JOBS_TO_FETCH)
-    count_future = job_module.Job.query().count_async(limit=_MAX_JOBS_TO_COUNT)
 
-    result = {
-        'jobs': [],
-        'count': count_future.get_result(),
-        'max_count': _MAX_JOBS_TO_COUNT
-    }
+  query = query.order(-job_module.Job.created)
+  job_future = query.fetch_async(limit=_MAX_JOBS_TO_FETCH)
+  count_future = query.count_async(limit=_MAX_JOBS_TO_COUNT)
 
-    jobs = job_future.get_result()
-    for job in jobs:
-      result['jobs'].append(job.AsDict(include_state=False))
+  result = {
+      'jobs': [],
+      'count': count_future.get_result(),
+      'max_count': _MAX_JOBS_TO_COUNT
+  }
 
-    return result
+  jobs = job_future.get_result()
+  for job in jobs:
+    result['jobs'].append(job.AsDict(options))
+
+  return result

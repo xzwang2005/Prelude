@@ -474,7 +474,7 @@ class LayerTreeHostReadbackDeviceScalePixelTest
   }
 
   void SetupTree() override {
-    layer_tree_host()->SetDeviceScaleFactor(device_scale_factor_);
+    SetInitialDeviceScaleFactor(device_scale_factor_);
     LayerTreePixelTest::SetupTree();
   }
 
@@ -568,7 +568,8 @@ class LayerTreeHostReadbackColorSpacePixelTest
       const viz::RendererSettings& renderer_settings,
       double refresh_rate,
       scoped_refptr<viz::ContextProvider> compositor_context_provider,
-      scoped_refptr<viz::ContextProvider> worker_context_provider) override {
+      scoped_refptr<viz::RasterContextProvider> worker_context_provider)
+      override {
     std::unique_ptr<viz::TestLayerTreeFrameSink> frame_sink =
         LayerTreePixelTest::CreateLayerTreeFrameSink(
             renderer_settings, refresh_rate, compositor_context_provider,

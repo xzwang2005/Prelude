@@ -14,12 +14,21 @@
 namespace ui {
 
 // static
-base::LazyInstance<base::ObserverList<AXModeObserver>>::Leaky
+base::LazyInstance<base::ObserverList<AXModeObserver>::Unchecked>::Leaky
     AXPlatformNode::ax_mode_observers_ = LAZY_INSTANCE_INITIALIZER;
 
 // static
 base::LazyInstance<AXPlatformNode::NativeWindowHandlerCallback>::Leaky
     AXPlatformNode::native_window_handler_ = LAZY_INSTANCE_INITIALIZER;
+
+// static
+AXMode AXPlatformNode::ax_mode_;
+
+// static
+bool AXPlatformNode::has_input_suggestions_ = false;
+
+// static
+gfx::NativeViewAccessible AXPlatformNode::popup_focus_override_ = nullptr;
 
 // static
 AXPlatformNode* AXPlatformNode::FromNativeWindow(
@@ -51,6 +60,11 @@ AXPlatformNode::~AXPlatformNode() {
 void AXPlatformNode::Destroy() {
 }
 
+int32_t AXPlatformNode::GetUniqueId() const {
+  DCHECK(GetDelegate());  // Must be called after Init()
+  return GetDelegate() ? GetDelegate()->GetUniqueId().Get() : -1;
+}
+
 // static
 void AXPlatformNode::AddAXModeObserver(AXModeObserver* observer) {
   ax_mode_observers_.Get().AddObserver(observer);
@@ -63,8 +77,36 @@ void AXPlatformNode::RemoveAXModeObserver(AXModeObserver* observer) {
 
 // static
 void AXPlatformNode::NotifyAddAXModeFlags(AXMode mode_flags) {
+  ax_mode_ |= mode_flags;
   for (auto& observer : ax_mode_observers_.Get())
     observer.OnAXModeAdded(mode_flags);
+}
+
+// static
+void AXPlatformNode::OnInputSuggestionsAvailable() {
+  has_input_suggestions_ = true;
+}
+
+// static
+void AXPlatformNode::OnInputSuggestionsUnavailable() {
+  has_input_suggestions_ = false;
+}
+
+// static
+// TODO(crbug.com/865101) Remove this once the autofill state works.
+bool AXPlatformNode::HasInputSuggestions() {
+  return has_input_suggestions_;
+}
+
+// static
+void AXPlatformNode::SetPopupFocusOverride(
+    gfx::NativeViewAccessible popup_focus_override) {
+  popup_focus_override_ = popup_focus_override;
+}
+
+// static
+gfx::NativeViewAccessible AXPlatformNode::GetPopupFocusOverride() {
+  return popup_focus_override_;
 }
 
 }  // namespace ui

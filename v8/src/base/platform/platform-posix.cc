@@ -18,7 +18,6 @@
 #include <unistd.h>
 
 #include <sys/mman.h>
-#include <sys/resource.h>
 #include <sys/stat.h>
 #include <sys/time.h>
 #include <sys/types.h>
@@ -55,12 +54,26 @@
 #include <sys/prctl.h>  // NOLINT, for prctl
 #endif
 
+#if defined(V8_OS_FUCHSIA)
+#include <zircon/process.h>
+#else
+#include <sys/resource.h>
+#endif
+
 #if !defined(_AIX) && !defined(V8_OS_FUCHSIA)
 #include <sys/syscall.h>
 #endif
 
 #if V8_OS_FREEBSD || V8_OS_MACOSX || V8_OS_OPENBSD || V8_OS_SOLARIS
 #define MAP_ANONYMOUS MAP_ANON
+#endif
+
+#if defined(V8_OS_SOLARIS)
+#if (defined(_POSIX_C_SOURCE) && _POSIX_C_SOURCE > 2) || defined(__EXTENSIONS__)
+extern "C" int madvise(caddr_t, size_t, int);
+#else
+extern int madvise(caddr_t, size_t, int);
+#endif
 #endif
 
 #ifndef MADV_FREE
@@ -73,7 +86,7 @@ namespace base {
 namespace {
 
 // 0 is never a valid thread id.
-const pthread_t kNoThread = (pthread_t) 0;
+const pthread_t kNoThread = static_cast<pthread_t>(0);
 
 bool g_hard_abort = false;
 
@@ -81,6 +94,7 @@ const char* g_gc_fake_mmap = nullptr;
 
 static LazyInstance<RandomNumberGenerator>::type
     platform_random_number_generator = LAZY_INSTANCE_INITIALIZER;
+static LazyMutex rng_mutex = LAZY_MUTEX_INITIALIZER;
 
 #if !V8_OS_FUCHSIA
 #if V8_OS_MACOSX
@@ -98,6 +112,8 @@ int GetProtectionFromMemoryPermission(OS::MemoryPermission access) {
   switch (access) {
     case OS::MemoryPermission::kNoAccess:
       return PROT_NONE;
+    case OS::MemoryPermission::kRead:
+      return PROT_READ;
     case OS::MemoryPermission::kReadWrite:
       return PROT_READ | PROT_WRITE;
     case OS::MemoryPermission::kReadWriteExecute:
@@ -122,11 +138,9 @@ int GetFlagsForMemoryPermission(OS::MemoryPermission access) {
 }
 
 void* Allocate(void* address, size_t size, OS::MemoryPermission access) {
-  const size_t actual_size = RoundUp(size, OS::AllocatePageSize());
   int prot = GetProtectionFromMemoryPermission(access);
   int flags = GetFlagsForMemoryPermission(access);
-  void* result =
-      mmap(address, actual_size, prot, flags, kMmapFd, kMmapFdOffset);
+  void* result = mmap(address, size, prot, flags, kMmapFd, kMmapFdOffset);
   if (result == MAP_FAILED) return nullptr;
   return result;
 }
@@ -137,16 +151,18 @@ int ReclaimInaccessibleMemory(void* address, size_t size) {
   // marks the pages with the reusable bit, which allows both Activity Monitor
   // and memory-infra to correctly track the pages.
   int ret = madvise(address, size, MADV_FREE_REUSABLE);
-#elif defined(_AIX)
+#elif defined(_AIX) || defined(V8_OS_SOLARIS)
   int ret = madvise(reinterpret_cast<caddr_t>(address), size, MADV_FREE);
 #else
   int ret = madvise(address, size, MADV_FREE);
 #endif
+  if (ret != 0 && errno == ENOSYS)
+    return 0;  // madvise is not available on all systems.
   if (ret != 0 && errno == EINVAL) {
     // MADV_FREE only works on Linux 4.5+ . If request failed, retry with older
     // MADV_DONTNEED . Note that MADV_FREE being defined at compile time doesn't
     // imply runtime support.
-#if defined(_AIX)
+#if defined(_AIX) || defined(V8_OS_SOLARIS)
     ret = madvise(reinterpret_cast<caddr_t>(address), size, MADV_DONTNEED);
 #else
     ret = madvise(address, size, MADV_DONTNEED);
@@ -159,11 +175,7 @@ int ReclaimInaccessibleMemory(void* address, size_t size) {
 
 }  // namespace
 
-void OS::Initialize(int64_t random_seed, bool hard_abort,
-                    const char* const gc_fake_mmap) {
-  if (random_seed) {
-    platform_random_number_generator.Pointer()->SetSeed(random_seed);
-  }
+void OS::Initialize(bool hard_abort, const char* const gc_fake_mmap) {
   g_hard_abort = hard_abort;
   g_gc_fake_mmap = gc_fake_mmap;
 }
@@ -199,15 +211,30 @@ size_t OS::CommitPageSize() {
 }
 
 // static
+void OS::SetRandomMmapSeed(int64_t seed) {
+  if (seed) {
+    LockGuard<Mutex> guard(rng_mutex.Pointer());
+    platform_random_number_generator.Pointer()->SetSeed(seed);
+  }
+}
+
+// static
 void* OS::GetRandomMmapAddr() {
-#if defined(ADDRESS_SANITIZER) || defined(MEMORY_SANITIZER) || \
-    defined(THREAD_SANITIZER)
-  // Dynamic tools do not support custom mmap addresses.
-  return nullptr;
-#else
   uintptr_t raw_addr;
-  platform_random_number_generator.Pointer()->NextBytes(&raw_addr,
-                                                        sizeof(raw_addr));
+  {
+    LockGuard<Mutex> guard(rng_mutex.Pointer());
+    platform_random_number_generator.Pointer()->NextBytes(&raw_addr,
+                                                          sizeof(raw_addr));
+  }
+#if defined(V8_USE_ADDRESS_SANITIZER) || defined(MEMORY_SANITIZER) || \
+    defined(THREAD_SANITIZER) || defined(LEAK_SANITIZER)
+  // If random hint addresses interfere with address ranges hard coded in
+  // sanitizers, bad things happen. This address range is copied from TSAN
+  // source but works with all tools.
+  // See crbug.com/539863.
+  raw_addr &= 0x007fffff0000ULL;
+  raw_addr += 0x7e8000000000ULL;
+#else
 #if V8_TARGET_ARCH_X64
   // Currently available CPUs have 48 bits of virtual addressing.  Truncate
   // the hint address to 46 bits to give the kernel a fighting chance of
@@ -221,11 +248,11 @@ void* OS::GetRandomMmapAddr() {
   // Use extra address space to isolate the mmap regions.
   raw_addr += uint64_t{0x400000000000};
 #elif V8_TARGET_BIG_ENDIAN
-  // Big-endian Linux: 44 bits of virtual addressing.
+  // Big-endian Linux: 42 bits of virtual addressing.
   raw_addr &= uint64_t{0x03FFFFFFF000};
 #else
-  // Little-endian Linux: 48 bits of virtual addressing.
-  raw_addr &= uint64_t{0x3FFFFFFFF000};
+  // Little-endian Linux: 46 bits of virtual addressing.
+  raw_addr &= uint64_t{0x3FFFFFFF0000};
 #endif
 #elif V8_TARGET_ARCH_S390X
   // Linux on Z uses bits 22-32 for Region Indexing, which translates to 42 bits
@@ -261,8 +288,8 @@ void* OS::GetRandomMmapAddr() {
   raw_addr += 0x20000000;
 #endif
 #endif
-  return reinterpret_cast<void*>(raw_addr);
 #endif
+  return reinterpret_cast<void*>(raw_addr);
 }
 
 // TODO(bbudge) Move Cygwin and Fuschia stuff into platform-specific files.
@@ -276,12 +303,14 @@ void* OS::Allocate(void* address, size_t size, size_t alignment,
   address = AlignedAddress(address, alignment);
   // Add the maximum misalignment so we are guaranteed an aligned base address.
   size_t request_size = size + (alignment - page_size);
+  request_size = RoundUp(request_size, OS::AllocatePageSize());
   void* result = base::Allocate(address, request_size, access);
   if (result == nullptr) return nullptr;
 
   // Unmap memory allocated before the aligned base address.
   uint8_t* base = static_cast<uint8_t*>(result);
-  uint8_t* aligned_base = RoundUp(base, alignment);
+  uint8_t* aligned_base = reinterpret_cast<uint8_t*>(
+      RoundUp(reinterpret_cast<uintptr_t>(base), alignment));
   if (aligned_base != base) {
     DCHECK_LT(base, aligned_base);
     size_t prefix_size = static_cast<size_t>(aligned_base - base);
@@ -322,8 +351,21 @@ bool OS::SetPermissions(void* address, size_t size, MemoryPermission access) {
   int prot = GetProtectionFromMemoryPermission(access);
   int ret = mprotect(address, size, prot);
   if (ret == 0 && access == OS::MemoryPermission::kNoAccess) {
-    ret = ReclaimInaccessibleMemory(address, size);
+    // This is advisory; ignore errors and continue execution.
+    ReclaimInaccessibleMemory(address, size);
   }
+
+// For accounting purposes, we want to call MADV_FREE_REUSE on macOS after
+// changing permissions away from OS::MemoryPermission::kNoAccess. Since this
+// state is not kept at this layer, we always call this if access != kNoAccess.
+// The cost is a syscall that effectively no-ops.
+// TODO(erikchen): Fix this to only call MADV_FREE_REUSE when necessary.
+// https://crbug.com/823915
+#if defined(OS_MACOSX)
+  if (access != OS::MemoryPermission::kNoAccess)
+    madvise(address, size, MADV_FREE_REUSE);
+#endif
+
   return ret == 0;
 }
 
@@ -455,7 +497,7 @@ int OS::GetCurrentThreadId() {
 #elif V8_OS_AIX
   return static_cast<int>(thread_self());
 #elif V8_OS_FUCHSIA
-  return static_cast<int>(pthread_self());
+  return static_cast<int>(zx_thread_self());
 #elif V8_OS_SOLARIS
   return static_cast<int>(pthread_self());
 #else
@@ -463,11 +505,19 @@ int OS::GetCurrentThreadId() {
 #endif
 }
 
+void OS::ExitProcess(int exit_code) {
+  // Use _exit instead of exit to avoid races between isolate
+  // threads and static destructors.
+  fflush(stdout);
+  fflush(stderr);
+  _exit(exit_code);
+}
 
 // ----------------------------------------------------------------------------
 // POSIX date/time support.
 //
 
+#if !defined(V8_OS_FUCHSIA)
 int OS::GetUserTime(uint32_t* secs, uint32_t* usecs) {
   struct rusage usage;
 
@@ -476,7 +526,7 @@ int OS::GetUserTime(uint32_t* secs, uint32_t* usecs) {
   *usecs = static_cast<uint32_t>(usage.ru_utime.tv_usec);
   return 0;
 }
-
+#endif
 
 double OS::TimeCurrentMillis() {
   return Time::Now().ToJsTime();
@@ -769,7 +819,7 @@ static void InitializeTlsBaseOffset() {
   size_t buffer_size = kBufferSize;
   int ctl_name[] = { CTL_KERN , KERN_OSRELEASE };
   if (sysctl(ctl_name, 2, buffer, &buffer_size, nullptr, 0) != 0) {
-    V8_Fatal(__FILE__, __LINE__, "V8 failed to get kernel version");
+    FATAL("V8 failed to get kernel version");
   }
   // The buffer now contains a string of the form XX.YY.ZZ, where
   // XX is the major kernel version component.
@@ -803,8 +853,7 @@ static void CheckFastTls(Thread::LocalStorageKey key) {
   Thread::SetThreadLocal(key, expected);
   void* actual = Thread::GetExistingThreadLocal(key);
   if (expected != actual) {
-    V8_Fatal(__FILE__, __LINE__,
-             "V8 failed to initialize fast TLS on current kernel");
+    FATAL("V8 failed to initialize fast TLS on current kernel");
   }
   Thread::SetThreadLocal(key, nullptr);
 }

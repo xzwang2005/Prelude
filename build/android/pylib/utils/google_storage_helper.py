@@ -13,6 +13,7 @@ import logging
 import os
 import sys
 import time
+import urlparse
 
 from pylib.constants import host_paths
 from pylib.utils import decorators
@@ -62,6 +63,15 @@ def upload(name, filepath, bucket, gs_args=None, command_args=None,
   return get_url_link(name, bucket, authenticated_link)
 
 
+@decorators.NoRaiseException(default_return_value='')
+def read_from_link(link):
+  # Note that urlparse returns the path with an initial '/', so we only need to
+  # add one more after the 'gs;'
+  gs_path = 'gs:/%s' % urlparse.urlparse(link).path
+  cmd = [_GSUTIL_PATH, '-q', 'cat', gs_path]
+  return cmd_helper.GetCmdOutput(cmd)
+
+
 @decorators.NoRaiseException(default_return_value=False)
 def exists(name, bucket):
   bucket = _format_bucket_name(bucket)
@@ -69,10 +79,7 @@ def exists(name, bucket):
 
   cmd = [_GSUTIL_PATH, '-q', 'stat', gs_path]
   return_code = cmd_helper.RunCmd(cmd)
-  if return_code == 0:
-    return True
-  else:
-    return False
+  return return_code == 0
 
 
 # TODO(jbudorick): Delete this function. Only one user of it.

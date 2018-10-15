@@ -25,7 +25,7 @@ void AppClient::OnBindInterface(const BindSourceInfo& source_info,
 }
 
 bool AppClient::OnServiceManagerConnectionLost() {
-  base::RunLoop::QuitCurrentWhenIdleDeprecated();
+  context()->QuitNow();
   return true;
 }
 
@@ -38,7 +38,7 @@ void AppClient::Ping(PingCallback callback) {
 }
 
 void AppClient::GracefulQuit() {
-  context()->RequestQuit();
+  context()->CreateQuitClosure().Run();
 }
 
 void AppClient::Crash() {

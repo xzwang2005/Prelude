@@ -197,33 +197,23 @@ class WebGLCompatibilityTest : public ANGLETest
                              glCheckFramebufferStatus(GL_FRAMEBUFFER));
             return;
         }
+
         ASSERT_GLENUM_EQ(GL_FRAMEBUFFER_COMPLETE, glCheckFramebufferStatus(GL_FRAMEBUFFER));
 
-        const std::string renderingVs =
-            "attribute vec4 position;\n"
-            "void main()\n"
-            "{\n"
-            "    gl_Position = vec4(position.xy, 0.0, 1.0);\n"
-            "}\n";
-
-        const std::string renderingFs =
-            "precision mediump float;\n"
-            "uniform vec4 writeValue;\n"
-            "void main()\n"
-            "{\n"
-            "   gl_FragColor = writeValue;\n"
-            "}\n";
-
-        ANGLE_GL_PROGRAM(renderingProgram, renderingVs, renderingFs);
+        ANGLE_GL_PROGRAM(renderingProgram, essl1_shaders::vs::Simple(),
+                         essl1_shaders::fs::UniformColor());
         glUseProgram(renderingProgram.get());
 
-        glUniform4fv(glGetUniformLocation(renderingProgram.get(), "writeValue"), 1, floatData);
+        glUniform4fv(glGetUniformLocation(renderingProgram.get(), essl1_shaders::ColorUniform()), 1,
+                     floatData);
 
-        drawQuad(renderingProgram.get(), "position", 0.5f, 1.0f, true);
+        drawQuad(renderingProgram.get(), essl1_shaders::PositionAttrib(), 0.5f, 1.0f, true);
 
         EXPECT_PIXEL_COLOR32F_NEAR(
             0, 0, GLColor32F(floatData[0], floatData[1], floatData[2], floatData[3]), 1.0f);
     }
+
+    void TestDifferentStencilMaskAndRef(GLenum errIfMismatch);
 
     // Called from RenderingFeedbackLoopWithDrawBuffersEXT.
     void drawBuffersEXTFeedbackLoop(GLuint program,
@@ -437,6 +427,74 @@ TEST_P(WebGLCompatibilityTest, EnableExtensionTextureFilterAnisotropic)
     }
 }
 
+// Test enabling the EGL image extensions
+TEST_P(WebGLCompatibilityTest, EnableExtensionEGLImage)
+{
+    EXPECT_FALSE(extensionEnabled("GL_OES_EGL_image"));
+    EXPECT_FALSE(extensionEnabled("GL_OES_EGL_image_external"));
+    EXPECT_FALSE(extensionEnabled("GL_OES_EGL_image_external_essl3"));
+    EXPECT_FALSE(extensionEnabled("NV_EGL_stream_consumer_external"));
+
+    const std::string &fragES2 =
+        "#extension GL_OES_EGL_image_external : require\n"
+        "precision highp float;\n"
+        "uniform samplerExternalOES sampler;\n"
+        "void main()\n"
+        "{\n"
+        "    gl_FragColor = texture2D(sampler, vec2(0, 0));\n"
+        "}";
+    EXPECT_EQ(0u, CompileShader(GL_FRAGMENT_SHADER, fragES2));
+
+    const std::string &fragES3 =
+        "#version 300 es\n"
+        "#extension GL_OES_EGL_image_external : require\n"
+        "precision highp float;\n"
+        "uniform samplerExternalOES sampler;\n"
+        "void main()\n"
+        "{\n"
+        "    gl_FragColor = texture(sampler, vec2(0, 0));\n"
+        "}";
+    if (getClientMajorVersion() > 3)
+    {
+        EXPECT_EQ(0u, CompileShader(GL_FRAGMENT_SHADER, fragES3));
+    }
+
+    glBindTexture(GL_TEXTURE_EXTERNAL_OES, 0);
+    EXPECT_GL_ERROR(GL_INVALID_ENUM);
+
+    GLint result;
+    glGetIntegerv(GL_TEXTURE_BINDING_EXTERNAL_OES, &result);
+    EXPECT_GL_ERROR(GL_INVALID_ENUM);
+
+    if (extensionRequestable("GL_OES_EGL_image_external"))
+    {
+        glRequestExtensionANGLE("GL_OES_EGL_image_external");
+        EXPECT_GL_NO_ERROR();
+        EXPECT_TRUE(extensionEnabled("GL_OES_EGL_image_external"));
+
+        EXPECT_NE(0u, CompileShader(GL_FRAGMENT_SHADER, fragES2));
+
+        glBindTexture(GL_TEXTURE_EXTERNAL_OES, 0);
+        EXPECT_GL_NO_ERROR();
+
+        glGetIntegerv(GL_TEXTURE_BINDING_EXTERNAL_OES, &result);
+        EXPECT_GL_NO_ERROR();
+
+        if (getClientMajorVersion() > 3 && extensionRequestable("GL_OES_EGL_image_external_essl3"))
+        {
+            glRequestExtensionANGLE("GL_OES_EGL_image_external_essl3");
+            EXPECT_GL_NO_ERROR();
+            EXPECT_TRUE(extensionEnabled("GL_OES_EGL_image_external_essl3"));
+
+            EXPECT_NE(0u, CompileShader(GL_FRAGMENT_SHADER, fragES3));
+        }
+        else
+        {
+            EXPECT_EQ(0u, CompileShader(GL_FRAGMENT_SHADER, fragES3));
+        }
+    }
+}
+
 // Verify that shaders are of a compatible spec when the extension is enabled.
 TEST_P(WebGLCompatibilityTest, ExtensionCompilerSpec)
 {
@@ -489,6 +547,47 @@ TEST_P(WebGLCompatibilityTest, EnablePixelBufferObjectExtensions)
         glBufferData(GL_PIXEL_PACK_BUFFER, 4, nullptr, GL_STATIC_DRAW);
         glReadPixels(0, 0, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
         EXPECT_GL_NO_ERROR();
+    }
+}
+
+// Test enabling the GL_EXT_texture_storage extension
+TEST_P(WebGLCompatibilityTest, EnableTextureStorage)
+{
+    EXPECT_FALSE(extensionEnabled("GL_EXT_texture_storage"));
+
+    GLTexture texture;
+    glBindTexture(GL_TEXTURE_2D, texture);
+
+    GLint result;
+    glGetTexParameteriv(GL_TEXTURE_2D, GL_TEXTURE_IMMUTABLE_FORMAT, &result);
+    if (getClientMajorVersion() >= 3)
+    {
+        EXPECT_GL_NO_ERROR();
+    }
+    else
+    {
+        EXPECT_GL_ERROR(GL_INVALID_ENUM);
+    }
+
+    if (extensionRequestable("GL_EXT_texture_storage"))
+    {
+        glRequestExtensionANGLE("GL_EXT_texture_storage");
+        EXPECT_GL_NO_ERROR();
+        EXPECT_TRUE(extensionEnabled("GL_EXT_texture_storage"));
+
+        glGetTexParameteriv(GL_TEXTURE_2D, GL_TEXTURE_IMMUTABLE_FORMAT, &result);
+        EXPECT_GL_NO_ERROR();
+
+        const GLenum alwaysAcceptableFormats[] = {
+            GL_ALPHA8_EXT, GL_LUMINANCE8_EXT, GL_LUMINANCE8_ALPHA8_EXT,
+        };
+        for (const auto &acceptableFormat : alwaysAcceptableFormats)
+        {
+            GLTexture localTexture;
+            glBindTexture(GL_TEXTURE_2D, localTexture);
+            glTexStorage2DEXT(GL_TEXTURE_2D, 1, acceptableFormat, 1, 1);
+            EXPECT_GL_NO_ERROR();
+        }
     }
 }
 
@@ -597,6 +696,9 @@ TEST_P(WebGLCompatibilityTest, EnableBlendMinMaxExtension)
 // Test enabling the query extensions
 TEST_P(WebGLCompatibilityTest, EnableQueryExtensions)
 {
+    // Seems to be causing a device lost. http://anglebug.com/2423
+    ANGLE_SKIP_TEST_IF(IsAMD() && IsWindows() && IsOpenGL());
+
     EXPECT_FALSE(extensionEnabled("GL_EXT_occlusion_query_boolean"));
     EXPECT_FALSE(extensionEnabled("GL_EXT_disjoint_timer_query"));
     EXPECT_FALSE(extensionEnabled("GL_CHROMIUM_sync_query"));
@@ -983,6 +1085,41 @@ TEST_P(WebGLCompatibilityTest, EnableProgramBinaryExtension)
     }
 }
 
+// Test enabling the GL_OES_vertex_array_object extension
+TEST_P(WebGLCompatibilityTest, EnableVertexArrayExtension)
+{
+    EXPECT_FALSE(extensionEnabled("GL_OES_vertex_array_object"));
+
+    // This extensions become core in in ES3/WebGL2.
+    ANGLE_SKIP_TEST_IF(getClientMajorVersion() >= 3);
+
+    GLint result = 0;
+    glGetIntegerv(GL_VERTEX_ARRAY_BINDING, &result);
+    EXPECT_GL_ERROR(GL_INVALID_ENUM);
+
+    // Expect that GL_OES_vertex_array_object is always available.  It is implemented in the GL
+    // frontend.
+    EXPECT_TRUE(extensionRequestable("GL_OES_vertex_array_object"));
+
+    glRequestExtensionANGLE("GL_OES_vertex_array_object");
+    EXPECT_GL_NO_ERROR();
+
+    EXPECT_TRUE(extensionEnabled("GL_OES_vertex_array_object"));
+
+    glGetIntegerv(GL_VERTEX_ARRAY_BINDING, &result);
+    EXPECT_GL_NO_ERROR();
+
+    GLuint vao = 0;
+    glGenVertexArraysOES(0, &vao);
+    EXPECT_GL_NO_ERROR();
+
+    glBindVertexArrayOES(vao);
+    EXPECT_GL_NO_ERROR();
+
+    glDeleteVertexArraysOES(1, &vao);
+    EXPECT_GL_NO_ERROR();
+}
+
 // Verify that the context generates the correct error when the framebuffer attachments are
 // different sizes
 TEST_P(WebGLCompatibilityTest, FramebufferAttachmentSizeMismatch)
@@ -1179,8 +1316,9 @@ TEST_P(WebGLCompatibilityTest, NullPixelDataForSubImage)
     }
 }
 
-// Tests the WebGL requirement of having the same stencil mask, writemask and ref for fron and back
-TEST_P(WebGLCompatibilityTest, RequiresSameStencilMaskAndRef)
+// Tests the WebGL requirement of having the same stencil mask, writemask and ref for front and back
+// (when stencil testing is enabled)
+void WebGLCompatibilityTest::TestDifferentStencilMaskAndRef(GLenum errIfMismatch)
 {
     // Run the test in an FBO to make sure we have some stencil bits.
     GLRenderbuffer renderbuffer;
@@ -1206,7 +1344,7 @@ TEST_P(WebGLCompatibilityTest, RequiresSameStencilMaskAndRef)
     // Having a different front - back write mask generates an error.
     glStencilMaskSeparate(GL_FRONT, 1);
     glDrawArrays(GL_TRIANGLES, 0, 6);
-    EXPECT_GL_ERROR(GL_INVALID_OPERATION);
+    EXPECT_GL_ERROR(errIfMismatch);
 
     // Setting both write masks separately to the same value is valid.
     glStencilMaskSeparate(GL_BACK, 1);
@@ -1216,7 +1354,7 @@ TEST_P(WebGLCompatibilityTest, RequiresSameStencilMaskAndRef)
     // Having a different stencil front - back mask generates an error
     glStencilFuncSeparate(GL_FRONT, GL_ALWAYS, 0, 1);
     glDrawArrays(GL_TRIANGLES, 0, 6);
-    EXPECT_GL_ERROR(GL_INVALID_OPERATION);
+    EXPECT_GL_ERROR(errIfMismatch);
 
     // Setting both masks separately to the same value is valid.
     glStencilFuncSeparate(GL_BACK, GL_ALWAYS, 0, 1);
@@ -1226,7 +1364,7 @@ TEST_P(WebGLCompatibilityTest, RequiresSameStencilMaskAndRef)
     // Having a different stencil front - back reference generates an error
     glStencilFuncSeparate(GL_FRONT, GL_ALWAYS, 255, 1);
     glDrawArrays(GL_TRIANGLES, 0, 6);
-    EXPECT_GL_ERROR(GL_INVALID_OPERATION);
+    EXPECT_GL_ERROR(errIfMismatch);
 
     // Setting both references separately to the same value is valid.
     glStencilFuncSeparate(GL_BACK, GL_ALWAYS, 255, 1);
@@ -1237,6 +1375,16 @@ TEST_P(WebGLCompatibilityTest, RequiresSameStencilMaskAndRef)
     glStencilFuncSeparate(GL_BACK, GL_NEVER, 255, 1);
     glDrawArrays(GL_TRIANGLES, 0, 6);
     ASSERT_GL_NO_ERROR();
+}
+TEST_P(WebGLCompatibilityTest, StencilTestEnabledDisallowsDifferentStencilMaskAndRef)
+{
+    glEnable(GL_STENCIL_TEST);
+    TestDifferentStencilMaskAndRef(GL_INVALID_OPERATION);
+}
+TEST_P(WebGLCompatibilityTest, StencilTestDisabledAllowsDifferentStencilMaskAndRef)
+{
+    glDisable(GL_STENCIL_TEST);
+    TestDifferentStencilMaskAndRef(GL_NO_ERROR);
 }
 
 // Test that GL_FIXED is forbidden
@@ -1277,14 +1425,7 @@ TEST_P(WebGLCompatibilityTest, DrawArraysBufferOutOfBoundsNonInstanced)
         "    gl_Position = vec4(a_pos, a_pos, a_pos, 1.0);\n"
         "}\n";
 
-    const std::string &frag =
-        "precision highp float;\n"
-        "void main()\n"
-        "{\n"
-        "    gl_FragColor = vec4(1.0);\n"
-        "}\n";
-
-    ANGLE_GL_PROGRAM(program, vert, frag);
+    ANGLE_GL_PROGRAM(program, vert, essl1_shaders::fs::Red());
     GLint posLocation = glGetAttribLocation(program.get(), "a_pos");
     ASSERT_NE(-1, posLocation);
     glUseProgram(program.get());
@@ -1329,6 +1470,71 @@ TEST_P(WebGLCompatibilityTest, DrawArraysBufferOutOfBoundsNonInstanced)
     EXPECT_GL_ERROR(GL_INVALID_OPERATION);
 }
 
+// Test that index values outside of the 32-bit integer range do not read out of bounds
+TEST_P(WebGLCompatibilityTest, LargeIndexRange)
+{
+    ANGLE_SKIP_TEST_IF(!ensureExtensionEnabled("GL_OES_element_index_uint"));
+
+    const std::string &vert =
+        "attribute vec4 a_Position;\n"
+        "void main()\n"
+        "{\n"
+        "    gl_Position = a_Position;\n"
+        "}\n";
+
+    ANGLE_GL_PROGRAM(program, vert, essl1_shaders::fs::Red());
+    glUseProgram(program.get());
+
+    glEnableVertexAttribArray(glGetAttribLocation(program, "a_Position"));
+
+    constexpr float kVertexData[] = {
+        1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f,
+    };
+
+    GLBuffer vertexBuffer;
+    glBindBuffer(GL_ARRAY_BUFFER, vertexBuffer);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(kVertexData), kVertexData, GL_STREAM_DRAW);
+
+    constexpr GLuint kMaxIntAsGLuint = static_cast<GLuint>(std::numeric_limits<GLint>::max());
+    constexpr GLuint kIndexData[]    = {
+        kMaxIntAsGLuint, kMaxIntAsGLuint + 1, kMaxIntAsGLuint + 2, kMaxIntAsGLuint + 3,
+    };
+
+    GLBuffer indexBuffer;
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, vertexBuffer);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(kIndexData), kIndexData, GL_DYNAMIC_DRAW);
+
+    EXPECT_GL_NO_ERROR();
+
+    // First index is representable as 32-bit int but second is not
+    glDrawElements(GL_LINES, 2, GL_UNSIGNED_INT, 0);
+    EXPECT_GL_ERROR(GL_INVALID_OPERATION);
+
+    // Neither index is representable as 32-bit int
+    glDrawElements(GL_LINES, 2, GL_UNSIGNED_INT, reinterpret_cast<void *>(sizeof(GLuint) * 2));
+    EXPECT_GL_ERROR(GL_INVALID_OPERATION);
+}
+
+// Test for drawing with a null index buffer
+TEST_P(WebGLCompatibilityTest, NullIndexBuffer)
+{
+    const std::string &vert =
+        "attribute float a_pos;\n"
+        "void main()\n"
+        "{\n"
+        "    gl_Position = vec4(a_pos, a_pos, a_pos, 1.0);\n"
+        "}\n";
+
+    ANGLE_GL_PROGRAM(program, vert, essl1_shaders::fs::Red());
+    glUseProgram(program.get());
+
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
+    glEnableVertexAttribArray(0);
+
+    glDrawElements(GL_TRIANGLES, 0, GL_UNSIGNED_BYTE, 0);
+    EXPECT_GL_ERROR(GL_INVALID_OPERATION);
+}
+
 // Test the checks for OOB reads in the vertex buffers, instanced version
 TEST_P(WebGL2CompatibilityTest, DrawArraysBufferOutOfBoundsInstanced)
 {
@@ -1340,14 +1546,7 @@ TEST_P(WebGL2CompatibilityTest, DrawArraysBufferOutOfBoundsInstanced)
         "    gl_Position = vec4(a_pos, a_pos, a_pos, a_w);\n"
         "}\n";
 
-    const std::string &frag =
-        "precision highp float;\n"
-        "void main()\n"
-        "{\n"
-        "    gl_FragColor = vec4(1.0);\n"
-        "}\n";
-
-    ANGLE_GL_PROGRAM(program, vert, frag);
+    ANGLE_GL_PROGRAM(program, vert, essl1_shaders::fs::Red());
     GLint posLocation = glGetAttribLocation(program.get(), "a_pos");
     GLint wLocation = glGetAttribLocation(program.get(), "a_w");
     ASSERT_NE(-1, posLocation);
@@ -1413,14 +1612,7 @@ TEST_P(WebGLCompatibilityTest, DrawArraysBufferOutOfBoundsInstancedANGLE)
         "    gl_Position = vec4(a_pos, a_pos, a_pos, a_w);\n"
         "}\n";
 
-    const std::string &frag =
-        "precision highp float;\n"
-        "void main()\n"
-        "{\n"
-        "    gl_FragColor = vec4(1.0);\n"
-        "}\n";
-
-    ANGLE_GL_PROGRAM(program, vert, frag);
+    ANGLE_GL_PROGRAM(program, vert, essl1_shaders::fs::Red());
     GLint posLocation = glGetAttribLocation(program.get(), "a_pos");
     GLint wLocation = glGetAttribLocation(program.get(), "a_w");
     ASSERT_NE(-1, posLocation);
@@ -1443,32 +1635,32 @@ TEST_P(WebGLCompatibilityTest, DrawArraysBufferOutOfBoundsInstancedANGLE)
     // Test touching the last element is valid.
     glVertexAttribPointer(wLocation, 1, GL_UNSIGNED_BYTE, GL_FALSE, 0, zeroOffset + 12);
     glDrawArraysInstancedANGLE(GL_POINTS, 0, 1, 4);
-    ASSERT_GL_NO_ERROR();
+    ASSERT_GL_NO_ERROR() << "touching the last element.";
 
     // Test touching the last element + 1 is invalid.
     glVertexAttribPointer(wLocation, 1, GL_UNSIGNED_BYTE, GL_FALSE, 0, zeroOffset + 13);
     glDrawArraysInstancedANGLE(GL_POINTS, 0, 1, 4);
-    EXPECT_GL_ERROR(GL_INVALID_OPERATION);
+    EXPECT_GL_ERROR(GL_INVALID_OPERATION) << "touching the last element + 1.";
 
     // Test touching the last element is valid, using a stride.
     glVertexAttribPointer(wLocation, 1, GL_UNSIGNED_BYTE, GL_FALSE, 2, zeroOffset + 9);
     glDrawArraysInstancedANGLE(GL_POINTS, 0, 1, 4);
-    ASSERT_GL_NO_ERROR();
+    ASSERT_GL_NO_ERROR() << "touching the last element using a stride.";
 
     // Test touching the last element + 1 is invalid, using a stride.
     glVertexAttribPointer(wLocation, 1, GL_UNSIGNED_BYTE, GL_FALSE, 2, zeroOffset + 10);
     glDrawArraysInstancedANGLE(GL_POINTS, 0, 1, 4);
-    EXPECT_GL_ERROR(GL_INVALID_OPERATION);
+    EXPECT_GL_ERROR(GL_INVALID_OPERATION) << "touching the last element + 1 using a stride.";
 
     // Test any offset is valid if no vertices are drawn.
     glVertexAttribPointer(wLocation, 1, GL_UNSIGNED_BYTE, GL_FALSE, 0, zeroOffset + 32);
     glDrawArraysInstancedANGLE(GL_POINTS, 0, 0, 1);
-    ASSERT_GL_NO_ERROR();
+    ASSERT_GL_NO_ERROR() << "any offset with no vertices.";
 
     // Test any offset is valid if no primitives are drawn.
     glVertexAttribPointer(wLocation, 1, GL_UNSIGNED_BYTE, GL_FALSE, 0, zeroOffset + 32);
     glDrawArraysInstancedANGLE(GL_POINTS, 0, 1, 0);
-    ASSERT_GL_NO_ERROR();
+    ASSERT_GL_NO_ERROR() << "any offset with primitives.";
 }
 
 // Test the checks for OOB reads in the index buffer
@@ -1481,14 +1673,7 @@ TEST_P(WebGLCompatibilityTest, DrawElementsBufferOutOfBoundsInIndexBuffer)
         "    gl_Position = vec4(a_pos, a_pos, a_pos, 1.0);\n"
         "}\n";
 
-    const std::string &frag =
-        "precision highp float;\n"
-        "void main()\n"
-        "{\n"
-        "    gl_FragColor = vec4(1.0);\n"
-        "}\n";
-
-    ANGLE_GL_PROGRAM(program, vert, frag);
+    ANGLE_GL_PROGRAM(program, vert, essl1_shaders::fs::Red());
     GLint posLocation = glGetAttribLocation(program.get(), "a_pos");
     ASSERT_NE(-1, posLocation);
     glUseProgram(program.get());
@@ -1541,14 +1726,7 @@ TEST_P(WebGLCompatibilityTest, DrawElementsBufferOutOfBoundsInVertexBuffer)
         "    gl_Position = vec4(a_pos, a_pos, a_pos, 1.0);\n"
         "}\n";
 
-    const std::string &frag =
-        "precision highp float;\n"
-        "void main()\n"
-        "{\n"
-        "    gl_FragColor = vec4(1.0);\n"
-        "}\n";
-
-    ANGLE_GL_PROGRAM(program, vert, frag);
+    ANGLE_GL_PROGRAM(program, vert, essl1_shaders::fs::Red());
     GLint posLocation = glGetAttribLocation(program.get(), "a_pos");
     ASSERT_NE(-1, posLocation);
     glUseProgram(program.get());
@@ -1812,14 +1990,7 @@ TEST_P(WebGL2CompatibilityTest, InstancedDrawZeroDivisor)
         "    gl_Position = vec4(a_pos, a_pos, a_pos, 1.0);\n"
         "}\n";
 
-    const std::string &frag =
-        "precision highp float;\n"
-        "void main()\n"
-        "{\n"
-        "    gl_FragColor = vec4(1.0);\n"
-        "}\n";
-
-    ANGLE_GL_PROGRAM(program, vert, frag);
+    ANGLE_GL_PROGRAM(program, vert, essl1_shaders::fs::Red());
 
     GLint posLocation = glGetAttribLocation(program.get(), "a_pos");
     ASSERT_NE(-1, posLocation);
@@ -2039,14 +2210,7 @@ TEST_P(WebGLCompatibilityTest, DrawElementsOffsetRestriction)
         "    gl_Position = vec4(a_pos, 1.0);\n"
         "}\n";
 
-    const std::string &frag =
-        "precision highp float;\n"
-        "void main()\n"
-        "{\n"
-        "    gl_FragColor = vec4(1.0);\n"
-        "}\n";
-
-    ANGLE_GL_PROGRAM(program, vert, frag);
+    ANGLE_GL_PROGRAM(program, vert, essl1_shaders::fs::Red());
 
     GLint posLocation = glGetAttribLocation(program.get(), "a_pos");
     ASSERT_NE(-1, posLocation);
@@ -2161,11 +2325,8 @@ TEST_P(WebGLCompatibilityTest, RenderingFeedbackLoopWithDrawBuffersEXT)
     GLint maxDrawBuffers = 0;
     glGetIntegerv(GL_MAX_DRAW_BUFFERS, &maxDrawBuffers);
 
-    if (maxDrawBuffers < 2)
-    {
-        std::cout << "Test skipped because MAX_DRAW_BUFFERS is too small." << std::endl;
-        return;
-    }
+    // Test skipped because MAX_DRAW_BUFFERS is too small.
+    ANGLE_SKIP_TEST_IF(maxDrawBuffers < 2);
 
     ANGLE_GL_PROGRAM(program, vertexShader, fragmentShader);
     glUseProgram(program.get());
@@ -2334,12 +2495,7 @@ TEST_P(WebGLCompatibilityTest, CompressedTextureS3TC)
         glRequestExtensionANGLE("GL_EXT_texture_compression_dxt1");
     }
 
-    if (!extensionEnabled("GL_EXT_texture_compression_dxt1"))
-    {
-        std::cout << "Test skipped because GL_EXT_texture_compression_dxt1 is not available."
-                  << std::endl;
-        return;
-    }
+    ANGLE_SKIP_TEST_IF(!extensionEnabled("GL_EXT_texture_compression_dxt1"));
 
     constexpr uint8_t CompressedImageDXT1[] = {0x00, 0xf8, 0x00, 0xf8, 0xaa, 0xaa, 0xaa, 0xaa};
 
@@ -2594,11 +2750,7 @@ TEST_P(WebGLCompatibilityTest, RG32FTextures)
 
 TEST_P(WebGLCompatibilityTest, RGB32FTextures)
 {
-    if (IsLinux() && IsIntel())
-    {
-        std::cout << "Test skipped on Linux Intel." << std::endl;
-        return;
-    }
+    ANGLE_SKIP_TEST_IF(IsLinux() && IsIntel());
 
     constexpr float data[] = {1000.0f, -500.0f, 10.0f, 1.0f};
 
@@ -2769,11 +2921,7 @@ TEST_P(WebGLCompatibilityTest, RG16FTextures)
 
 TEST_P(WebGLCompatibilityTest, RGB16FTextures)
 {
-    if (IsOzone() && IsIntel())
-    {
-        std::cout << "Test skipped on Intel Ozone." << std::endl;
-        return;
-    }
+    ANGLE_SKIP_TEST_IF(IsOzone() && IsIntel());
 
     constexpr float readPixelsData[] = {7000.0f, 100.0f, 33.0f, 1.0f};
     const GLushort textureData[]     = {
@@ -2822,11 +2970,7 @@ TEST_P(WebGLCompatibilityTest, RGB16FTextures)
 
 TEST_P(WebGLCompatibilityTest, RGBA16FTextures)
 {
-    if (IsOzone() && IsIntel())
-    {
-        std::cout << "Test skipped on Intel Ozone." << std::endl;
-        return;
-    }
+    ANGLE_SKIP_TEST_IF(IsOzone() && IsIntel());
 
     constexpr float readPixelsData[] = {7000.0f, 100.0f, 33.0f, -1.0f};
     const GLushort textureData[]     = {
@@ -2879,17 +3023,11 @@ TEST_P(WebGLCompatibilityTest, RGBA16FTextures)
 // accepted by glTexImage2D
 TEST_P(WebGLCompatibilityTest, SizedRGBA32FFormats)
 {
-    if (getClientMajorVersion() != 2)
-    {
-        std::cout << "Test skipped because it is only valid for WebGL1 contexts." << std::endl;
-        return;
-    }
+    // Test skipped because it is only valid for WebGL1 contexts.
+    ANGLE_SKIP_TEST_IF(getClientMajorVersion() != 2);
 
-    if (!extensionRequestable("GL_OES_texture_float"))
-    {
-        std::cout << "Test skipped because GL_OES_texture_float is not requestable." << std::endl;
-        return;
-    }
+    ANGLE_SKIP_TEST_IF(!extensionRequestable("GL_OES_texture_float"));
+
     glRequestExtensionANGLE("GL_OES_texture_float");
     ASSERT_GL_NO_ERROR();
 
@@ -2976,6 +3114,22 @@ TEST_P(WebGLCompatibilityTest, FramebufferAttachmentConsistancy)
     glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, rb2);
 
     glGetFramebufferAttachmentParameteriv(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT,
+                                          GL_FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE, &attachmentType);
+
+    EXPECT_GL_NO_ERROR();
+    EXPECT_GLENUM_EQ(GL_RENDERBUFFER, attachmentType);
+
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, rb2);
+
+    glGetFramebufferAttachmentParameteriv(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT,
+                                          GL_FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE, &attachmentType);
+
+    EXPECT_GL_NO_ERROR();
+    EXPECT_GLENUM_EQ(GL_RENDERBUFFER, attachmentType);
+
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_STENCIL_ATTACHMENT, GL_RENDERBUFFER, rb2);
+
+    glGetFramebufferAttachmentParameteriv(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT,
                                           GL_FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE, &attachmentType);
 
     EXPECT_GL_NO_ERROR();
@@ -3078,12 +3232,12 @@ TEST_P(WebGL2CompatibilityTest, RenderingFeedbackLoopWithDepthStencil)
     // Create textures and allocate storage
     GLTexture tex0;
     GLTexture tex1;
-    GLRenderbuffer rb;
+    GLTexture tex2;
     FillTexture2D(tex0.get(), width, height, GLColor::black, 0, GL_RGBA, GL_RGBA, GL_UNSIGNED_BYTE);
     FillTexture2D(tex1.get(), width, height, 0x80, 0, GL_DEPTH_COMPONENT16, GL_DEPTH_COMPONENT,
                   GL_UNSIGNED_INT);
-    glBindRenderbuffer(GL_RENDERBUFFER, rb.get());
-    glRenderbufferStorage(GL_RENDERBUFFER, GL_STENCIL_INDEX8, width, height);
+    FillTexture2D(tex2.get(), width, height, 0x40, 0, GL_DEPTH_STENCIL, GL_DEPTH_STENCIL,
+                  GL_UNSIGNED_INT_24_8);
     ASSERT_GL_NO_ERROR();
 
     GLFramebuffer fbo;
@@ -3098,23 +3252,25 @@ TEST_P(WebGL2CompatibilityTest, RenderingFeedbackLoopWithDepthStencil)
     // The same image is used as depth buffer during rendering.
     glEnable(GL_DEPTH_TEST);
     drawQuad(program.get(), "aPosition", 0.5f, 1.0f, true);
-    EXPECT_GL_ERROR(GL_INVALID_OPERATION);
+    EXPECT_GL_ERROR(GL_INVALID_OPERATION) << "Same image as depth buffer should fail";
 
     // The same image is used as depth buffer. But depth mask is false.
+    // This is now considered a feedback loop and should generate an error. http://crbug.com/763695
     glDepthMask(GL_FALSE);
     drawQuad(program.get(), "aPosition", 0.5f, 1.0f, true);
-    EXPECT_GL_NO_ERROR();
+    EXPECT_GL_ERROR(GL_INVALID_OPERATION) << "Depth writes disabled should still fail";
 
     // The same image is used as depth buffer. But depth test is not enabled during rendering.
+    // This is now considered a feedback loop and should generate an error. http://crbug.com/763695
     glDepthMask(GL_TRUE);
     glDisable(GL_DEPTH_TEST);
     drawQuad(program.get(), "aPosition", 0.5f, 1.0f, true);
-    EXPECT_GL_NO_ERROR();
+    EXPECT_GL_ERROR(GL_INVALID_OPERATION) << "Depth read disabled should still fail";
 
     // Test rendering and sampling feedback loop for stencil buffer
-    glBindTexture(GL_RENDERBUFFER, rb.get());
+    glBindTexture(GL_TEXTURE_2D, tex2.get());
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, 0, 0);
-    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_STENCIL_ATTACHMENT, GL_RENDERBUFFER, rb.get());
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_STENCIL_ATTACHMENT, GL_TEXTURE_2D, tex2.get(), 0);
     ASSERT_GLENUM_EQ(GL_FRAMEBUFFER_COMPLETE, glCheckFramebufferStatus(GL_FRAMEBUFFER));
     constexpr GLint stencilClearValue = 0x40;
     glClearBufferiv(GL_STENCIL, 0, &stencilClearValue);
@@ -3122,18 +3278,20 @@ TEST_P(WebGL2CompatibilityTest, RenderingFeedbackLoopWithDepthStencil)
     // The same image is used as stencil buffer during rendering.
     glEnable(GL_STENCIL_TEST);
     drawQuad(program.get(), "aPosition", 0.5f, 1.0f, true);
-    EXPECT_GL_ERROR(GL_INVALID_OPERATION);
+    EXPECT_GL_ERROR(GL_INVALID_OPERATION) << "Same image as stencil buffer should fail";
 
     // The same image is used as stencil buffer. But stencil mask is zero.
+    // This is now considered a feedback loop and should generate an error. http://crbug.com/763695
     glStencilMask(0x0);
     drawQuad(program.get(), "aPosition", 0.5f, 1.0f, true);
-    EXPECT_GL_NO_ERROR();
+    EXPECT_GL_ERROR(GL_INVALID_OPERATION) << "Stencil mask zero should still fail";
 
     // The same image is used as stencil buffer. But stencil test is not enabled during rendering.
+    // This is now considered a feedback loop and should generate an error. http://crbug.com/763695
     glStencilMask(0xffff);
     glDisable(GL_STENCIL_TEST);
     drawQuad(program.get(), "aPosition", 0.5f, 1.0f, true);
-    EXPECT_GL_NO_ERROR();
+    EXPECT_GL_ERROR(GL_INVALID_OPERATION) << "Stencil test disabled should still fail";
 }
 
 // The source and the target for CopyTexSubImage3D are the same 3D texture.
@@ -3197,11 +3355,8 @@ TEST_P(WebGL2CompatibilityTest, TextureCopyingFeedbackLoop3D)
 // the buffer type.
 TEST_P(WebGL2CompatibilityTest, ClearBufferTypeCompatibity)
 {
-    if (IsD3D11())
-    {
-        std::cout << "Test skipped because it generates D3D11 runtime warnings." << std::endl;
-        return;
-    }
+    // Test skipped for D3D11 because it generates D3D11 runtime warnings.
+    ANGLE_SKIP_TEST_IF(IsD3D11());
 
     constexpr float clearFloat[]       = {0.0f, 0.0f, 0.0f, 0.0f};
     constexpr int clearInt[]           = {0, 0, 0, 0};
@@ -3565,11 +3720,7 @@ TEST_P(WebGLCompatibilityTest, DrawBuffers)
     bool useEXT = false;
     if (getClientMajorVersion() < 3)
     {
-        if (!extensionRequestable("GL_EXT_draw_buffers"))
-        {
-            std::cout << "Test skipped because draw buffers are not available" << std::endl;
-            return;
-        }
+        ANGLE_SKIP_TEST_IF(!extensionRequestable("GL_EXT_draw_buffers"));
 
         glRequestExtensionANGLE("GL_EXT_draw_buffers");
         useEXT = true;
@@ -3578,11 +3729,8 @@ TEST_P(WebGLCompatibilityTest, DrawBuffers)
 
     GLint maxDrawBuffers = 0;
     glGetIntegerv(GL_MAX_DRAW_BUFFERS, &maxDrawBuffers);
-    if (maxDrawBuffers < 4)
-    {
-        std::cout << "Test skipped because MAX_DRAW_BUFFERS is too small." << std::endl;
-        return;
-    }
+    // Test skipped because MAX_DRAW_BUFFERS is too small.
+    ANGLE_SKIP_TEST_IF(maxDrawBuffers < 4);
 
     // Clears all the renderbuffers to red.
     auto ClearEverythingToRed = [](GLRenderbuffer *renderbuffers) {
@@ -3643,20 +3791,6 @@ TEST_P(WebGLCompatibilityTest, DrawBuffers)
 
     ASSERT_GL_NO_ERROR();
 
-    const char *vertESSL1 =
-        "attribute vec4 a_pos;\n"
-        "void main()\n"
-        "{\n"
-        "    gl_Position = a_pos;\n"
-        "}\n";
-    const char *vertESSL3 =
-        "#version 300 es\n"
-        "in vec4 a_pos;\n"
-        "void main()\n"
-        "{\n"
-        "    gl_Position = a_pos;\n"
-        "}\n";
-
     GLenum allDrawBuffers[] = {
         GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1, GL_COLOR_ATTACHMENT2, GL_COLOR_ATTACHMENT3,
     };
@@ -3672,14 +3806,14 @@ TEST_P(WebGLCompatibilityTest, DrawBuffers)
         "{\n"
         "    gl_FragColor = vec4(0.0, 1.0, 0.0, 1.0);\n"
         "}\n";
-    ANGLE_GL_PROGRAM(programESSL1, vertESSL1, fragESSL1);
+    ANGLE_GL_PROGRAM(programESSL1, essl1_shaders::vs::Simple(), fragESSL1);
 
     {
         ClearEverythingToRed(renderbuffers);
 
         glBindFramebuffer(GL_FRAMEBUFFER, drawFBO);
         DrawBuffers(useEXT, 4, allDrawBuffers);
-        drawQuad(programESSL1, "a_pos", 0.5, 1.0, true);
+        drawQuad(programESSL1, essl1_shaders::PositionAttrib(), 0.5, 1.0, true);
         ASSERT_GL_NO_ERROR();
 
         CheckColors(renderbuffers, 0b0001, GLColor::green);
@@ -3693,7 +3827,7 @@ TEST_P(WebGLCompatibilityTest, DrawBuffers)
 
         glBindFramebuffer(GL_FRAMEBUFFER, drawFBO);
         DrawBuffers(useEXT, 4, halfDrawBuffers);
-        drawQuad(programESSL1, "a_pos", 0.5, 1.0, true);
+        drawQuad(programESSL1, essl1_shaders::PositionAttrib(), 0.5, 1.0, true);
         ASSERT_GL_NO_ERROR();
 
         CheckColors(renderbuffers, 0b1111, GLColor::red);
@@ -3704,6 +3838,7 @@ TEST_P(WebGLCompatibilityTest, DrawBuffers)
     // array of size MAX_DRAW_BUFFERS, so the WebGL spec stipulates that elements not written to
     // should default to 0. On the contrary, in ES3 outputs are specified one by one, so
     // attachments not declared in the shader should not be written to.
+    const char *positionAttrib;
     const char *writeOddOutputsVert;
     const char *writeOddOutputsFrag;
     GLColor unwrittenColor;
@@ -3711,7 +3846,8 @@ TEST_P(WebGLCompatibilityTest, DrawBuffers)
     {
         // In the extension, when an attachment isn't written to, it should get 0's
         unwrittenColor      = GLColor(0, 0, 0, 0);
-        writeOddOutputsVert = vertESSL1;
+        positionAttrib      = essl1_shaders::PositionAttrib();
+        writeOddOutputsVert = essl1_shaders::vs::Simple();
         writeOddOutputsFrag =
             "#extension GL_EXT_draw_buffers : require\n"
             "precision highp float;\n"
@@ -3726,7 +3862,8 @@ TEST_P(WebGLCompatibilityTest, DrawBuffers)
         // In ES3 if an attachment isn't declared, it shouldn't get written and should be red
         // because of the preceding clears.
         unwrittenColor      = GLColor::red;
-        writeOddOutputsVert = vertESSL3;
+        positionAttrib      = essl3_shaders::PositionAttrib();
+        writeOddOutputsVert = essl3_shaders::vs::Simple();
         writeOddOutputsFrag =
             "#version 300 es\n"
             "precision highp float;\n"
@@ -3746,7 +3883,7 @@ TEST_P(WebGLCompatibilityTest, DrawBuffers)
 
         glBindFramebuffer(GL_FRAMEBUFFER, drawFBO);
         DrawBuffers(useEXT, 4, allDrawBuffers);
-        drawQuad(writeOddOutputsProgram, "a_pos", 0.5, 1.0, true);
+        drawQuad(writeOddOutputsProgram, positionAttrib, 0.5, 1.0, true);
         ASSERT_GL_NO_ERROR();
 
         CheckColors(renderbuffers, 0b1010, GLColor::green);
@@ -3760,7 +3897,7 @@ TEST_P(WebGLCompatibilityTest, DrawBuffers)
 
         glBindFramebuffer(GL_FRAMEBUFFER, drawFBO);
         DrawBuffers(useEXT, 4, halfDrawBuffers);
-        drawQuad(writeOddOutputsProgram, "a_pos", 0.5, 1.0, true);
+        drawQuad(writeOddOutputsProgram, positionAttrib, 0.5, 1.0, true);
         ASSERT_GL_NO_ERROR();
 
         CheckColors(renderbuffers, 0b1000, GLColor::green);
@@ -4047,21 +4184,13 @@ TEST_P(WebGL2CompatibilityTest, NoAttributeVertexShader)
         "    ivec2 xy = ivec2(gl_VertexID % 2, (gl_VertexID / 2 + gl_VertexID / 3) % 2);\n"
         "    gl_Position = vec4(vec2(xy) * 2. - 1., 0, 1);\n"
         "}";
-    const std::string fragmentShader =
-        "#version 300 es\n"
-        "precision mediump float;\n"
-        "out vec4 result;\n"
-        "void main()\n"
-        "{\n"
-        "    result = vec4(0, 1, 0, 1);\n"
-        "}";
 
-    ANGLE_GL_PROGRAM(program, vertexShader, fragmentShader);
+    ANGLE_GL_PROGRAM(program, vertexShader, essl3_shaders::fs::Red());
     glUseProgram(program);
 
     glDrawArrays(GL_TRIANGLES, 0, 6);
     ASSERT_GL_NO_ERROR();
-    EXPECT_PIXEL_COLOR_EQ(0, 0, GLColor::green);
+    EXPECT_PIXEL_COLOR_EQ(0, 0, GLColor::red);
 }
 
 // Tests bindAttribLocations for length limit
@@ -4073,6 +4202,44 @@ TEST_P(WebGL2CompatibilityTest, BindAttribLocationLimitation)
     glBindAttribLocation(0, 0, static_cast<const GLchar *>(tooLongString.c_str()));
 
     EXPECT_GL_ERROR(GL_INVALID_VALUE);
+}
+
+// Covers a bug in transform feedback loop detection.
+TEST_P(WebGL2CompatibilityTest, TransformFeedbackCheckNullDeref)
+{
+    constexpr char kVS[] = R"(attribute vec4 color; void main() { color.r; })";
+    constexpr char kFS[] = R"(void main(){})";
+    ANGLE_GL_PROGRAM(program, kVS, kFS);
+    glUseProgram(program);
+
+    glEnableVertexAttribArray(0);
+    glDrawArrays(GL_POINTS, 0, 1);
+
+    // This should fail because it is trying to pull a vertex with no buffer.
+    EXPECT_GL_ERROR(GL_INVALID_OPERATION);
+
+    GLBuffer buffer;
+    glBindBuffer(GL_ARRAY_BUFFER, buffer);
+    glVertexAttribPointer(0, 4, GL_FLOAT, GL_FALSE, 0, nullptr);
+
+    // This should fail because it is trying to pull a vertex from an empty buffer.
+    glDrawArrays(GL_POINTS, 0, 1);
+    EXPECT_GL_ERROR(GL_INVALID_OPERATION);
+}
+
+// Check the return type of a given parameter upon getting the active uniforms.
+TEST_P(WebGL2CompatibilityTest, UniformVariablesReturnTypes)
+{
+    ANGLE_GL_PROGRAM(program, essl1_shaders::vs::Simple(), essl1_shaders::fs::UniformColor());
+
+    std::vector<GLuint> validUniformIndices = {0};
+    std::vector<GLint> uniformNameLengthBuf(validUniformIndices.size());
+
+    // This should fail because GL_UNIFORM_NAME_LENGTH cannot be used in WebGL2.
+    glGetActiveUniformsiv(program, static_cast<GLsizei>(validUniformIndices.size()),
+                          &validUniformIndices[0], GL_UNIFORM_NAME_LENGTH,
+                          &uniformNameLengthBuf[0]);
+    EXPECT_GL_ERROR(GL_INVALID_ENUM);
 }
 
 // Use this to select which configurations (e.g. which renderer, which GLES major version) these

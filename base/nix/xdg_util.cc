@@ -71,6 +71,8 @@ DesktopEnvironment GetDesktopEnvironment(Environment* env) {
     }
     if (xdg_current_desktop == "GNOME")
       return DESKTOP_ENVIRONMENT_GNOME;
+    if (xdg_current_desktop == "X-Cinnamon")
+      return DESKTOP_ENVIRONMENT_CINNAMON;
     if (xdg_current_desktop == "KDE") {
       std::string kde_session;
       if (env->GetVar(kKDESessionEnvVar, &kde_session)) {
@@ -82,6 +84,8 @@ DesktopEnvironment GetDesktopEnvironment(Environment* env) {
     }
     if (xdg_current_desktop == "Pantheon")
       return DESKTOP_ENVIRONMENT_PANTHEON;
+    if (xdg_current_desktop == "XFCE")
+      return DESKTOP_ENVIRONMENT_XFCE;
   }
 
   // DESKTOP_SESSION was what everyone used in 2010.
@@ -120,6 +124,8 @@ const char* GetDesktopEnvironmentName(DesktopEnvironment env) {
   switch (env) {
     case DESKTOP_ENVIRONMENT_OTHER:
       return nullptr;
+    case DESKTOP_ENVIRONMENT_CINNAMON:
+      return "CINNAMON";
     case DESKTOP_ENVIRONMENT_GNOME:
       return "GNOME";
     case DESKTOP_ENVIRONMENT_KDE3:

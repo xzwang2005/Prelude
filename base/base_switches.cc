@@ -7,6 +7,9 @@
 
 namespace switches {
 
+// Delays execution of base::TaskPriority::BEST_EFFORT tasks until shutdown.
+const char kDisableBackgroundTasks[] = "disable-background-tasks";
+
 // Disables the crash reporting.
 const char kDisableBreakpad[]               = "disable-breakpad";
 
@@ -20,25 +23,6 @@ const char kEnableCrashReporter[]           = "enable-crash-reporter";
 
 // Comma-separated list of feature names to enable. See also kDisableFeatures.
 const char kEnableFeatures[] = "enable-features";
-
-// Makes memory allocators keep track of their allocations and context, so a
-// detailed breakdown of memory usage can be presented in chrome://tracing when
-// the memory-infra category is enabled.
-const char kEnableHeapProfiling[]           = "enable-heap-profiling";
-
-// Report pseudo allocation traces. Pseudo traces are derived from currently
-// active trace events.
-const char kEnableHeapProfilingModePseudo[] = "";
-
-// Report native (walk the stack) allocation traces. By default pseudo stacks
-// derived from trace events are reported.
-const char kEnableHeapProfilingModeNative[] = "native";
-
-// Report per-task heap usage and churn in the task profiler.
-// Does not keep track of individual allocations unlike the default and native
-// mode. Keeps only track of summarized churn stats in the task profiler
-// (chrome://profiler).
-const char kEnableHeapProfilingTaskProfiler[] = "task-profiler";
 
 // Generates full memory crash dump.
 const char kFullMemoryCrashReport[]         = "full-memory-crash-report";
@@ -112,6 +96,14 @@ const char kProfilingFile[] = "profiling-file";
 const char kDisableUsbKeyboardDetect[]      = "disable-usb-keyboard-detect";
 #endif
 
+#if defined(OS_LINUX) && !defined(OS_CHROMEOS)
+// The /dev/shm partition is too small in certain VM environments, causing
+// Chrome to fail or crash (see http://crbug.com/715363). Use this flag to
+// work-around this issue (a temporary directory will always be used to create
+// anonymous shared memory files).
+const char kDisableDevShmUsage[] = "disable-dev-shm-usage";
+#endif
+
 #if defined(OS_POSIX)
 // Used for turning on Breakpad crash reporting in a debug environment where
 // crash reporting is typically compiled but disabled.
@@ -120,9 +112,10 @@ const char kEnableCrashReporterForTesting[] =
 #endif
 
 #if defined(OS_ANDROID)
-// Calls madvise(MADV_RANDOM) on executable code right after the library is
-// loaded, from all processes.
-const char kMadviseRandomExecutableCode[] = "madvise-random-executable-code";
+// Optimizes memory layout of the native library using the orderfile symbols
+// given in base/android/library_loader/anchor_functions.h, via madvise and
+// changing the library prefetch behavior.
+const char kOrderfileMemoryOptimization[] = "orderfile-memory-optimization";
 #endif
 
 }  // namespace switches

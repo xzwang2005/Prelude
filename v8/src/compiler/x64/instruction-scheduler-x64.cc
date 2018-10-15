@@ -54,6 +54,8 @@ int InstructionScheduler::GetTargetInstructionFlags(
     case kX64Tzcnt32:
     case kX64Popcnt:
     case kX64Popcnt32:
+    case kX64Bswap:
+    case kX64Bswap32:
     case kSSEFloat32Cmp:
     case kSSEFloat32Add:
     case kSSEFloat32Sub:
@@ -123,6 +125,23 @@ int InstructionScheduler::GetTargetInstructionFlags(
     case kX64Lea:
     case kX64Dec32:
     case kX64Inc32:
+    case kX64F32x4Splat:
+    case kX64F32x4ExtractLane:
+    case kX64F32x4ReplaceLane:
+    case kX64F32x4RecipApprox:
+    case kX64F32x4RecipSqrtApprox:
+    case kX64F32x4Abs:
+    case kX64F32x4Neg:
+    case kX64F32x4Add:
+    case kX64F32x4AddHoriz:
+    case kX64F32x4Sub:
+    case kX64F32x4Mul:
+    case kX64F32x4Min:
+    case kX64F32x4Max:
+    case kX64F32x4Eq:
+    case kX64F32x4Ne:
+    case kX64F32x4Lt:
+    case kX64F32x4Le:
     case kX64I32x4Splat:
     case kX64I32x4ExtractLane:
     case kX64I32x4ReplaceLane:
@@ -240,10 +259,54 @@ int InstructionScheduler::GetTargetInstructionFlags(
       return instr->HasOutput() ? kIsLoadOperation : kHasSideEffect;
 
     case kX64StackCheck:
+    case kX64Peek:
       return kIsLoadOperation;
 
     case kX64Push:
     case kX64Poke:
+      return kHasSideEffect;
+
+    case kLFence:
+      return kHasSideEffect;
+
+    case kX64Word64AtomicLoadUint8:
+    case kX64Word64AtomicLoadUint16:
+    case kX64Word64AtomicLoadUint32:
+    case kX64Word64AtomicLoadUint64:
+      return kIsLoadOperation;
+
+    case kX64Word64AtomicStoreWord8:
+    case kX64Word64AtomicStoreWord16:
+    case kX64Word64AtomicStoreWord32:
+    case kX64Word64AtomicStoreWord64:
+    case kX64Word64AtomicAddUint8:
+    case kX64Word64AtomicAddUint16:
+    case kX64Word64AtomicAddUint32:
+    case kX64Word64AtomicAddUint64:
+    case kX64Word64AtomicSubUint8:
+    case kX64Word64AtomicSubUint16:
+    case kX64Word64AtomicSubUint32:
+    case kX64Word64AtomicSubUint64:
+    case kX64Word64AtomicAndUint8:
+    case kX64Word64AtomicAndUint16:
+    case kX64Word64AtomicAndUint32:
+    case kX64Word64AtomicAndUint64:
+    case kX64Word64AtomicOrUint8:
+    case kX64Word64AtomicOrUint16:
+    case kX64Word64AtomicOrUint32:
+    case kX64Word64AtomicOrUint64:
+    case kX64Word64AtomicXorUint8:
+    case kX64Word64AtomicXorUint16:
+    case kX64Word64AtomicXorUint32:
+    case kX64Word64AtomicXorUint64:
+    case kX64Word64AtomicExchangeUint8:
+    case kX64Word64AtomicExchangeUint16:
+    case kX64Word64AtomicExchangeUint32:
+    case kX64Word64AtomicExchangeUint64:
+    case kX64Word64AtomicCompareExchangeUint8:
+    case kX64Word64AtomicCompareExchangeUint16:
+    case kX64Word64AtomicCompareExchangeUint32:
+    case kX64Word64AtomicCompareExchangeUint64:
       return kHasSideEffect;
 
 #define CASE(Name) case k##Name:
@@ -261,20 +324,6 @@ int InstructionScheduler::GetInstructionLatency(const Instruction* instr) {
   // Basic latency modeling for x64 instructions. They have been determined
   // in an empirical way.
   switch (instr->arch_opcode()) {
-    case kCheckedLoadInt8:
-    case kCheckedLoadUint8:
-    case kCheckedLoadInt16:
-    case kCheckedLoadUint16:
-    case kCheckedLoadWord32:
-    case kCheckedLoadWord64:
-    case kCheckedLoadFloat32:
-    case kCheckedLoadFloat64:
-    case kCheckedStoreWord8:
-    case kCheckedStoreWord16:
-    case kCheckedStoreWord32:
-    case kCheckedStoreWord64:
-    case kCheckedStoreFloat32:
-    case kCheckedStoreFloat64:
     case kSSEFloat64Mul:
       return 5;
     case kX64Imul:

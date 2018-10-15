@@ -65,6 +65,8 @@ FuzzedDatagramClientSocket::GetBoundNetwork() const {
   return NetworkChangeNotifier::kInvalidNetworkHandle;
 }
 
+void FuzzedDatagramClientSocket::ApplySocketTag(const SocketTag& tag) {}
+
 void FuzzedDatagramClientSocket::Close() {
   connected_ = false;
   read_pending_ = false;
@@ -89,13 +91,42 @@ int FuzzedDatagramClientSocket::GetLocalAddress(IPEndPoint* address) const {
 
 void FuzzedDatagramClientSocket::UseNonBlockingIO() {}
 
+int FuzzedDatagramClientSocket::WriteAsync(
+    DatagramBuffers buffers,
+    CompletionOnceCallback callback,
+    const NetworkTrafficAnnotationTag& traffic_annotation) {
+  return -1;
+}
+
+int FuzzedDatagramClientSocket::WriteAsync(
+    const char* buffer,
+    size_t buf_len,
+    CompletionOnceCallback callback,
+    const NetworkTrafficAnnotationTag& traffic_annotation) {
+  return -1;
+}
+
+DatagramBuffers FuzzedDatagramClientSocket::GetUnwrittenBuffers() {
+  DatagramBuffers result;
+  return result;
+}
+
+void FuzzedDatagramClientSocket::SetWriteAsyncEnabled(bool enabled) {}
+bool FuzzedDatagramClientSocket::WriteAsyncEnabled() {
+  return false;
+}
+void FuzzedDatagramClientSocket::SetMaxPacketSize(size_t max_packet_size) {}
+void FuzzedDatagramClientSocket::SetWriteMultiCoreEnabled(bool enabled) {}
+void FuzzedDatagramClientSocket::SetSendmmsgEnabled(bool enabled) {}
+void FuzzedDatagramClientSocket::SetWriteBatchingActive(bool active) {}
+
 const NetLogWithSource& FuzzedDatagramClientSocket::NetLog() const {
   return net_log_;
 }
 
 int FuzzedDatagramClientSocket::Read(IOBuffer* buf,
                                      int buf_len,
-                                     const CompletionCallback& callback) {
+                                     CompletionOnceCallback callback) {
   CHECK(!callback.is_null());
   CHECK_GT(buf_len, 0);
   CHECK(!read_pending_);
@@ -126,20 +157,19 @@ int FuzzedDatagramClientSocket::Read(IOBuffer* buf,
 
   read_pending_ = true;
   base::ThreadTaskRunnerHandle::Get()->PostTask(
-      FROM_HERE, base::Bind(&FuzzedDatagramClientSocket::OnReadComplete,
-                            weak_factory_.GetWeakPtr(), callback, result));
+      FROM_HERE,
+      base::BindOnce(&FuzzedDatagramClientSocket::OnReadComplete,
+                     weak_factory_.GetWeakPtr(), std::move(callback), result));
   return ERR_IO_PENDING;
 }
 
 int FuzzedDatagramClientSocket::Write(
     IOBuffer* buf,
     int buf_len,
-    const CompletionCallback& callback,
-    const NetworkTrafficAnnotationTag& traffic_annotation) {
+    CompletionOnceCallback callback,
+    const NetworkTrafficAnnotationTag& /* traffic_annotation */) {
   CHECK(!callback.is_null());
   CHECK(!write_pending_);
-
-  // TODO(crbug.com/656607): Handle traffic annotation.
 
   // Normally this is allowed, but code really shouldn't be doing this - if it
   // is, it's best to figure out why, and fix it.
@@ -161,8 +191,9 @@ int FuzzedDatagramClientSocket::Write(
 
   write_pending_ = true;
   base::ThreadTaskRunnerHandle::Get()->PostTask(
-      FROM_HERE, base::Bind(&FuzzedDatagramClientSocket::OnWriteComplete,
-                            weak_factory_.GetWeakPtr(), callback, result));
+      FROM_HERE,
+      base::BindOnce(&FuzzedDatagramClientSocket::OnWriteComplete,
+                     weak_factory_.GetWeakPtr(), std::move(callback), result));
   return ERR_IO_PENDING;
 }
 
@@ -179,23 +210,23 @@ int FuzzedDatagramClientSocket::SetDoNotFragment() {
 }
 
 void FuzzedDatagramClientSocket::OnReadComplete(
-    const net::CompletionCallback& callback,
+    net::CompletionOnceCallback callback,
     int result) {
   CHECK(connected_);
   CHECK(read_pending_);
 
   read_pending_ = false;
-  callback.Run(result);
+  std::move(callback).Run(result);
 }
 
 void FuzzedDatagramClientSocket::OnWriteComplete(
-    const net::CompletionCallback& callback,
+    net::CompletionOnceCallback callback,
     int result) {
   CHECK(connected_);
   CHECK(write_pending_);
 
   write_pending_ = false;
-  callback.Run(result);
+  std::move(callback).Run(result);
 }
 
 }  // namespace net

@@ -52,6 +52,7 @@ from testrunner.local import utils
 
 # Special LINT rules diverging from default and reason.
 # build/header_guard: Our guards have the form "V8_FOO_H_", not "SRC_FOO_H_".
+#   We now run our own header guard check in PRESUBMIT.py.
 # build/include_what_you_use: Started giving false positives for variables
 #   named "string" and "map" assuming that you needed to include STL headers.
 
@@ -59,7 +60,9 @@ LINT_RULES = """
 -build/header_guard
 -build/include_what_you_use
 -readability/fn_size
+-readability/multiline_comment
 -runtime/references
+-whitespace/comments
 """.split()
 
 LINT_OUTPUT_PATTERN = re.compile(r'^.+[:(]\d+[:)]|^Done processing')
@@ -280,8 +283,7 @@ class SourceProcessor(SourceFileProcessor):
   Check that all files include a copyright notice and no trailing whitespaces.
   """
 
-  RELEVANT_EXTENSIONS = ['.js', '.cc', '.h', '.py', '.c',
-                         '.status', '.gyp', '.gypi']
+  RELEVANT_EXTENSIONS = ['.js', '.cc', '.h', '.py', '.c', '.status', '.tq', '.g4']
 
   def __init__(self):
     self.runtime_function_call_pattern = self.CreateRuntimeFunctionCallMatcher()
@@ -295,7 +297,7 @@ class SourceProcessor(SourceFileProcessor):
         m = pattern.match(line)
         if m:
           runtime_functions.append(m.group(1))
-    if len(runtime_functions) < 500:
+    if len(runtime_functions) < 450:
       print ("Runtime functions list is suspiciously short. "
              "Consider updating the presubmit script.")
       sys.exit(1)
@@ -331,7 +333,7 @@ class SourceProcessor(SourceFileProcessor):
 
   def IgnoreDir(self, name):
     return (super(SourceProcessor, self).IgnoreDir(name) or
-            name in ('third_party', 'gyp', 'out', 'obj', 'DerivedSources'))
+            name in ('third_party', 'out', 'obj', 'DerivedSources'))
 
   IGNORE_COPYRIGHTS = ['box2d.js',
                        'cpplint.py',
@@ -554,9 +556,15 @@ def CheckDeps(workspace):
 
 
 def PyTests(workspace):
-  test_scripts = join(workspace, 'tools', 'release', 'test_scripts.py')
-  return subprocess.call(
-      [sys.executable, test_scripts], stdout=subprocess.PIPE) == 0
+  result = True
+  for script in [
+      join(workspace, 'tools', 'release', 'test_scripts.py'),
+      join(workspace, 'tools', 'unittests', 'run_tests_test.py'),
+    ]:
+    print 'Running ' + script
+    result &= subprocess.call(
+        [sys.executable, script], stdout=subprocess.PIPE) == 0
+  return result
 
 
 def GetOptions():
@@ -573,8 +581,8 @@ def Main():
   success = True
   print "Running checkdeps..."
   success &= CheckDeps(workspace)
-  print "Running C++ lint check..."
   if not options.no_lint:
+    print "Running C++ lint check..."
     success &= CppLintProcessor().RunOnPath(workspace)
   print "Running copyright header, trailing whitespaces and " \
         "two empty lines between declarations check..."

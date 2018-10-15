@@ -22,10 +22,12 @@
 #include "net/base/expiring_cache.h"
 #include "net/base/net_export.h"
 #include "net/dns/dns_util.h"
+#include "net/dns/host_resolver_source.h"
 
 namespace base {
 class ListValue;
-}
+class TickClock;
+}  // namespace base
 
 namespace net {
 
@@ -33,28 +35,35 @@ namespace net {
 class NET_EXPORT HostCache {
  public:
   struct Key {
-    Key(const std::string& hostname, AddressFamily address_family,
-        HostResolverFlags host_resolver_flags)
+    Key(const std::string& hostname,
+        AddressFamily address_family,
+        HostResolverFlags host_resolver_flags,
+        HostResolverSource host_resolver_source = HostResolverSource::ANY)
         : hostname(hostname),
           address_family(address_family),
-          host_resolver_flags(host_resolver_flags) {}
+          host_resolver_flags(host_resolver_flags),
+          host_resolver_source(host_resolver_source) {}
 
     Key()
-        : address_family(ADDRESS_FAMILY_UNSPECIFIED), host_resolver_flags(0) {}
+        : address_family(ADDRESS_FAMILY_UNSPECIFIED),
+          host_resolver_flags(0),
+          host_resolver_source(HostResolverSource::ANY) {}
 
     bool operator<(const Key& other) const {
       // The order of comparisons of |Key| fields is arbitrary, thus
       // |address_family| and |host_resolver_flags| are compared before
       // |hostname| under assumption that integer comparisons are faster than
       // string comparisons.
-      return std::tie(address_family, host_resolver_flags, hostname) <
+      return std::tie(address_family, host_resolver_flags, hostname,
+                      host_resolver_source) <
              std::tie(other.address_family, other.host_resolver_flags,
-                      other.hostname);
+                      other.hostname, other.host_resolver_source);
     }
 
     std::string hostname;
     AddressFamily address_family;
     HostResolverFlags host_resolver_flags;
+    HostResolverSource host_resolver_source;
   };
 
   struct NET_EXPORT EntryStaleness {
@@ -154,7 +163,6 @@ class NET_EXPORT HostCache {
   };
 
   using EntryMap = std::map<Key, Entry>;
-  using EvictionCallback = base::Callback<void(const Key&, const Entry&)>;
 
   // Constructs a HostCache that stores up to |max_entries|.
   explicit HostCache(size_t max_entries);
@@ -180,14 +188,24 @@ class NET_EXPORT HostCache {
            base::TimeTicks now,
            base::TimeDelta ttl);
 
+  // Checks whether an entry exists for |hostname|.
+  // If so, returns true and writes the source (e.g. DNS, HOSTS file, etc.) to
+  // |source_out| and the staleness to |stale_out| (if they are not null).
+  // It tries using two common address_family and host_resolver_flag
+  // combinations when performing lookups in the cache; this means false
+  // negatives are possible, but unlikely.
+  bool HasEntry(base::StringPiece hostname,
+                HostCache::Entry::Source* source_out,
+                HostCache::EntryStaleness* stale_out);
+
   // Marks all entries as stale on account of a network change.
   void OnNetworkChange();
 
-  void set_eviction_callback(const EvictionCallback& callback) {
-    eviction_callback_ = callback;
-  }
-
   void set_persistence_delegate(PersistenceDelegate* delegate);
+
+  void set_tick_clock_for_testing(const base::TickClock* tick_clock) {
+    tick_clock_ = tick_clock;
+  }
 
   // Empties the cache.
   void clear();
@@ -254,12 +272,13 @@ class NET_EXPORT HostCache {
   EntryMap entries_;
   size_t max_entries_;
   int network_changes_;
-  EvictionCallback eviction_callback_;
   // Number of cache entries that were restored in the last call to
   // RestoreFromListValue(). Used in histograms.
   size_t restore_size_;
 
   PersistenceDelegate* delegate_;
+  // Shared tick clock, overridden for testing.
+  const base::TickClock* tick_clock_;
 
   THREAD_CHECKER(thread_checker_);
 

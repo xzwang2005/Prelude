@@ -23,8 +23,189 @@
 #include <GLES2/gl2.h>
 #include <GLES2/gl2ext.h>
 #include <GLES3/gl3.h>
+#include <GL/glcorearb.h>
+#include <GL/glext.h>
 
 #include <stdlib.h>
+
+namespace
+{
+	GLenum glVariableType(const TType &type)
+	{
+		switch(type.getBasicType())
+		{
+		case EbtFloat:
+			if(type.isScalar())
+			{
+				return GL_FLOAT;
+			}
+			else if(type.isVector())
+			{
+				switch(type.getNominalSize())
+				{
+				case 2: return GL_FLOAT_VEC2;
+				case 3: return GL_FLOAT_VEC3;
+				case 4: return GL_FLOAT_VEC4;
+				default: UNREACHABLE(type.getNominalSize());
+				}
+			}
+			else if(type.isMatrix())
+			{
+				switch(type.getNominalSize())
+				{
+				case 2:
+					switch(type.getSecondarySize())
+					{
+					case 2: return GL_FLOAT_MAT2;
+					case 3: return GL_FLOAT_MAT2x3;
+					case 4: return GL_FLOAT_MAT2x4;
+					default: UNREACHABLE(type.getSecondarySize());
+					}
+				case 3:
+					switch(type.getSecondarySize())
+					{
+					case 2: return GL_FLOAT_MAT3x2;
+					case 3: return GL_FLOAT_MAT3;
+					case 4: return GL_FLOAT_MAT3x4;
+					default: UNREACHABLE(type.getSecondarySize());
+					}
+				case 4:
+					switch(type.getSecondarySize())
+					{
+					case 2: return GL_FLOAT_MAT4x2;
+					case 3: return GL_FLOAT_MAT4x3;
+					case 4: return GL_FLOAT_MAT4;
+					default: UNREACHABLE(type.getSecondarySize());
+					}
+				default: UNREACHABLE(type.getNominalSize());
+				}
+			}
+			else UNREACHABLE(0);
+			break;
+		case EbtInt:
+			if(type.isScalar())
+			{
+				return GL_INT;
+			}
+			else if(type.isVector())
+			{
+				switch(type.getNominalSize())
+				{
+				case 2: return GL_INT_VEC2;
+				case 3: return GL_INT_VEC3;
+				case 4: return GL_INT_VEC4;
+				default: UNREACHABLE(type.getNominalSize());
+				}
+			}
+			else UNREACHABLE(0);
+			break;
+		case EbtUInt:
+			if(type.isScalar())
+			{
+				return GL_UNSIGNED_INT;
+			}
+			else if(type.isVector())
+			{
+				switch(type.getNominalSize())
+				{
+				case 2: return GL_UNSIGNED_INT_VEC2;
+				case 3: return GL_UNSIGNED_INT_VEC3;
+				case 4: return GL_UNSIGNED_INT_VEC4;
+				default: UNREACHABLE(type.getNominalSize());
+				}
+			}
+			else UNREACHABLE(0);
+			break;
+		case EbtBool:
+			if(type.isScalar())
+			{
+				return GL_BOOL;
+			}
+			else if(type.isVector())
+			{
+				switch(type.getNominalSize())
+				{
+				case 2: return GL_BOOL_VEC2;
+				case 3: return GL_BOOL_VEC3;
+				case 4: return GL_BOOL_VEC4;
+				default: UNREACHABLE(type.getNominalSize());
+				}
+			}
+			else UNREACHABLE(0);
+			break;
+		case EbtSampler2D:
+			return GL_SAMPLER_2D;
+		case EbtISampler2D:
+			return GL_INT_SAMPLER_2D;
+		case EbtUSampler2D:
+			return GL_UNSIGNED_INT_SAMPLER_2D;
+		case EbtSamplerCube:
+			return GL_SAMPLER_CUBE;
+		case EbtSampler2DRect:
+			return GL_SAMPLER_2D_RECT_ARB;
+		case EbtISamplerCube:
+			return GL_INT_SAMPLER_CUBE;
+		case EbtUSamplerCube:
+			return GL_UNSIGNED_INT_SAMPLER_CUBE;
+		case EbtSamplerExternalOES:
+			return GL_SAMPLER_EXTERNAL_OES;
+		case EbtSampler3D:
+			return GL_SAMPLER_3D_OES;
+		case EbtISampler3D:
+			return GL_INT_SAMPLER_3D;
+		case EbtUSampler3D:
+			return GL_UNSIGNED_INT_SAMPLER_3D;
+		case EbtSampler2DArray:
+			return GL_SAMPLER_2D_ARRAY;
+		case EbtISampler2DArray:
+			return GL_INT_SAMPLER_2D_ARRAY;
+		case EbtUSampler2DArray:
+			return GL_UNSIGNED_INT_SAMPLER_2D_ARRAY;
+		case EbtSampler2DShadow:
+			return GL_SAMPLER_2D_SHADOW;
+		case EbtSamplerCubeShadow:
+			return GL_SAMPLER_CUBE_SHADOW;
+		case EbtSampler2DArrayShadow:
+			return GL_SAMPLER_2D_ARRAY_SHADOW;
+		default:
+			UNREACHABLE(type.getBasicType());
+			break;
+		}
+
+		return GL_NONE;
+	}
+
+	GLenum glVariablePrecision(const TType &type)
+	{
+		if(type.getBasicType() == EbtFloat)
+		{
+			switch(type.getPrecision())
+			{
+			case EbpHigh:   return GL_HIGH_FLOAT;
+			case EbpMedium: return GL_MEDIUM_FLOAT;
+			case EbpLow:    return GL_LOW_FLOAT;
+			case EbpUndefined:
+				// Should be defined as the default precision by the parser
+			default: UNREACHABLE(type.getPrecision());
+			}
+		}
+		else if(type.getBasicType() == EbtInt)
+		{
+			switch(type.getPrecision())
+			{
+			case EbpHigh:   return GL_HIGH_INT;
+			case EbpMedium: return GL_MEDIUM_INT;
+			case EbpLow:    return GL_LOW_INT;
+			case EbpUndefined:
+				// Should be defined as the default precision by the parser
+			default: UNREACHABLE(type.getPrecision());
+			}
+		}
+
+		// Other types (boolean, sampler) don't have a precision
+		return GL_NONE;
+	}
+}
 
 namespace glsl
 {
@@ -81,8 +262,21 @@ namespace glsl
 		ConstantUnion constants[4];
 	};
 
-	Uniform::Uniform(GLenum type, GLenum precision, const std::string &name, int arraySize, int registerIndex, int blockId, const BlockMemberInfo& blockMemberInfo) :
-		type(type), precision(precision), name(name), arraySize(arraySize), registerIndex(registerIndex), blockId(blockId), blockInfo(blockMemberInfo)
+	ShaderVariable::ShaderVariable(const TType& type, const std::string& name, int registerIndex) :
+		type(type.isStruct() ? GL_NONE : glVariableType(type)), precision(glVariablePrecision(type)),
+		name(name), arraySize(type.getArraySize()), registerIndex(registerIndex)
+	{
+		if(type.isStruct())
+		{
+			for(const auto& field : type.getStruct()->fields())
+			{
+				fields.push_back(ShaderVariable(*(field->type()), field->name().c_str(), -1));
+			}
+		}
+	}
+
+	Uniform::Uniform(const TType& type, const std::string &name, int registerIndex, int blockId, const BlockMemberInfo& blockMemberInfo) :
+		ShaderVariable(type, name, registerIndex), blockId(blockId), blockInfo(blockMemberInfo)
 	{
 	}
 
@@ -93,8 +287,8 @@ namespace glsl
 	{
 	}
 
-	BlockLayoutEncoder::BlockLayoutEncoder(bool rowMajor)
-		: mCurrentOffset(0), isRowMajor(rowMajor)
+	BlockLayoutEncoder::BlockLayoutEncoder()
+		: mCurrentOffset(0)
 	{
 	}
 
@@ -103,6 +297,7 @@ namespace glsl
 		int arrayStride;
 		int matrixStride;
 
+		bool isRowMajor = type.getLayoutQualifier().matrixPacking == EmpRowMajor;
 		getBlockLayoutInfo(type, type.getArraySize(), isRowMajor, &arrayStride, &matrixStride);
 
 		const BlockMemberInfo memberInfo(static_cast<int>(mCurrentOffset * BytesPerComponent),
@@ -132,7 +327,7 @@ namespace glsl
 		mCurrentOffset = sw::align(mCurrentOffset, ComponentsPerRegister);
 	}
 
-	Std140BlockEncoder::Std140BlockEncoder(bool rowMajor) : BlockLayoutEncoder(rowMajor)
+	Std140BlockEncoder::Std140BlockEncoder() : BlockLayoutEncoder()
 	{
 	}
 
@@ -205,34 +400,34 @@ namespace glsl
 		registerIndex = 0;
 	}
 
-	Attribute::Attribute(GLenum type, const std::string &name, int arraySize, int location, int registerIndex)
+	Attribute::Attribute(GLenum type, const std::string &name, int arraySize, int layoutLocation, int registerIndex)
 	{
 		this->type = type;
 		this->name = name;
 		this->arraySize = arraySize;
-		this->location = location;
+		this->layoutLocation = layoutLocation;
 		this->registerIndex = registerIndex;
 	}
 
 	sw::PixelShader *Shader::getPixelShader() const
 	{
-		return 0;
+		return nullptr;
 	}
 
 	sw::VertexShader *Shader::getVertexShader() const
 	{
-		return 0;
+		return nullptr;
 	}
 
 	OutputASM::TextureFunction::TextureFunction(const TString& nodeName) : method(IMPLICIT), proj(false), offset(false)
 	{
 		TString name = TFunction::unmangleName(nodeName);
 
-		if(name == "texture2D" || name == "textureCube" || name == "texture" || name == "texture3D")
+		if(name == "texture2D" || name == "textureCube" || name == "texture" || name == "texture3D" || name == "texture2DRect")
 		{
 			method = IMPLICIT;
 		}
-		else if(name == "texture2DProj" || name == "textureProj")
+		else if(name == "texture2DProj" || name == "textureProj" || name == "texture2DRectProj")
 		{
 			method = IMPLICIT;
 			proj = true;
@@ -306,9 +501,9 @@ namespace glsl
 
 	OutputASM::OutputASM(TParseContext &context, Shader *shaderObject) : TIntermTraverser(true, true, true), shaderObject(shaderObject), mContext(context)
 	{
-		shader = 0;
-		pixelShader = 0;
-		vertexShader = 0;
+		shader = nullptr;
+		pixelShader = nullptr;
+		vertexShader = nullptr;
 
 		if(shaderObject)
 		{
@@ -317,9 +512,9 @@ namespace glsl
 			vertexShader = shaderObject->getVertexShader();
 		}
 
-		functionArray.push_back(Function(0, "main(", 0, 0));
+		functionArray.push_back(Function(0, "main(", nullptr, nullptr));
 		currentFunction = 0;
-		outputQualifier = EvqOutput; // Set outputQualifier to any value other than EvqFragColor or EvqFragData
+		outputQualifier = EvqOutput;   // Initialize outputQualifier to any value other than EvqFragColor or EvqFragData
 	}
 
 	OutputASM::~OutputASM()
@@ -465,14 +660,26 @@ namespace glsl
 
 	void OutputASM::visitSymbol(TIntermSymbol *symbol)
 	{
-		// Vertex varyings don't have to be actively used to successfully link
-		// against pixel shaders that use them. So make sure they're declared.
-		if(symbol->getQualifier() == EvqVaryingOut || symbol->getQualifier() == EvqInvariantVaryingOut || symbol->getQualifier() == EvqVertexOut)
+		// The type of vertex outputs and fragment inputs with the same name must match (validated at link time),
+		// so declare them but don't assign a register index yet (one will be assigned when referenced in reachable code).
+		switch(symbol->getQualifier())
 		{
+		case EvqVaryingIn:
+		case EvqVaryingOut:
+		case EvqInvariantVaryingIn:
+		case EvqInvariantVaryingOut:
+		case EvqVertexOut:
+		case EvqFragmentIn:
 			if(symbol->getBasicType() != EbtInvariant)   // Typeless declarations are not new varyings
 			{
 				declareVarying(symbol, -1);
 			}
+			break;
+		case EvqFragmentOut:
+			declareFragmentOutput(symbol);
+			break;
+		default:
+			break;
 		}
 
 		TInterfaceBlock* block = symbol->getType().getInterfaceBlock();
@@ -514,8 +721,19 @@ namespace glsl
 			return false;
 		case EOpInitialize:
 			assert(visit == PreVisit);
-			right->traverse(this);
-			copy(left, right);
+			// Constant arrays go into the constant register file.
+			if(leftType.getQualifier() == EvqConstExpr && leftType.isArray() && leftType.getArraySize() > 1)
+			{
+				for(int i = 0; i < left->totalRegisterCount(); i++)
+				{
+					emit(sw::Shader::OPCODE_DEF, left, i, right, i);
+				}
+			}
+			else
+			{
+				right->traverse(this);
+				copy(left, right);
+			}
 			return false;
 		case EOpMatrixTimesScalarAssign:
 			assert(visit == PreVisit);
@@ -1292,6 +1510,23 @@ namespace glsl
 
 						component += size;
 					}
+					else if(!result->isMatrix()) // Construct a non matrix from a matrix
+					{
+						Instruction *mov = emitCast(result, arrayIndex, argi, 0);
+						mov->dst.mask = (0xF << swizzle) & 0xF;
+						mov->src[0].swizzle = readSwizzle(argi, size) << (swizzle * 2);
+
+						// At most one more instruction when constructing a vec3 from a mat2 or a vec4 from a mat2/mat3
+						if(result->getNominalSize() > size)
+						{
+							Instruction *mov = emitCast(result, arrayIndex, argi, 1);
+							mov->dst.mask = (0xF << (swizzle + size)) & 0xF;
+							// mat2: xxxy (0x40), mat3: xxxx (0x00)
+							mov->src[0].swizzle = ((size == 2) ? 0x40 : 0x00) << (swizzle * 2);
+						}
+
+						component += size;
+					}
 					else   // Matrix
 					{
 						int column = 0;
@@ -1433,7 +1668,19 @@ namespace glsl
 				emit(getOpcode(sw::Shader::OPCODE_MIN, result), result, result, arg[2]);
 			}
 			break;
-		case EOpMix:         if(visit == PostVisit) emit(sw::Shader::OPCODE_LRP, result, arg[2], arg[1], arg[0]); break;
+		case EOpMix:
+			if(visit == PostVisit)
+			{
+				if(arg[2]->getAsTyped()->getBasicType() == EbtBool)
+				{
+					emit(sw::Shader::OPCODE_SELECT, result, arg[2], arg[1], arg[0]);
+				}
+				else
+				{
+					emit(sw::Shader::OPCODE_LRP, result, arg[2], arg[1], arg[0]);
+				}
+			}
+			break;
 		case EOpStep:        if(visit == PostVisit) emit(sw::Shader::OPCODE_STEP, result, arg[0], arg[1]); break;
 		case EOpSmoothStep:  if(visit == PostVisit) emit(sw::Shader::OPCODE_SMOOTH, result, arg[0], arg[1], arg[2]); break;
 		case EOpDistance:    if(visit == PostVisit) emit(sw::Shader::OPCODE_DIST(dim(arg[0])), result, arg[0], arg[1]); break;
@@ -1579,20 +1826,19 @@ namespace glsl
 			return false;
 		}
 
-		unsigned int iterations = loopCount(node);
+		LoopInfo loop(node);
 
-		if(iterations == 0)
+		if(loop.iterations == 0)
 		{
 			return false;
 		}
 
-		bool unroll = (iterations <= 4);
-
-		if(unroll)
+		if(loop.isDeterministic())
 		{
-			LoopUnrollable loopUnrollable;
-			unroll = loopUnrollable.traverse(node);
+			 deterministicVariables.insert(loop.index->getId());
 		}
+
+		bool unroll = (loop.iterations <= 4);
 
 		TIntermNode *init = node->getInit();
 		TIntermTyped *condition = node->getCondition();
@@ -1628,7 +1874,9 @@ namespace glsl
 
 			if(unroll)
 			{
-				for(unsigned int i = 0; i < iterations; i++)
+				mContext.info(node->getLine(), "loop unrolled", "for");
+
+				for(unsigned int i = 0; i < loop.iterations; i++)
 				{
 				//	condition->traverse(this);   // Condition could contain statements, but not in an unrollable loop
 
@@ -1675,6 +1923,11 @@ namespace glsl
 
 				emit(sw::Shader::OPCODE_ENDWHILE);
 			}
+		}
+
+		if(loop.isDeterministic())
+		{
+			 deterministicVariables.erase(loop.index->getId());
 		}
 
 		return false;
@@ -1755,10 +2008,16 @@ namespace glsl
 					emit(sw::Shader::OPCODE_IF, 0, &result);
 					nbCases++;
 
+					// Emit the code for this case and all subsequent cases until we hit a break statement.
+					// TODO: This can repeat a lot of code for switches with many fall-through cases.
 					for(++caseIt; caseIt != sequence.end(); ++caseIt)
 					{
 						(*caseIt)->traverse(this);
-						if((*caseIt)->getAsBranchNode()) // Kill, Break, Continue or Return
+
+						// Stop if we encounter an unconditional branch (break, continue, return, or kill).
+						// TODO: This doesn't work if the statement is at a deeper scope level (e.g. {break;}).
+						// Note that this eliminates useless operations but shouldn't affect correctness.
+						if((*caseIt)->getAsBranchNode())
 						{
 							break;
 						}
@@ -1935,9 +2194,9 @@ namespace glsl
 			const TFieldList& fields = type.getStruct() ? type.getStruct()->fields() : type.getInterfaceBlock()->fields();
 			int elements = 0;
 
-			for(TFieldList::const_iterator field = fields.begin(); field != fields.end(); field++)
+			for(const auto &field : fields)
 			{
-				const TType &fieldType = *((*field)->type());
+				const TType &fieldType = *(field->type());
 
 				if(fieldType.totalRegisterCount() <= registers)
 				{
@@ -1987,9 +2246,9 @@ namespace glsl
 			const TFieldList& fields = type.getStruct() ? type.getStruct()->fields() : type.getInterfaceBlock()->fields();
 			int elements = 0;
 
-			for(TFieldList::const_iterator field = fields.begin(); field != fields.end(); field++)
+			for(const auto &field : fields)
 			{
-				const TType &fieldType = *((*field)->type());
+				const TType &fieldType = *(field->type());
 
 				if(fieldType.totalRegisterCount() <= registers)
 				{
@@ -2125,7 +2384,7 @@ namespace glsl
 					arg = &unpackedUniform;
 					index = 0;
 				}
-				else if((srcBlock->matrixPacking() == EmpRowMajor) && memberType.isMatrix())
+				else if((memberType.getLayoutQualifier().matrixPacking == EmpRowMajor) && memberType.isMatrix())
 				{
 					int numCols = memberType.getNominalSize();
 					int numRows = memberType.getSecondarySize();
@@ -2406,10 +2665,12 @@ namespace glsl
 								sw::Shader::SourceParameter relativeRegister;
 								source(relativeRegister, right);
 
+								int indexId = right->getAsSymbolNode() ? right->getAsSymbolNode()->getId() : 0;
+
 								rel.index = relativeRegister.index;
 								rel.type = relativeRegister.type;
 								rel.scale = scale;
-								rel.deterministic = !(vertexShader && left->getQualifier() == EvqUniform);
+								rel.dynamic = (right->getQualifier() != EvqUniform) && (deterministicVariables.count(indexId) == 0);
 							}
 						}
 						else if(rel.index != registerIndex(&address))   // Move the previous index register to the address register
@@ -2544,7 +2805,15 @@ namespace glsl
 
 		if(qualifier == EvqConstExpr && (!operand->getAsConstantUnion() || !operand->getAsConstantUnion()->getUnionArrayPointer()))
 		{
-			return sw::Shader::PARAMETER_TEMP;
+			// Constant arrays are in the constant register file.
+			if(operand->isArray() && operand->getArraySize() > 1)
+			{
+				return sw::Shader::PARAMETER_CONST;
+			}
+			else
+			{
+				return sw::Shader::PARAMETER_TEMP;
+			}
 		}
 
 		switch(qualifier)
@@ -2599,6 +2868,10 @@ namespace glsl
 		if(isSamplerRegister(operand))
 		{
 			return samplerRegister(operand);
+		}
+		else if(operand->getType().totalSamplerRegisterCount() > 0) // Struct containing a sampler
+		{
+			samplerRegister(operand); // Make sure the sampler is declared
 		}
 
 		switch(operand->getQualifier())
@@ -2772,7 +3045,14 @@ namespace glsl
 
 	int OutputASM::temporaryRegister(TIntermTyped *temporary)
 	{
-		return allocate(temporaries, temporary);
+		int index = allocate(temporaries, temporary);
+		if(index >= sw::NUM_TEMPORARY_REGISTERS)
+		{
+			mContext.error(temporary->getLine(),
+				"Too many temporary registers required to compile shader",
+				pixelShader ? "pixel shader" : "vertex shader");
+		}
+		return index;
 	}
 
 	void OutputASM::setPixelShaderInputs(const TType& type, int var, bool flat)
@@ -2781,9 +3061,9 @@ namespace glsl
 		{
 			const TFieldList &fields = type.getStruct()->fields();
 			int fieldVar = var;
-			for(size_t i = 0; i < fields.size(); i++)
+			for(const auto &field : fields)
 			{
-				const TType& fieldType = *(fields[i]->type());
+				const TType& fieldType = *(field->type());
 				setPixelShaderInputs(fieldType, fieldVar, flat);
 				fieldVar += fieldType.totalRegisterCount();
 			}
@@ -2875,10 +3155,10 @@ namespace glsl
 			int fieldRegisterIndex = registerIndex;
 
 			const TFieldList &fields = type.getStruct()->fields();
-			for(size_t i = 0; i < fields.size(); i++)
+			for(const auto &field : fields)
 			{
-				const TType& fieldType = *(fields[i]->type());
-				declareVarying(fieldType, varyingName + "." + fields[i]->name(), fieldRegisterIndex);
+				const TType& fieldType = *(field->type());
+				declareVarying(fieldType, varyingName + "." + field->name(), fieldRegisterIndex);
 				if(fieldRegisterIndex >= 0)
 				{
 					fieldRegisterIndex += fieldType.totalRegisterCount();
@@ -2894,15 +3174,70 @@ namespace glsl
 				{
 					if(registerIndex >= 0)
 					{
-						ASSERT(v->reg < 0 || v->reg == registerIndex);
-						v->reg = registerIndex;
+						ASSERT(v->registerIndex < 0 || v->registerIndex == registerIndex);
+						v->registerIndex = registerIndex;
 					}
 
 					return;
 				}
 			}
 
-			activeVaryings.push_back(glsl::Varying(glVariableType(type), name, type.getArraySize(), registerIndex, 0));
+			activeVaryings.push_back(glsl::Varying(type, name, registerIndex, 0));
+		}
+	}
+
+	void OutputASM::declareFragmentOutput(TIntermTyped *fragmentOutput)
+	{
+		int requestedLocation = fragmentOutput->getType().getLayoutQualifier().location;
+		int registerCount = fragmentOutput->totalRegisterCount();
+		if(requestedLocation < 0)
+		{
+			ASSERT(requestedLocation == -1); // All other negative values would have been prevented in TParseContext::parseLayoutQualifier
+			return; // No requested location
+		}
+		else if((requestedLocation + registerCount) > sw::RENDERTARGETS)
+		{
+			mContext.error(fragmentOutput->getLine(), "Fragment output location larger or equal to MAX_DRAW_BUFFERS", "fragment shader");
+		}
+		else
+		{
+			int currentIndex = lookup(fragmentOutputs, fragmentOutput);
+			if(requestedLocation != currentIndex)
+			{
+				if(currentIndex != -1)
+				{
+					mContext.error(fragmentOutput->getLine(), "Multiple locations for fragment output", "fragment shader");
+				}
+				else
+				{
+					if(fragmentOutputs.size() <= (size_t)requestedLocation)
+					{
+						while(fragmentOutputs.size() < (size_t)requestedLocation)
+						{
+							fragmentOutputs.push_back(nullptr);
+						}
+						for(int i = 0; i < registerCount; i++)
+						{
+							fragmentOutputs.push_back(fragmentOutput);
+						}
+					}
+					else
+					{
+						for(int i = 0; i < registerCount; i++)
+						{
+							if(!fragmentOutputs[requestedLocation + i])
+							{
+								fragmentOutputs[requestedLocation + i] = fragmentOutput;
+							}
+							else
+							{
+								mContext.error(fragmentOutput->getLine(), "Fragment output location aliasing", "fragment shader");
+								return;
+							}
+						}
+					}
+				}
+			}
 		}
 	}
 
@@ -2932,7 +3267,7 @@ namespace glsl
 				int blockMemberIndex = blockMemberLookup(type, name, index);
 				if(blockMemberIndex == -1)
 				{
-					declareUniform(type, name, index);
+					declareUniform(type, name, index, false);
 				}
 				else
 				{
@@ -3033,7 +3368,7 @@ namespace glsl
 			{
 			case EOpIndexDirect:
 				ASSERT(left->isArray());
-				offset = index * leftType.elementRegisterCount();
+				offset = index * leftType.samplerRegisterCount();
 				break;
 			case EOpIndexDirectStruct:
 				ASSERT(leftType.isStruct());
@@ -3042,7 +3377,7 @@ namespace glsl
 
 					for(int i = 0; i < index; i++)
 					{
-						offset += fields[i]->type()->totalRegisterCount();
+						offset += fields[i]->type()->totalSamplerRegisterCount();
 					}
 				}
 				break;
@@ -3077,12 +3412,12 @@ namespace glsl
 
 		if(index == -1)
 		{
-			index = allocate(samplers, sampler);
+			index = allocate(samplers, sampler, true);
 
 			if(sampler->getQualifier() == EvqUniform)
 			{
 				const char *name = sampler->getSymbol().c_str();
-				declareUniform(type, name, index);
+				declareUniform(type, name, index, true);
 			}
 		}
 
@@ -3168,13 +3503,13 @@ namespace glsl
 		return -1;
 	}
 
-	int OutputASM::allocate(VariableArray &list, TIntermTyped *variable)
+	int OutputASM::allocate(VariableArray &list, TIntermTyped *variable, bool samplersOnly)
 	{
 		int index = lookup(list, variable);
 
 		if(index == -1)
 		{
-			unsigned int registerCount = variable->blockRegisterCount();
+			unsigned int registerCount = variable->blockRegisterCount(samplersOnly);
 
 			for(unsigned int i = 0; i < list.size(); i++)
 			{
@@ -3262,7 +3597,7 @@ namespace glsl
 		return -1;
 	}
 
-	void OutputASM::declareUniform(const TType &type, const TString &name, int registerIndex, int blockId, BlockLayoutEncoder* encoder)
+	void OutputASM::declareUniform(const TType &type, const TString &name, int registerIndex, bool samplersOnly, int blockId, BlockLayoutEncoder* encoder)
 	{
 		const TStructure *structure = type.getStruct();
 		const TInterfaceBlock *block = (type.isInterfaceBlock() || (blockId == -1)) ? type.getInterfaceBlock() : nullptr;
@@ -3273,18 +3608,21 @@ namespace glsl
 			const BlockMemberInfo blockInfo = encoder ? encoder->encodeType(type) : BlockMemberInfo::getDefaultBlockInfo();
 			if(blockId >= 0)
 			{
-				blockDefinitions[blockId][registerIndex] = TypedMemberInfo(blockInfo, type);
+				blockDefinitions[blockId].insert(BlockDefinitionIndexMap::value_type(registerIndex, TypedMemberInfo(blockInfo, type)));
 				shaderObject->activeUniformBlocks[blockId].fields.push_back(activeUniforms.size());
 			}
 			int fieldRegisterIndex = encoder ? shaderObject->activeUniformBlocks[blockId].registerIndex + BlockLayoutEncoder::getBlockRegister(blockInfo) : registerIndex;
-			activeUniforms.push_back(Uniform(glVariableType(type), glVariablePrecision(type), name.c_str(), type.getArraySize(),
-			                                 fieldRegisterIndex, blockId, blockInfo));
-			if(IsSampler(type.getBasicType()))
+			bool isSampler = IsSampler(type.getBasicType());
+			if(isSampler && samplersOnly)
 			{
 				for(int i = 0; i < type.totalRegisterCount(); i++)
 				{
 					shader->declareSampler(fieldRegisterIndex + i);
 				}
+			}
+			if(isSampler == samplersOnly)
+			{
+				activeUniforms.push_back(Uniform(type, name.c_str(), fieldRegisterIndex, blockId, blockInfo));
 			}
 		}
 		else if(block)
@@ -3301,12 +3639,12 @@ namespace glsl
 			                                           block->blockStorage(), isRowMajor, registerIndex, blockId));
 			blockDefinitions.push_back(BlockDefinitionIndexMap());
 
-			Std140BlockEncoder currentBlockEncoder(isRowMajor);
+			Std140BlockEncoder currentBlockEncoder;
 			currentBlockEncoder.enterAggregateType();
-			for(size_t i = 0; i < fields.size(); i++)
+			for(const auto &field : fields)
 			{
-				const TType &fieldType = *(fields[i]->type());
-				const TString &fieldName = fields[i]->name();
+				const TType &fieldType = *(field->type());
+				const TString &fieldName = field->name();
 				if(isUniformBlockMember && (fieldName == name))
 				{
 					registerIndex = fieldRegisterIndex;
@@ -3314,7 +3652,7 @@ namespace glsl
 
 				const TString uniformName = block->hasInstanceName() ? blockName + "." + fieldName : fieldName;
 
-				declareUniform(fieldType, uniformName, fieldRegisterIndex, blockId, &currentBlockEncoder);
+				declareUniform(fieldType, uniformName, fieldRegisterIndex, samplersOnly, blockId, &currentBlockEncoder);
 				fieldRegisterIndex += fieldType.totalRegisterCount();
 			}
 			currentBlockEncoder.exitAggregateType();
@@ -3322,6 +3660,9 @@ namespace glsl
 		}
 		else
 		{
+			// Store struct for program link time validation
+			shaderObject->activeUniformStructs.push_back(Uniform(type, name.c_str(), registerIndex, -1, BlockMemberInfo::getDefaultBlockInfo()));
+
 			int fieldRegisterIndex = registerIndex;
 
 			const TFieldList& fields = structure->fields();
@@ -3333,14 +3674,14 @@ namespace glsl
 					{
 						encoder->enterAggregateType();
 					}
-					for(size_t j = 0; j < fields.size(); j++)
+					for(const auto &field : fields)
 					{
-						const TType &fieldType = *(fields[j]->type());
-						const TString &fieldName = fields[j]->name();
+						const TType &fieldType = *(field->type());
+						const TString &fieldName = field->name();
 						const TString uniformName = name + "[" + str(i) + "]." + fieldName;
 
-						declareUniform(fieldType, uniformName, fieldRegisterIndex, blockId, encoder);
-						fieldRegisterIndex += fieldType.totalRegisterCount();
+						declareUniform(fieldType, uniformName, fieldRegisterIndex, samplersOnly, blockId, encoder);
+						fieldRegisterIndex += samplersOnly ? fieldType.totalSamplerRegisterCount() : fieldType.totalRegisterCount();
 					}
 					if(encoder)
 					{
@@ -3354,14 +3695,14 @@ namespace glsl
 				{
 					encoder->enterAggregateType();
 				}
-				for(size_t i = 0; i < fields.size(); i++)
+				for(const auto &field : fields)
 				{
-					const TType &fieldType = *(fields[i]->type());
-					const TString &fieldName = fields[i]->name();
+					const TType &fieldType = *(field->type());
+					const TString &fieldName = field->name();
 					const TString uniformName = name + "." + fieldName;
 
-					declareUniform(fieldType, uniformName, fieldRegisterIndex, blockId, encoder);
-					fieldRegisterIndex += fieldType.totalRegisterCount();
+					declareUniform(fieldType, uniformName, fieldRegisterIndex, samplersOnly, blockId, encoder);
+					fieldRegisterIndex += samplersOnly ? fieldType.totalSamplerRegisterCount() : fieldType.totalRegisterCount();
 				}
 				if(encoder)
 				{
@@ -3369,180 +3710,6 @@ namespace glsl
 				}
 			}
 		}
-	}
-
-	GLenum OutputASM::glVariableType(const TType &type)
-	{
-		switch(type.getBasicType())
-		{
-		case EbtFloat:
-			if(type.isScalar())
-			{
-				return GL_FLOAT;
-			}
-			else if(type.isVector())
-			{
-				switch(type.getNominalSize())
-				{
-				case 2: return GL_FLOAT_VEC2;
-				case 3: return GL_FLOAT_VEC3;
-				case 4: return GL_FLOAT_VEC4;
-				default: UNREACHABLE(type.getNominalSize());
-				}
-			}
-			else if(type.isMatrix())
-			{
-				switch(type.getNominalSize())
-				{
-				case 2:
-					switch(type.getSecondarySize())
-					{
-					case 2: return GL_FLOAT_MAT2;
-					case 3: return GL_FLOAT_MAT2x3;
-					case 4: return GL_FLOAT_MAT2x4;
-					default: UNREACHABLE(type.getSecondarySize());
-					}
-				case 3:
-					switch(type.getSecondarySize())
-					{
-					case 2: return GL_FLOAT_MAT3x2;
-					case 3: return GL_FLOAT_MAT3;
-					case 4: return GL_FLOAT_MAT3x4;
-					default: UNREACHABLE(type.getSecondarySize());
-					}
-				case 4:
-					switch(type.getSecondarySize())
-					{
-					case 2: return GL_FLOAT_MAT4x2;
-					case 3: return GL_FLOAT_MAT4x3;
-					case 4: return GL_FLOAT_MAT4;
-					default: UNREACHABLE(type.getSecondarySize());
-					}
-				default: UNREACHABLE(type.getNominalSize());
-				}
-			}
-			else UNREACHABLE(0);
-			break;
-		case EbtInt:
-			if(type.isScalar())
-			{
-				return GL_INT;
-			}
-			else if(type.isVector())
-			{
-				switch(type.getNominalSize())
-				{
-				case 2: return GL_INT_VEC2;
-				case 3: return GL_INT_VEC3;
-				case 4: return GL_INT_VEC4;
-				default: UNREACHABLE(type.getNominalSize());
-				}
-			}
-			else UNREACHABLE(0);
-			break;
-		case EbtUInt:
-			if(type.isScalar())
-			{
-				return GL_UNSIGNED_INT;
-			}
-			else if(type.isVector())
-			{
-				switch(type.getNominalSize())
-				{
-				case 2: return GL_UNSIGNED_INT_VEC2;
-				case 3: return GL_UNSIGNED_INT_VEC3;
-				case 4: return GL_UNSIGNED_INT_VEC4;
-				default: UNREACHABLE(type.getNominalSize());
-				}
-			}
-			else UNREACHABLE(0);
-			break;
-		case EbtBool:
-			if(type.isScalar())
-			{
-				return GL_BOOL;
-			}
-			else if(type.isVector())
-			{
-				switch(type.getNominalSize())
-				{
-				case 2: return GL_BOOL_VEC2;
-				case 3: return GL_BOOL_VEC3;
-				case 4: return GL_BOOL_VEC4;
-				default: UNREACHABLE(type.getNominalSize());
-				}
-			}
-			else UNREACHABLE(0);
-			break;
-		case EbtSampler2D:
-			return GL_SAMPLER_2D;
-		case EbtISampler2D:
-			return GL_INT_SAMPLER_2D;
-		case EbtUSampler2D:
-			return GL_UNSIGNED_INT_SAMPLER_2D;
-		case EbtSamplerCube:
-			return GL_SAMPLER_CUBE;
-		case EbtISamplerCube:
-			return GL_INT_SAMPLER_CUBE;
-		case EbtUSamplerCube:
-			return GL_UNSIGNED_INT_SAMPLER_CUBE;
-		case EbtSamplerExternalOES:
-			return GL_SAMPLER_EXTERNAL_OES;
-		case EbtSampler3D:
-			return GL_SAMPLER_3D_OES;
-		case EbtISampler3D:
-			return GL_INT_SAMPLER_3D;
-		case EbtUSampler3D:
-			return GL_UNSIGNED_INT_SAMPLER_3D;
-		case EbtSampler2DArray:
-			return GL_SAMPLER_2D_ARRAY;
-		case EbtISampler2DArray:
-			return GL_INT_SAMPLER_2D_ARRAY;
-		case EbtUSampler2DArray:
-			return GL_UNSIGNED_INT_SAMPLER_2D_ARRAY;
-		case EbtSampler2DShadow:
-			return GL_SAMPLER_2D_SHADOW;
-		case EbtSamplerCubeShadow:
-			return GL_SAMPLER_CUBE_SHADOW;
-		case EbtSampler2DArrayShadow:
-			return GL_SAMPLER_2D_ARRAY_SHADOW;
-		default:
-			UNREACHABLE(type.getBasicType());
-			break;
-		}
-
-		return GL_NONE;
-	}
-
-	GLenum OutputASM::glVariablePrecision(const TType &type)
-	{
-		if(type.getBasicType() == EbtFloat)
-		{
-			switch(type.getPrecision())
-			{
-			case EbpHigh:   return GL_HIGH_FLOAT;
-			case EbpMedium: return GL_MEDIUM_FLOAT;
-			case EbpLow:    return GL_LOW_FLOAT;
-			case EbpUndefined:
-				// Should be defined as the default precision by the parser
-			default: UNREACHABLE(type.getPrecision());
-			}
-		}
-		else if(type.getBasicType() == EbtInt)
-		{
-			switch(type.getPrecision())
-			{
-			case EbpHigh:   return GL_HIGH_INT;
-			case EbpMedium: return GL_MEDIUM_INT;
-			case EbpLow:    return GL_LOW_INT;
-			case EbpUndefined:
-				// Should be defined as the default precision by the parser
-			default: UNREACHABLE(type.getPrecision());
-			}
-		}
-
-		// Other types (boolean, sampler) don't have a precision
-		return GL_NONE;
 	}
 
 	int OutputASM::dim(TIntermNode *v)
@@ -3559,16 +3726,11 @@ namespace glsl
 		return matrix->getSecondarySize();
 	}
 
-	// Returns ~0u if no loop count could be determined
-	unsigned int OutputASM::loopCount(TIntermLoop *node)
+	// Sets iterations to ~0u if no loop count could be statically determined.
+	OutputASM::LoopInfo::LoopInfo(TIntermLoop *node)
 	{
 		// Parse loops of the form:
-		// for(int index = initial; index [comparator] limit; index += increment)
-		TIntermSymbol *index = 0;
-		TOperator comparator = EOpNull;
-		int initial = 0;
-		int limit = 0;
-		int increment = 0;
+		// for(int index = initial; index [comparator] limit; index [op] increment)
 
 		// Parse index name and intial value
 		if(node->getInit())
@@ -3631,41 +3793,61 @@ namespace glsl
 
 			if(binaryTerminal)
 			{
-				TOperator op = binaryTerminal->getOp();
-				TIntermConstantUnion *constant = binaryTerminal->getRight()->getAsConstantUnion();
+				TIntermSymbol *operand = binaryTerminal->getLeft()->getAsSymbolNode();
 
-				if(constant)
+				if(operand && operand->getId() == index->getId())
 				{
-					if(constant->getBasicType() == EbtInt && constant->getNominalSize() == 1)
-					{
-						int value = constant->getUnionArrayPointer()[0].getIConst();
+					TOperator op = binaryTerminal->getOp();
+					TIntermConstantUnion *constant = binaryTerminal->getRight()->getAsConstantUnion();
 
-						switch(op)
+					if(constant)
+					{
+						if(constant->getBasicType() == EbtInt && constant->getNominalSize() == 1)
 						{
-						case EOpAddAssign: increment = value;  break;
-						case EOpSubAssign: increment = -value; break;
-						default: UNIMPLEMENTED();
+							int value = constant->getUnionArrayPointer()[0].getIConst();
+
+							switch(op)
+							{
+							case EOpAddAssign: increment = value;  break;
+							case EOpSubAssign: increment = -value; break;
+							default:           increment = 0;      break;   // Rare cases left unhandled. Treated as non-deterministic.
+							}
 						}
 					}
 				}
 			}
 			else if(unaryTerminal)
 			{
-				TOperator op = unaryTerminal->getOp();
+				TIntermSymbol *operand = unaryTerminal->getOperand()->getAsSymbolNode();
 
-				switch(op)
+				if(operand && operand->getId() == index->getId())
 				{
-				case EOpPostIncrement: increment = 1;  break;
-				case EOpPostDecrement: increment = -1; break;
-				case EOpPreIncrement:  increment = 1;  break;
-				case EOpPreDecrement:  increment = -1; break;
-				default: UNIMPLEMENTED();
+					TOperator op = unaryTerminal->getOp();
+
+					switch(op)
+					{
+					case EOpPostIncrement: increment = 1;  break;
+					case EOpPostDecrement: increment = -1; break;
+					case EOpPreIncrement:  increment = 1;  break;
+					case EOpPreDecrement:  increment = -1; break;
+					default:               increment = 0;  break;   // Rare cases left unhandled. Treated as non-deterministic.
+					}
 				}
 			}
 		}
 
 		if(index && comparator != EOpNull && increment != 0)
 		{
+			// Check the loop body for return statements or changes to the index variable that make it non-deterministic.
+			LoopUnrollable loopUnrollable;
+			bool unrollable = loopUnrollable.traverse(node, index->getId());
+
+			if(!unrollable)
+			{
+				iterations = ~0u;
+				return;
+			}
+
 			if(comparator == EOpLessThanEqual)
 			{
 				comparator = EOpLessThan;
@@ -3689,46 +3871,78 @@ namespace glsl
 			{
 				if(!(initial < limit))   // Never loops
 				{
-					return 0;
+					iterations = 0;
 				}
-
-				int iterations = (limit - initial + abs(increment) - 1) / increment;   // Ceiling division
-
-				if(iterations < 0)
+				else if(increment < 0)
 				{
-					return ~0u;
+					iterations = ~0u;
 				}
-
-				return iterations;
+				else
+				{
+					iterations = (limit - initial + abs(increment) - 1) / increment;   // Ceiling division
+				}
 			}
-			else UNIMPLEMENTED();   // Falls through
+			else
+			{
+				// Rare cases left unhandled. Treated as non-deterministic.
+				iterations = ~0u;
+			}
 		}
-
-		return ~0u;
 	}
 
-	bool LoopUnrollable::traverse(TIntermNode *node)
+	bool LoopUnrollable::traverse(TIntermLoop *loop, int indexId)
 	{
-		loopDepth = 0;
 		loopUnrollable = true;
 
-		node->traverse(this);
+		loopIndexId = indexId;
+		TIntermNode *body = loop->getBody();
+
+		if(body)
+		{
+			body->traverse(this);
+		}
 
 		return loopUnrollable;
 	}
 
-	bool LoopUnrollable::visitLoop(Visit visit, TIntermLoop *loop)
+	void LoopUnrollable::visitSymbol(TIntermSymbol *node)
 	{
-		if(visit == PreVisit)
+		// Check that the loop index is not used as the argument to a function out or inout parameter.
+		if(node->getId() == loopIndexId)
 		{
-			loopDepth++;
+			if(node->getQualifier() == EvqOut || node->getQualifier() == EvqInOut)
+			{
+				loopUnrollable = false;
+			}
 		}
-		else if(visit == PostVisit)
+	}
+
+	bool LoopUnrollable::visitBinary(Visit visit, TIntermBinary *node)
+	{
+		if(!loopUnrollable)
 		{
-			loopDepth++;
+			return false;
 		}
 
-		return true;
+		// Check that the loop index is not statically assigned to.
+		TIntermSymbol *symbol = node->getLeft()->getAsSymbolNode();
+		loopUnrollable = !(node->modifiesState() && symbol && (symbol->getId() == loopIndexId));
+
+		return loopUnrollable;
+	}
+
+	bool LoopUnrollable::visitUnary(Visit visit, TIntermUnary *node)
+	{
+		if(!loopUnrollable)
+		{
+			return false;
+		}
+
+		// Check that the loop index is not statically assigned to.
+		TIntermSymbol *symbol = node->getOperand()->getAsSymbolNode();
+		loopUnrollable = !(node->modifiesState() && symbol && (symbol->getId() == loopIndexId));
+
+		return loopUnrollable;
 	}
 
 	bool LoopUnrollable::visitBranch(Visit visit, TIntermBranch *node)
@@ -3738,16 +3952,10 @@ namespace glsl
 			return false;
 		}
 
-		if(!loopDepth)
-		{
-			return true;
-		}
-
 		switch(node->getFlowOp())
 		{
 		case EOpKill:
 		case EOpReturn:
-			break;
 		case EOpBreak:
 		case EOpContinue:
 			loopUnrollable = false;

@@ -12,12 +12,14 @@
 namespace v8 {
 namespace internal {
 
+class JSTypedArray;
+
 // Abstract base class for handles that can operate on objects with differing
 // ElementsKinds.
 class ElementsAccessor {
  public:
   explicit ElementsAccessor(const char* name) : name_(name) { }
-  virtual ~ElementsAccessor() { }
+  virtual ~ElementsAccessor() = default;
 
   const char* name() const { return name_; }
 
@@ -46,17 +48,16 @@ class ElementsAccessor {
                           PropertyFilter filter = ALL_PROPERTIES) = 0;
 
   inline bool HasElement(JSObject* holder, uint32_t index,
-                         PropertyFilter filter = ALL_PROPERTIES) {
-    return HasElement(holder, index, holder->elements(), filter);
-  }
+                         PropertyFilter filter = ALL_PROPERTIES);
 
   // Note: this is currently not implemented for string wrapper and
   // typed array elements.
   virtual bool HasEntry(JSObject* holder, uint32_t entry) = 0;
 
+  // TODO(cbruni): HasEntry and Get should not be exposed publicly with the
+  // entry parameter.
   virtual Handle<Object> Get(Handle<JSObject> holder, uint32_t entry) = 0;
 
-  virtual PropertyDetails GetDetails(JSObject* holder, uint32_t entry) = 0;
   virtual bool HasAccessors(JSObject* holder) = 0;
   virtual uint32_t NumberOfElements(JSObject* holder) = 0;
 
@@ -67,8 +68,6 @@ class ElementsAccessor {
   // element that is non-deletable.
   virtual void SetLength(Handle<JSArray> holder, uint32_t new_length) = 0;
 
-  // Deletes an element in an object.
-  virtual void Delete(Handle<JSObject> holder, uint32_t entry) = 0;
 
   // If kCopyToEnd is specified as the copy_size to CopyElements, it copies all
   // of elements from source after source_start to the destination array.
@@ -87,10 +86,7 @@ class ElementsAccessor {
                                      KeyAccumulator* keys) = 0;
 
   inline void CollectElementIndices(Handle<JSObject> object,
-                                    KeyAccumulator* keys) {
-    CollectElementIndices(object, handle(object->elements(), keys->isolate()),
-                          keys);
-  }
+                                    KeyAccumulator* keys);
 
   virtual Maybe<bool> CollectValuesOrEntries(
       Isolate* isolate, Handle<JSObject> object,
@@ -104,10 +100,7 @@ class ElementsAccessor {
 
   inline MaybeHandle<FixedArray> PrependElementIndices(
       Handle<JSObject> object, Handle<FixedArray> keys,
-      GetKeysConversion convert, PropertyFilter filter = ALL_PROPERTIES) {
-    return PrependElementIndices(object, handle(object->elements()), keys,
-                                 convert, filter);
-  }
+      GetKeysConversion convert, PropertyFilter filter = ALL_PROPERTIES);
 
   virtual void AddElementsToKeyAccumulator(Handle<JSObject> receiver,
                                            KeyAccumulator* accumulator,
@@ -126,11 +119,6 @@ class ElementsAccessor {
 
   virtual void Set(Handle<JSObject> holder, uint32_t entry, Object* value) = 0;
 
-  virtual void Reconfigure(Handle<JSObject> object,
-                           Handle<FixedArrayBase> backing_store, uint32_t entry,
-                           Handle<Object> value,
-                           PropertyAttributes attributes) = 0;
-
   virtual void Add(Handle<JSObject> object, uint32_t index,
                    Handle<Object> value, PropertyAttributes attributes,
                    uint32_t new_capacity) = 0;
@@ -141,18 +129,11 @@ class ElementsAccessor {
   virtual uint32_t Push(Handle<JSArray> receiver, Arguments* args,
                         uint32_t push_size) = 0;
 
-  virtual uint32_t Unshift(Handle<JSArray> receiver,
-                           Arguments* args, uint32_t unshift_size) = 0;
+  virtual uint32_t Unshift(Handle<JSArray> receiver, Arguments* args,
+                           uint32_t unshift_size) = 0;
 
   virtual Handle<JSObject> Slice(Handle<JSObject> receiver, uint32_t start,
                                  uint32_t end) = 0;
-
-  virtual Handle<JSObject> Slice(Handle<JSObject> receiver, uint32_t start,
-                                 uint32_t end, Handle<JSObject> result) = 0;
-
-  virtual Handle<JSArray> Splice(Handle<JSArray> receiver,
-                                 uint32_t start, uint32_t delete_count,
-                                 Arguments* args, uint32_t add_count) = 0;
 
   virtual Handle<Object> Pop(Handle<JSArray> receiver) = 0;
 
@@ -163,9 +144,8 @@ class ElementsAccessor {
   virtual uint32_t GetCapacity(JSObject* holder,
                                FixedArrayBase* backing_store) = 0;
 
-  virtual Object* Fill(Isolate* isolate, Handle<JSObject> receiver,
-                       Handle<Object> obj_value, uint32_t start,
-                       uint32_t end) = 0;
+  virtual Object* Fill(Handle<JSObject> receiver, Handle<Object> obj_value,
+                       uint32_t start, uint32_t end) = 0;
 
   // Check an Object's own elements for an element (using SameValueZero
   // semantics)
@@ -180,24 +160,27 @@ class ElementsAccessor {
                                       Handle<Object> value, uint32_t start,
                                       uint32_t length) = 0;
 
-  virtual Maybe<int64_t> LastIndexOfValue(Isolate* isolate,
-                                          Handle<JSObject> receiver,
+  virtual Maybe<int64_t> LastIndexOfValue(Handle<JSObject> receiver,
                                           Handle<Object> value,
                                           uint32_t start) = 0;
 
   virtual void Reverse(JSObject* receiver) = 0;
 
-  virtual void CopyElements(Handle<FixedArrayBase> source,
+  virtual void CopyElements(Isolate* isolate, Handle<FixedArrayBase> source,
                             ElementsKind source_kind,
                             Handle<FixedArrayBase> destination, int size) = 0;
 
-  virtual Object* CopyElements(Handle<JSReceiver> source,
+  virtual Object* CopyElements(Handle<Object> source,
                                Handle<JSObject> destination, size_t length,
                                uint32_t offset = 0) = 0;
 
   virtual Handle<FixedArray> CreateListFromArrayLike(Isolate* isolate,
                                                      Handle<JSObject> object,
                                                      uint32_t length) = 0;
+
+  virtual void CopyTypedArrayElementsSlice(JSTypedArray* source,
+                                           JSTypedArray* destination,
+                                           size_t start, size_t end) = 0;
 
  protected:
   friend class LookupIterator;
@@ -213,6 +196,15 @@ class ElementsAccessor {
   virtual uint32_t GetEntryForIndex(Isolate* isolate, JSObject* holder,
                                     FixedArrayBase* backing_store,
                                     uint32_t index) = 0;
+
+  virtual PropertyDetails GetDetails(JSObject* holder, uint32_t entry) = 0;
+  virtual void Reconfigure(Handle<JSObject> object,
+                           Handle<FixedArrayBase> backing_store, uint32_t entry,
+                           Handle<Object> value,
+                           PropertyAttributes attributes) = 0;
+
+  // Deletes an element in an object.
+  virtual void Delete(Handle<JSObject> holder, uint32_t entry) = 0;
 
   // NOTE: this method violates the handlified function signature convention:
   // raw pointer parameter |source_holder| in the function that allocates.
@@ -233,12 +225,10 @@ class ElementsAccessor {
 void CheckArrayAbuse(Handle<JSObject> obj, const char* op, uint32_t index,
                      bool allow_appending = false);
 
-MUST_USE_RESULT MaybeHandle<Object> ArrayConstructInitializeElements(
-    Handle<JSArray> array,
-    Arguments* args);
+V8_WARN_UNUSED_RESULT MaybeHandle<Object> ArrayConstructInitializeElements(
+    Handle<JSArray> array, Arguments* args);
 
 // Called directly from CSA.
-class JSTypedArray;
 void CopyFastNumberJSArrayElementsToTypedArray(Context* context,
                                                JSArray* source,
                                                JSTypedArray* destination,
@@ -247,6 +237,9 @@ void CopyFastNumberJSArrayElementsToTypedArray(Context* context,
 void CopyTypedArrayElementsToTypedArray(JSTypedArray* source,
                                         JSTypedArray* destination,
                                         uintptr_t length, uintptr_t offset);
+void CopyTypedArrayElementsSlice(JSTypedArray* source,
+                                 JSTypedArray* destination, uintptr_t start,
+                                 uintptr_t end);
 
 }  // namespace internal
 }  // namespace v8

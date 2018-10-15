@@ -6,18 +6,18 @@
  */
 
 #include "GrReducedClip.h"
-
 #include "GrAppliedClip.h"
 #include "GrClip.h"
 #include "GrColor.h"
 #include "GrContextPriv.h"
-#include "GrRenderTargetContext.h"
-#include "GrRenderTargetContextPriv.h"
 #include "GrDrawingManager.h"
 #include "GrFixedClip.h"
 #include "GrPathRenderer.h"
-#include "GrStencilSettings.h"
+#include "GrRenderTargetContext.h"
+#include "GrRenderTargetContextPriv.h"
+#include "GrShape.h"
 #include "GrStencilClip.h"
+#include "GrStencilSettings.h"
 #include "GrStyle.h"
 #include "GrUserStencilSettings.h"
 #include "SkClipOpPriv.h"
@@ -34,14 +34,15 @@
  * take a rect in case the caller knows a bound on what is to be drawn through this clip.
  */
 GrReducedClip::GrReducedClip(const SkClipStack& stack, const SkRect& queryBounds,
-                             const GrShaderCaps* caps, int maxWindowRectangles, int maxAnalyticFPs,
-                             GrCoverageCountingPathRenderer* ccpr)
+                             const GrCaps* caps, int maxWindowRectangles, int maxAnalyticFPs,
+                             int maxCCPRClipPaths)
         : fCaps(caps)
         , fMaxWindowRectangles(maxWindowRectangles)
         , fMaxAnalyticFPs(maxAnalyticFPs)
-        , fCCPR(fMaxAnalyticFPs ? ccpr : nullptr) {
+        , fMaxCCPRClipPaths(maxCCPRClipPaths) {
     SkASSERT(!queryBounds.isEmpty());
     SkASSERT(fMaxWindowRectangles <= GrWindowRectangles::kMaxWindows);
+    SkASSERT(fMaxCCPRClipPaths <= fMaxAnalyticFPs);
     fHasScissor = false;
     fAAClipRectGenID = SK_InvalidGenID;
 
@@ -629,7 +630,8 @@ GrReducedClip::ClipResult GrReducedClip::addAnalyticFP(const SkRRect& deviceSpac
         return ClipResult::kNotClipped;
     }
 
-    if (auto fp = GrRRectEffect::Make(GetClipEdgeType(invert, aa), deviceSpaceRRect, *fCaps)) {
+    if (auto fp = GrRRectEffect::Make(GetClipEdgeType(invert, aa), deviceSpaceRRect,
+                                      *fCaps->shaderCaps())) {
         fAnalyticFPs.push_back(std::move(fp));
         return ClipResult::kClipped;
     }
@@ -651,7 +653,7 @@ GrReducedClip::ClipResult GrReducedClip::addAnalyticFP(const SkPath& deviceSpace
         return ClipResult::kClipped;
     }
 
-    if (fCCPR && GrAA::kYes == aa && fCCPR->canMakeClipProcessor(deviceSpacePath)) {
+    if (fCCPRClipPaths.count() < fMaxCCPRClipPaths && GrAA::kYes == aa) {
         // Set aside CCPR paths for later. We will create their clip FPs once we know the ID of the
         // opList they will operate in.
         SkPath& ccprClipPath = fCCPRClipPaths.push_back(deviceSpacePath);
@@ -746,7 +748,7 @@ bool GrReducedClip::drawAlphaClipMask(GrRenderTargetContext* rtc) const {
     // The scratch texture that we are drawing into can be substantially larger than the mask. Only
     // clear the part that we care about.
     GrColor initialCoverage = InitialState::kAllIn == this->initialState() ? -1 : 0;
-    rtc->priv().clear(clip, initialCoverage, true);
+    rtc->priv().clear(clip, initialCoverage, GrRenderTargetContext::CanClearFullscreen::kYes);
 
     // Set the matrix so that rendered clip elements are transformed to mask space from clip space.
     SkMatrix translate;
@@ -846,7 +848,7 @@ bool GrReducedClip::drawStencilClipMask(GrContext* context,
 
             GrShape shape(clipPath, GrStyle::SimpleFill());
             GrPathRenderer::CanDrawPathArgs canDrawArgs;
-            canDrawArgs.fCaps = context->caps();
+            canDrawArgs.fCaps = context->contextPriv().caps();
             canDrawArgs.fClipConservativeBounds = &stencilClip.fixedClip().scissorRect();
             canDrawArgs.fViewMatrix = &SkMatrix::I();
             canDrawArgs.fShape = &shape;
@@ -954,17 +956,18 @@ bool GrReducedClip::drawStencilClipMask(GrContext* context,
     return true;
 }
 
-std::unique_ptr<GrFragmentProcessor> GrReducedClip::finishAndDetachAnalyticFPs(uint32_t opListID,
-                                                                               int rtWidth,
-                                                                               int rtHeight) {
+std::unique_ptr<GrFragmentProcessor> GrReducedClip::finishAndDetachAnalyticFPs(
+        GrCoverageCountingPathRenderer* ccpr, uint32_t opListID, int rtWidth, int rtHeight) {
     // Make sure finishAndDetachAnalyticFPs hasn't been called already.
     SkDEBUGCODE(for (const auto& fp : fAnalyticFPs) { SkASSERT(fp); })
 
     if (!fCCPRClipPaths.empty()) {
         fAnalyticFPs.reserve(fAnalyticFPs.count() + fCCPRClipPaths.count());
         for (const SkPath& ccprClipPath : fCCPRClipPaths) {
+            SkASSERT(ccpr);
             SkASSERT(fHasScissor);
-            auto fp = fCCPR->makeClipProcessor(opListID, ccprClipPath, fScissor, rtWidth, rtHeight);
+            auto fp = ccpr->makeClipProcessor(opListID, ccprClipPath, fScissor, rtWidth, rtHeight,
+                                              *fCaps);
             fAnalyticFPs.push_back(std::move(fp));
         }
         fCCPRClipPaths.reset();

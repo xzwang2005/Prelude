@@ -12,35 +12,8 @@
 
 #include <stdio.h>
 
-const GrGLInterface* GrGLInterfaceAddTestDebugMarker(const GrGLInterface* interface,
-                                                     GrGLInsertEventMarkerProc insertEventMarkerFn,
-                                                     GrGLPushGroupMarkerProc pushGroupMarkerFn,
-                                                     GrGLPopGroupMarkerProc popGroupMarkerFn) {
-    GrGLInterface* newInterface = GrGLInterface::NewClone(interface);
-
-    if (!newInterface->fExtensions.has("GL_EXT_debug_marker")) {
-        newInterface->fExtensions.add("GL_EXT_debug_marker");
-    }
-
-    newInterface->fFunctions.fInsertEventMarker = insertEventMarkerFn;
-    newInterface->fFunctions.fPushGroupMarker = pushGroupMarkerFn;
-    newInterface->fFunctions.fPopGroupMarker = popGroupMarkerFn;
-
-    return newInterface;
-}
-
 GrGLInterface::GrGLInterface() {
     fStandard = kNone_GrGLStandard;
-}
-
-GrGLInterface* GrGLInterface::NewClone(const GrGLInterface* interface) {
-    SkASSERT(interface);
-
-    GrGLInterface* clone = new GrGLInterface;
-    clone->fStandard = interface->fStandard;
-    clone->fExtensions = interface->fExtensions;
-    clone->fFunctions = interface->fFunctions;
-    return clone;
 }
 
 #ifdef SK_DEBUG
@@ -589,141 +562,6 @@ bool GrGLInterface::validate() const {
         }
     }
 
-    if (fExtensions.has("GL_NV_bindless_texture")) {
-        if (!fFunctions.fGetTextureHandle ||
-            !fFunctions.fGetTextureSamplerHandle ||
-            !fFunctions.fMakeTextureHandleResident ||
-            !fFunctions.fMakeTextureHandleNonResident ||
-            !fFunctions.fGetImageHandle ||
-            !fFunctions.fMakeImageHandleResident ||
-            !fFunctions.fMakeImageHandleNonResident ||
-            !fFunctions.fIsTextureHandleResident ||
-            !fFunctions.fIsImageHandleResident ||
-            !fFunctions.fUniformHandleui64 ||
-            !fFunctions.fUniformHandleui64v ||
-            !fFunctions.fProgramUniformHandleui64 ||
-            !fFunctions.fProgramUniformHandleui64v) {
-            RETURN_FALSE_INTERFACE
-        }
-    }
-
-    if (kGL_GrGLStandard == fStandard && fExtensions.has("GL_EXT_direct_state_access")) {
-        if (!fFunctions.fTextureParameteri ||
-            !fFunctions.fTextureParameteriv ||
-            !fFunctions.fTextureParameterf ||
-            !fFunctions.fTextureParameterfv ||
-            !fFunctions.fTextureImage1D ||
-            !fFunctions.fTextureImage2D ||
-            !fFunctions.fTextureSubImage1D ||
-            !fFunctions.fTextureSubImage2D ||
-            !fFunctions.fCopyTextureImage1D ||
-            !fFunctions.fCopyTextureImage2D ||
-            !fFunctions.fCopyTextureSubImage1D ||
-            !fFunctions.fCopyTextureSubImage2D ||
-            !fFunctions.fGetNamedBufferParameteriv ||
-            !fFunctions.fGetNamedBufferPointerv ||
-            !fFunctions.fGetNamedBufferSubData ||
-            !fFunctions.fGetTextureImage ||
-            !fFunctions.fGetTextureParameterfv ||
-            !fFunctions.fGetTextureParameteriv ||
-            !fFunctions.fGetTextureLevelParameterfv ||
-            !fFunctions.fGetTextureLevelParameteriv ||
-            !fFunctions.fMapNamedBuffer ||
-            !fFunctions.fNamedBufferData ||
-            !fFunctions.fNamedBufferSubData ||
-            !fFunctions.fProgramUniform1f ||
-            !fFunctions.fProgramUniform2f ||
-            !fFunctions.fProgramUniform3f ||
-            !fFunctions.fProgramUniform4f ||
-            !fFunctions.fProgramUniform1i ||
-            !fFunctions.fProgramUniform2i ||
-            !fFunctions.fProgramUniform3i ||
-            !fFunctions.fProgramUniform4i ||
-            !fFunctions.fProgramUniform1fv ||
-            !fFunctions.fProgramUniform2fv ||
-            !fFunctions.fProgramUniform3fv ||
-            !fFunctions.fProgramUniform4fv ||
-            !fFunctions.fProgramUniform1iv ||
-            !fFunctions.fProgramUniform2iv ||
-            !fFunctions.fProgramUniform3iv ||
-            !fFunctions.fProgramUniform4iv ||
-            !fFunctions.fProgramUniformMatrix2fv ||
-            !fFunctions.fProgramUniformMatrix3fv ||
-            !fFunctions.fProgramUniformMatrix4fv ||
-            !fFunctions.fUnmapNamedBuffer) {
-            RETURN_FALSE_INTERFACE
-        }
-        if (glVer >= GR_GL_VER(1,2)) {
-            if (!fFunctions.fTextureImage3D ||
-                !fFunctions.fTextureSubImage3D ||
-                !fFunctions.fCopyTextureSubImage3D ||
-                !fFunctions.fCompressedTextureImage3D ||
-                !fFunctions.fCompressedTextureImage2D ||
-                !fFunctions.fCompressedTextureImage1D ||
-                !fFunctions.fCompressedTextureSubImage3D ||
-                !fFunctions.fCompressedTextureSubImage2D ||
-                !fFunctions.fCompressedTextureSubImage1D ||
-                !fFunctions.fGetCompressedTextureImage) {
-                RETURN_FALSE_INTERFACE
-            }
-        }
-        if (glVer >= GR_GL_VER(2,1)) {
-            if (!fFunctions.fProgramUniformMatrix2x3fv ||
-                !fFunctions.fProgramUniformMatrix3x2fv ||
-                !fFunctions.fProgramUniformMatrix2x4fv ||
-                !fFunctions.fProgramUniformMatrix4x2fv ||
-                !fFunctions.fProgramUniformMatrix3x4fv ||
-                !fFunctions.fProgramUniformMatrix4x3fv) {
-                RETURN_FALSE_INTERFACE
-            }
-        }
-        if (glVer >= GR_GL_VER(3,0)) {
-            if (!fFunctions.fNamedRenderbufferStorage ||
-                !fFunctions.fGetNamedRenderbufferParameteriv ||
-                !fFunctions.fNamedRenderbufferStorageMultisample ||
-                !fFunctions.fCheckNamedFramebufferStatus ||
-                !fFunctions.fNamedFramebufferTexture1D ||
-                !fFunctions.fNamedFramebufferTexture2D ||
-                !fFunctions.fNamedFramebufferTexture3D ||
-                !fFunctions.fNamedFramebufferRenderbuffer ||
-                !fFunctions.fGetNamedFramebufferAttachmentParameteriv ||
-                !fFunctions.fGenerateTextureMipmap ||
-                !fFunctions.fFramebufferDrawBuffer ||
-                !fFunctions.fFramebufferDrawBuffers ||
-                !fFunctions.fFramebufferReadBuffer ||
-                !fFunctions.fGetFramebufferParameteriv ||
-                !fFunctions.fNamedCopyBufferSubData ||
-                !fFunctions.fVertexArrayVertexOffset ||
-                !fFunctions.fVertexArrayColorOffset ||
-                !fFunctions.fVertexArrayEdgeFlagOffset ||
-                !fFunctions.fVertexArrayIndexOffset ||
-                !fFunctions.fVertexArrayNormalOffset ||
-                !fFunctions.fVertexArrayTexCoordOffset ||
-                !fFunctions.fVertexArrayMultiTexCoordOffset ||
-                !fFunctions.fVertexArrayFogCoordOffset ||
-                !fFunctions.fVertexArraySecondaryColorOffset ||
-                !fFunctions.fVertexArrayVertexAttribOffset ||
-                !fFunctions.fVertexArrayVertexAttribIOffset ||
-                !fFunctions.fEnableVertexArray ||
-                !fFunctions.fDisableVertexArray ||
-                !fFunctions.fEnableVertexArrayAttrib ||
-                !fFunctions.fDisableVertexArrayAttrib ||
-                !fFunctions.fGetVertexArrayIntegerv ||
-                !fFunctions.fGetVertexArrayPointerv ||
-                !fFunctions.fGetVertexArrayIntegeri_v ||
-                !fFunctions.fGetVertexArrayPointeri_v ||
-                !fFunctions.fMapNamedBufferRange ||
-                !fFunctions.fFlushMappedNamedBufferRange) {
-                RETURN_FALSE_INTERFACE
-            }
-        }
-        if (glVer >= GR_GL_VER(3,1)) {
-            if (!fFunctions.fTextureBuffer) {
-                RETURN_FALSE_INTERFACE;
-            }
-        }
-    }
-
     if ((kGL_GrGLStandard == fStandard && glVer >= GR_GL_VER(4,3)) ||
         fExtensions.has("GL_KHR_debug")) {
         if (!fFunctions.fDebugMessageControl ||
@@ -790,26 +628,6 @@ bool GrGLInterface::validate() const {
         }
     }
 
-    if (kGL_GrGLStandard == fStandard) {
-        if (glVer >= GR_GL_VER(4,2) || fExtensions.has("GL_ARB_shader_image_load_store")) {
-            if (!fFunctions.fBindImageTexture ||
-                !fFunctions.fMemoryBarrier) {
-                RETURN_FALSE_INTERFACE;
-            }
-        }
-        if (glVer >= GR_GL_VER(4,5) || fExtensions.has("GL_ARB_ES3_1_compatibility")) {
-            if (!fFunctions.fMemoryBarrierByRegion) {
-                RETURN_FALSE_INTERFACE;
-            }
-        }
-    } else if (kGLES_GrGLStandard == fStandard && glVer >= GR_GL_VER(3,1)) {
-        if (!fFunctions.fBindImageTexture ||
-            !fFunctions.fMemoryBarrier ||
-            !fFunctions.fMemoryBarrierByRegion) {
-            RETURN_FALSE_INTERFACE;
-        }
-    }
-
     // getInternalformativ was added in GL 4.2, ES 3.0, and with extension ARB_internalformat_query
     if ((kGL_GrGLStandard == fStandard &&
          (glVer >= GR_GL_VER(4,2) || fExtensions.has("GL_ARB_internalformat_query"))) ||
@@ -830,3 +648,12 @@ bool GrGLInterface::validate() const {
 
     return true;
 }
+
+#if GR_TEST_UTILS
+
+void GrGLInterface::abandon() const {
+    const_cast<GrGLInterface*>(this)->fFunctions = GrGLInterface::Functions();
+}
+
+#endif // GR_TEST_UTILS
+

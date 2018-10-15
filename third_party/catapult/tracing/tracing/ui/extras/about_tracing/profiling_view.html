@@ -115,7 +115,8 @@ tr.exportTo('tr.ui.e.about_tracing', function() {
         this.tracingControllerClient_ = tracingControllerClient;
       } else if (window.DevToolsHost !== undefined) {
         this.tracingControllerClient_ =
-            new tr.ui.e.about_tracing.InspectorTracingControllerClient();
+            new tr.ui.e.about_tracing.InspectorTracingControllerClient(
+                new tr.ui.e.about_tracing.InspectorConnection(window));
       } else {
         this.tracingControllerClient_ =
             new tr.ui.e.about_tracing.XhrBasedTracingControllerClient();
@@ -277,7 +278,7 @@ tr.exportTo('tr.ui.e.about_tracing', function() {
     onSaveClicked_() {
       // Create a blob URL from the binary array.
       const blob = new Blob([this.activeTrace_.data],
-                          {type: 'application/octet-binary'});
+          {type: 'application/octet-binary'});
       const blobUrl = window.webkitURL.createObjectURL(blob);
 
       // Create a link and click on it. BEST API EVAR!

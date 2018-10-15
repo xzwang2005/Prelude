@@ -14,7 +14,9 @@
 
 #include "../private/SkTemplates.h"
 #include "GrColor.h"
+#include "GrFPArgs.h"
 #include "GrSamplerState.h"
+#include "SkMacros.h"
 #include "SkPathEffect.h"
 #include "SkRandom.h"
 #include "SkShaderBase.h"
@@ -54,12 +56,12 @@ class TestAsFPArgs {
 public:
     TestAsFPArgs(GrProcessorTestData*);
     ~TestAsFPArgs();
-    const SkShaderBase::AsFPArgs& args() const { return fArgs; }
+    const GrFPArgs& args() const { return fArgs; }
 
 private:
-    SkShaderBase::AsFPArgs fArgs;
     SkMatrix fViewMatrixStorage;
     std::unique_ptr<GrColorSpaceInfo> fColorSpaceInfoStorage;
+    GrFPArgs fArgs;
 };
 
 // We have a simplified dash path effect here to avoid relying on SkDashPathEffect which
@@ -70,10 +72,11 @@ public:
         return sk_sp<SkPathEffect>(new TestDashPathEffect(intervals, count, phase));
     }
 
-    bool filterPath(SkPath* dst, const SkPath&, SkStrokeRec* , const SkRect*) const override;
-    DashType asADash(DashInfo* info) const override;
     Factory getFactory() const override { return nullptr; }
-    void toString(SkString*) const override {}
+
+protected:
+    bool onFilterPath(SkPath* dst, const SkPath&, SkStrokeRec* , const SkRect*) const override;
+    DashType onAsADash(DashInfo* info) const override;
 
 private:
     TestDashPathEffect(const SkScalar* intervals, int count, SkScalar phase);

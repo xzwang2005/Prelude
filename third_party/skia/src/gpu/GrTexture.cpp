@@ -25,14 +25,8 @@ void GrTexture::markMipMapsDirty() {
 }
 
 void GrTexture::markMipMapsClean() {
-    const bool sizeChanged = GrMipMapsStatus::kNotAllocated == fMipMapsStatus;
+    SkASSERT(GrMipMapsStatus::kNotAllocated != fMipMapsStatus);
     fMipMapsStatus = GrMipMapsStatus::kValid;
-    if (sizeChanged) {
-        // This must not be called until after changing fMipMapsStatus.
-        this->didChangeGpuMemorySize();
-        // TODO(http://skbug.com/4548) - The desc and scratch key should be
-        // updated to reflect the newly-allocated mipmaps.
-    }
 }
 
 size_t GrTexture::onGpuMemorySize() const {
@@ -41,15 +35,9 @@ size_t GrTexture::onGpuMemorySize() const {
 }
 
 /////////////////////////////////////////////////////////////////////////////
-GrTexture::GrTexture(GrGpu* gpu, const GrSurfaceDesc& desc, GrSLType samplerType,
-                     GrSamplerState::Filter highestFilterMode,
+GrTexture::GrTexture(GrGpu* gpu, const GrSurfaceDesc& desc, GrTextureType textureType,
                      GrMipMapsStatus mipMapsStatus)
-        : INHERITED(gpu, desc)
-        , fSamplerType(samplerType)
-        , fHighestFilterMode(highestFilterMode)
-        , fMipMapsStatus(mipMapsStatus)
-        // Mip color mode is explicitly set after creation via GrTexturePriv
-        , fMipColorMode(SkDestinationSurfaceColorMode::kLegacy) {
+        : INHERITED(gpu, desc), fTextureType(textureType), fMipMapsStatus(mipMapsStatus) {
     if (GrMipMapsStatus::kNotAllocated == fMipMapsStatus) {
         fMaxMipMapLevel = 0;
     } else {
@@ -78,7 +66,7 @@ bool GrTexture::StealBackendTexture(sk_sp<GrTexture>&& texture,
 
 void GrTexture::computeScratchKey(GrScratchKey* key) const {
     const GrRenderTarget* rt = this->asRenderTarget();
-    int sampleCount = 0;
+    int sampleCount = 1;
     if (rt) {
         sampleCount = rt->numStencilSamples();
     }
@@ -92,8 +80,10 @@ void GrTexturePriv::ComputeScratchKey(GrPixelConfig config, int width, int heigh
                                       GrMipMapped mipMapped, GrScratchKey* key) {
     static const GrScratchKey::ResourceType kType = GrScratchKey::GenerateResourceType();
     uint32_t flags = isRenderTarget;
-
-    SkASSERT(0 == sampleCnt || isRenderTarget);
+    SkASSERT(width > 0);
+    SkASSERT(height > 0);
+    SkASSERT(sampleCnt > 0);
+    SkASSERT(1 == sampleCnt || isRenderTarget);
 
     // make sure desc.fConfig fits in 5 bits
     SkASSERT(sk_float_log2(kLast_GrPixelConfig) <= 5);

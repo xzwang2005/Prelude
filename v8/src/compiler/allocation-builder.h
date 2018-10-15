@@ -26,7 +26,7 @@ class AllocationBuilder final {
 
   // Primitive allocation of static size.
   void Allocate(int size, PretenureFlag pretenure = NOT_TENURED,
-                Type* type = Type::Any()) {
+                Type type = Type::Any()) {
     DCHECK_LE(size, kMaxRegularHeapObjectSize);
     effect_ = graph()->NewNode(
         common()->BeginRegion(RegionObservability::kNotObservable), effect_);
@@ -48,6 +48,16 @@ class AllocationBuilder final {
                                index, value, effect_, control_);
   }
 
+  // Compound allocation of a context.
+  void AllocateContext(int length, Handle<Map> map) {
+    DCHECK(map->instance_type() >= BLOCK_CONTEXT_TYPE &&
+           map->instance_type() <= WITH_CONTEXT_TYPE);
+    int size = FixedArray::SizeFor(length);
+    Allocate(size, NOT_TENURED, Type::OtherInternal());
+    Store(AccessBuilder::ForMap(), map);
+    Store(AccessBuilder::ForFixedArrayLength(), jsgraph()->Constant(length));
+  }
+
   // Compound allocation of a FixedArray.
   void AllocateArray(int length, Handle<Map> map,
                      PretenureFlag pretenure = NOT_TENURED) {
@@ -65,6 +75,10 @@ class AllocationBuilder final {
   void Store(const FieldAccess& access, Handle<Object> value) {
     Store(access, jsgraph()->Constant(value));
   }
+  // Compound store of a constant into a field.
+  void Store(const FieldAccess& access, const ObjectRef& value) {
+    Store(access, jsgraph()->Constant(value));
+  }
 
   void FinishAndChange(Node* node) {
     NodeProperties::SetType(allocation_, NodeProperties::GetType(node));
@@ -80,6 +94,7 @@ class AllocationBuilder final {
 
  protected:
   JSGraph* jsgraph() { return jsgraph_; }
+  Isolate* isolate() const { return jsgraph_->isolate(); }
   Graph* graph() { return jsgraph_->graph(); }
   CommonOperatorBuilder* common() { return jsgraph_->common(); }
   SimplifiedOperatorBuilder* simplified() { return jsgraph_->simplified(); }

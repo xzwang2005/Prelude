@@ -5,7 +5,7 @@
 #ifndef MEDIA_GPU_D3D11_VIDEO_DECODER_IMPL_H_
 #define MEDIA_GPU_D3D11_VIDEO_DECODER_IMPL_H_
 
-#include <d3d11.h>
+#include <d3d11_1.h>
 #include <wrl/client.h>
 
 #include <list>
@@ -13,78 +13,70 @@
 #include <string>
 #include <tuple>
 
+#include "base/callback.h"
 #include "base/memory/ref_counted.h"
 #include "base/memory/weak_ptr.h"
-#include "gpu/ipc/service/command_buffer_stub.h"
-#include "media/base/video_decoder.h"
-#include "media/gpu/gles2_decoder_helper.h"
+#include "base/threading/thread_checker.h"
+#include "gpu/command_buffer/service/sequence_id.h"
 #include "media/gpu/media_gpu_export.h"
-#include "media/gpu/windows/d3d11_h264_accelerator.h"
-#include "media/gpu/windows/output_with_release_mailbox_cb.h"
+
+namespace gpu {
+class CommandBufferStub;
+struct SyncToken;
+}  // namespace gpu
 
 namespace media {
 
-class MEDIA_GPU_EXPORT D3D11VideoDecoderImpl : public VideoDecoder,
-                                               public D3D11VideoDecoderClient {
+class MediaLog;
+class D3D11PictureBuffer;
+
+// Does the gpu main thread work for D3D11VideoDecoder.  Except as noted, this
+// class lives on the GPU main thread.
+// TODO(liberato): Rename this class as a follow-on to this refactor.
+class MEDIA_GPU_EXPORT D3D11VideoDecoderImpl {
  public:
-  D3D11VideoDecoderImpl(base::Callback<gpu::CommandBufferStub*()> get_stub_cb,
-                        deprecated::OutputWithReleaseMailboxCB output_cb);
-  ~D3D11VideoDecoderImpl() override;
+  // May be constructed on any thread.
+  explicit D3D11VideoDecoderImpl(
+      std::unique_ptr<MediaLog> media_log,
+      base::RepeatingCallback<gpu::CommandBufferStub*()> get_stub_cb);
+  virtual ~D3D11VideoDecoderImpl();
 
-  // VideoDecoder implementation:
-  std::string GetDisplayName() const override;
-  void Initialize(const VideoDecoderConfig& config,
-                  bool low_delay,
-                  CdmContext* cdm_context,
-                  const InitCB& init_cb,
-                  const OutputCB& output_cb) override;
-  void Decode(const scoped_refptr<DecoderBuffer>& buffer,
-              const DecodeCB& decode_cb) override;
-  void Reset(const base::Closure& closure) override;
-  bool NeedsBitstreamConversion() const override;
-  bool CanReadWithoutStalling() const override;
-  int GetMaxDecodeRequests() const override;
+  using InitCB = base::OnceCallback<void(bool success)>;
 
-  // D3D11VideoDecoderClient implementation.
-  D3D11PictureBuffer* GetPicture() override;
-  void OutputResult(D3D11PictureBuffer* buffer,
-                    size_t input_buffer_id) override;
-  size_t input_buffer_id() const override;
+  // Returns a picture buffer that's no longer in use by the client.
+  using ReturnPictureBufferCB =
+      base::RepeatingCallback<void(scoped_refptr<D3D11PictureBuffer>)>;
+
+  // We will call back |init_cb| with the init status.  |try_decoding_cb| should
+  // try to re-start decoding.  We'll call this when we do something that might
+  // allow decoding to make progress, such as reclaim a picture buffer.
+  virtual void Initialize(InitCB init_cb,
+                          ReturnPictureBufferCB return_picture_buffer_cb);
+
+  // Called when the VideoFrame that uses |buffer| is freed.
+  void OnMailboxReleased(scoped_refptr<D3D11PictureBuffer> buffer,
+                         const gpu::SyncToken& sync_token);
 
   // Return a weak ptr, since D3D11VideoDecoder constructs callbacks for us.
+  // May be called from any thread.
   base::WeakPtr<D3D11VideoDecoderImpl> GetWeakPtr();
 
  private:
-  void DoDecode();
-  void CreatePictureBuffers();
+  void OnSyncTokenReleased(scoped_refptr<D3D11PictureBuffer> buffer);
 
-  void OnMailboxReleased(D3D11PictureBuffer* buffer,
-                         const gpu::SyncToken& sync_token);
+  std::unique_ptr<MediaLog> media_log_;
 
-  base::Callback<gpu::CommandBufferStub*()> get_stub_cb_;
+  base::RepeatingCallback<gpu::CommandBufferStub*()> get_stub_cb_;
   gpu::CommandBufferStub* stub_ = nullptr;
-  // A helper for creating textures. Only valid while |stub_| is valid.
-  std::unique_ptr<GLES2DecoderHelper> decoder_helper_;
 
-  Microsoft::WRL::ComPtr<ID3D11Device> device_;
-  Microsoft::WRL::ComPtr<ID3D11DeviceContext> device_context_;
-  Microsoft::WRL::ComPtr<ID3D11VideoDevice> video_device_;
-  Microsoft::WRL::ComPtr<ID3D11VideoContext> video_context_;
+  // Wait sequence for sync points.
+  gpu::SequenceId wait_sequence_id_;
 
-  std::unique_ptr<AcceleratedVideoDecoder> decoder_;
-  std::unique_ptr<D3D11H264Accelerator> h264_accelerator_;
+  // Called when we get a picture buffer back from the client.
+  ReturnPictureBufferCB return_picture_buffer_cb_;
 
-  GUID decoder_guid_;
-
-  std::list<std::pair<scoped_refptr<DecoderBuffer>, DecodeCB>>
-      input_buffer_queue_;
-  scoped_refptr<DecoderBuffer> current_buffer_;
-  DecodeCB current_decode_cb_;
-  base::TimeDelta current_timestamp_;
-
-  std::vector<std::unique_ptr<D3D11PictureBuffer>> picture_buffers_;
-
-  deprecated::OutputWithReleaseMailboxCB output_cb_;
+  // Has thread affinity -- must be run on the gpu main thread.
+  THREAD_CHECKER(thread_checker_);
 
   base::WeakPtrFactory<D3D11VideoDecoderImpl> weak_factory_;
 

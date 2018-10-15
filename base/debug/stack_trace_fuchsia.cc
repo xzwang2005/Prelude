@@ -9,7 +9,6 @@
 #include <string.h>
 #include <threads.h>
 #include <unwind.h>
-#include <zircon/crashlogger.h>
 #include <zircon/process.h>
 #include <zircon/syscalls.h>
 #include <zircon/syscalls/definitions.h>
@@ -63,7 +62,9 @@ class SymbolMap {
   Entry* GetForAddress(void* address);
 
  private:
-  static const size_t kMaxMapEntries = 64;
+  // Component builds of Chrome pull about 250 shared libraries (on Linux), so
+  // 512 entries should be enough in most cases.
+  static const size_t kMaxMapEntries = 512;
 
   void Populate();
 
@@ -116,7 +117,6 @@ void SymbolMap::Populate() {
   }
 
   // Retrieve the debug info struct.
-  constexpr size_t map_capacity = sizeof(entries_);
   uintptr_t debug_addr;
   status = zx_object_get_property(process, ZX_PROP_PROCESS_DEBUG_ADDR,
                                   &debug_addr, sizeof(debug_addr));
@@ -135,7 +135,7 @@ void SymbolMap::Populate() {
 
   // Copy the contents of the link map linked list to |entries_|.
   while (lmap != nullptr) {
-    if (count_ == map_capacity) {
+    if (count_ >= arraysize(entries_)) {
       break;
     }
     SymbolMap::Entry* next_entry = &entries_[count_];
@@ -172,8 +172,8 @@ StackTrace::StackTrace(size_t count) : count_(0) {
   _Unwind_Backtrace(&UnwindStore, &data);
 }
 
-void StackTrace::Print() const {
-  OutputToStream(&std::cerr);
+void StackTrace::PrintWithPrefix(const char* prefix_string) const {
+  OutputToStreamWithPrefix(&std::cerr, prefix_string);
 }
 
 // Sample stack trace output is designed to be similar to Fuchsia's crashlogger:
@@ -184,12 +184,15 @@ void StackTrace::Print() const {
 // bt#21: pc 0x1527a05b51b4 (app:/system/base_unittests,0x18e81b4)
 // bt#22: pc 0x54fdbf3593de (libc.so,0x1c3de)
 // bt#23: end
-void StackTrace::OutputToStream(std::ostream* os) const {
+void StackTrace::OutputToStreamWithPrefix(std::ostream* os,
+                                          const char* prefix_string) const {
   SymbolMap map;
 
   size_t i = 0;
   for (; (i < count_) && os->good(); ++i) {
     SymbolMap::Entry* entry = map.GetForAddress(trace_[i]);
+    if (prefix_string)
+      *os << prefix_string;
     if (entry) {
       size_t offset = reinterpret_cast<uintptr_t>(trace_[i]) -
                       reinterpret_cast<uintptr_t>(entry->addr);

@@ -78,32 +78,17 @@ void GetImeTextSpans(HIMC imm_context,
         ime_text_span.start_offset = clause_data[i];
         ime_text_span.end_offset = clause_data[i + 1];
         ime_text_span.underline_color = SK_ColorBLACK;
-        ime_text_span.thick = false;
+        ime_text_span.thickness = ui::ImeTextSpan::Thickness::kThin;
         ime_text_span.background_color = SK_ColorTRANSPARENT;
 
         // Use thick underline for the target clause.
         if (ime_text_span.start_offset >= static_cast<uint32_t>(target_start) &&
             ime_text_span.end_offset <= static_cast<uint32_t>(target_end)) {
-          ime_text_span.thick = true;
+          ime_text_span.thickness = ui::ImeTextSpan::Thickness::kThick;
         }
         ime_text_spans->push_back(ime_text_span);
       }
     }
-  }
-}
-
-// Checks if a given primary language ID is a RTL language.
-bool IsRTLPrimaryLangID(LANGID lang) {
-  switch (lang) {
-    case LANG_ARABIC:
-    case LANG_HEBREW:
-    case LANG_PERSIAN:
-    case LANG_SYRIAC:
-    case LANG_UIGHUR:
-    case LANG_URDU:
-      return true;
-    default:
-      return false;
   }
 }
 
@@ -330,24 +315,24 @@ void IMM32Manager::GetCompositionInfo(HIMC imm_context,
     return;
 
   ImeTextSpan ime_text_span;
-  ime_text_span.underline_color = SK_ColorBLACK;
+  ime_text_span.underline_color = SK_ColorTRANSPARENT;
   ime_text_span.background_color = SK_ColorTRANSPARENT;
   if (target_start > 0) {
     ime_text_span.start_offset = 0U;
     ime_text_span.end_offset = static_cast<uint32_t>(target_start);
-    ime_text_span.thick = false;
+    ime_text_span.thickness = ui::ImeTextSpan::Thickness::kThin;
     composition->ime_text_spans.push_back(ime_text_span);
   }
   if (target_end > target_start) {
     ime_text_span.start_offset = static_cast<uint32_t>(target_start);
     ime_text_span.end_offset = static_cast<uint32_t>(target_end);
-    ime_text_span.thick = true;
+    ime_text_span.thickness = ui::ImeTextSpan::Thickness::kThick;
     composition->ime_text_spans.push_back(ime_text_span);
   }
   if (target_end < length) {
     ime_text_span.start_offset = static_cast<uint32_t>(target_end);
     ime_text_span.end_offset = static_cast<uint32_t>(length);
-    ime_text_span.thick = false;
+    ime_text_span.thickness = ui::ImeTextSpan::Thickness::kThin;
     composition->ime_text_spans.push_back(ime_text_span);
   }
 }
@@ -496,115 +481,12 @@ void IMM32Manager::SetTextInputMode(HWND window_handle,
 }
 
 // static
-bool IMM32Manager::IsRTLKeyboardLayoutInstalled() {
-  static enum {
-    RTL_KEYBOARD_LAYOUT_NOT_INITIALIZED,
-    RTL_KEYBOARD_LAYOUT_INSTALLED,
-    RTL_KEYBOARD_LAYOUT_NOT_INSTALLED,
-    RTL_KEYBOARD_LAYOUT_ERROR,
-  } layout = RTL_KEYBOARD_LAYOUT_NOT_INITIALIZED;
-
-  // Cache the result value.
-  if (layout != RTL_KEYBOARD_LAYOUT_NOT_INITIALIZED)
-    return layout == RTL_KEYBOARD_LAYOUT_INSTALLED;
-
-  // Retrieve the number of layouts installed in this system.
-  int size = GetKeyboardLayoutList(0, NULL);
-  if (size <= 0) {
-    layout = RTL_KEYBOARD_LAYOUT_ERROR;
-    return false;
-  }
-
-  // Retrieve the keyboard layouts in an array and check if there is an RTL
-  // layout in it.
-  std::unique_ptr<HKL[]> layouts(new HKL[size]);
-  ::GetKeyboardLayoutList(size, layouts.get());
-  for (int i = 0; i < size; ++i) {
-    if (IsRTLPrimaryLangID(
-            PRIMARYLANGID(reinterpret_cast<uintptr_t>(layouts[i])))) {
-      layout = RTL_KEYBOARD_LAYOUT_INSTALLED;
-      return true;
-    }
-  }
-
-  layout = RTL_KEYBOARD_LAYOUT_NOT_INSTALLED;
-  return false;
-}
-
-bool IMM32Manager::IsCtrlShiftPressed(base::i18n::TextDirection* direction) {
-  uint8_t keystate[256];
-  if (!::GetKeyboardState(&keystate[0]))
-    return false;
-
-  // To check if a user is pressing only a control key and a right-shift key
-  // (or a left-shift key), we use the steps below:
-  // 1. Check if a user is pressing a control key and a right-shift key (or
-  //    a left-shift key).
-  // 2. If the condition 1 is true, we should check if there are any other
-  //    keys pressed at the same time.
-  //    To ignore the keys checked in 1, we set their status to 0 before
-  //    checking the key status.
-  const int kKeyDownMask = 0x80;
-  if ((keystate[VK_CONTROL] & kKeyDownMask) == 0)
-    return false;
-
-  if (keystate[VK_RSHIFT] & kKeyDownMask) {
-    keystate[VK_RSHIFT] = 0;
-    *direction = base::i18n::RIGHT_TO_LEFT;
-  } else if (keystate[VK_LSHIFT] & kKeyDownMask) {
-    keystate[VK_LSHIFT] = 0;
-    *direction = base::i18n::LEFT_TO_RIGHT;
-  } else {
-    return false;
-  }
-
-  // Scan the key status to find pressed keys. We should abandon changing the
-  // text direction when there are other pressed keys.
-  // This code is executed only when a user is pressing a control key and a
-  // right-shift key (or a left-shift key), i.e. we should ignore the status of
-  // the keys: VK_SHIFT, VK_CONTROL, VK_RCONTROL, and VK_LCONTROL.
-  // So, we reset their status to 0 and ignore them.
-  keystate[VK_SHIFT] = 0;
-  keystate[VK_CONTROL] = 0;
-  keystate[VK_RCONTROL] = 0;
-  keystate[VK_LCONTROL] = 0;
-  // Oddly, pressing F10 in another application seemingly breaks all subsequent
-  // calls to GetKeyboardState regarding the state of the F22 key. Perhaps this
-  // defect is limited to my keyboard driver, but ignoring F22 should be okay.
-  keystate[VK_F22] = 0;
-  for (int i = 0; i <= VK_PACKET; ++i) {
-    if (keystate[i] & kKeyDownMask)
-      return false;
-  }
-  return true;
-}
-
 void IMM32Manager::ConvertInputModeToImmFlags(TextInputMode input_mode,
                                               DWORD initial_conversion_mode,
                                               BOOL* open,
                                               DWORD* new_conversion_mode) {
-  *open = TRUE;
+  *open = FALSE;
   *new_conversion_mode = initial_conversion_mode;
-  switch (input_mode) {
-    case ui::TEXT_INPUT_MODE_FULL_WIDTH_LATIN:
-      *new_conversion_mode |= IME_CMODE_FULLSHAPE;
-      *new_conversion_mode &= ~(IME_CMODE_NATIVE
-                              | IME_CMODE_KATAKANA);
-      break;
-    case ui::TEXT_INPUT_MODE_KANA:
-      *new_conversion_mode |= (IME_CMODE_NATIVE
-                             | IME_CMODE_FULLSHAPE);
-      *new_conversion_mode &= ~IME_CMODE_KATAKANA;
-      break;
-    case ui::TEXT_INPUT_MODE_KATAKANA:
-      *new_conversion_mode |= (IME_CMODE_NATIVE
-                             | IME_CMODE_KATAKANA
-                             | IME_CMODE_FULLSHAPE);
-      break;
-    default:
-      *open = FALSE;
-      break;
-  }
 }
 
 }  // namespace ui

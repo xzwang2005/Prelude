@@ -35,7 +35,7 @@ function mergeLeafHistograms(groupedHistograms, mergedHistograms) {
     }
 
     if (histograms.length === 1) {
-      mergedHistograms.addHistogram(histograms[0]);
+      mergedHistograms.addHistogram(histograms[0].clone());
       continue;
     }
 
@@ -63,15 +63,15 @@ function stripInternalDiagnostics(mergedHistograms) {
     hist.diagnostics.delete(tr.v.d.RESERVED_NAMES.MERGED_FROM);
     hist.diagnostics.delete(tr.v.d.RESERVED_NAMES.MERGED_TO);
     hist.diagnostics.delete(tr.v.d.RESERVED_NAMES.GROUPING_PATH);
+    hist.diagnostics.delete(tr.v.d.RESERVED_NAMES.TEST_PATH);
   }
 }
 
-if (tr.isHeadless) {
+function mergeHistograms(histogramsPath, groupingKeys) {
   const histograms = new tr.v.HistogramSet();
-  histograms.importDicts(JSON.parse(tr.b.getSync('file://' + sys.argv[1])));
+  histograms.importDicts(JSON.parse(tr.b.getSync('file://' + histogramsPath)));
   histograms.resolveRelatedHistograms();
   histograms.buildGroupingsFromTags([tr.v.d.RESERVED_NAMES.STORY_TAGS]);
-  const groupingKeys = sys.argv.slice(2);
   const groupings = groupingKeys.map(findGrouping);
   const groupedHistograms = histograms.groupHistogramsRecursively(groupings);
   const mergedHistograms = new tr.v.HistogramSet();
@@ -79,6 +79,11 @@ if (tr.isHeadless) {
   mergedHistograms.deduplicateDiagnostics();
   mergedHistograms.mergeRelationships();
   stripInternalDiagnostics(mergedHistograms);
+  return mergedHistograms;
+}
+
+if (tr.isHeadless) {
+  const mergedHistograms = mergeHistograms(sys.argv[1], sys.argv.slice(2));
   console.log(JSON.stringify(mergedHistograms.asDicts()));
 }
 </script>

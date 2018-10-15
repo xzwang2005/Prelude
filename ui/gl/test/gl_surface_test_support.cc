@@ -37,6 +37,7 @@ void InitializeOneOffHelper(bool init_extensions) {
   ui::OzonePlatform::InitParams params;
   params.single_process = true;
   ui::OzonePlatform::InitializeForGPU(params);
+  ui::OzonePlatform::GetInstance()->AfterSandboxEntry();
 #endif
 
   ui::test::EnableTestConfigForPlatformWindows();
@@ -52,7 +53,7 @@ void InitializeOneOffHelper(bool init_extensions) {
 
 #if defined(OS_ANDROID) || defined(OS_FUCHSIA)
   // On Android we always use hardware GL.
-  // On Fuchsia, we always use fake GL, but we don't want Mesa or other software
+  // On Fuchsia, we always use fake GL, but we don't want any software
   // GLs, but rather a stub implementation.
   use_software_gl = false;
 #endif
@@ -63,10 +64,7 @@ void InitializeOneOffHelper(bool init_extensions) {
 
   GLImplementation impl = allowed_impls[0];
   if (use_software_gl)
-    impl = kGLImplementationOSMesaGL;  // FIXME(sugoi): change to
-                                       // gl::GetSoftwareGLImplementation() when
-                                       // SwiftShader is used for Layout Tests
-                                       // on all platforms
+    impl = gl::GetSoftwareGLImplementation();
 
   DCHECK(!base::CommandLine::ForCurrentProcess()->HasSwitch(switches::kUseGL))
       << "kUseGL has not effect in tests";
@@ -116,19 +114,27 @@ void GLSurfaceTestSupport::InitializeOneOffWithMockBindings() {
   ui::OzonePlatform::InitParams params;
   params.single_process = true;
   ui::OzonePlatform::InitializeForGPU(params);
+  ui::OzonePlatform::GetInstance()->AfterSandboxEntry();
 #endif
 
   InitializeOneOffImplementation(kGLImplementationMockGL, false);
 }
 
+// static
 void GLSurfaceTestSupport::InitializeOneOffWithStubBindings() {
 #if defined(USE_OZONE)
   ui::OzonePlatform::InitParams params;
   params.single_process = true;
   ui::OzonePlatform::InitializeForGPU(params);
+  ui::OzonePlatform::GetInstance()->AfterSandboxEntry();
 #endif
 
   InitializeOneOffImplementation(kGLImplementationStubGL, false);
+}
+
+// static
+void GLSurfaceTestSupport::ShutdownGL() {
+  init::ShutdownGL(false);
 }
 
 }  // namespace gl

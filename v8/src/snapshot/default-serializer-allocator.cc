@@ -5,6 +5,7 @@
 #include "src/snapshot/default-serializer-allocator.h"
 
 #include "src/heap/heap-inl.h"
+#include "src/snapshot/references.h"
 #include "src/snapshot/serializer.h"
 #include "src/snapshot/snapshot-source-sink.h"
 
@@ -19,18 +20,34 @@ DefaultSerializerAllocator::DefaultSerializerAllocator(
   }
 }
 
+void DefaultSerializerAllocator::UseCustomChunkSize(uint32_t chunk_size) {
+  custom_chunk_size_ = chunk_size;
+}
+
+static uint32_t PageSizeOfSpace(int space) {
+  return static_cast<uint32_t>(
+      MemoryAllocator::PageAreaSize(static_cast<AllocationSpace>(space)));
+}
+
+uint32_t DefaultSerializerAllocator::TargetChunkSize(int space) {
+  if (custom_chunk_size_ == 0) return PageSizeOfSpace(space);
+  DCHECK_LE(custom_chunk_size_, PageSizeOfSpace(space));
+  return custom_chunk_size_;
+}
+
 SerializerReference DefaultSerializerAllocator::Allocate(AllocationSpace space,
                                                          uint32_t size) {
   DCHECK(space >= 0 && space < kNumberOfPreallocatedSpaces);
-  DCHECK(size > 0 && size <= MaxChunkSizeInSpace(space));
+  DCHECK(size > 0 && size <= PageSizeOfSpace(space));
 
   // Maps are allocated through AllocateMap.
   DCHECK_NE(MAP_SPACE, space);
 
-  uint32_t new_chunk_size = pending_chunk_[space] + size;
-  if (new_chunk_size > MaxChunkSizeInSpace(space)) {
-    // The new chunk size would not fit onto a single page. Complete the
-    // current chunk and start a new one.
+  uint32_t old_chunk_size = pending_chunk_[space];
+  uint32_t new_chunk_size = old_chunk_size + size;
+  // Start a new chunk if the new size exceeds the target chunk size.
+  // We may exceed the target chunk size if the single object size does.
+  if (new_chunk_size > TargetChunkSize(space) && old_chunk_size != 0) {
     serializer_->PutNextChunk(space);
     completed_chunks_[space].push_back(pending_chunk_[space]);
     pending_chunk_[space] = 0;
@@ -70,6 +87,11 @@ bool DefaultSerializerAllocator::BackReferenceIsAlreadyAllocated(
     return reference.large_object_index() < seen_large_objects_index_;
   } else if (space == MAP_SPACE) {
     return reference.map_index() < num_maps_;
+  } else if (space == RO_SPACE &&
+             serializer_->isolate()->heap()->deserialization_complete()) {
+    // If not deserializing the isolate itself, then we create BackReferences
+    // for all RO_SPACE objects without ever allocating.
+    return true;
   } else {
     size_t chunk_index = reference.chunk_index();
     if (chunk_index == completed_chunks_[space].size()) {
@@ -86,8 +108,7 @@ std::vector<SerializedData::Reservation>
 DefaultSerializerAllocator::EncodeReservations() const {
   std::vector<SerializedData::Reservation> out;
 
-  STATIC_ASSERT(NEW_SPACE == 0);
-  for (int i = 0; i < kNumberOfPreallocatedSpaces; i++) {
+  for (int i = FIRST_SPACE; i < kNumberOfPreallocatedSpaces; i++) {
     for (size_t j = 0; j < completed_chunks_[i].size(); j++) {
       out.emplace_back(completed_chunks_[i][j]);
     }
@@ -114,14 +135,12 @@ void DefaultSerializerAllocator::OutputStatistics() {
 
   PrintF("  Spaces (bytes):\n");
 
-  STATIC_ASSERT(NEW_SPACE == 0);
-  for (int space = 0; space < kNumberOfSpaces; space++) {
+  for (int space = FIRST_SPACE; space < kNumberOfSpaces; space++) {
     PrintF("%16s", AllocationSpaceName(static_cast<AllocationSpace>(space)));
   }
   PrintF("\n");
 
-  STATIC_ASSERT(NEW_SPACE == 0);
-  for (int space = 0; space < kNumberOfPreallocatedSpaces; space++) {
+  for (int space = FIRST_SPACE; space < kNumberOfPreallocatedSpaces; space++) {
     size_t s = pending_chunk_[space];
     for (uint32_t chunk_size : completed_chunks_[space]) s += chunk_size;
     PrintF("%16" PRIuS, s);
@@ -132,14 +151,6 @@ void DefaultSerializerAllocator::OutputStatistics() {
 
   STATIC_ASSERT(LO_SPACE == MAP_SPACE + 1);
   PrintF("%16d\n", large_objects_total_size_);
-}
-
-// static
-uint32_t DefaultSerializerAllocator::MaxChunkSizeInSpace(int space) {
-  DCHECK(0 <= space && space < kNumberOfPreallocatedSpaces);
-
-  return static_cast<uint32_t>(
-      MemoryAllocator::PageAreaSize(static_cast<AllocationSpace>(space)));
 }
 
 }  // namespace internal

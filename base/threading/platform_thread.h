@@ -17,11 +17,11 @@
 #include "build/build_config.h"
 
 #if defined(OS_WIN)
-#include <windows.h>
-#elif defined(OS_MACOSX)
-#include <mach/mach_types.h>
+#include "base/win/windows_types.h"
 #elif defined(OS_FUCHSIA)
 #include <zircon/types.h>
+#elif defined(OS_MACOSX)
+#include <mach/mach_types.h>
 #elif defined(OS_POSIX)
 #include <pthread.h>
 #include <unistd.h>
@@ -32,10 +32,10 @@ namespace base {
 // Used for logging. Always an integer value.
 #if defined(OS_WIN)
 typedef DWORD PlatformThreadId;
-#elif defined(OS_MACOSX)
-typedef mach_port_t PlatformThreadId;
 #elif defined(OS_FUCHSIA)
 typedef zx_handle_t PlatformThreadId;
+#elif defined(OS_MACOSX)
+typedef mach_port_t PlatformThreadId;
 #elif defined(OS_POSIX)
 typedef pid_t PlatformThreadId;
 #endif
@@ -52,16 +52,12 @@ class PlatformThreadRef {
  public:
 #if defined(OS_WIN)
   typedef DWORD RefType;
-#elif defined(OS_POSIX)
+#else  //  OS_POSIX
   typedef pthread_t RefType;
 #endif
-  PlatformThreadRef()
-      : id_(0) {
-  }
+  constexpr PlatformThreadRef() : id_(0) {}
 
-  explicit PlatformThreadRef(RefType id)
-      : id_(id) {
-  }
+  explicit constexpr PlatformThreadRef(RefType id) : id_(id) {}
 
   bool operator==(PlatformThreadRef other) const {
     return id_ == other.id_;
@@ -81,13 +77,13 @@ class PlatformThreadHandle {
  public:
 #if defined(OS_WIN)
   typedef void* Handle;
-#elif defined(OS_POSIX)
+#elif defined(OS_POSIX) || defined(OS_FUCHSIA)
   typedef pthread_t Handle;
 #endif
 
-  PlatformThreadHandle() : handle_(0) {}
+  constexpr PlatformThreadHandle() : handle_(0) {}
 
-  explicit PlatformThreadHandle(Handle handle) : handle_(handle) {}
+  explicit constexpr PlatformThreadHandle(Handle handle) : handle_(handle) {}
 
   bool is_equal(const PlatformThreadHandle& other) const {
     return handle_ == other.handle_;
@@ -130,7 +126,7 @@ class BASE_EXPORT PlatformThread {
     virtual void ThreadMain() = 0;
 
    protected:
-    virtual ~Delegate() {}
+    virtual ~Delegate() = default;
   };
 
   // Gets the current thread id, which may be useful for logging purposes.
@@ -200,9 +196,9 @@ class BASE_EXPORT PlatformThread {
   // and |thread_handle| is invalidated after this call.
   static void Detach(PlatformThreadHandle thread_handle);
 
-  // Returns true if SetCurrentThreadPriority() can be used to increase the
-  // priority of the current thread.
-  static bool CanIncreaseCurrentThreadPriority();
+  // Returns true if SetCurrentThreadPriority() should be able to increase the
+  // priority of a thread to |priority|.
+  static bool CanIncreaseThreadPriority(ThreadPriority priority);
 
   // Toggles the current thread's priority at runtime.
   //

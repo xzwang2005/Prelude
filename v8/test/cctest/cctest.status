@@ -69,18 +69,35 @@
   # This tests API threading, no point in running several variants.
   'test-api/Threading*': [PASS, SLOW, NO_VARIANTS],
 
+  # TODO(ulan): Renable after fixing the test's brittleness.
+  'test-heap/OutOfMemory': [SKIP],
+
   # BUG(5193). The cpu profiler tests are notoriously flaky.
+  'test-profile-generator/RecordStackTraceAtStartProfiling': [SKIP],
   'test-cpu-profiler/CollectCpuProfile': [SKIP],
+  'test-cpu-profiler/CollectCpuProfileCallerLineNumbers': [FAIL, PASS],
+  'test-cpu-profiler/CollectCpuProfileSamples': [SKIP],
   'test-cpu-profiler/CollectDeoptEvents': [SKIP],
   'test-cpu-profiler/CpuProfileDeepStack': [SKIP],
+  'test-cpu-profiler/DeoptAtFirstLevelInlinedSource': [SKIP],
+  'test-cpu-profiler/DeoptAtSecondLevelInlinedSource': [SKIP],
+  'test-cpu-profiler/DeoptUntrackedFunction': [SKIP],
   'test-cpu-profiler/FunctionApplySample': [SKIP],
   'test-cpu-profiler/HotDeoptNoFrameEntry': [SKIP],
   'test-cpu-profiler/JsNative1JsNative2JsSample': [SKIP],
   'test-cpu-profiler/JsNativeJsRuntimeJsSample': [SKIP],
   'test-cpu-profiler/JsNativeJsRuntimeJsSampleMultiple': [SKIP],
   'test-cpu-profiler/JsNativeJsSample': [SKIP],
+  'test-cpu-profiler/NativeAccessorUninitializedIC': [SKIP],
   'test-cpu-profiler/SampleWhenFrameIsNotSetup': [SKIP],
+  'test-cpu-profiler/TracingCpuProfiler': [SKIP],
   'test-sampler/LibSamplerCollectSample': [SKIP],
+
+  # BUG(7702). Flaky data race and other test failures.
+  'test-cpu-profiler/MultipleProfilers': [SKIP],
+
+  # BUG(7202). The test is flaky.
+  'test-cpu-profiler/NativeFrameStackTrace': [SKIP],
 
   # BUG(7054)
   'test-cpu-profiler/StaticCollectSampleAPI': [SKIP],
@@ -104,6 +121,7 @@
 
   # Test that serialization with unknown external reference fails.
   'test-serialize/SnapshotCreatorUnknownExternalReferences': [FAIL],
+  'test-serialize/SnapshotCreatorUnknownHandles': [FAIL],
   'test-serialize/SnapshotCreatorNoExternalReferencesCustomFail1': [FAIL],
   'test-serialize/SnapshotCreatorNoExternalReferencesCustomFail2': [FAIL],
 
@@ -136,7 +154,7 @@
   'test-mark-compact/Promotion': [PASS, FAIL],
 
   # BUG(v8:3434).
-  ' test-api/LoadICFastApi_DirectCall_GCMoveStubWithProfiler': [SKIP],
+  'test-api/LoadICFastApi_DirectCall_GCMoveStubWithProfiler': [SKIP],
 }],  # 'arch == arm64'
 
 ['arch == arm64 and simulator_run', {
@@ -158,12 +176,20 @@
 }],  # 'arch == arm64 and mode == debug and simulator_run'
 
 ##############################################################################
+# TODO(ahaas): Port multiple return values to ARM, MIPS, S390 and PPC
+['arch == s390 or arch == s390x or arch == ppc or arch == ppc64', {
+  'test-multiple-return/*': [SKIP],
+}],
+##############################################################################
 ['asan == True', {
   # Skip tests not suitable for ASAN.
   'test-assembler-x64/AssemblerX64XchglOperations': [SKIP],
 
   # BUG(v8:5193): Flaky.
   'test-cpu-profiler/TickEvents': [SKIP],
+
+  # BUG(v8:7587): Strange breakage on Mac.
+  'test-log-stack-tracer/PureJSStackTrace': [SKIP],
 }],  # 'asan == True'
 
 ##############################################################################
@@ -178,6 +204,8 @@
   'test-cpu-profiler/TickEvents': [SKIP],
   # BUG(v8:6924). The test allocates a lot of memory.
   'test-api/NewStringRangeError': [PASS, NO_VARIANTS],
+  # BUG(v8:8209). Flaky
+  'test-cpu-profiler/Issue1398': [SKIP],
 }],  # 'tsan == True'
 
 ##############################################################################
@@ -190,6 +218,9 @@
   # support.
   'test-serialize/CustomSnapshotDataBlobWithWarmup': [SKIP],
   'test-serialize/SnapshotDataBlobWithWarmup': [SKIP],
+
+  # https://crbug.com/v8/7763
+  'test-lockers/ExtensionsRegistration': [SKIP],
 }],  # 'no_snap == True'
 ['no_snap == False', {
   # FunctionEntryHooks require bootstrapping from scratch.
@@ -211,14 +242,11 @@
   # platforms, since this would require bit swapping as a part of atomic
   # operations.
   'test-run-wasm-atomics/*': [SKIP],
+  'test-run-wasm-atomics64/*': [SKIP],
 }],  # 'byteorder == big'
 
 ##############################################################################
 ['system == windows', {
-
-  # BUG(3331). Fails on windows.
-  'test-heap/NoWeakHashTableLeakWithIncrementalMarking': [SKIP],
-
   # BUG(v8:4573).
   'test-api/MultipleIsolatesOnIndividualThreads': [PASS, NO_VARIANTS],
 
@@ -262,6 +290,16 @@
 }],  # 'arch == arm'
 
 ##############################################################################
+['arch == arm and not simulator_run', {
+  # crbug.com/v8/7605
+  'test-heap/OutOfMemorySmallObjects': [SKIP],
+
+  # BUG(v8:8201).
+  'test-run-wasm-atomics/*': [SKIP],
+  'test-run-wasm-atomics64/*': [SKIP],
+}],  # 'arch == arm and not simulator_run'
+
+##############################################################################
 ['arch == mipsel or arch == mips', {
   # TODO(mips-team): Improve code-size on large RegExp's.
   'test-heap/TestSizeOfRegExpCode':  [SKIP],
@@ -285,6 +323,11 @@
 }],  # 'arch == mips'
 
 ##############################################################################
+['arch == mips64', {
+  # TODO(mips-team): Currently fails on mips64 board.
+  'test-run-wasm/RunWasmLiftoff_I32Binop*': [SKIP],
+}],  # 'arch == mips64'
+##############################################################################
 ['arch == mips64el or arch == mips64', {
   # BUG(v8:3154).
   'test-heap/ReleaseOverReservedPages': [PASS, FAIL],
@@ -300,12 +343,31 @@
 }],  # 'arch == mips64el or arch == mips64'
 
 ##############################################################################
-['arch == mips or arch == mipsel or arch == mips64 or arch == mips64el', {
-  # For now skip wasm SIMD tests that fail when MSA instr. extension is not
-  # available (currently simd-scalar-lowering mechanism doesn't work properly
-  # for all SIMD operations)
-  'test-run-wasm-simd/*': [SKIP],
-}],  # 'arch == mips or arch == mipsel or arch == mips64 or arch == mips64el'
+['(arch == mipsel or arch == mips64el or arch == mips or arch == mips64) and not simd_mips', {
+  # Skip tests that fail on MIPS architectures which don't support SIMD,
+  # because lowering mechanism doesn't work properly
+  'test-run-wasm-simd/RunWasm_ReductionTest4_compiled': [SKIP],
+  'test-run-wasm-simd/RunWasm_ReductionTest8_compiled': [SKIP],
+  'test-run-wasm-simd/RunWasm_ReductionTest16_compiled': [SKIP],
+}],  # '(arch == mipsel or arch == mips64el or arch == mips or arch == mips64) and not simd_mips'
+
+##############################################################################
+['arch == mipsel or arch == mips64el or arch == mips or arch == mips64 or arch == ppc or arch == ppc64 or arch == s390 or arch == s390x', {
+  # TODO(mips-team): Implement I64Atomic operations on MIPS
+  # TODO(ppc-team, s390-team): Implement I64Atomic operations on PPC/s390
+  'test-run-wasm-atomics64/*': [SKIP],
+}],  # 'arch == mipsel or arch == mips64el or arch == mips or arch == mips64 or arch == ppc or arch == ppc64 or arch == s390 or arch == s390x'
+
+##############################################################################
+['mips_arch_variant == r6', {
+  # For MIPS[64] architecture release 6, fusion multiply-accumulate instructions
+  # will cause failures on several tests that expect exact floating-point
+  # results.
+  'test-run-machops/RunFloat64MulAndFloat64Add1': [SKIP],
+  'test-run-machops/RunFloat64MulAndFloat64Add2': [SKIP],
+  'test-run-machops/RunFloat64MulAndFloat64Sub1': [SKIP],
+  'test-run-machops/RunFloat64MulAndFloat64Sub2': [SKIP],
+}],  # 'mips_arch_variant == r6'
 
 ##############################################################################
 ['arch == android_arm or arch == android_ia32', {
@@ -315,6 +377,12 @@
   'test-log/LogCallbacks': [SKIP],
   'test-log/ProfLazyMode': [SKIP],
 }],  # 'arch == android_arm or arch == android_ia32'
+
+##############################################################################
+['system == android', {
+  # Uses too much memory.
+  'test-api/NewStringRangeError': [SKIP],
+}],  # 'system == android'
 
 ##############################################################################
 ['system == aix and arch == ppc64', {
@@ -335,6 +403,7 @@
   # TODO(ppc): Implement load/store reverse byte instructions
   'test-run-wasm-simd/RunWasmCompiled_SimdLoadStoreLoad': [SKIP],
   'test-run-wasm-simd/RunWasm_SimdLoadStoreLoad': [SKIP],
+  'test-run-wasm-simd/RunWasm_SimdLoadStoreLoad_turbofan': [SKIP],
 
 }],  # 'system == aix or (arch == ppc64 and byteorder == big)'
 
@@ -361,7 +430,7 @@
 }],  # variant == stress_incremental_marking
 
 ##############################################################################
-['variant == wasm_traps', {
+['variant == no_wasm_traps', {
   'test-accessors/*': [SKIP],
   'test-api-interceptors/*': [SKIP],
   'test-api/*': [SKIP],
@@ -383,6 +452,6 @@
   'test-log/*': [SKIP],
   'test-gap-resolver/*': [SKIP],
   'test-dtoa/*': [SKIP],
-}],  # variant == wasm_traps
+}],  # variant == no_wasm_traps
 
 ]

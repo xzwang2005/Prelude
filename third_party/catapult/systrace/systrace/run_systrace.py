@@ -14,6 +14,7 @@ the kernel.  It creates an HTML file for visualizing the trace.
 # The flags= parameter of re.sub() is new in Python 2.7. And Systrace does not
 # support Python 3 yet.
 
+# pylint: disable=wrong-import-position
 import sys
 
 version = sys.version_info[:2]
@@ -44,13 +45,13 @@ from systrace import util
 from systrace.tracing_agents import atrace_agent
 from systrace.tracing_agents import atrace_from_file_agent
 from systrace.tracing_agents import atrace_process_dump
-from systrace.tracing_agents import battor_trace_agent
 from systrace.tracing_agents import ftrace_agent
 from systrace.tracing_agents import walt_agent
+# pylint: enable=wrong-import-position
 
 
 ALL_MODULES = [atrace_agent, atrace_from_file_agent, atrace_process_dump,
-               battor_trace_agent, ftrace_agent, walt_agent]
+               ftrace_agent, walt_agent]
 
 
 def parse_options(argv):
@@ -81,7 +82,11 @@ def parse_options(argv):
   options, categories = parser.parse_args(argv[1:])
 
   if options.output_file is None:
-    options.output_file = 'trace.json' if options.write_json else 'trace.html'
+    base = 'trace'
+    if options.from_file is not None:
+      base = os.path.splitext(options.from_file)[0]
+    suffix = '.json' if options.write_json else '.html'
+    options.output_file = base + suffix
 
   if options.link_assets or options.asset_dir != 'trace-viewer':
     parser.error('--link-assets and --asset-dir are deprecated.')
@@ -154,13 +159,16 @@ def main_impl(arguments):
 
   if options.target == 'android' and not options.from_file:
     initialize_devil()
+    devices = [a.GetDeviceSerial() for a in adb_wrapper.AdbWrapper.Devices()]
     if not options.device_serial_number:
-      devices = [a.GetDeviceSerial() for a in adb_wrapper.AdbWrapper.Devices()]
       if len(devices) == 0:
         raise RuntimeError('No ADB devices connected.')
       elif len(devices) >= 2:
         raise RuntimeError('Multiple devices connected, serial number required')
       options.device_serial_number = devices[0]
+    elif options.device_serial_number not in devices:
+      raise RuntimeError('Device with the serial number "%s" is not connected.'
+                         % options.device_serial_number)
 
   # If list_categories is selected, just print the list of categories.
   # In this case, use of the tracing controller is not necessary.

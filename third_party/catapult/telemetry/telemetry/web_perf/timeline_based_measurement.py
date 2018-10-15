@@ -3,8 +3,8 @@
 # found in the LICENSE file.
 import collections
 import logging
+import os
 import time
-from collections import defaultdict
 
 from tracing.metrics import metric_runner
 
@@ -68,7 +68,7 @@ class _TBMResultWrapper(ResultsWrapperInterface):
 
 
 def _GetRendererThreadsToInteractionRecordsMap(model):
-  threads_to_records_map = defaultdict(list)
+  threads_to_records_map = collections.defaultdict(list)
   interaction_labels_of_previous_threads = set()
   for curr_thread in model.GetAllThreads():
     for event in curr_thread.async_slices:
@@ -97,7 +97,7 @@ class _TimelineBasedMetrics(object):
     self._all_metrics = metrics
 
   def AddResults(self, results):
-    interactions_by_label = defaultdict(list)
+    interactions_by_label = collections.defaultdict(list)
     for i in self._interaction_records:
       interactions_by_label[i.label].append(i)
 
@@ -160,9 +160,11 @@ class Options(object):
 
 
   def ExtendTraceCategoryFilter(self, filters):
-    category_filter = self._config.chrome_trace_config.category_filter
-    for new_category_filter in filters:
-      category_filter.AddIncludedCategory(new_category_filter)
+    for category_filter in filters:
+      self.AddTraceCategoryFilter(category_filter)
+
+  def AddTraceCategoryFilter(self, category_filter):
+    self._config.chrome_trace_config.category_filter.AddFilter(category_filter)
 
   @property
   def category_filter(self):
@@ -171,6 +173,10 @@ class Options(object):
   @property
   def config(self):
     return self._config
+
+  def ExtendTimelineBasedMetric(self, metrics):
+    for metric in metrics:
+      self.AddTimelineBasedMetric(metric)
 
   def AddTimelineBasedMetric(self, metric):
     assert isinstance(metric, basestring)
@@ -257,7 +263,6 @@ class TimelineBasedMeasurement(story_test.StoryTest):
   def Measure(self, platform, results):
     """Collect all possible metrics and added them to results."""
     platform.tracing_controller.telemetry_info = results.telemetry_info
-    # TODO(charliea): Add all nonfatal errors to results as FailureValues.
     trace_result, _ = platform.tracing_controller.StopTracing()
     trace_value = trace.TraceValue(
         results.current_page, trace_result,
@@ -286,7 +291,6 @@ class TimelineBasedMeasurement(story_test.StoryTest):
   def DidRunStory(self, platform, results):
     """Clean up after running the story."""
     if platform.tracing_controller.is_tracing_running:
-      # TODO(charliea): Add all nonfatal errors to results as FailureValues.
       trace_result, _ = platform.tracing_controller.StopTracing()
       trace_value = trace.TraceValue(
           results.current_page, trace_result,
@@ -301,22 +305,27 @@ class TimelineBasedMeasurement(story_test.StoryTest):
     extra_import_options = {
         'trackDetailedModelStats': True
     }
+    trace_size_in_mib = os.path.getsize(trace_value.filename) / (2 ** 20)
+    # Bails out on trace that are too big. See crbug.com/812631 for more
+    # details.
+    if trace_size_in_mib > 400:
+      results.Fail('Trace size is too big: %s MiB' % trace_size_in_mib)
+      return
 
+    logging.info('Starting to compute metrics on trace')
     start = time.time()
     mre_result = metric_runner.RunMetric(
         trace_value.filename, metrics, extra_import_options,
         report_progress=False, canonical_url=results.telemetry_info.trace_url)
-    logging.warning('Processing resulting traces took %.3f seconds' % (
+    logging.info('Processing resulting traces took %.3f seconds' % (
         time.time() - start))
     page = results.current_page
 
-    failure_dicts = mre_result.failures
-    for d in failure_dicts:
-      results.AddValue(
-          common_value_helpers.TranslateMreFailure(d, page))
+    for f in mre_result.failures:
+      results.Fail(f.stack)
 
-    results.histograms.ImportDicts(mre_result.pairs.get('histograms', []))
-    results.histograms.ResolveRelatedHistograms()
+    histogram_dicts = mre_result.pairs.get('histograms', [])
+    results.ImportHistogramDicts(histogram_dicts)
 
     for d in mre_result.pairs.get('scalars', []):
       results.AddValue(common_value_helpers.TranslateScalarValue(d, page))
@@ -343,3 +352,7 @@ class TimelineBasedMeasurement(story_test.StoryTest):
 
     for metric in all_metrics:
       metric.AddWholeTraceResults(model, results)
+
+  @property
+  def tbm_options(self):
+    return self._tbm_options

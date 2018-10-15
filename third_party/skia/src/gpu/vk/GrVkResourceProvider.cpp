@@ -18,7 +18,6 @@
 #include "GrVkUtil.h"
 
 #ifdef SK_TRACE_VK_RESOURCES
-GrVkResource::Trace GrVkResource::fTrace;
 uint32_t GrVkResource::fKeyCounter = 0;
 #endif
 
@@ -57,16 +56,15 @@ void GrVkResourceProvider::init() {
     fUniformDSHandle = GrVkDescriptorSetManager::Handle(0);
 }
 
-GrVkPipeline* GrVkResourceProvider::createPipeline(const GrPipeline& pipeline,
+GrVkPipeline* GrVkResourceProvider::createPipeline(const GrPrimitiveProcessor& primProc,
+                                                   const GrPipeline& pipeline,
                                                    const GrStencilSettings& stencil,
-                                                   const GrPrimitiveProcessor& primProc,
                                                    VkPipelineShaderStageCreateInfo* shaderStageInfo,
                                                    int shaderStageCount,
                                                    GrPrimitiveType primitiveType,
                                                    const GrVkRenderPass& renderPass,
                                                    VkPipelineLayout layout) {
-
-    return GrVkPipeline::Create(fGpu, pipeline, stencil, primProc, shaderStageInfo,
+    return GrVkPipeline::Create(fGpu, primProc, pipeline, stencil, shaderStageInfo,
                                 shaderStageCount, primitiveType, renderPass, layout,
                                 fPipelineCache);
 }
@@ -88,6 +86,9 @@ GrVkCopyPipeline* GrVkResourceProvider::findOrCreateCopyPipeline(
                                             dst->numColorSamples(),
                                             *dst->simpleRenderPass(),
                                             fPipelineCache);
+        if (!pipeline) {
+            return nullptr;
+        }
         fCopyPipelines.push_back(pipeline);
     }
     SkASSERT(pipeline);
@@ -182,7 +183,7 @@ GrVkPipelineState* GrVkResourceProvider::findOrCreateCompatiblePipelineState(
                                                                  const GrPrimitiveProcessor& proc,
                                                                  GrPrimitiveType primitiveType,
                                                                  const GrVkRenderPass& renderPass) {
-    return fPipelineStateCache->refPipelineState(pipeline, proc, primitiveType, renderPass);
+    return fPipelineStateCache->refPipelineState(proc, pipeline, primitiveType, renderPass);
 }
 
 void GrVkResourceProvider::getSamplerDescriptorSetHandle(VkDescriptorType type,
@@ -379,14 +380,12 @@ void GrVkResourceProvider::destroyResources(bool deviceLost) {
 void GrVkResourceProvider::abandonResources() {
     // release our active command buffers
     for (int i = 0; i < fActiveCommandBuffers.count(); ++i) {
-        SkASSERT(fActiveCommandBuffers[i]->finished(fGpu));
         SkASSERT(fActiveCommandBuffers[i]->unique());
         fActiveCommandBuffers[i]->unrefAndAbandon();
     }
     fActiveCommandBuffers.reset();
     // release our available command buffers
     for (int i = 0; i < fAvailableCommandBuffers.count(); ++i) {
-        SkASSERT(fAvailableCommandBuffers[i]->finished(fGpu));
         SkASSERT(fAvailableCommandBuffers[i]->unique());
         fAvailableCommandBuffers[i]->unrefAndAbandon();
     }

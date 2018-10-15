@@ -110,8 +110,8 @@ class MEDIA_EXPORT SourceBufferRange {
   // |keyframe_map_|.
   // TODO(wolenetz): elevate keyframe_map_ to base class so this comment has
   // better context. See https://crbug.com/718641.
-  void FreeBufferRange(const BufferQueue::iterator& starting_point,
-                       const BufferQueue::iterator& ending_point);
+  void FreeBufferRange(const BufferQueue::const_iterator& starting_point,
+                       const BufferQueue::const_iterator& ending_point);
 
   // Returns the distance in time estimating how far from the beginning or end
   // of this range a buffer can be to considered in the range.
@@ -122,7 +122,7 @@ class MEDIA_EXPORT SourceBufferRange {
 
   // Updates |highest_frame_| if |new_buffer| has a higher PTS than
   // |highest_frame_| or if the range was previously empty.
-  void UpdateEndTime(const scoped_refptr<StreamParserBuffer>& new_buffer);
+  void UpdateEndTime(scoped_refptr<StreamParserBuffer> new_buffer);
 
   // Returns true if |timestamp| is allowed in this range as the timestamp of
   // the next buffer in presentation sequence at or after |highest_frame_|.

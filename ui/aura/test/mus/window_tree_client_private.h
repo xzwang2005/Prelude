@@ -10,32 +10,29 @@
 #include <memory>
 
 #include "base/macros.h"
-#include "services/ui/public/interfaces/window_tree_constants.mojom.h"
+#include "services/ws/public/mojom/window_tree_constants.mojom.h"
 #include "ui/aura/mus/mus_types.h"
+#include "ui/aura/mus/window_tree_client.h"
 
-namespace display {
-class Display;
-}
-
-namespace ui {
-class Event;
-
+namespace ws {
 namespace mojom {
-class WindowManagerClient;
 class WindowTree;
 }
 }
 
+namespace ui {
+class Event;
+}
+
 namespace aura {
 
+class EmbedRoot;
 class Window;
 class WindowMus;
+class WindowTreeClientDelegate;
 class WindowTreeClient;
-class WindowTreeHostMus;
 
 enum class ChangeType;
-
-struct WindowTreeHostMusInitParams;
 
 // Use to access implementation details of WindowTreeClient.
 class WindowTreeClientPrivate {
@@ -44,16 +41,11 @@ class WindowTreeClientPrivate {
   explicit WindowTreeClientPrivate(Window* window);
   ~WindowTreeClientPrivate();
 
+  static std::unique_ptr<WindowTreeClient> CreateWindowTreeClient(
+      WindowTreeClientDelegate* window_tree_delegate);
+
   // Calls OnEmbed() on the WindowTreeClient.
-  void OnEmbed(ui::mojom::WindowTree* window_tree);
-
-  WindowTreeHostMus* CallWmNewDisplayAdded(const display::Display& display);
-  WindowTreeHostMus* CallWmNewDisplayAdded(const display::Display& display,
-                                           ui::mojom::WindowDataPtr root_data,
-                                           bool parent_drawn);
-
-  // Pretends that |event| has been received from the window server.
-  void CallOnWindowInputEvent(Window* window, std::unique_ptr<ui::Event> event);
+  void OnEmbed(ws::mojom::WindowTree* window_tree);
 
   // Simulates |event| matching a pointer watcher on the window server.
   void CallOnPointerEventObserved(Window* window,
@@ -61,33 +53,35 @@ class WindowTreeClientPrivate {
 
   void CallOnCaptureChanged(Window* new_capture, Window* old_capture);
 
-  void CallOnConnect();
-
-  WindowTreeHostMusInitParams CallCreateInitParamsForNewDisplay();
+  // Simulates the EmbedRoot receiving the token from the WindowTree and then
+  // the WindowTree calling OnEmbedFromToken().
+  void CallOnEmbedFromToken(EmbedRoot* embed_root);
 
   // Sets the WindowTree.
-  void SetTree(ui::mojom::WindowTree* window_tree);
-
-  void SetWindowManagerClient(ui::mojom::WindowManagerClient* client);
+  void SetTree(ws::mojom::WindowTree* window_tree);
 
   bool HasPointerWatcher();
 
-  Window* GetWindowByServerId(Id id);
+  Window* GetWindowByServerId(ws::Id id);
 
   WindowMus* NewWindowFromWindowData(WindowMus* parent,
-                                     const ui::mojom::WindowData& window_data);
+                                     const ws::mojom::WindowData& window_data);
 
   bool HasInFlightChanges();
 
   bool HasChangeInFlightOfType(ChangeType type);
 
+  // Calls FlushForTesting() on the mojo::Binding for the WindowTreeClient.
+  void FlushForTesting();
+
  private:
+  ws::mojom::WindowDataPtr CreateWindowDataForEmbed();
+
   WindowTreeClient* tree_client_impl_;
-  uint16_t next_window_id_ = 1u;
 
   DISALLOW_COPY_AND_ASSIGN(WindowTreeClientPrivate);
 };
 
-}  // namespace ui
+}  // namespace aura
 
 #endif  // UI_AURA_TEST_MUS_WINDOW_TREE_CLIENT_PRIVATE_H_

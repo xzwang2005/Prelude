@@ -8,18 +8,17 @@
 
 #include "Resources.h"
 #include "SkCanvas.h"
-#include "SkDocument.h"
 #include "SkOSFile.h"
 #include "SkOSPath.h"
+#include "SkPDFDocument.h"
 #include "SkStream.h"
-#include "SkPixelSerializer.h"
 
 #include "sk_tool_utils.h"
 
 static void test_empty(skiatest::Reporter* reporter) {
     SkDynamicMemoryWStream stream;
 
-    sk_sp<SkDocument> doc(SkDocument::MakePDF(&stream));
+    sk_sp<SkDocument> doc(SkPDF::MakeDocument(&stream));
 
     doc->close();
 
@@ -28,7 +27,7 @@ static void test_empty(skiatest::Reporter* reporter) {
 
 static void test_abort(skiatest::Reporter* reporter) {
     SkDynamicMemoryWStream stream;
-    sk_sp<SkDocument> doc(SkDocument::MakePDF(&stream));
+    sk_sp<SkDocument> doc(SkPDF::MakeDocument(&stream));
 
     SkCanvas* canvas = doc->beginPage(100, 100);
     canvas->drawColor(SK_ColorRED);
@@ -44,16 +43,20 @@ static void test_abortWithFile(skiatest::Reporter* reporter) {
     SkString tmpDir = skiatest::GetTmpDir();
 
     if (tmpDir.isEmpty()) {
-        return;  // TODO(edisonn): unfortunatelly this pattern is used in other
-                 // tests, but if GetTmpDir() starts returning and empty dir
-                 // allways, then all these tests will be disabled.
+        ERRORF(reporter, "missing tmpDir.");
+        return;
     }
 
     SkString path = SkOSPath::Join(tmpDir.c_str(), "aborted.pdf");
+    if (!SkFILEWStream(path.c_str()).isValid()) {
+        ERRORF(reporter, "unable to write to: %s", path.c_str());
+        return;
+    }
 
     // Make sure doc's destructor is called to flush.
     {
-        sk_sp<SkDocument> doc(SkDocument::MakePDF(path.c_str()));
+        SkFILEWStream stream(path.c_str());
+        sk_sp<SkDocument> doc = SkPDF::MakeDocument(&stream);
 
         SkCanvas* canvas = doc->beginPage(100, 100);
         canvas->drawColor(SK_ColorRED);
@@ -72,20 +75,25 @@ static void test_abortWithFile(skiatest::Reporter* reporter) {
 static void test_file(skiatest::Reporter* reporter) {
     SkString tmpDir = skiatest::GetTmpDir();
     if (tmpDir.isEmpty()) {
-        return;  // TODO(edisonn): unfortunatelly this pattern is used in other
-                 // tests, but if GetTmpDir() starts returning and empty dir
-                 // allways, then all these tests will be disabled.
+        ERRORF(reporter, "missing tmpDir.");
+        return;
     }
 
     SkString path = SkOSPath::Join(tmpDir.c_str(), "file.pdf");
+    if (!SkFILEWStream(path.c_str()).isValid()) {
+        ERRORF(reporter, "unable to write to: %s", path.c_str());
+        return;
+    }
 
-    sk_sp<SkDocument> doc(SkDocument::MakePDF(path.c_str()));
+    {
+        SkFILEWStream stream(path.c_str());
+        sk_sp<SkDocument> doc = SkPDF::MakeDocument(&stream);
+        SkCanvas* canvas = doc->beginPage(100, 100);
 
-    SkCanvas* canvas = doc->beginPage(100, 100);
-
-    canvas->drawColor(SK_ColorRED);
-    doc->endPage();
-    doc->close();
+        canvas->drawColor(SK_ColorRED);
+        doc->endPage();
+        doc->close();
+    }
 
     FILE* file = fopen(path.c_str(), "r");
     REPORTER_ASSERT(reporter, file != nullptr);
@@ -97,7 +105,7 @@ static void test_file(skiatest::Reporter* reporter) {
 
 static void test_close(skiatest::Reporter* reporter) {
     SkDynamicMemoryWStream stream;
-    sk_sp<SkDocument> doc(SkDocument::MakePDF(&stream));
+    sk_sp<SkDocument> doc(SkPDF::MakeDocument(&stream));
 
     SkCanvas* canvas = doc->beginPage(100, 100);
     canvas->drawColor(SK_ColorRED);
@@ -117,45 +125,10 @@ DEF_TEST(SkPDF_document_tests, reporter) {
     test_close(reporter);
 }
 
-namespace {
-class JPEGSerializer final : public SkPixelSerializer {
-    bool onUseEncodedData(const void*, size_t) override { return true; }
-    SkData* onEncode(const SkPixmap& pixmap) override {
-        return sk_tool_utils::EncodeImageToData(pixmap, SkEncodedImageFormat::kJPEG, 85).release();
-    }
-};
-}  // namespace
-
-size_t count_bytes(const SkBitmap& bm, bool useDCT) {
-    SkDynamicMemoryWStream stream;
-    sk_sp<SkDocument> doc;
-    if (useDCT) {
-        doc = SkDocument::MakePDF(&stream, SK_ScalarDefaultRasterDPI,
-                                  SkDocument::PDFMetadata(),
-                                  sk_make_sp<JPEGSerializer>(), false);
-    } else {
-        doc = SkDocument::MakePDF(&stream);
-    }
-    SkCanvas* canvas = doc->beginPage(64, 64);
-    canvas->drawBitmap(bm, 0, 0);
-    doc->endPage();
-    doc->close();
-    return stream.bytesWritten();
-}
-
-DEF_TEST(SkPDF_document_dct_encoder, r) {
-    REQUIRE_PDF_DOCUMENT(SkPDF_document_dct_encoder, r);
-    SkBitmap bm;
-    if (GetResourceAsBitmap("images/mandrill_64.png", &bm)) {
-        // Lossy encoding works better on photographs.
-        REPORTER_ASSERT(r, count_bytes(bm, true) < count_bytes(bm, false));
-    }
-}
-
 DEF_TEST(SkPDF_document_skbug_4734, r) {
     REQUIRE_PDF_DOCUMENT(SkPDF_document_skbug_4734, r);
     SkDynamicMemoryWStream stream;
-    sk_sp<SkDocument> doc(SkDocument::MakePDF(&stream));
+    sk_sp<SkDocument> doc(SkPDF::MakeDocument(&stream));
     SkCanvas* canvas = doc->beginPage(64, 64);
     canvas->scale(10000.0f, 10000.0f);
     canvas->translate(20.0f, 10.0f);
@@ -179,14 +152,13 @@ static bool contains(const uint8_t* result, size_t size, const char expectation[
 DEF_TEST(SkPDF_pdfa_document, r) {
     REQUIRE_PDF_DOCUMENT(SkPDF_pdfa_document, r);
 
-    SkDocument::PDFMetadata pdfMetadata;
+    SkPDF::Metadata pdfMetadata;
     pdfMetadata.fTitle = "test document";
-    pdfMetadata.fCreation.fEnabled = true;
-    pdfMetadata.fCreation.fDateTime = {0, 1999, 12, 5, 31, 23, 59, 59};
+    pdfMetadata.fCreation = {0, 1999, 12, 5, 31, 23, 59, 59};
+    pdfMetadata.fPDFA = true;
 
     SkDynamicMemoryWStream buffer;
-    auto doc = SkDocument::MakePDF(&buffer, SK_ScalarDefaultRasterDPI,
-                                   pdfMetadata, nullptr, /* pdfa = */ true);
+    auto doc = SkPDF::MakeDocument(&buffer, pdfMetadata);
     doc->beginPage(64, 64)->drawColor(SK_ColorRED);
     doc->close();
     sk_sp<SkData> data(buffer.detachAsData());
@@ -204,8 +176,8 @@ DEF_TEST(SkPDF_pdfa_document, r) {
         }
     }
     pdfMetadata.fProducer = "phoney library";
-    doc = SkDocument::MakePDF(&buffer, SK_ScalarDefaultRasterDPI,
-                              pdfMetadata, nullptr, /* pdfa = */ true);
+    pdfMetadata.fPDFA = true;
+    doc = SkPDF::MakeDocument(&buffer, pdfMetadata);
     doc->beginPage(64, 64)->drawColor(SK_ColorRED);
     doc->close();
     data = buffer.detachAsData();
@@ -219,6 +191,33 @@ DEF_TEST(SkPDF_pdfa_document, r) {
     for (const char* expectation : moreExpectations) {
         if (!contains(data->bytes(), data->size(), expectation)) {
             ERRORF(r, "PDFA expectation missing: '%s'.", expectation);
+        }
+    }
+}
+
+
+DEF_TEST(SkPDF_unicode_metadata, r) {
+    REQUIRE_PDF_DOCUMENT(SkPDF_unicode_metadata, r);
+    SkPDF::Metadata pdfMetadata;
+    pdfMetadata.fTitle   = "𝓐𝓑𝓒𝓓𝓔 𝓕𝓖𝓗𝓘𝓙"; // Out of basic multilingual plane
+    pdfMetadata.fAuthor  = "ABCDE FGHIJ"; // ASCII
+    pdfMetadata.fSubject = "αβγδε ζηθικ"; // inside  basic multilingual plane
+    pdfMetadata.fPDFA = true;
+    SkDynamicMemoryWStream wStream;
+    {
+        auto doc = SkPDF::MakeDocument(&wStream, pdfMetadata);
+        doc->beginPage(612, 792)->drawColor(SK_ColorCYAN);
+    }
+    sk_sp<SkData> data(wStream.detachAsData());
+    static const char* expectations[] = {
+        "<</Title <FEFFD835DCD0D835DCD1D835DCD2D835DCD3D835DCD40020"
+            "D835DCD5D835DCD6D835DCD7D835DCD8D835DCD9>",
+        "/Author (ABCDE FGHIJ)",
+        "Subject <FEFF03B103B203B303B403B5002003B603B703B803B903BA>",
+    };
+    for (const char* expectation : expectations) {
+        if (!contains(data->bytes(), data->size(), expectation)) {
+            ERRORF(r, "PDF expectation missing: '%s'.", expectation);
         }
     }
 }

@@ -48,13 +48,13 @@ def RunSteps(api):
 
   # The raw data files are brought in as isolated inputs. It is possible
   # for there to be 1 if the coverage task wasn't broken up.
-  raw_inputs = api.file.glob_paths('find raw inputs', api.path['start_dir'],
-                                   RAW_FILE,
-                                   test_data=['a.raw', 'b.raw', 'c.raw'])
+  raw_inputs = api.file.glob_paths(
+      'find raw inputs', api.path['start_dir'].join('coverage'),
+      RAW_FILE, test_data=['a.raw', 'b.raw', 'c.raw'])
 
 
   # The instrumented executable is brought in as an isolated input.
-  executable = api.path['start_dir'].join('out','Debug','dm')
+  executable = api.path['start_dir'].join('build', 'dm')
   # clang_dir is brought in via CIPD.
   clang_dir = api.path['start_dir'].join('clang_linux', 'bin')
 
@@ -91,7 +91,7 @@ def RunSteps(api):
 
   gcs_file = PARSED_FILE % builder_name
   api.gsutil.cp('parsed data', indexed_data,
-                   'gs://%s/%s%s' % (bucket, path, gcs_file), ['-Z'])
+                   'gs://%s/%s%s' % (bucket, path, gcs_file), extra_args=['-Z'])
 
   # Create text coverage output
   output_data = api.path['start_dir'].join('coverage_text')
@@ -108,7 +108,7 @@ def RunSteps(api):
   # downloading and untarring all the coverage data.
   gcs_file = SUMMARY_FILE % builder_name
   api.gsutil.cp('coverage summary', output_data.join('index.txt'),
-                   'gs://%s/%s%s' % (bucket, path, gcs_file), ['-Z'])
+                   'gs://%s/%s%s' % (bucket, path, gcs_file), extra_args=['-Z'])
 
   tar_file = api.path['start_dir'].join('coverage.text.tar')
 
@@ -119,7 +119,7 @@ def RunSteps(api):
 
   gcs_file = COVERAGE_TEXT_FILE % builder_name
   api.gsutil.cp('text coverage data', tar_file,
-                   'gs://%s/%s%s' % (bucket, path, gcs_file), ['-Z'])
+                   'gs://%s/%s%s' % (bucket, path, gcs_file), extra_args=['-Z'])
 
   # Create html coverage output
   output_data = api.path['start_dir'].join('coverage_html')
@@ -141,7 +141,7 @@ def RunSteps(api):
 
   gcs_file = COVERAGE_HTML_FILE % builder_name
   api.gsutil.cp('html coverage data', tar_file,
-                   'gs://%s/%s%s' % (bucket, path, gcs_file), ['-Z'])
+                   'gs://%s/%s%s' % (bucket, path, gcs_file), extra_args=['-Z'])
 
 
 def GenTests(api):

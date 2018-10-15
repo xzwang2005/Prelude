@@ -5,7 +5,7 @@
  * found in the LICENSE file.
  */
 
-#include "SampleCode.h"
+#include "Sample.h"
 #include "SkAnimTimer.h"
 #include "SkCanvas.h"
 #include "SkColorFilter.h"
@@ -13,7 +13,6 @@
 #include "SkCornerPathEffect.h"
 #include "SkDrawable.h"
 #include "SkGradientShader.h"
-#include "SkLayerRasterizer.h"
 #include "SkPath.h"
 #include "SkPathMeasure.h"
 #include "SkPictureRecorder.h"
@@ -21,8 +20,7 @@
 #include "SkRegion.h"
 #include "SkShader.h"
 #include "SkString.h"
-#include "SkUtils.h"
-#include "SkView.h"
+#include "SkUTF.h"
 #include "Sk1DPathEffect.h"
 
 #include "SkParsePath.h"
@@ -38,7 +36,7 @@ static void testparse() {
     SkParsePath::ToSVGString(p2, &str2);
 }
 
-class ArcsView : public SampleView {
+class ArcsView : public Sample {
     class MyDrawable : public SkDrawable {
         SkRect   fR;
         SkScalar fSweep;
@@ -100,10 +98,9 @@ public:
     }
 
 protected:
-    // overrides from SkEventSink
-    bool onQuery(SkEvent* evt) override {
-        if (SampleCode::TitleQ(*evt)) {
-            SampleCode::TitleR(evt, "Arcs");
+    bool onQuery(Sample::Event* evt) override {
+        if (Sample::TitleQ(*evt)) {
+            Sample::TitleR(evt, "Arcs");
             return true;
         }
         return this->INHERITED::onQuery(evt);
@@ -200,10 +197,9 @@ protected:
 private:
     SkScalar fSweep;
 
-    typedef SampleView INHERITED;
+    typedef Sample INHERITED;
 };
 
 //////////////////////////////////////////////////////////////////////////////
 
-static SkView* MyFactory() { return new ArcsView; }
-static SkViewRegister reg(MyFactory);
+DEF_SAMPLE( return new ArcsView(); )

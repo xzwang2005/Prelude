@@ -13,6 +13,14 @@
 #include "base/macros.h"
 
 typedef void* HANDLE;
+struct _OSVERSIONINFOEXW;
+struct _SYSTEM_INFO;
+
+namespace base {
+namespace test {
+class ScopedOSInfoOverride;
+}  // namespace test
+}  // namespace base
 
 namespace base {
 namespace win {
@@ -36,7 +44,11 @@ enum Version {
   VERSION_WIN10_TH2 = 8,    // Threshold 2: Version 1511, Build 10586.
   VERSION_WIN10_RS1 = 9,    // Redstone 1: Version 1607, Build 14393.
   VERSION_WIN10_RS2 = 10,   // Redstone 2: Version 1703, Build 15063.
-  VERSION_WIN_LAST,         // Indicates error condition.
+  VERSION_WIN10_RS3 = 11,   // Redstone 3: Version 1709, Build 16299.
+  VERSION_WIN10_RS4 = 12,   // Redstone 4: Version 1803, Build 17134.
+  // On edit, update tools\metrics\histograms\enums.xml "WindowsVersion" and
+  // "GpuBlacklistFeatureTestResultsWindows2".
+  VERSION_WIN_LAST,  // Indicates error condition.
 };
 
 // A rough bucketing of the available types of versions of Windows. This is used
@@ -112,7 +124,12 @@ class BASE_EXPORT OSInfo {
   static WOW64Status GetWOW64StatusForProcess(HANDLE process_handle);
 
  private:
-  OSInfo();
+  friend class base::test::ScopedOSInfoOverride;
+  static OSInfo** GetInstanceStorage();
+
+  OSInfo(const _OSVERSIONINFOEXW& version_info,
+         const _SYSTEM_INFO& system_info,
+         int os_type);
   ~OSInfo();
 
   Version version_;

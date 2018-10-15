@@ -10,10 +10,6 @@
 
 namespace cc {
 
-class LayerTreeHostImpl;
-class RasterBufferProvider;
-class ResourcePool;
-
 enum PixelResourceTestCase {
   SOFTWARE,
   GPU,
@@ -27,13 +23,13 @@ class LayerTreeHostPixelResourceTest : public LayerTreePixelTest {
                                           Layer::LayerMaskType mask_type);
   LayerTreeHostPixelResourceTest();
 
-  void CreateResourceAndRasterBufferProvider(
-      LayerTreeHostImpl* host_impl,
-      std::unique_ptr<RasterBufferProvider>* raster_buffer_provider,
-      std::unique_ptr<ResourcePool>* resource_pool) override;
+  std::unique_ptr<RasterBufferProvider> CreateRasterBufferProvider(
+      LayerTreeHostImpl* host_impl) override;
 
   void RunPixelResourceTest(scoped_refptr<Layer> content_root,
                             base::FilePath file_name);
+  void RunPixelResourceTest(scoped_refptr<Layer> content_root,
+                            const SkBitmap& expected_bitmap);
 
  protected:
   PixelResourceTestCase test_case_;

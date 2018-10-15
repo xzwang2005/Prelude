@@ -11,8 +11,21 @@ found in the LICENSE file.
 <script>
 'use strict';
 
+// The |androidStartupMetric| produces metrics that start counting at the
+// earliest moment the Chrome code on Android is executed.
+// A few histograms are produced with the names as described below:
+// 1. messageloop_start_time - time till the message loop of the browser main
+//    starts processing posted tasts (after having loaded the Profile)
+// The metric also supports multiple browser restarts, in this case multiple
+// samples would be added to the histograms above.
 tr.exportTo('tr.metrics.sh', function() {
+  const MESSAGE_LOOP_EVENT_NAME =
+      'Startup.BrowserMessageLoopStartTimeFromMainEntry3';
   function androidStartupMetric(histograms, model) {
+    // Walk the browser slices, extract timestamps for the browser start,
+    // message loop start. TODO(crbug.com/883290): re-introduce
+    // request_start_time. TODO(crbug.com/886621): deflake the
+    // first_contentful_paint_time metric and re-introduce it.
     const messageLoopStartHistogram = histograms.createHistogram(
         'messageloop_start_time',
         tr.b.Unit.byName.timeDurationInMs_smallerIsBetter, []);
@@ -21,11 +34,7 @@ tr.exportTo('tr.metrics.sh', function() {
     if (!chromeHelper) return;
     for (const helper of chromeHelper.browserHelpers) {
       for (const ev of helper.mainThread.asyncSliceGroup.childEvents()) {
-        // This messageloop start time does not include the time to initialize
-        // the native library. TODO(pasko): Improve the metric by covering the
-        // earlier parts of browser initialization.
-        if (ev.title ===
-            'Startup.BrowserMessageLoopStartTimeFromMainEntry2') {
+        if (ev.title === MESSAGE_LOOP_EVENT_NAME) {
           messageLoopStartHistogram.addSample(ev.duration,
               { events: new tr.v.d.RelatedEventSet([ev]) });
         }

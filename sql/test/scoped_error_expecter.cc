@@ -17,14 +17,14 @@ int ScopedErrorExpecter::SQLiteLibVersionNumber() {
 
 ScopedErrorExpecter::ScopedErrorExpecter()
     : checked_(false) {
-  callback_ =
-      base::Bind(&ScopedErrorExpecter::ErrorSeen, base::Unretained(this));
-  Connection::SetErrorExpecter(&callback_);
+  callback_ = base::BindRepeating(&ScopedErrorExpecter::ErrorSeen,
+                                  base::Unretained(this));
+  Database::SetErrorExpecter(&callback_);
 }
 
 ScopedErrorExpecter::~ScopedErrorExpecter() {
   EXPECT_TRUE(checked_) << " Test must call SawExpectedErrors()";
-  Connection::ResetErrorExpecter();
+  Database::ResetErrorExpecter();
 }
 
 void ScopedErrorExpecter::ExpectError(int err) {

@@ -183,6 +183,9 @@ class MEDIA_EXPORT AudioRendererImpl
   // by the value of |success|).
   void OnAudioBufferStreamInitialized(bool succes);
 
+  void FinishInitialization(PipelineStatus status);
+  void FinishFlush();
+
   // Callback functions to be called on |client_|.
   void OnPlaybackError(PipelineStatus error);
   void OnPlaybackEnded();
@@ -242,7 +245,7 @@ class MEDIA_EXPORT AudioRendererImpl
   base::Closure flush_cb_;
 
   // Overridable tick clock for testing.
-  base::TickClock* tick_clock_;
+  const base::TickClock* tick_clock_;
 
   // Memory usage of |algorithm_| recorded during the last
   // HandleDecodedBuffer_Locked() call.

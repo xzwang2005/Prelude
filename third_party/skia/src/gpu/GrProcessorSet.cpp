@@ -159,9 +159,7 @@ bool GrProcessorSet::operator==(const GrProcessorSet& that) const {
 GrProcessorSet::Analysis GrProcessorSet::finalize(const GrProcessorAnalysisColor& colorInput,
                                                   const GrProcessorAnalysisCoverage coverageInput,
                                                   const GrAppliedClip* clip, bool isMixedSamples,
-                                                  const GrCaps& caps,
-                                                  GrPixelConfigIsClamped dstIsClamped,
-                                                  GrColor* overrideInputColor) {
+                                                  const GrCaps& caps, GrColor* overrideInputColor) {
     SkASSERT(!this->isFinalized());
     SkASSERT(!fFragmentProcessorOffset);
 
@@ -181,9 +179,6 @@ GrProcessorSet::Analysis GrProcessorSet::finalize(const GrProcessorAnalysisColor
     for (int i = 0; i < n; ++i) {
         if (!fps[i]->compatibleWithCoverageAsAlpha()) {
             analysis.fCompatibleWithCoverageAsAlpha = false;
-            // Other than tests that exercise atypical behavior we expect all coverage FPs to be
-            // compatible with the coverage-as-alpha optimization.
-            GrCapsDebugf(&caps, "Coverage FP is not compatible with coverage as alpha.\n");
         }
         coverageUsesLocalCoords |= fps[i]->usesLocalCoords();
     }
@@ -210,7 +205,7 @@ GrProcessorSet::Analysis GrProcessorSet::finalize(const GrProcessorAnalysisColor
     }
 
     GrXPFactory::AnalysisProperties props = GrXPFactory::GetAnalysisProperties(
-            this->xpFactory(), colorAnalysis.outputColor(), outputCoverage, caps, dstIsClamped);
+            this->xpFactory(), colorAnalysis.outputColor(), outputCoverage, caps);
     if (!this->numCoverageFragmentProcessors() &&
         GrProcessorAnalysisCoverage::kNone == coverageInput) {
         analysis.fCanCombineOverlappedStencilAndCover = SkToBool(
@@ -244,7 +239,7 @@ GrProcessorSet::Analysis GrProcessorSet::finalize(const GrProcessorAnalysisColor
     fColorFragmentProcessorCnt -= colorFPsToEliminate;
 
     auto xp = GrXPFactory::MakeXferProcessor(this->xpFactory(), colorAnalysis.outputColor(),
-                                             outputCoverage, isMixedSamples, caps, dstIsClamped);
+                                             outputCoverage, isMixedSamples, caps);
     fXP.fProcessor = xp.release();
 
     fFlags |= kFinalized_Flag;

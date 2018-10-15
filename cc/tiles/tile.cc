@@ -13,6 +13,7 @@
 #include "base/trace_event/trace_event_argument.h"
 #include "cc/base/math_util.h"
 #include "cc/tiles/tile_manager.h"
+#include "components/viz/common/resources/resource_sizes.h"
 #include "components/viz/common/traced_value.h"
 
 namespace cc {
@@ -80,8 +81,8 @@ size_t Tile::GPUMemoryUsageInBytes() const {
   if (draw_info_.resource_) {
     // We can use UncheckedSizeInBytes, since the tile size is determined by the
     // compositor.
-    return ResourceUtil::UncheckedSizeInBytes<size_t>(
-        draw_info_.resource_->size(), draw_info_.resource_->format());
+    return viz::ResourceSizes::UncheckedSizeInBytes<size_t>(
+        draw_info_.resource_size(), draw_info_.resource_format());
   }
   return 0;
 }

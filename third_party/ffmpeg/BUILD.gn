@@ -94,7 +94,7 @@ if (is_win) {
 # gn orders flags on a target before flags from configs. The default config
 # adds -Wall, and these flags have to be after -Wall -- so they need to come
 # from a config and can't be on the target directly.
-config("ffmpegsumo_warnings") {
+config("ffmpeg_warnings") {
   if (is_clang) {
     cflags = [
       "-Wno-absolute-value",
@@ -176,6 +176,7 @@ target(link_target_type, "ffmpeg_internal") {
     "_POSIX_C_SOURCE=200112",
     "_XOPEN_SOURCE=600",
     "PIC",
+    "FFMPEG_CONFIGURATION=NULL",
   ]
 
   # Disable internal ffmpeg logs in the official build; this saves ~158kb.
@@ -199,7 +200,7 @@ target(link_target_type, "ffmpeg_internal") {
     # These must be after no_chromium_code for warning flags to be ordered
     # correctly.
     "//build/config/compiler:no_incompatible_pointer_warnings",
-    ":ffmpegsumo_warnings",
+    ":ffmpeg_warnings",
   ]
 
   # Since we are not often debugging FFmpeg, and performance is
@@ -225,14 +226,27 @@ target(link_target_type, "ffmpeg_internal") {
   }
 
   if (ffmpeg_use_atomics_fallback) {
-    if (is_posix) {
+    if (is_posix || is_fuchsia) {
       include_dirs += [ "compat/atomics/gcc" ]
     } else if (is_win) {
       include_dirs += [ "compat/atomics/win32" ]
     }
   }
 
-  if (is_posix) {
+  # On x86, sanitizers will fail to compiler the H264 CABAC code due to
+  # insufficient registers unless we disable EBP usage. https://crbug.com/786760
+  #
+  # Windows builds can't compile without EBP because we can't omit frame
+  # pointers like we do on posix.
+  if (target_cpu == "x86") {
+    if (using_sanitizer || is_win) {
+      defines += [ "HAVE_EBP_AVAILABLE=0" ]
+    } else {
+      defines += [ "HAVE_EBP_AVAILABLE=1" ]
+    }
+  }
+
+  if (is_posix || is_fuchsia) {
     # Remove default stack frames config so we can force -fomit-frame-pointer.
     configs -= [ "//build/config/compiler:default_stack_frames" ]
 
@@ -243,16 +257,6 @@ target(link_target_type, "ffmpeg_internal") {
       # ffmpeg uses its own deprecated functions.
       "-Wno-deprecated-declarations",
     ]
-
-    # On POSIX x86, sanitizers will fail to compiler the H264 CABAC code due to
-    # insufficient registers unless we disable EBP usage. crbug.com/786760
-    if (target_cpu == "x86") {
-      if (using_sanitizer) {
-        defines += [ "HAVE_EBP_AVAILABLE=0" ]
-      } else {
-        defines += [ "HAVE_EBP_AVAILABLE=1" ]
-      }
-    }
 
     if (!is_clang) {
       # gcc doesn't have flags for specific warnings, so disable them
@@ -270,7 +274,7 @@ target(link_target_type, "ffmpeg_internal") {
     }
   }
 
-  if (is_posix && !is_mac) {
+  if (is_fuchsia || (is_posix && !is_mac)) {
     defines += [
       "_ISOC99_SOURCE",
       "_LARGEFILE_SOURCE",
@@ -327,13 +331,6 @@ target(link_target_type, "ffmpeg_internal") {
       "_LARGEFILE_SOURCE",
       "HAVE_AV_CONFIG_H",
     ]
-
-    # Clang allows inline assembly where MSVC does not.
-    if (is_clang) {
-      defines += [ "HAVE_INLINE_ASM=1" ]
-    } else {
-      defines += [ "HAVE_INLINE_ASM=0" ]
-    }
 
     if (is_component_ffmpeg) {
       # Required to avoid 4049 and 4217 errors around redundant imports.
@@ -393,7 +390,7 @@ if (is_component_ffmpeg) {
     # So we can append below and assume they're defined.
     ldflags = []
 
-    if (is_posix && !is_mac) {
+    if (is_fuchsia || (is_posix && !is_mac)) {
       # Fixes warnings PIC relocation when building as component.
       ldflags += [
         "-Wl,-Bsymbolic",

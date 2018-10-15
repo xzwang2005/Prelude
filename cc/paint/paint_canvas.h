@@ -132,13 +132,6 @@ class CC_PAINT_EXPORT PaintCanvas {
                              const SkRect& dst,
                              const PaintFlags* flags,
                              SrcRectConstraint constraint) = 0;
-  virtual void drawBitmap(const SkBitmap& bitmap,
-                          SkScalar left,
-                          SkScalar top,
-                          const PaintFlags* flags) = 0;
-  void drawBitmap(const SkBitmap& bitmap, SkScalar left, SkScalar top) {
-    drawBitmap(bitmap, left, top, nullptr);
-  }
 
   virtual void drawTextBlob(scoped_refptr<PaintTextBlob> blob,
                             SkScalar x,
@@ -161,6 +154,9 @@ class CC_PAINT_EXPORT PaintCanvas {
   virtual void Annotate(AnnotationType type,
                         const SkRect& rect,
                         sk_sp<SkData> data) = 0;
+
+  // Subclasses can override to handle custom data.
+  virtual void recordCustomData(uint32_t id) {}
 
  private:
   DISALLOW_COPY_AND_ASSIGN(PaintCanvas);

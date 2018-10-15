@@ -2,21 +2,20 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "base/memory/ptr_util.h"
 #include "cc/base/lap_timer.h"
-#include "cc/resources/display_resource_provider.h"
 #include "cc/test/fake_output_surface_client.h"
-#include "cc/test/fake_resource_provider.h"
-#include "cc/test/test_context_provider.h"
-#include "cc/test/test_shared_bitmap_manager.h"
+#include "components/viz/common/frame_sinks/begin_frame_args.h"
 #include "components/viz/common/quads/compositor_frame.h"
 #include "components/viz/common/quads/surface_draw_quad.h"
 #include "components/viz/common/quads/texture_draw_quad.h"
+#include "components/viz/service/display/display_resource_provider.h"
 #include "components/viz/service/display/surface_aggregator.h"
+#include "components/viz/service/display_embedder/server_shared_bitmap_manager.h"
 #include "components/viz/service/frame_sinks/compositor_frame_sink_support.h"
 #include "components/viz/service/frame_sinks/frame_sink_manager_impl.h"
 #include "components/viz/service/surfaces/surface_manager.h"
 #include "components/viz/test/compositor_frame_helpers.h"
+#include "components/viz/test/test_context_provider.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "testing/perf/perf_test.h"
 
@@ -31,14 +30,13 @@ const base::UnguessableToken kArbitraryToken = base::UnguessableToken::Create();
 
 class SurfaceAggregatorPerfTest : public testing::Test {
  public:
-  SurfaceAggregatorPerfTest() {
-    context_provider_ = cc::TestContextProvider::Create();
+  SurfaceAggregatorPerfTest() : manager_(&shared_bitmap_manager_) {
+    context_provider_ = TestContextProvider::Create();
     context_provider_->BindToCurrentThread();
-    shared_bitmap_manager_ = base::MakeUnique<cc::TestSharedBitmapManager>();
 
-    resource_provider_ =
-        cc::FakeResourceProvider::CreateDisplayResourceProvider(
-            context_provider_.get(), shared_bitmap_manager_.get());
+    resource_provider_ = std::make_unique<DisplayResourceProvider>(
+        DisplayResourceProvider::kGpu, context_provider_.get(),
+        &shared_bitmap_manager_);
   }
 
   void RunTest(int num_surfaces,
@@ -50,11 +48,11 @@ class SurfaceAggregatorPerfTest : public testing::Test {
     std::vector<std::unique_ptr<CompositorFrameSinkSupport>> child_supports(
         num_surfaces);
     for (int i = 0; i < num_surfaces; i++) {
-      child_supports[i] = CompositorFrameSinkSupport::Create(
+      child_supports[i] = std::make_unique<CompositorFrameSinkSupport>(
           nullptr, &manager_, FrameSinkId(1, i + 1), kIsChildRoot,
           kNeedsSyncPoints);
     }
-    aggregator_ = base::MakeUnique<SurfaceAggregator>(
+    aggregator_ = std::make_unique<SurfaceAggregator>(
         manager_.surface_manager(), resource_provider_.get(), optimize_damage);
     for (int i = 0; i < num_surfaces; i++) {
       LocalSurfaceId local_surface_id(i + 1, kArbitraryToken);
@@ -95,8 +93,10 @@ class SurfaceAggregatorPerfTest : public testing::Test {
         auto* surface_quad = pass->CreateAndAppendDrawQuad<SurfaceDrawQuad>();
         surface_quad->SetNew(
             sqs, gfx::Rect(0, 0, 1, 1), gfx::Rect(0, 0, 1, 1),
-            SurfaceId(FrameSinkId(1, i), LocalSurfaceId(i, kArbitraryToken)),
-            base::nullopt, SK_ColorWHITE, false);
+            SurfaceRange(base::nullopt,
+                         SurfaceId(FrameSinkId(1, i),
+                                   LocalSurfaceId(i, kArbitraryToken))),
+            SK_ColorWHITE, false);
       }
 
       frame_builder.AddRenderPass(std::move(pass));
@@ -104,9 +104,11 @@ class SurfaceAggregatorPerfTest : public testing::Test {
                                                frame_builder.Build());
     }
 
-    auto root_support = CompositorFrameSinkSupport::Create(
+    auto root_support = std::make_unique<CompositorFrameSinkSupport>(
         nullptr, &manager_, FrameSinkId(1, num_surfaces + 1), kIsRoot,
         kNeedsSyncPoints);
+    base::TimeTicks next_fake_display_time =
+        base::TimeTicks() + base::TimeDelta::FromSeconds(1);
     timer_.Reset();
     do {
       auto pass = RenderPass::Create();
@@ -115,9 +117,11 @@ class SurfaceAggregatorPerfTest : public testing::Test {
       auto* surface_quad = pass->CreateAndAppendDrawQuad<SurfaceDrawQuad>();
       surface_quad->SetNew(
           sqs, gfx::Rect(0, 0, 100, 100), gfx::Rect(0, 0, 100, 100),
-          SurfaceId(FrameSinkId(1, num_surfaces),
-                    LocalSurfaceId(num_surfaces, kArbitraryToken)),
-          base::nullopt, SK_ColorWHITE, false);
+          SurfaceRange(
+              base::nullopt,
+              SurfaceId(FrameSinkId(1, num_surfaces),
+                        LocalSurfaceId(num_surfaces, kArbitraryToken))),
+          SK_ColorWHITE, false);
 
       pass->output_rect = gfx::Rect(0, 0, 100, 100);
 
@@ -134,22 +138,21 @@ class SurfaceAggregatorPerfTest : public testing::Test {
 
       CompositorFrame aggregated = aggregator_->Aggregate(
           SurfaceId(FrameSinkId(1, num_surfaces + 1),
-                    LocalSurfaceId(num_surfaces + 1, kArbitraryToken)));
+                    LocalSurfaceId(num_surfaces + 1, kArbitraryToken)),
+          next_fake_display_time);
+      next_fake_display_time += BeginFrameArgs::DefaultInterval();
       timer_.NextLap();
     } while (!timer_.HasTimeLimitExpired());
 
     perf_test::PrintResult("aggregator_speed", "", name, timer_.LapsPerSecond(),
                            "runs/s", true);
-    for (int i = 0; i < num_surfaces; i++)
-      child_supports[i]->EvictCurrentSurface();
-    root_support->EvictCurrentSurface();
   }
 
  protected:
+  ServerSharedBitmapManager shared_bitmap_manager_;
   FrameSinkManagerImpl manager_;
-  scoped_refptr<cc::TestContextProvider> context_provider_;
-  std::unique_ptr<SharedBitmapManager> shared_bitmap_manager_;
-  std::unique_ptr<cc::DisplayResourceProvider> resource_provider_;
+  scoped_refptr<TestContextProvider> context_provider_;
+  std::unique_ptr<DisplayResourceProvider> resource_provider_;
   std::unique_ptr<SurfaceAggregator> aggregator_;
   cc::LapTimer timer_;
 };

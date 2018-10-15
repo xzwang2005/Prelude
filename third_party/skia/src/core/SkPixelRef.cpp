@@ -75,7 +75,7 @@ uint32_t SkPixelRef::getGenerationID() const {
     uint32_t id = fTaggedGenID.load();
     if (0 == id) {
         uint32_t next = SkNextID::ImageID() | 1u;
-        if (fTaggedGenID.compare_exchange(&id, next)) {
+        if (fTaggedGenID.compare_exchange_strong(id, next)) {
             id = next;  // There was no race or we won the race.  fTaggedGenID is next now.
         } else {
             // We lost a race to set fTaggedGenID. compare_exchange() filled id with the winner.
@@ -92,11 +92,13 @@ void SkPixelRef::addGenIDChangeListener(GenIDChangeListener* listener) {
         delete listener;
         return;
     }
+    SkAutoMutexAcquire lock(fGenIDChangeListenersMutex);
     *fGenIDChangeListeners.append() = listener;
 }
 
 // we need to be called *before* the genID gets changed or zerod
 void SkPixelRef::callGenIDChangeListeners() {
+    SkAutoMutexAcquire lock(fGenIDChangeListenersMutex);
     // We don't invalidate ourselves if we think another SkPixelRef is sharing our genID.
     if (this->genIDIsUnique()) {
         for (int i = 0; i < fGenIDChangeListeners.count(); i++) {
@@ -121,7 +123,6 @@ void SkPixelRef::notifyPixelsChanged() {
 #endif
     this->callGenIDChangeListeners();
     this->needsNewGenID();
-    this->onNotifyPixelsChanged();
 }
 
 void SkPixelRef::setImmutable() {
@@ -148,5 +149,3 @@ void SkPixelRef::restoreMutability() {
     SkASSERT(fMutability != kImmutable);
     fMutability = kMutable;
 }
-
-void SkPixelRef::onNotifyPixelsChanged() { }

@@ -25,8 +25,7 @@ import java.util.concurrent.TimeUnit;
 public class RecordHistogramTest {
     @Before
     public void setUp() throws Exception {
-        LibraryLoader.get(LibraryProcessType.PROCESS_BROWSER).ensureInitialized();
-        RecordHistogram.initialize();
+        LibraryLoader.getInstance().ensureInitialized(LibraryProcessType.PROCESS_BROWSER);
     }
 
     /**

@@ -1,19 +1,19 @@
-/***************************************************************************/
-/*                                                                         */
-/*  t1driver.c                                                             */
-/*                                                                         */
-/*    Type 1 driver interface (body).                                      */
-/*                                                                         */
-/*  Copyright 1996-2017 by                                                 */
-/*  David Turner, Robert Wilhelm, and Werner Lemberg.                      */
-/*                                                                         */
-/*  This file is part of the FreeType project, and may only be used,       */
-/*  modified, and distributed under the terms of the FreeType project      */
-/*  license, LICENSE.TXT.  By continuing to use, modify, or distribute     */
-/*  this file you indicate that you have read the license and              */
-/*  understand and accept it fully.                                        */
-/*                                                                         */
-/***************************************************************************/
+/****************************************************************************
+ *
+ * t1driver.c
+ *
+ *   Type 1 driver interface (body).
+ *
+ * Copyright 1996-2018 by
+ * David Turner, Robert Wilhelm, and Werner Lemberg.
+ *
+ * This file is part of the FreeType project, and may only be used,
+ * modified, and distributed under the terms of the FreeType project
+ * license, LICENSE.TXT.  By continuing to use, modify, or distribute
+ * this file you indicate that you have read the license and
+ * understand and accept it fully.
+ *
+ */
 
 
 #include <ft2build.h>
@@ -30,7 +30,8 @@
 #include FT_INTERNAL_DEBUG_H
 #include FT_INTERNAL_STREAM_H
 #include FT_INTERNAL_HASH_H
-#include FT_TYPE1_DRIVER_H
+#include FT_INTERNAL_POSTSCRIPT_PROPS_H
+#include FT_DRIVER_H
 
 #include FT_SERVICE_MULTIPLE_MASTERS_H
 #include FT_SERVICE_GLYPH_DICT_H
@@ -42,19 +43,19 @@
 #include FT_SERVICE_KERNING_H
 
 
-  /*************************************************************************/
-  /*                                                                       */
-  /* The macro FT_COMPONENT is used in trace mode.  It is an implicit      */
-  /* parameter of the FT_TRACE() and FT_ERROR() macros, used to print/log  */
-  /* messages during execution.                                            */
-  /*                                                                       */
+  /**************************************************************************
+   *
+   * The macro FT_COMPONENT is used in trace mode.  It is an implicit
+   * parameter of the FT_TRACE() and FT_ERROR() macros, used to print/log
+   * messages during execution.
+   */
 #undef  FT_COMPONENT
-#define FT_COMPONENT  trace_t1driver
+#define FT_COMPONENT  t1driver
 
- /*
-  *  GLYPH DICT SERVICE
-  *
-  */
+  /*
+   * GLYPH DICT SERVICE
+   *
+   */
 
   static FT_Error
   t1_get_glyph_name( T1_Face     face,
@@ -96,7 +97,7 @@
 
 
   /*
-   *  POSTSCRIPT NAME SERVICE
+   * POSTSCRIPT NAME SERVICE
    *
    */
 
@@ -114,7 +115,7 @@
 
 
   /*
-   *  MULTIPLE MASTERS SERVICE
+   * MULTIPLE MASTERS SERVICE
    *
    */
 
@@ -137,7 +138,7 @@
 
 
   /*
-   *  POSTSCRIPT INFO SERVICE
+   * POSTSCRIPT INFO SERVICE
    *
    */
 
@@ -269,9 +270,12 @@
       break;
 
     case PS_DICT_FONT_NAME:
-      retval = ft_strlen( type1->font_name ) + 1;
-      if ( value && value_len >= retval )
-        ft_memcpy( value, (void *)( type1->font_name ), retval );
+      if ( type1->font_name )
+      {
+        retval = ft_strlen( type1->font_name ) + 1;
+        if ( value && value_len >= retval )
+          ft_memcpy( value, (void *)( type1->font_name ), retval );
+      }
       break;
 
     case PS_DICT_UNIQUE_ID:
@@ -361,7 +365,7 @@
             ok = 1;
         }
 
-        if ( ok )
+        if ( ok && type1->subrs )
         {
           retval = type1->subrs_len[idx] + 1;
           if ( value && value_len >= retval )
@@ -558,33 +562,49 @@
       break;
 
     case PS_DICT_VERSION:
-      retval = ft_strlen( type1->font_info.version ) + 1;
-      if ( value && value_len >= retval )
-        ft_memcpy( value, (void *)( type1->font_info.version ), retval );
+      if ( type1->font_info.version )
+      {
+        retval = ft_strlen( type1->font_info.version ) + 1;
+        if ( value && value_len >= retval )
+          ft_memcpy( value, (void *)( type1->font_info.version ), retval );
+      }
       break;
 
     case PS_DICT_NOTICE:
-      retval = ft_strlen( type1->font_info.notice ) + 1;
-      if ( value && value_len >= retval )
-        ft_memcpy( value, (void *)( type1->font_info.notice ), retval );
+      if ( type1->font_info.notice )
+      {
+        retval = ft_strlen( type1->font_info.notice ) + 1;
+        if ( value && value_len >= retval )
+          ft_memcpy( value, (void *)( type1->font_info.notice ), retval );
+      }
       break;
 
     case PS_DICT_FULL_NAME:
-      retval = ft_strlen( type1->font_info.full_name ) + 1;
-      if ( value && value_len >= retval )
-        ft_memcpy( value, (void *)( type1->font_info.full_name ), retval );
+      if ( type1->font_info.full_name )
+      {
+        retval = ft_strlen( type1->font_info.full_name ) + 1;
+        if ( value && value_len >= retval )
+          ft_memcpy( value, (void *)( type1->font_info.full_name ), retval );
+      }
       break;
 
     case PS_DICT_FAMILY_NAME:
-      retval = ft_strlen( type1->font_info.family_name ) + 1;
-      if ( value && value_len >= retval )
-        ft_memcpy( value, (void *)( type1->font_info.family_name ), retval );
+      if ( type1->font_info.family_name )
+      {
+        retval = ft_strlen( type1->font_info.family_name ) + 1;
+        if ( value && value_len >= retval )
+          ft_memcpy( value, (void *)( type1->font_info.family_name ),
+                     retval );
+      }
       break;
 
     case PS_DICT_WEIGHT:
-      retval = ft_strlen( type1->font_info.weight ) + 1;
-      if ( value && value_len >= retval )
-        ft_memcpy( value, (void *)( type1->font_info.weight ), retval );
+      if ( type1->font_info.weight )
+      {
+        retval = ft_strlen( type1->font_info.weight ) + 1;
+        if ( value && value_len >= retval )
+          ft_memcpy( value, (void *)( type1->font_info.weight ), retval );
+      }
       break;
 
     case PS_DICT_ITALIC_ANGLE:
@@ -617,238 +637,19 @@
 
 
   /*
-   *  PROPERTY SERVICE
+   * PROPERTY SERVICE
    *
    */
-  static FT_Error
-  t1_property_set( FT_Module    module,         /* PS_Driver */
-                   const char*  property_name,
-                   const void*  value,
-                   FT_Bool      value_is_string )
-  {
-    FT_Error   error  = FT_Err_Ok;
-    PS_Driver  driver = (PS_Driver)module;
-
-#ifndef FT_CONFIG_OPTION_ENVIRONMENT_PROPERTIES
-    FT_UNUSED( value_is_string );
-#endif
-
-
-    if ( !ft_strcmp( property_name, "darkening-parameters" ) )
-    {
-      FT_Int*  darken_params;
-      FT_Int   x1, y1, x2, y2, x3, y3, x4, y4;
-
-#ifdef FT_CONFIG_OPTION_ENVIRONMENT_PROPERTIES
-      FT_Int   dp[8];
-
-
-      if ( value_is_string )
-      {
-        const char*  s = (const char*)value;
-        char*        ep;
-        int          i;
-
-
-        /* eight comma-separated numbers */
-        for ( i = 0; i < 7; i++ )
-        {
-          dp[i] = (FT_Int)ft_strtol( s, &ep, 10 );
-          if ( *ep != ',' || s == ep )
-            return FT_THROW( Invalid_Argument );
-
-          s = ep + 1;
-        }
-
-        dp[7] = (FT_Int)ft_strtol( s, &ep, 10 );
-        if ( !( *ep == '\0' || *ep == ' ' ) || s == ep )
-          return FT_THROW( Invalid_Argument );
-
-        darken_params = dp;
-      }
-      else
-#endif
-        darken_params = (FT_Int*)value;
-
-      x1 = darken_params[0];
-      y1 = darken_params[1];
-      x2 = darken_params[2];
-      y2 = darken_params[3];
-      x3 = darken_params[4];
-      y3 = darken_params[5];
-      x4 = darken_params[6];
-      y4 = darken_params[7];
-
-      if ( x1 < 0   || x2 < 0   || x3 < 0   || x4 < 0   ||
-           y1 < 0   || y2 < 0   || y3 < 0   || y4 < 0   ||
-           x1 > x2  || x2 > x3  || x3 > x4              ||
-           y1 > 500 || y2 > 500 || y3 > 500 || y4 > 500 )
-        return FT_THROW( Invalid_Argument );
-
-      driver->darken_params[0] = x1;
-      driver->darken_params[1] = y1;
-      driver->darken_params[2] = x2;
-      driver->darken_params[3] = y2;
-      driver->darken_params[4] = x3;
-      driver->darken_params[5] = y3;
-      driver->darken_params[6] = x4;
-      driver->darken_params[7] = y4;
-
-      return error;
-    }
-    else if ( !ft_strcmp( property_name, "hinting-engine" ) )
-    {
-#ifdef FT_CONFIG_OPTION_ENVIRONMENT_PROPERTIES
-      if ( value_is_string )
-      {
-        const char*  s = (const char*)value;
-
-
-        if ( !ft_strcmp( s, "adobe" ) )
-          driver->hinting_engine = FT_T1_HINTING_ADOBE;
-#ifdef T1_CONFIG_OPTION_OLD_ENGINE
-        else if ( !ft_strcmp( s, "freetype" ) )
-          driver->hinting_engine = FT_T1_HINTING_FREETYPE;
-#endif
-        else
-          return FT_THROW( Invalid_Argument );
-      }
-      else
-#endif
-      {
-        FT_UInt*  hinting_engine = (FT_UInt*)value;
-
-
-        if ( *hinting_engine == FT_T1_HINTING_ADOBE
-#ifdef T1_CONFIG_OPTION_OLD_ENGINE
-             || *hinting_engine == FT_T1_HINTING_FREETYPE
-#endif
-           )
-          driver->hinting_engine = *hinting_engine;
-        else
-          error = FT_ERR( Unimplemented_Feature );
-
-        return error;
-      }
-    }
-    else if ( !ft_strcmp( property_name, "no-stem-darkening" ) )
-    {
-#ifdef FT_CONFIG_OPTION_ENVIRONMENT_PROPERTIES
-      if ( value_is_string )
-      {
-        const char*  s   = (const char*)value;
-        long         nsd = ft_strtol( s, NULL, 10 );
-
-
-        if ( !nsd )
-          driver->no_stem_darkening = FALSE;
-        else
-          driver->no_stem_darkening = TRUE;
-      }
-      else
-#endif
-      {
-        FT_Bool*  no_stem_darkening = (FT_Bool*)value;
-
-
-        driver->no_stem_darkening = *no_stem_darkening;
-      }
-
-      return error;
-    }
-    else if ( !ft_strcmp( property_name, "random-seed" ) )
-    {
-      FT_Int32  random_seed;
-
-
-#ifdef FT_CONFIG_OPTION_ENVIRONMENT_PROPERTIES
-      if ( value_is_string )
-      {
-        const char*  s = (const char*)value;
-
-
-        random_seed = (FT_Int32)ft_strtol( s, NULL, 10 );
-      }
-      else
-#endif
-        random_seed = *(FT_Int32*)value;
-
-      if ( random_seed < 0 )
-        random_seed = 0;
-
-      driver->random_seed = random_seed;
-
-      return error;
-    }
-
-    FT_TRACE0(( "t1_property_set: missing property `%s'\n",
-                property_name ));
-    return FT_THROW( Missing_Property );
-  }
-
-
-  static FT_Error
-  t1_property_get( FT_Module    module,         /* PS_Driver */
-                   const char*  property_name,
-                   const void*  value )
-  {
-    FT_Error   error  = FT_Err_Ok;
-    PS_Driver  driver = (PS_Driver)module;
-
-
-    if ( !ft_strcmp( property_name, "darkening-parameters" ) )
-    {
-      FT_Int*  darken_params = driver->darken_params;
-      FT_Int*  val           = (FT_Int*)value;
-
-
-      val[0] = darken_params[0];
-      val[1] = darken_params[1];
-      val[2] = darken_params[2];
-      val[3] = darken_params[3];
-      val[4] = darken_params[4];
-      val[5] = darken_params[5];
-      val[6] = darken_params[6];
-      val[7] = darken_params[7];
-
-      return error;
-    }
-    else if ( !ft_strcmp( property_name, "hinting-engine" ) )
-    {
-      FT_UInt   hinting_engine    = driver->hinting_engine;
-      FT_UInt*  val               = (FT_UInt*)value;
-
-
-      *val = hinting_engine;
-
-      return error;
-    }
-    else if ( !ft_strcmp( property_name, "no-stem-darkening" ) )
-    {
-      FT_Bool   no_stem_darkening = driver->no_stem_darkening;
-      FT_Bool*  val               = (FT_Bool*)value;
-
-
-      *val = no_stem_darkening;
-
-      return error;
-    }
-
-    FT_TRACE0(( "t1_property_get: missing property `%s'\n",
-                property_name ));
-    return FT_THROW( Missing_Property );
-  }
-
 
   FT_DEFINE_SERVICE_PROPERTIESREC(
     t1_service_properties,
 
-    (FT_Properties_SetFunc)t1_property_set,      /* set_property */
-    (FT_Properties_GetFunc)t1_property_get )     /* get_property */
+    (FT_Properties_SetFunc)ps_property_set,      /* set_property */
+    (FT_Properties_GetFunc)ps_property_get )     /* get_property */
 
 
   /*
-   *  SERVICE LIST
+   * SERVICE LIST
    *
    */
 
@@ -883,38 +684,42 @@
 
 #ifndef T1_CONFIG_OPTION_NO_AFM
 
-  /*************************************************************************/
-  /*                                                                       */
-  /* <Function>                                                            */
-  /*    Get_Kerning                                                        */
-  /*                                                                       */
-  /* <Description>                                                         */
-  /*    A driver method used to return the kerning vector between two      */
-  /*    glyphs of the same face.                                           */
-  /*                                                                       */
-  /* <Input>                                                               */
-  /*    face        :: A handle to the source face object.                 */
-  /*                                                                       */
-  /*    left_glyph  :: The index of the left glyph in the kern pair.       */
-  /*                                                                       */
-  /*    right_glyph :: The index of the right glyph in the kern pair.      */
-  /*                                                                       */
-  /* <Output>                                                              */
-  /*    kerning     :: The kerning vector.  This is in font units for      */
-  /*                   scalable formats, and in pixels for fixed-sizes     */
-  /*                   formats.                                            */
-  /*                                                                       */
-  /* <Return>                                                              */
-  /*    FreeType error code.  0 means success.                             */
-  /*                                                                       */
-  /* <Note>                                                                */
-  /*    Only horizontal layouts (left-to-right & right-to-left) are        */
-  /*    supported by this function.  Other layouts, or more sophisticated  */
-  /*    kernings are out of scope of this method (the basic driver         */
-  /*    interface is meant to be simple).                                  */
-  /*                                                                       */
-  /*    They can be implemented by format-specific interfaces.             */
-  /*                                                                       */
+  /**************************************************************************
+   *
+   * @Function:
+   *   Get_Kerning
+   *
+   * @Description:
+   *   A driver method used to return the kerning vector between two
+   *   glyphs of the same face.
+   *
+   * @Input:
+   *   face ::
+   *     A handle to the source face object.
+   *
+   *   left_glyph ::
+   *     The index of the left glyph in the kern pair.
+   *
+   *   right_glyph ::
+   *     The index of the right glyph in the kern pair.
+   *
+   * @Output:
+   *   kerning ::
+   *     The kerning vector.  This is in font units for
+   *     scalable formats, and in pixels for fixed-sizes
+   *     formats.
+   *
+   * @Return:
+   *   FreeType error code.  0 means success.
+   *
+   * @Note:
+   *   Only horizontal layouts (left-to-right & right-to-left) are
+   *   supported by this function.  Other layouts, or more sophisticated
+   *   kernings are out of scope of this method (the basic driver
+   *   interface is meant to be simple).
+   *
+   *   They can be implemented by format-specific interfaces.
+   */
   static FT_Error
   Get_Kerning( FT_Face     t1face,        /* T1_Face */
                FT_UInt     left_glyph,

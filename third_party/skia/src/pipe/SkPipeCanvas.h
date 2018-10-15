@@ -8,6 +8,7 @@
 #ifndef SkPipeCanvas_DEFINED
 #define SkPipeCanvas_DEFINED
 
+#include "SkCanvasVirtualEnforcer.h"
 #include "SkDeduper.h"
 #include "SkImage.h"
 #include "SkNoDrawCanvas.h"
@@ -62,8 +63,7 @@ public:
 
     void setCanvas(SkPipeCanvas* canvas) { fPipeCanvas = canvas; }
     void setStream(SkWStream* stream) { fStream = stream; }
-    void setTypefaceSerializer(SkTypefaceSerializer* tfs) { fTFSerializer = tfs; }
-    void setImageSerializer(SkImageSerializer* ims) { fIMSerializer = ims; }
+    void setSerialProcs(const SkSerialProcs& procs) { fProcs = procs; }
 
     // returns 0 if not found
     int findImage(SkImage* image) const { return fImages.find(image->uniqueID()); }
@@ -77,9 +77,7 @@ public:
 private:
     SkPipeCanvas*           fPipeCanvas = nullptr;
     SkWStream*              fStream = nullptr;
-
-    SkTypefaceSerializer*   fTFSerializer = nullptr;
-    SkImageSerializer*      fIMSerializer = nullptr;
+    SkSerialProcs           fProcs;
 
     // All our keys (at the moment) are 32bit uniqueIDs
     SkTIndexSet<uint32_t>   fImages;
@@ -89,7 +87,7 @@ private:
 };
 
 
-class SkPipeCanvas : public SkNoDrawCanvas {
+class SkPipeCanvas : public SkCanvasVirtualEnforcer<SkNoDrawCanvas> {
 public:
     SkPipeCanvas(const SkRect& cull, SkPipeDeduper*, SkWStream*);
     ~SkPipeCanvas() override;
@@ -113,8 +111,6 @@ protected:
                        const SkPaint&) override;
     void onDrawPosTextH(const void* text, size_t byteLength, const SkScalar xpos[],
                         SkScalar constY, const SkPaint&) override;
-    void onDrawTextOnPath(const void* text, size_t byteLength, const SkPath&, const SkMatrix*,
-                          const SkPaint&) override;
     void onDrawTextBlob(const SkTextBlob* blob, SkScalar x, SkScalar y, const SkPaint&) override;
     void onDrawTextRSXform(const void* text, size_t byteLength, const SkRSXform xform[],
                            const SkRect* cull, const SkPaint& paint) override;
@@ -128,6 +124,7 @@ protected:
     void onDrawRegion(const SkRegion&, const SkPaint&) override;
     void onDrawRRect(const SkRRect&, const SkPaint&) override;
     void onDrawPath(const SkPath&, const SkPaint&) override;
+    void onDrawShadowRec(const SkPath&, const SkDrawShadowRec&) override;
 
     void onDrawImage(const SkImage*, SkScalar left, SkScalar top, const SkPaint*) override;
     void onDrawImageRect(const SkImage*, const SkRect* src, const SkRect& dst,
@@ -136,7 +133,8 @@ protected:
                          const SkPaint*) override;
     void onDrawImageLattice(const SkImage*, const Lattice& lattice, const SkRect& dst,
                             const SkPaint*) override;
-    void onDrawVerticesObject(const SkVertices*, SkBlendMode, const SkPaint&) override;
+    void onDrawVerticesObject(const SkVertices*, const SkVertices::Bone bones[], int boneCount,
+                              SkBlendMode, const SkPaint&) override;
 
     void onClipRect(const SkRect&, SkClipOp, ClipEdgeStyle) override;
     void onClipRRect(const SkRRect&, SkClipOp, ClipEdgeStyle) override;
@@ -145,6 +143,7 @@ protected:
 
     void onDrawPicture(const SkPicture*, const SkMatrix*, const SkPaint*) override;
     void onDrawAnnotation(const SkRect&, const char[], SkData*) override;
+    void onDrawDrawable(SkDrawable*, const SkMatrix*) override;
 
     // These we turn into images
     void onDrawBitmap(const SkBitmap&, SkScalar left, SkScalar top, const SkPaint*) override;
@@ -161,7 +160,7 @@ private:
 
     friend class SkPipeWriter;
 
-    typedef SkNoDrawCanvas INHERITED;
+    typedef SkCanvasVirtualEnforcer<SkNoDrawCanvas> INHERITED;
 };
 
 

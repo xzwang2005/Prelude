@@ -53,20 +53,14 @@ class Smoothness(legacy_page_test.LegacyPageTest):
     if self.options and self.options.extra_chrome_categories:
       config.chrome_trace_config.category_filter.AddFilterString(
           self.options.extra_chrome_categories)
+    if self.options and self.options.enable_systrace:
+      config.chrome_trace_config.SetEnableSystrace()
 
     tab.browser.platform.tracing_controller.StartTracing(config)
 
   def ValidateAndMeasurePage(self, _, tab, results):
     self._results = results
-    trace_result = tab.browser.platform.tracing_controller.StopTracing()
-
-    # TODO(charliea): This is part of a three-sided Chromium/Telemetry patch
-    # where we're changing the return type of StopTracing from a TraceValue to a
-    # (TraceValue, nonfatal_exception_list) tuple. Once the tuple return value
-    # lands in Chromium, the non-tuple logic should be deleted.
-    if isinstance(trace_result, tuple):
-      trace_result = trace_result[0]
-
+    trace_result = tab.browser.platform.tracing_controller.StopTracing()[0]
     trace_value = trace.TraceValue(
         results.current_page, trace_result,
         file_path=results.telemetry_info.trace_local_path,
@@ -76,23 +70,15 @@ class Smoothness(legacy_page_test.LegacyPageTest):
     results.AddValue(trace_value)
 
     model = model_module.TimelineModel(trace_result)
-    renderer_thread = model.GetRendererThreadFromTabId(tab.id)
+    renderer_thread = model.GetFirstRendererThread(tab.id)
     records = _CollectRecordsFromRendererThreads(model, renderer_thread)
     metric = smoothness.SmoothnessMetric()
     metric.AddResults(model, renderer_thread, records, results)
 
   def DidRunPage(self, platform):
     if platform.tracing_controller.is_tracing_running:
-      trace_result = platform.tracing_controller.StopTracing()
+      trace_result = platform.tracing_controller.StopTracing()[0]
       if self._results:
-
-        # TODO(charliea): This is part of a three-sided Chromium/Telemetry patch
-        # where we're changing the return type of StopTracing from a TraceValue
-        # to a (TraceValue, nonfatal_exception_list) tuple. Once the tuple
-        # return value lands in Chromium, the non-tuple logic should be deleted.
-        if isinstance(trace_result, tuple):
-          trace_result = trace_result[0]
-
         trace_value = trace.TraceValue(
             self._results.current_page, trace_result,
             file_path=self._results.telemetry_info.trace_local_path,

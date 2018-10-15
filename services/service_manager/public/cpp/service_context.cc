@@ -99,6 +99,11 @@ void ServiceContext::RequestQuit() {
   service_control_->RequestQuit();
 }
 
+base::RepeatingClosure ServiceContext::CreateQuitClosure() {
+  return base::BindRepeating(&ServiceContext::RequestQuit,
+                             weak_factory_.GetWeakPtr());
+}
+
 void ServiceContext::DisconnectFromServiceManager() {
   if (binding_.is_bound())
     binding_.Close();
@@ -108,9 +113,9 @@ void ServiceContext::DisconnectFromServiceManager() {
 void ServiceContext::QuitNow() {
   if (binding_.is_bound())
     binding_.Close();
-  if (!quit_closure_.is_null()) {
+  if (quit_closure_) {
     // CAUTION: May delete |this|.
-    base::ResetAndReturn(&quit_closure_).Run();
+    std::move(quit_closure_).Run();
   }
 }
 

@@ -12,7 +12,10 @@ from dashboard.models import graph_data
 class ListTimeseriesHandler(api_request_handler.ApiRequestHandler):
   """API handler for listing timeseries for a benchmark."""
 
-  def AuthorizedPost(self, *args):
+  def PrivilegedPost(self, *args):
+    return self.UnprivilegedPost(*args)
+
+  def UnprivilegedPost(self, *args):
     """Returns list in response to API requests.
 
     Argument:
@@ -23,11 +26,12 @@ class ListTimeseriesHandler(api_request_handler.ApiRequestHandler):
     """
     benchmark = args[0]
     sheriff_name = self.request.get('sheriff', 'Chromium Perf Sheriff')
-    sheriff = ndb.Key('Sheriff', sheriff_name)
     query = graph_data.TestMetadata.query()
     query = query.filter(graph_data.TestMetadata.suite_name == benchmark)
     query = query.filter(graph_data.TestMetadata.has_rows == True)
     query = query.filter(graph_data.TestMetadata.deprecated == False)
-    query = query.filter(graph_data.TestMetadata.sheriff == sheriff)
+    if sheriff_name != 'all':
+      sheriff = ndb.Key('Sheriff', sheriff_name)
+      query = query.filter(graph_data.TestMetadata.sheriff == sheriff)
     keys = query.fetch(keys_only=True)
     return [utils.TestPath(key) for key in keys]

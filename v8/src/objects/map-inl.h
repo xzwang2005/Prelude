@@ -6,11 +6,13 @@
 #define V8_OBJECTS_MAP_INL_H_
 
 #include "src/objects/map.h"
-
 #include "src/field-type.h"
 #include "src/objects-inl.h"
+#include "src/objects/api-callbacks-inl.h"
 #include "src/objects/descriptor-array.h"
+#include "src/objects/prototype-info-inl.h"
 #include "src/objects/shared-function-info.h"
+#include "src/objects/templates-inl.h"
 #include "src/property.h"
 #include "src/transitions.h"
 
@@ -29,7 +31,7 @@ CAST_ACCESSOR(Map)
 ACCESSORS(Map, instance_descriptors, DescriptorArray, kDescriptorsOffset)
 ACCESSORS_CHECKED(Map, layout_descriptor, LayoutDescriptor,
                   kLayoutDescriptorOffset, FLAG_unbox_double_fields)
-ACCESSORS(Map, raw_transitions, Object, kTransitionsOrPrototypeInfoOffset)
+WEAK_ACCESSORS(Map, raw_transitions, kTransitionsOrPrototypeInfoOffset)
 
 // |bit_field| fields.
 BIT_FIELD_ACCESSORS(Map, bit_field, has_non_instance_prototype,
@@ -49,6 +51,8 @@ BIT_FIELD_ACCESSORS(Map, bit_field, has_prototype_slot,
 // |bit_field2| fields.
 BIT_FIELD_ACCESSORS(Map, bit_field2, is_extensible, Map::IsExtensibleBit)
 BIT_FIELD_ACCESSORS(Map, bit_field2, is_prototype_map, Map::IsPrototypeMapBit)
+BIT_FIELD_ACCESSORS(Map, bit_field2, is_in_retained_map_list,
+                    Map::IsInRetainedMapListBit)
 
 // |bit_field3| fields.
 BIT_FIELD_ACCESSORS(Map, bit_field3, owns_descriptors, Map::OwnsDescriptorsBit)
@@ -66,8 +70,6 @@ BIT_FIELD_ACCESSORS(Map, bit_field3, may_have_interesting_symbols,
 BIT_FIELD_ACCESSORS(Map, bit_field3, construction_counter,
                     Map::ConstructionCounterBits)
 
-TYPE_CHECKER(Map, MAP_TYPE)
-
 InterceptorInfo* Map::GetNamedInterceptor() {
   DCHECK(has_named_interceptor());
   FunctionTemplateInfo* info = GetFunctionTemplateInfo();
@@ -84,8 +86,9 @@ bool Map::IsInplaceGeneralizableField(PropertyConstness constness,
                                       Representation representation,
                                       FieldType* field_type) {
   if (FLAG_track_constant_fields && FLAG_modify_map_inplace &&
-      (constness == kConst)) {
-    // kConst -> kMutable field generalization may happen in-place.
+      (constness == PropertyConstness::kConst)) {
+    // VariableMode::kConst -> PropertyConstness::kMutable field generalization
+    // may happen in-place.
     return true;
   }
   if (representation.IsHeapObject() && !field_type->IsAny()) {
@@ -115,9 +118,9 @@ void Map::GeneralizeIfCanHaveTransitionableFastElementsKind(
     // do not have fields that can be generalized in-place (without creation
     // of a new map).
     if (FLAG_track_constant_fields && FLAG_modify_map_inplace) {
-      // The constness is either already kMutable or should become kMutable if
-      // it was kConst.
-      *constness = kMutable;
+      // The constness is either already PropertyConstness::kMutable or should
+      // become PropertyConstness::kMutable if it was VariableMode::kConst.
+      *constness = PropertyConstness::kMutable;
     }
     if (representation->IsHeapObject()) {
       // The field type is either already Any or should become Any if it was
@@ -133,10 +136,10 @@ bool Map::IsUnboxedDoubleField(FieldIndex index) const {
   return !layout_descriptor()->IsTagged(index.property_index());
 }
 
-bool Map::TooManyFastProperties(StoreFromKeyed store_mode) const {
+bool Map::TooManyFastProperties(StoreOrigin store_origin) const {
   if (UnusedPropertyFields() != 0) return false;
   if (is_prototype_map()) return false;
-  int minimum = store_mode == CERTAINLY_NOT_STORE_FROM_KEYED ? 128 : 12;
+  int minimum = store_origin == StoreOrigin::kNamed ? 128 : 12;
   int limit = Max(minimum, GetInObjectProperties());
   int external = NumberOfFields() - GetInObjectProperties();
   return external > limit;
@@ -157,7 +160,9 @@ int Map::NumberOfOwnDescriptors() const {
 }
 
 void Map::SetNumberOfOwnDescriptors(int number) {
-  DCHECK(number <= instance_descriptors()->number_of_descriptors());
+  DCHECK_LE(number, instance_descriptors()->number_of_descriptors());
+  CHECK_LE(static_cast<unsigned>(number),
+           static_cast<unsigned>(kMaxNumberOfDescriptors));
   set_bit_field3(NumberOfOwnDescriptorsBits::update(bit_field3(), number));
 }
 
@@ -165,8 +170,9 @@ int Map::EnumLength() const { return EnumLengthBits::decode(bit_field3()); }
 
 void Map::SetEnumLength(int length) {
   if (length != kInvalidEnumCacheSentinel) {
-    DCHECK_GE(length, 0);
-    DCHECK(length <= NumberOfOwnDescriptors());
+    DCHECK_LE(length, NumberOfOwnDescriptors());
+    CHECK_LE(static_cast<unsigned>(length),
+             static_cast<unsigned>(kMaxNumberOfDescriptors));
   }
   set_bit_field3(EnumLengthBits::update(bit_field3(), length));
 }
@@ -174,28 +180,28 @@ void Map::SetEnumLength(int length) {
 FixedArrayBase* Map::GetInitialElements() const {
   FixedArrayBase* result = nullptr;
   if (has_fast_elements() || has_fast_string_wrapper_elements()) {
-    result = GetHeap()->empty_fixed_array();
+    result = GetReadOnlyRoots().empty_fixed_array();
   } else if (has_fast_sloppy_arguments_elements()) {
-    result = GetHeap()->empty_sloppy_arguments_elements();
+    result = GetReadOnlyRoots().empty_sloppy_arguments_elements();
   } else if (has_fixed_typed_array_elements()) {
-    result = GetHeap()->EmptyFixedTypedArrayForMap(this);
+    result = GetReadOnlyRoots().EmptyFixedTypedArrayForMap(this);
   } else if (has_dictionary_elements()) {
-    result = GetHeap()->empty_slow_element_dictionary();
+    result = GetReadOnlyRoots().empty_slow_element_dictionary();
   } else {
     UNREACHABLE();
   }
-  DCHECK(!GetHeap()->InNewSpace(result));
+  DCHECK(!Heap::InNewSpace(result));
   return result;
 }
 
 VisitorId Map::visitor_id() const {
-  return static_cast<VisitorId>(READ_BYTE_FIELD(this, kVisitorIdOffset));
+  return static_cast<VisitorId>(
+      RELAXED_READ_BYTE_FIELD(this, kVisitorIdOffset));
 }
 
 void Map::set_visitor_id(VisitorId id) {
-  DCHECK_LE(0, id);
-  DCHECK_LT(id, 256);
-  WRITE_BYTE_FIELD(this, kVisitorIdOffset, static_cast<byte>(id));
+  CHECK_LT(static_cast<unsigned>(id), 256);
+  RELAXED_WRITE_BYTE_FIELD(this, kVisitorIdOffset, static_cast<byte>(id));
 }
 
 int Map::instance_size_in_words() const {
@@ -212,9 +218,9 @@ int Map::instance_size() const {
 }
 
 void Map::set_instance_size(int value) {
-  DCHECK_EQ(0, value & (kPointerSize - 1));
+  CHECK_EQ(0, value & (kPointerSize - 1));
   value >>= kPointerSizeLog2;
-  DCHECK(0 <= value && value < 256);
+  CHECK_LT(static_cast<unsigned>(value), 256);
   set_instance_size_in_words(value);
 }
 
@@ -225,8 +231,7 @@ int Map::inobject_properties_start_or_constructor_function_index() const {
 
 void Map::set_inobject_properties_start_or_constructor_function_index(
     int value) {
-  DCHECK_LE(0, value);
-  DCHECK_LT(value, 256);
+  CHECK_LT(static_cast<unsigned>(value), 256);
   RELAXED_WRITE_BYTE_FIELD(
       this, kInObjectPropertiesStartOrConstructorFunctionIndexOffset,
       static_cast<byte>(value));
@@ -238,7 +243,7 @@ int Map::GetInObjectPropertiesStartInWords() const {
 }
 
 void Map::SetInObjectPropertiesStartInWords(int value) {
-  DCHECK(IsJSObjectMap());
+  CHECK(IsJSObjectMap());
   set_inobject_properties_start_or_constructor_function_index(value);
 }
 
@@ -253,7 +258,7 @@ int Map::GetConstructorFunctionIndex() const {
 }
 
 void Map::SetConstructorFunctionIndex(int value) {
-  DCHECK(IsPrimitiveMap());
+  CHECK(IsPrimitiveMap());
   set_inobject_properties_start_or_constructor_function_index(value);
 }
 
@@ -262,9 +267,11 @@ int Map::GetInObjectPropertyOffset(int index) const {
 }
 
 Handle<Map> Map::AddMissingTransitionsForTesting(
-    Handle<Map> split_map, Handle<DescriptorArray> descriptors,
+    Isolate* isolate, Handle<Map> split_map,
+    Handle<DescriptorArray> descriptors,
     Handle<LayoutDescriptor> full_layout_descriptor) {
-  return AddMissingTransitions(split_map, descriptors, full_layout_descriptor);
+  return AddMissingTransitions(isolate, split_map, descriptors,
+                               full_layout_descriptor);
 }
 
 InstanceType Map::instance_type() const {
@@ -290,13 +297,23 @@ int Map::UnusedPropertyFields() const {
   return unused;
 }
 
+int Map::UnusedInObjectProperties() const {
+  // Like Map::UnusedPropertyFields(), but returns 0 for out of object
+  // properties.
+  int value = used_or_unused_instance_size_in_words();
+  DCHECK_IMPLIES(!IsJSObjectMap(), value == 0);
+  if (value >= JSObject::kFieldsAdded) {
+    return instance_size_in_words() - value;
+  }
+  return 0;
+}
+
 int Map::used_or_unused_instance_size_in_words() const {
   return RELAXED_READ_BYTE_FIELD(this, kUsedOrUnusedInstanceSizeInWordsOffset);
 }
 
 void Map::set_used_or_unused_instance_size_in_words(int value) {
-  DCHECK_LE(0, value);
-  DCHECK_LE(value, 255);
+  CHECK_LE(static_cast<unsigned>(value), 255);
   RELAXED_WRITE_BYTE_FIELD(this, kUsedOrUnusedInstanceSizeInWordsOffset,
                            static_cast<byte>(value));
 }
@@ -314,12 +331,12 @@ int Map::UsedInstanceSize() const {
 void Map::SetInObjectUnusedPropertyFields(int value) {
   STATIC_ASSERT(JSObject::kFieldsAdded == JSObject::kHeaderSize / kPointerSize);
   if (!IsJSObjectMap()) {
-    DCHECK_EQ(0, value);
+    CHECK_EQ(0, value);
     set_used_or_unused_instance_size_in_words(0);
     DCHECK_EQ(0, UnusedPropertyFields());
     return;
   }
-  DCHECK_LE(0, value);
+  CHECK_LE(0, value);
   DCHECK_LE(value, GetInObjectProperties());
   int used_inobject_properties = GetInObjectProperties() - value;
   set_used_or_unused_instance_size_in_words(
@@ -329,8 +346,7 @@ void Map::SetInObjectUnusedPropertyFields(int value) {
 
 void Map::SetOutOfObjectUnusedPropertyFields(int value) {
   STATIC_ASSERT(JSObject::kFieldsAdded == JSObject::kHeaderSize / kPointerSize);
-  DCHECK_LE(0, value);
-  DCHECK_LT(value, JSObject::kFieldsAdded);
+  CHECK_LT(static_cast<unsigned>(value), JSObject::kFieldsAdded);
   // For out of object properties "used_instance_size_in_words" byte encodes
   // the slack in the property array.
   set_used_or_unused_instance_size_in_words(value);
@@ -340,6 +356,17 @@ void Map::SetOutOfObjectUnusedPropertyFields(int value) {
 void Map::CopyUnusedPropertyFields(Map* map) {
   set_used_or_unused_instance_size_in_words(
       map->used_or_unused_instance_size_in_words());
+  DCHECK_EQ(UnusedPropertyFields(), map->UnusedPropertyFields());
+}
+
+void Map::CopyUnusedPropertyFieldsAdjustedForInstanceSize(Map* map) {
+  int value = map->used_or_unused_instance_size_in_words();
+  if (value >= JSValue::kFieldsAdded) {
+    // Unused in-object fields. Adjust the offset from the object’s start
+    // so it matches the distance to the object’s end.
+    value += instance_size_in_words() - map->instance_size_in_words();
+  }
+  set_used_or_unused_instance_size_in_words(value);
   DCHECK_EQ(UnusedPropertyFields(), map->UnusedPropertyFields());
 }
 
@@ -369,8 +396,8 @@ void Map::AccountAddedOutOfObjectPropertyField(int unused_in_property_array) {
   if (unused_in_property_array < 0) {
     unused_in_property_array += JSObject::kFieldsAdded;
   }
-  DCHECK_GE(unused_in_property_array, 0);
-  DCHECK_LT(unused_in_property_array, JSObject::kFieldsAdded);
+  CHECK_LT(static_cast<unsigned>(unused_in_property_array),
+           JSObject::kFieldsAdded);
   set_used_or_unused_instance_size_in_words(unused_in_property_array);
   DCHECK_EQ(unused_in_property_array, UnusedPropertyFields());
 }
@@ -397,7 +424,7 @@ bool Map::should_be_fast_prototype_map() const {
 }
 
 void Map::set_elements_kind(ElementsKind elements_kind) {
-  DCHECK_LT(static_cast<int>(elements_kind), kElementsKindCount);
+  CHECK_LT(static_cast<int>(elements_kind), kElementsKindCount);
   set_bit_field2(Map::ElementsKindBits::update(bit_field2(), elements_kind));
 }
 
@@ -476,58 +503,45 @@ bool Map::CanBeDeprecated() const {
   return false;
 }
 
-void Map::NotifyLeafMapLayoutChange() {
+void Map::NotifyLeafMapLayoutChange(Isolate* isolate) {
   if (is_stable()) {
     mark_unstable();
     dependent_code()->DeoptimizeDependentCodeGroup(
-        GetIsolate(), DependentCode::kPrototypeCheckGroup);
+        isolate, DependentCode::kPrototypeCheckGroup);
   }
 }
 
 bool Map::CanTransition() const {
   // Only JSObject and subtypes have map transitions and back pointers.
-  STATIC_ASSERT(LAST_TYPE == LAST_JS_OBJECT_TYPE);
-  return instance_type() >= FIRST_JS_OBJECT_TYPE;
+  return InstanceTypeChecker::IsJSObject(instance_type());
 }
 
-bool Map::IsBooleanMap() const { return this == GetHeap()->boolean_map(); }
+#define DEF_TESTER(Type, ...)                              \
+  bool Map::Is##Type##Map() const {                        \
+    return InstanceTypeChecker::Is##Type(instance_type()); \
+  }
+INSTANCE_TYPE_CHECKERS(DEF_TESTER)
+#undef DEF_TESTER
+
+bool Map::IsBooleanMap() const {
+  return this == GetReadOnlyRoots().boolean_map();
+}
+
+bool Map::IsNullOrUndefinedMap() const {
+  return this == GetReadOnlyRoots().null_map() ||
+         this == GetReadOnlyRoots().undefined_map();
+}
+
 bool Map::IsPrimitiveMap() const {
-  STATIC_ASSERT(FIRST_PRIMITIVE_TYPE == FIRST_TYPE);
   return instance_type() <= LAST_PRIMITIVE_TYPE;
-}
-bool Map::IsJSReceiverMap() const {
-  STATIC_ASSERT(LAST_JS_RECEIVER_TYPE == LAST_TYPE);
-  return instance_type() >= FIRST_JS_RECEIVER_TYPE;
-}
-bool Map::IsJSObjectMap() const {
-  STATIC_ASSERT(LAST_JS_OBJECT_TYPE == LAST_TYPE);
-  return instance_type() >= FIRST_JS_OBJECT_TYPE;
-}
-bool Map::IsJSArrayMap() const { return instance_type() == JS_ARRAY_TYPE; }
-bool Map::IsJSFunctionMap() const {
-  return instance_type() == JS_FUNCTION_TYPE;
-}
-bool Map::IsStringMap() const { return instance_type() < FIRST_NONSTRING_TYPE; }
-bool Map::IsJSProxyMap() const { return instance_type() == JS_PROXY_TYPE; }
-bool Map::IsJSGlobalProxyMap() const {
-  return instance_type() == JS_GLOBAL_PROXY_TYPE;
-}
-bool Map::IsJSGlobalObjectMap() const {
-  return instance_type() == JS_GLOBAL_OBJECT_TYPE;
-}
-bool Map::IsJSTypedArrayMap() const {
-  return instance_type() == JS_TYPED_ARRAY_TYPE;
-}
-bool Map::IsJSDataViewMap() const {
-  return instance_type() == JS_DATA_VIEW_TYPE;
 }
 
 Object* Map::prototype() const { return READ_FIELD(this, kPrototypeOffset); }
 
 void Map::set_prototype(Object* value, WriteBarrierMode mode) {
-  DCHECK(value->IsNull(GetIsolate()) || value->IsJSReceiver());
+  DCHECK(value->IsNull() || value->IsJSReceiver());
   WRITE_FIELD(this, kPrototypeOffset, value);
-  CONDITIONAL_WRITE_BARRIER(GetHeap(), this, kPrototypeOffset, value, mode);
+  CONDITIONAL_WRITE_BARRIER(this, kPrototypeOffset, value, mode);
 }
 
 LayoutDescriptor* Map::layout_descriptor_gc_safe() const {
@@ -627,13 +641,16 @@ Object* Map::GetBackPointer() const {
   if (object->IsMap()) {
     return object;
   }
-  return GetIsolate()->heap()->undefined_value();
+  return GetReadOnlyRoots().undefined_value();
 }
 
 Map* Map::ElementsTransitionMap() {
   DisallowHeapAllocation no_gc;
-  return TransitionsAccessor(this, &no_gc)
-      .SearchSpecial(GetHeap()->elements_transition_symbol());
+  // TODO(delphick): While it's safe to pass nullptr for Isolate* here as
+  // SearchSpecial doesn't need it, this is really ugly. Perhaps factor out a
+  // base class for methods not requiring an Isolate?
+  return TransitionsAccessor(nullptr, this, &no_gc)
+      .SearchSpecial(GetReadOnlyRoots().elements_transition_symbol());
 }
 
 Object* Map::prototype_info() const {
@@ -642,25 +659,32 @@ Object* Map::prototype_info() const {
 }
 
 void Map::set_prototype_info(Object* value, WriteBarrierMode mode) {
-  DCHECK(is_prototype_map());
+  CHECK(is_prototype_map());
   WRITE_FIELD(this, Map::kTransitionsOrPrototypeInfoOffset, value);
-  CONDITIONAL_WRITE_BARRIER(
-      GetHeap(), this, Map::kTransitionsOrPrototypeInfoOffset, value, mode);
+  CONDITIONAL_WRITE_BARRIER(this, Map::kTransitionsOrPrototypeInfoOffset, value,
+                            mode);
 }
 
 void Map::SetBackPointer(Object* value, WriteBarrierMode mode) {
-  DCHECK(instance_type() >= FIRST_JS_RECEIVER_TYPE);
-  DCHECK(value->IsMap());
-  DCHECK(GetBackPointer()->IsUndefined(GetIsolate()));
-  DCHECK(!value->IsMap() ||
-         Map::cast(value)->GetConstructor() == constructor_or_backpointer());
+  CHECK_GE(instance_type(), FIRST_JS_RECEIVER_TYPE);
+  CHECK(value->IsMap());
+  CHECK(GetBackPointer()->IsUndefined());
+  CHECK_IMPLIES(value->IsMap(), Map::cast(value)->GetConstructor() ==
+                                    constructor_or_backpointer());
   set_constructor_or_backpointer(value, mode);
 }
 
 ACCESSORS(Map, dependent_code, DependentCode, kDependentCodeOffset)
-ACCESSORS(Map, weak_cell_cache, Object, kWeakCellCacheOffset)
+ACCESSORS(Map, prototype_validity_cell, Object, kPrototypeValidityCellOffset)
 ACCESSORS(Map, constructor_or_backpointer, Object,
           kConstructorOrBackPointerOffset)
+
+bool Map::IsPrototypeValidityCellValid() const {
+  Object* validity_cell = prototype_validity_cell();
+  Object* value = validity_cell->IsSmi() ? Smi::cast(validity_cell)
+                                         : Cell::cast(validity_cell)->value();
+  return value == Smi::FromInt(Map::kPrototypeChainValid);
+}
 
 Object* Map::GetConstructor() const {
   Object* maybe_constructor = constructor_or_backpointer();
@@ -684,12 +708,13 @@ FunctionTemplateInfo* Map::GetFunctionTemplateInfo() const {
 
 void Map::SetConstructor(Object* constructor, WriteBarrierMode mode) {
   // Never overwrite a back pointer with a constructor.
-  DCHECK(!constructor_or_backpointer()->IsMap());
+  CHECK(!constructor_or_backpointer()->IsMap());
   set_constructor_or_backpointer(constructor, mode);
 }
 
-Handle<Map> Map::CopyInitialMap(Handle<Map> map) {
-  return CopyInitialMap(map, map->instance_size(), map->GetInObjectProperties(),
+Handle<Map> Map::CopyInitialMap(Isolate* isolate, Handle<Map> map) {
+  return CopyInitialMap(isolate, map, map->instance_size(),
+                        map->GetInObjectProperties(),
                         map->UnusedPropertyFields());
 }
 
@@ -697,14 +722,14 @@ bool Map::IsInobjectSlackTrackingInProgress() const {
   return construction_counter() != Map::kNoSlackTracking;
 }
 
-void Map::InobjectSlackTrackingStep() {
+void Map::InobjectSlackTrackingStep(Isolate* isolate) {
   // Slack tracking should only be performed on an initial map.
-  DCHECK(GetBackPointer()->IsUndefined(GetIsolate()));
+  DCHECK(GetBackPointer()->IsUndefined());
   if (!IsInobjectSlackTrackingInProgress()) return;
   int counter = construction_counter();
   set_construction_counter(counter - 1);
   if (counter == kSlackTrackingCounterEnd) {
-    CompleteInobjectSlackTracking();
+    CompleteInobjectSlackTracking(isolate);
   }
 }
 
@@ -723,14 +748,15 @@ int NormalizedMapCache::GetIndex(Handle<Map> map) {
 }
 
 bool NormalizedMapCache::IsNormalizedMapCache(const HeapObject* obj) {
-  if (!obj->IsFixedArray()) return false;
-  if (FixedArray::cast(obj)->length() != NormalizedMapCache::kEntries) {
+  if (!obj->IsWeakFixedArray()) return false;
+  if (WeakFixedArray::cast(obj)->length() != NormalizedMapCache::kEntries) {
     return false;
   }
 #ifdef VERIFY_HEAP
   if (FLAG_verify_heap) {
-    reinterpret_cast<NormalizedMapCache*>(const_cast<HeapObject*>(obj))
-        ->NormalizedMapCacheVerify();
+    NormalizedMapCache* cache =
+        reinterpret_cast<NormalizedMapCache*>(const_cast<HeapObject*>(obj));
+    cache->NormalizedMapCacheVerify(cache->GetIsolate());
   }
 #endif
   return true;

@@ -2,12 +2,45 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
+import contextlib
 import collections
 import logging
 import os
 import shutil
+import tempfile
 
 from telemetry.internal.util import file_handle
+
+
+class NoopArtifactResults(object):
+  """A no-op artifact results object."""
+  def __init__(self, output_dir):
+    self._artifact_dir = os.path.join(os.path.realpath(output_dir), 'artifacts')
+
+  @property
+  def artifact_dir(self):
+    return self._artifact_dir
+
+  def GetTestArtifacts(self, test_name):
+    del test_name
+    return {}
+
+  def CreateArtifact(self, story, name, run_number=None, prefix='',
+                     suffix=''):
+    del story, name, run_number, prefix, suffix
+    return open(os.devnull, 'w')
+
+  def IterTestAndArtifacts(self):
+    return
+    yield  # pylint: disable=unreachable
+
+  def AddArtifact(self, test_name, name, artifact_path, run_number=None):
+    del run_number
+    if isinstance(artifact_path, file_handle.FileHandle):
+      artifact_path = artifact_path.GetAbsPath()
+    if os.path.exists(artifact_path):
+      logging.info("Deleting unused artifact %r of %r" % (name, test_name))
+      os.unlink(artifact_path)
 
 
 class ArtifactResults(object):
@@ -26,6 +59,17 @@ class ArtifactResults(object):
     if not os.path.exists(self.artifact_dir):
       os.makedirs(self.artifact_dir)
 
+  def IterTestAndArtifacts(self):
+    """ Iter all artifacts by |test_name| and corresponding |artifacts|.
+
+      test_name: the name of test in string
+      artifacts: a dictionary whose keys are the name of artifact type
+        (e.g: 'screenshot', 'log'..) and values are the list of file paths of
+        those artifacts.
+    """
+    for test_name, artifacts in self._test_artifacts.iteritems():
+      yield test_name, artifacts
+
   def GetTestArtifacts(self, test_name):
     """Gets all artifacts for a test.
 
@@ -36,6 +80,33 @@ class ArtifactResults(object):
   @property
   def artifact_dir(self):
     return self._artifact_dir
+
+  @contextlib.contextmanager
+  def CreateArtifact(self, story, name, run_number=None, prefix='',
+                     suffix=''):
+    """Create an artifact.
+
+    Args:
+      * story: The name of the story this artifact belongs to.
+      * name: The name of this artifact; 'logs', 'screenshot'.  Note that this
+          isn't used as part of the file name.
+      * run_number: Which run of a test this is. If the current number of
+          artifacts for the (test_name, name) key is less than this number,
+          new `None` artifacts will be inserted, with the assumption that
+          other runs of this test did not produce the same set of artifacts.
+          NOT CURRENTLY IMPLEMENTED.
+      * prefix: A string to appear at the beginning of the file name.
+      * suffix: A string to appear at the end of the file name.
+    Returns:
+      A generator yielding a file object.
+    """
+    del run_number
+    prefix = prefix or 'telemetry_test'
+    with tempfile.NamedTemporaryFile(
+        prefix=prefix, suffix=suffix, dir=self._artifact_dir,
+        delete=False) as file_obj:
+      self.AddArtifact(story, name, file_obj.name)
+      yield file_obj
 
   def AddArtifact(self, test_name, name, artifact_path, run_number=None):
     """Adds an artifact.

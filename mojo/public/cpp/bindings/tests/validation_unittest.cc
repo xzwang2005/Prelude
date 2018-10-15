@@ -42,18 +42,16 @@ Message CreateRawMessage(size_t size) {
   DCHECK(handle.is_valid());
 
   DCHECK(base::IsValueInRangeForNumericType<uint32_t>(size));
+  MojoAppendMessageDataOptions options;
+  options.struct_size = sizeof(options);
+  options.flags = MOJO_APPEND_MESSAGE_DATA_FLAG_COMMIT_SIZE;
   void* buffer;
   uint32_t buffer_size;
-  rv = MojoAttachSerializedMessageBuffer(handle->value(),
-                                         static_cast<uint32_t>(size), nullptr,
-                                         0, &buffer, &buffer_size);
+  rv = MojoAppendMessageData(handle->value(), static_cast<uint32_t>(size),
+                             nullptr, 0, &options, &buffer, &buffer_size);
   DCHECK_EQ(MOJO_RESULT_OK, rv);
 
-  rv = MojoCommitSerializedMessageContents(
-      handle->value(), static_cast<uint32_t>(size), nullptr, nullptr);
-  DCHECK_EQ(MOJO_RESULT_OK, rv);
-
-  return Message(std::move(handle));
+  return Message::CreateFromMessageHandle(&handle);
 }
 
 template <typename T>
@@ -286,9 +284,8 @@ class IntegrationTestInterfaceImpl : public IntegrationTestInterface {
  public:
   ~IntegrationTestInterfaceImpl() override {}
 
-  void Method0(BasicStructPtr param0,
-               const Method0Callback& callback) override {
-    callback.Run(std::vector<uint8_t>());
+  void Method0(BasicStructPtr param0, Method0Callback callback) override {
+    std::move(callback).Run(std::vector<uint8_t>());
   }
 };
 

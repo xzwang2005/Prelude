@@ -5,6 +5,9 @@
 #ifndef COMPONENTS_VIZ_SERVICE_SURFACES_SURFACE_OBSERVER_H_
 #define COMPONENTS_VIZ_SERVICE_SURFACES_SURFACE_OBSERVER_H_
 
+#include "base/optional.h"
+#include "base/time/time.h"
+
 namespace viz {
 
 class Surface;
@@ -15,12 +18,19 @@ struct BeginFrameArgs;
 
 class SurfaceObserver {
  public:
+  // Called when a Surface with a new SurfaceId is created.
+  virtual void OnSurfaceCreated(const SurfaceId& surface_id) = 0;
+
   // Called when a CompositorFrame with a new SurfaceId activates for the first
   // time.
   virtual void OnFirstSurfaceActivation(const SurfaceInfo& surface_info) = 0;
 
-  // Called when a CompositorFrame within |surface| activates.
-  virtual void OnSurfaceActivated(const SurfaceId& surface_id) = 0;
+  // Called when a CompositorFrame within a surface corresponding to
+  // |surface_id| activates. If the CompositorFrame was blocked on activation
+  // dependencies then |duration| specifies the amount of time that frame was
+  // blocked.
+  virtual void OnSurfaceActivated(const SurfaceId& surface_id,
+                                  base::Optional<base::TimeDelta> duration) = 0;
 
   // Called when a Surface was marked to be destroyed.
   virtual void OnSurfaceDestroyed(const SurfaceId& surface_id) = 0;
@@ -42,14 +52,18 @@ class SurfaceObserver {
   virtual void OnSurfaceDamageExpected(const SurfaceId& surface_id,
                                        const BeginFrameArgs& args) = 0;
 
-  // Called when |surface_id| or one of its descendents is determined to be
-  // damaged at aggregation time.
-  // TODO(crbug.com/776098): This is only used in tests. We can probably remove
-  // it.
-  virtual void OnSurfaceSubtreeDamaged(const SurfaceId& surface_id) = 0;
-
   // Called whenever |surface| will be drawn in the next display frame.
   virtual void OnSurfaceWillBeDrawn(Surface* surface) {}
+
+  // Called whenever the surface reference from the surface that has |parent_id|
+  // to the surface that has |child_id| is added.
+  virtual void OnAddedSurfaceReference(const SurfaceId& parent_id,
+                                       const SurfaceId& child_id) {}
+
+  // Called whenever the surface reference from the surface that has |parent_id|
+  // to the surface that has |child_id| is removed.
+  virtual void OnRemovedSurfaceReference(const SurfaceId& parent_id,
+                                         const SurfaceId& child_id) {}
 };
 
 }  // namespace viz

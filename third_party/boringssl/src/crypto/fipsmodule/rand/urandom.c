@@ -97,18 +97,6 @@ DEFINE_BSS_GET(int, urandom_fd);
 
 DEFINE_STATIC_ONCE(rand_once);
 
-#if defined(USE_NR_getrandom) || defined(BORINGSSL_FIPS)
-// message writes |msg| to stderr. We use this because referencing |stderr|
-// with |fprintf| generates relocations, which is a problem inside the FIPS
-// module.
-static void message(const char *msg) {
-  ssize_t r;
-  do {
-    r = write(2, msg, strlen(msg));
-  } while (r == -1 && errno == EINTR);
-}
-#endif
-
 // init_once initializes the state of this module to values previously
 // requested. This is the only function that modifies |urandom_fd| and
 // |urandom_buffering|, whose values may be read safely after calling the
@@ -127,7 +115,8 @@ static void init_once(void) {
     *urandom_fd_bss_get() = kHaveGetrandom;
     return;
   } else if (getrandom_ret == -1 && errno == EAGAIN) {
-    message(
+    fprintf(
+        stderr,
         "getrandom indicates that the entropy pool has not been initialized. "
         "Rather than continue with poor entropy, this process will block until "
         "entropy is available.\n");
@@ -151,6 +140,7 @@ static void init_once(void) {
   }
 
   if (fd < 0) {
+    perror("failed to open /dev/urandom");
     abort();
   }
 
@@ -163,6 +153,7 @@ static void init_once(void) {
     close(kUnset);
 
     if (fd <= 0) {
+      perror("failed to dup /dev/urandom fd");
       abort();
     }
   }
@@ -175,9 +166,9 @@ static void init_once(void) {
   for (;;) {
     int entropy_bits;
     if (ioctl(fd, RNDGETENTCNT, &entropy_bits)) {
-      message(
-          "RNDGETENTCNT on /dev/urandom failed. We cannot continue in this "
-          "case when in FIPS mode.\n");
+      fprintf(stderr,
+              "RNDGETENTCNT on /dev/urandom failed. We cannot continue in this "
+              "case when in FIPS mode.\n");
       abort();
     }
 
@@ -194,11 +185,13 @@ static void init_once(void) {
   if (flags == -1) {
     // Native Client doesn't implement |fcntl|.
     if (errno != ENOSYS) {
+      perror("failed to get flags from urandom fd");
       abort();
     }
   } else {
     flags |= FD_CLOEXEC;
     if (fcntl(fd, F_SETFD, flags) == -1) {
+      perror("failed to set FD_CLOEXEC on urandom fd");
       abort();
     }
   }
@@ -208,6 +201,7 @@ static void init_once(void) {
 void RAND_set_urandom_fd(int fd) {
   fd = dup(fd);
   if (fd < 0) {
+    perror("failed to dup supplied urandom fd");
     abort();
   }
 
@@ -220,6 +214,7 @@ void RAND_set_urandom_fd(int fd) {
     close(kUnset);
 
     if (fd <= 0) {
+      perror("failed to dup supplied urandom fd");
       abort();
     }
   }
@@ -232,7 +227,8 @@ void RAND_set_urandom_fd(int fd) {
   if (*urandom_fd_bss_get() == kHaveGetrandom) {
     close(fd);
   } else if (*urandom_fd_bss_get() != fd) {
-    abort();  // Already initialized.
+    fprintf(stderr, "RAND_set_urandom_fd called after initialisation.\n");
+    abort();
   }
 }
 
@@ -261,6 +257,7 @@ static char fill_with_entropy(uint8_t *out, size_t len) {
 #endif  // OPENSSL_MSAN
 
 #else  // USE_NR_getrandom
+      fprintf(stderr, "urandom fd corrupt.\n");
       abort();
 #endif
     } else {
@@ -288,6 +285,7 @@ void CRYPTO_sysrand(uint8_t *out, size_t requested) {
   CRYPTO_once(rand_once_bss_get(), init_once);
 
   if (!fill_with_entropy(out, requested)) {
+    perror("entropy fill failed");
     abort();
   }
 

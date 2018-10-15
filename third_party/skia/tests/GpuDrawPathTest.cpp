@@ -7,8 +7,6 @@
 
 #include "SkTypes.h"
 
-#if SK_SUPPORT_GPU
-
 #include "GrContext.h"
 #include "GrPath.h"
 #include "GrShape.h"
@@ -78,7 +76,7 @@ static void test_drawSameRectOvals(skiatest::Reporter*, SkCanvas* canvas) {
 
 DEF_GPUTEST_FOR_ALL_GL_CONTEXTS(GpuDrawPath, reporter, ctxInfo) {
     for (auto& test_func : { &test_drawPathEmpty, &test_drawSameRectOvals }) {
-        for (auto& sampleCount : {0, 4, 16}) {
+        for (auto& sampleCount : {1, 4, 16}) {
             SkImageInfo info = SkImageInfo::MakeN32Premul(255, 255);
             auto surface(
                 SkSurface::MakeRenderTarget(ctxInfo.grContext(), SkBudgeted::kNo, info,
@@ -163,5 +161,3 @@ DEF_GPUTEST(GrPathKeys, reporter, /* options */) {
         }
     }
 }
-
-#endif

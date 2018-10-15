@@ -14,6 +14,7 @@
 #include "../include/core/SkString.h"
 #include "../include/core/SkPictureRecorder.h"
 #include "../src/core/SkBlendModePriv.h"
+
 #include <cstring>
 
 // Verify that replay of a recording into a clipped canvas
@@ -168,6 +169,6 @@ DEF_TEST(SkRecordingAccuracyXfermode, reporter) {
     }
 
 #if !FINEGRAIN
-    REPORTER_ASSERT_MESSAGE(reporter, 0 == numErrors, errors.c_str());
+    REPORTER_ASSERT(reporter, 0 == numErrors, errors.c_str());
 #endif
 }

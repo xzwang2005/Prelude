@@ -45,6 +45,8 @@ InspectorTest.logMessage = function(originalMessage) {
   var objects = [ message ];
   while (objects.length) {
     var object = objects.shift();
+    if (object && object.name === '[[StableObjectId]]')
+      object.value = '<StablectObjectId>';
     for (var key in object) {
       if (nonStableFields.has(key))
         object[key] = `<${key}>`;
@@ -118,6 +120,12 @@ InspectorTest.ContextGroup = class {
 
   addScript(string, lineOffset, columnOffset, url) {
     utils.compileAndRunWithOrigin(this.id, string, url || '', lineOffset || 0, columnOffset || 0, false);
+  }
+
+  addInlineScript(string, url) {
+    const match = (new Error().stack).split('\n')[2].match(/([0-9]+):([0-9]+)/);
+    this.addScript(
+        string, match[1] * 1, match[1] * 1 + '.addInlineScript('.length, url);
   }
 
   addModule(string, url, lineOffset, columnOffset) {
@@ -213,7 +221,8 @@ InspectorTest.Session = class {
   logCallFrames(callFrames) {
     for (var frame of callFrames) {
       var functionName = frame.functionName || '(anonymous)';
-      var url = frame.url ? frame.url : this._scriptMap.get(frame.location.scriptId).url;
+      var scriptId = frame.location ? frame.location.scriptId : frame.scriptId;
+      var url = frame.url ? frame.url : this._scriptMap.get(scriptId).url;
       var lineNumber = frame.location ? frame.location.lineNumber : frame.lineNumber;
       var columnNumber = frame.location ? frame.location.columnNumber : frame.columnNumber;
       InspectorTest.log(`${functionName} (${url}:${lineNumber}:${columnNumber})`);
@@ -301,18 +310,16 @@ InspectorTest.Session = class {
 
   logAsyncStackTrace(asyncStackTrace) {
     while (asyncStackTrace) {
-      if (asyncStackTrace.promiseCreationFrame) {
-        var frame = asyncStackTrace.promiseCreationFrame;
-        InspectorTest.log(`-- ${asyncStackTrace.description} (${frame.url}:${frame.lineNumber}:${frame.columnNumber})--`);
-      } else {
-        InspectorTest.log(`-- ${asyncStackTrace.description} --`);
-      }
+      InspectorTest.log(`-- ${asyncStackTrace.description || '<empty>'} --`);
       this.logCallFrames(asyncStackTrace.callFrames);
+      if (asyncStackTrace.parentId) InspectorTest.log('  <external stack>');
       asyncStackTrace = asyncStackTrace.parent;
     }
   }
 
   _sendCommandPromise(method, params) {
+    if (typeof params !== 'object')
+      utils.print(`WARNING: non-object params passed to invocation of method ${method}`);
     if (InspectorTest._commandsForLogging.has(method))
       utils.print(method + ' called');
     var requestId = ++this._requestId;
@@ -330,7 +337,8 @@ InspectorTest.Session = class {
         var eventName = match[2];
         eventName = eventName.charAt(0).toLowerCase() + eventName.slice(1);
         if (match[1])
-          return () => this._waitForEventPromise(`${agentName}.${eventName}`);
+          return numOfEvents => this._waitForEventPromise(
+                     `${agentName}.${eventName}`, numOfEvents || 1);
         return listener => this._eventHandlers.set(`${agentName}.${eventName}`, listener);
       }
     })});
@@ -364,11 +372,16 @@ InspectorTest.Session = class {
     }
   };
 
-  _waitForEventPromise(eventName) {
+  _waitForEventPromise(eventName, numOfEvents) {
+    let events = [];
     return new Promise(fulfill => {
       this._eventHandlers.set(eventName, result => {
-        delete this._eventHandlers.delete(eventName);
-        fulfill(result);
+        --numOfEvents;
+        events.push(result);
+        if (numOfEvents === 0) {
+          delete this._eventHandlers.delete(eventName);
+          fulfill(events.length > 1 ? events : events[0]);
+        }
       });
     });
   }

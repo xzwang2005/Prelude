@@ -4,6 +4,7 @@
 import logging as real_logging
 import os
 import sys
+import time
 
 from telemetry.core import local_server
 from telemetry.core import memory_cache_http_server
@@ -169,7 +170,7 @@ class Platform(object):
     return self._platform_backend.GetSystemTotalPhysicalMemory()
 
   def CanFlushIndividualFilesFromSystemCache(self):
-    """Returns true if the disk cache can be flushed for specific files."""
+    """Returns true if the disk cache can be flushed for individual files."""
     return self._platform_backend.CanFlushIndividualFilesFromSystemCache()
 
   def SupportFlushEntireSystemCache(self):
@@ -179,19 +180,30 @@ class Platform(object):
     """
     return self._platform_backend.SupportFlushEntireSystemCache()
 
+  def _WaitForPageCacheToBeDropped(self):
+    # There seems to be no reliable way to wait for all pages to be dropped from
+    # the OS page cache (also known as 'file cache'). There is no guaranteed
+    # moment in time when everything is out of page cache. A number of pages
+    # will likely be reused before other pages are evicted. While individual
+    # files can be watched in limited ways, we choose not to be clever.
+    time.sleep(2)
+
   def FlushEntireSystemCache(self):
     """Flushes the OS's file cache completely.
 
     This function may require root or administrator access. Clients should
     call SupportFlushEntireSystemCache to check first.
     """
-    return self._platform_backend.FlushEntireSystemCache()
+    self._platform_backend.FlushEntireSystemCache()
+    self._WaitForPageCacheToBeDropped()
 
-  def FlushSystemCacheForDirectory(self, directory):
+  def FlushSystemCacheForDirectories(self, directories):
     """Flushes the OS's file cache for the specified directory.
 
     This function does not require root or administrator access."""
-    return self._platform_backend.FlushSystemCacheForDirectory(directory)
+    for path in directories:
+      self._platform_backend.FlushSystemCacheForDirectory(path)
+    self._WaitForPageCacheToBeDropped()
 
   def FlushDnsCache(self):
     """Flushes the OS's DNS cache completely.
@@ -214,6 +226,10 @@ class Platform(object):
         application,
         parameters,
         elevate_privilege=elevate_privilege)
+
+  def StartActivity(self, intent, blocking=False):
+    """Starts an activity for the given intent on the device."""
+    return self._platform_backend.StartActivity(intent, blocking)
 
   def IsApplicationRunning(self, application):
     """Returns whether an application is currently running."""
@@ -379,6 +395,13 @@ class Platform(object):
     """
     return self._platform_backend.TakeScreenshot(file_path)
 
+  def SetFullPerformanceModeEnabled(self, enabled):
+    """ Set full performance mode on the platform.
+
+    Note: this can be no-op on certain platforms.
+    """
+    return self._platform_backend.SetFullPerformanceModeEnabled(enabled)
+
   def StartLocalServer(self, server):
     """Starts a LocalServer and associates it with this platform.
     |server.Close()| should be called manually to close the started server.
@@ -387,6 +410,8 @@ class Platform(object):
 
   @property
   def http_server(self):
+    # TODO(crbug.com/799490): Ownership of the local server should be moved
+    # to the network_controller.
     return self._local_server_controller.GetRunningServer(
         memory_cache_http_server.MemoryCacheHTTPServer, None)
 
@@ -437,9 +462,6 @@ class Platform(object):
   def local_servers(self):
     """Returns the currently running local servers."""
     return self._local_server_controller.local_servers
-
-  def HasBattOrConnected(self):
-    return  self._platform_backend.HasBattOrConnected()
 
   def WaitForBatteryTemperature(self, temp):
     """Waits for the battery on the device under test to cool down to temp.

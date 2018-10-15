@@ -5,12 +5,14 @@
  * found in the LICENSE file.
  */
 
+#include "SkPDFGraphicState.h"
+
 #include "SkData.h"
-#include "SkPaint.h"
 #include "SkPDFCanon.h"
 #include "SkPDFFormXObject.h"
-#include "SkPDFGraphicState.h"
 #include "SkPDFUtils.h"
+#include "SkPaint.h"
+#include "SkTo.h"
 
 static const char* as_pdf_blend_mode_name(SkBlendMode mode) {
     // PDF32000.book section 11.3.5 "Blend Mode"
@@ -126,10 +128,7 @@ sk_sp<SkPDFDict> SkPDFGraphicState::GetGraphicStateForPaint(SkPDFCanon* canon,
 static sk_sp<SkPDFStream> make_invert_function() {
     // Acrobat crashes if we use a type 0 function, kpdf crashes if we use
     // a type 2 function, so we use a type 4 function.
-    auto domainAndRange = sk_make_sp<SkPDFArray>();
-    domainAndRange->reserve(2);
-    domainAndRange->appendInt(0);
-    domainAndRange->appendInt(1);
+    auto domainAndRange = SkPDFMakeArray(0, 1);
 
     static const char psInvert[] = "{1 exch sub}";
     // Do not copy the trailing '\0' into the SkData.

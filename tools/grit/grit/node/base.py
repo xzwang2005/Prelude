@@ -597,17 +597,6 @@ class Node(object):
     '''Whether this node is a resource map source.'''
     return False
 
-  def GeneratesResourceMapEntry(self, output_all_resource_defines,
-                                is_active_descendant):
-    '''Whether this node should output a resource map entry.
-
-    Args:
-      output_all_resource_defines: The value of output_all_resource_defines for
-                                   the root node.
-      is_active_descendant: Whether the current node is an active descendant
-                            from the root node.'''
-    return False
-
   def CompressDataIfNeeded(self, data):
     '''Compress data using the format specified in the compress attribute.
 
@@ -632,4 +621,3 @@ class ContentNode(Node):
   '''Convenience baseclass for nodes that can have content.'''
   def _ContentType(self):
     return self._CONTENT_TYPE_MIXED
-

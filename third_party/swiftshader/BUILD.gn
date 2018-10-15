@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import("//build/config/c++/c++.gni")
 import("//build/config/compiler/compiler.gni")
 
 config("swiftshader_config") {
@@ -26,8 +27,18 @@ config("swiftshader_config") {
       "/Gd",  # Default calling convention
     ]
 
+    if (!use_custom_libcxx) {
+      # Disable EH usage in STL headers.
+      # libc++ uses a predefined macro to control whether to use exceptions, so
+      # defining this macro is unnecessary. Defining _HAS_EXCEPTIONS to 0 also
+      # breaks libc++ because it depends on MSVC headers that only provide
+      # certain declarations if _HAS_EXCEPTIONS is 1.
+      defines += [
+        "_HAS_EXCEPTIONS=0",
+      ]
+    }
+
     defines += [
-      "_HAS_EXCEPTIONS=0",  # Disable EH usage in STL headers
       "_CRT_SECURE_NO_DEPRECATE",
       "NOMINMAX",
       "_WINDLL",
@@ -74,13 +85,16 @@ config("swiftshader_config") {
       cflags += [
         "-m64",
         "-fPIC",
-        "-march=core2",
+        "-march=x86-64",
+        "-mtune=generic",
       ]
-    } else {  # 32 bit version
+    } else if (target_cpu == "x86") {  # 32 bit version
       cflags += [
         "-m32",
         "-msse2",
-        "-march=i686",
+        "-mfpmath=sse",
+        "-march=pentium4",
+        "-mtune=generic",
       ]
     }
 

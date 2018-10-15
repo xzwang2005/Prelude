@@ -28,18 +28,10 @@ group("gn_all") {
   testonly = true
 
   deps = [
-    "//mojo/public:public", 
-    "//ipc:ipc",
-    "//url",
-    "//mojo/edk/test:run_all_unittests",
-    "//mojo/edk/system",
-    "//ui/gfx",
-    "//media",
-    "//gpu:gpu",
-    "//ui/aura",
-    "//ui/views",  
-    "//ui/views/examples:views_examples_exe",
-    "//prelude",
+    "//device/vr/buildflags",   # TODO: remove this to sub-targets?
+    "//skia",
+    "//ui/views",  # builds //ui/aura
+    "//third_party/angle/samples:all",
   ]
 }
 

@@ -21,12 +21,15 @@
 #include "build/build_config.h"
 #include "ui/gfx/geometry/size.h"
 #include "ui/gfx/vsync_provider.h"
+#include "ui/gl/egl_timestamps.h"
 #include "ui/gl/gl_bindings.h"
 #include "ui/gl/gl_export.h"
 #include "ui/gl/gl_surface.h"
 #include "ui/gl/gl_surface_overlay.h"
 
 namespace gl {
+
+class GLSurfacePresentationHelper;
 
 // If adding a new type, also add it to EGLDisplayType in
 // tools/metrics/histograms/histograms.xml. Don't remove or reorder entries.
@@ -42,12 +45,15 @@ enum DisplayType {
   ANGLE_D3D11_NULL = 8,
   ANGLE_OPENGL_NULL = 9,
   ANGLE_OPENGLES_NULL = 10,
-  DISPLAY_TYPE_MAX = 11,
+  ANGLE_VULKAN = 11,
+  ANGLE_VULKAN_NULL = 12,
+  DISPLAY_TYPE_MAX = 13,
 };
 
 GL_EXPORT void GetEGLInitDisplays(bool supports_angle_d3d,
                                   bool supports_angle_opengl,
                                   bool supports_angle_null,
+                                  bool supports_angle_vulkan,
                                   const base::CommandLine* command_line,
                                   std::vector<DisplayType>* init_displays);
 
@@ -62,6 +68,7 @@ class GL_EXPORT GLSurfaceEGL : public GLSurface {
   GLSurfaceFormat GetFormat() override;
 
   static bool InitializeOneOff(EGLNativeDisplayType native_display);
+  static bool InitializeOneOffForTesting();
   static bool InitializeExtensionSettingsOneOff();
   static void ShutdownOneOff();
   static EGLDisplay GetHardwareDisplay();
@@ -92,20 +99,22 @@ class GL_EXPORT GLSurfaceEGL : public GLSurface {
 
  private:
   DISALLOW_COPY_AND_ASSIGN(GLSurfaceEGL);
+  static bool InitializeOneOffCommon();
   static bool initialized_;
 };
 
 // Encapsulates an EGL surface bound to a view.
-class GL_EXPORT NativeViewGLSurfaceEGL : public GLSurfaceEGL {
+class GL_EXPORT NativeViewGLSurfaceEGL : public GLSurfaceEGL,
+                                         public EGLTimestampClient {
  public:
   NativeViewGLSurfaceEGL(EGLNativeWindowType window,
                          std::unique_ptr<gfx::VSyncProvider> vsync_provider);
 
   // Implement GLSurface.
-  using GLSurfaceEGL::Initialize;
   bool Initialize(GLSurfaceFormat format) override;
   bool SupportsSwapTimestamps() const override;
   void SetEnableSwapTimestamps() override;
+  bool SupportsPresentationCallback() override;
   void Destroy() override;
   bool Resize(const gfx::Size& size,
               float scale_factor,
@@ -125,14 +134,27 @@ class GL_EXPORT NativeViewGLSurfaceEGL : public GLSurfaceEGL {
   bool SupportsCommitOverlayPlanes() override;
   gfx::SwapResult CommitOverlayPlanes(
       const PresentationCallback& callback) override;
+  bool OnMakeCurrent(GLContext* context) override;
   gfx::VSyncProvider* GetVSyncProvider() override;
+  void SetVSyncEnabled(bool enabled) override;
   bool ScheduleOverlayPlane(int z_order,
                             gfx::OverlayTransform transform,
                             GLImage* image,
                             const gfx::Rect& bounds_rect,
-                            const gfx::RectF& crop_rect) override;
+                            const gfx::RectF& crop_rect,
+                            bool enable_blend,
+                            std::unique_ptr<gfx::GpuFence> gpu_fence) override;
   bool FlipsVertically() const override;
   bool BuffersFlipped() const override;
+  EGLTimestampClient* GetEGLTimestampClient() override;
+
+  // EGLTimestampClient implementation.
+  bool IsEGLTimestampSupported() const override;
+
+  bool GetFrameTimestampInfoIfAvailable(base::TimeTicks* presentation_time,
+                                        base::TimeDelta* composite_interval,
+                                        uint32_t* presentation_flags,
+                                        int frame_id) override;
 
   // Takes care of the platform dependant bits, of any, for creating the window.
   virtual bool InitializeNativeWindow();
@@ -140,9 +162,9 @@ class GL_EXPORT NativeViewGLSurfaceEGL : public GLSurfaceEGL {
  protected:
   ~NativeViewGLSurfaceEGL() override;
 
-  EGLNativeWindowType window_;
-  gfx::Size size_;
-  bool enable_fixed_size_angle_;
+  EGLNativeWindowType window_ = 0;
+  gfx::Size size_ = gfx::Size(1, 1);
+  bool enable_fixed_size_angle_ = true;
 
   gfx::SwapResult SwapBuffersWithDamage(const std::vector<int>& rects,
                                         const PresentationCallback& callback);
@@ -156,14 +178,17 @@ class GL_EXPORT NativeViewGLSurfaceEGL : public GLSurfaceEGL {
   // Commit the |pending_overlays_| and clear the vector. Returns false if any
   // fail to be committed.
   bool CommitAndClearPendingOverlays();
-
   void UpdateSwapEvents(EGLuint64KHR newFrameId, bool newFrameIdIsValid);
   void TraceSwapEvents(EGLuint64KHR oldFrameId);
 
-  EGLSurface surface_;
-  bool supports_post_sub_buffer_;
-  bool supports_swap_buffer_with_damage_;
-  bool flips_vertically_;
+  EGLSurface surface_ = nullptr;
+  bool supports_post_sub_buffer_ = false;
+  bool supports_swap_buffer_with_damage_ = false;
+  bool flips_vertically_ = false;
+
+#if defined(USE_X11)
+  bool has_swapped_buffers_ = false;
+#endif
 
   std::unique_ptr<gfx::VSyncProvider> vsync_provider_external_;
   std::unique_ptr<gfx::VSyncProvider> vsync_provider_internal_;
@@ -172,11 +197,18 @@ class GL_EXPORT NativeViewGLSurfaceEGL : public GLSurfaceEGL {
 
   // Stored in separate vectors so we can pass the egl timestamps
   // directly to the EGL functions.
-  bool use_egl_timestamps_;
+  bool use_egl_timestamps_ = false;
   std::vector<EGLint> supported_egl_timestamps_;
   std::vector<const char*> supported_event_names_;
 
+  // PresentationFeedback support.
+  int presentation_feedback_index_ = -1;
+  uint32_t presentation_flags_ = 0;
+
   base::queue<SwapInfo> swap_info_queue_;
+
+  bool vsync_enabled_ = true;
+  std::unique_ptr<GLSurfacePresentationHelper> presentation_helper_;
 
   DISALLOW_COPY_AND_ASSIGN(NativeViewGLSurfaceEGL);
 };

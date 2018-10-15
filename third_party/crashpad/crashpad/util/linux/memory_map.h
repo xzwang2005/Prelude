@@ -22,6 +22,7 @@
 
 #include "util/linux/address_types.h"
 #include "util/linux/checked_linux_address_range.h"
+#include "util/linux/ptrace_connection.h"
 #include "util/misc/initialization_state_dcheck.h"
 
 namespace crashpad {
@@ -54,15 +55,15 @@ class MemoryMap {
   ~MemoryMap();
 
   //! \brief Initializes this object with information about the mapped memory
-  //!     regions in the process whose ID is \a pid.
+  //!     regions in the process connected via \a connection.
   //!
   //! This method must be called successfully prior to calling any other method
   //! in this class. This method may only be called once.
   //!
-  //! \param[in] pid The process ID to obtain information for.
+  //! \param[in] connection A connection to the process create a map for.
   //!
   //! \return `true` on success, `false` on failure with a message logged.
-  bool Initialize(pid_t pid);
+  bool Initialize(PtraceConnection* connection);
 
   //! \return The Mapping containing \a address or `nullptr` if no match is
   //!     found. The caller does not take ownership of this object. It is scoped
@@ -75,20 +76,32 @@ class MemoryMap {
   //!     it was obtained from.
   const Mapping* FindMappingWithName(const std::string& name) const;
 
-  //! \brief Find the first Mapping in a series of mappings for the same file.
+  //! \brief Find possible initial mappings of files mapped over several
+  //!     segments.
   //!
   //! Executables and libaries are typically loaded into several mappings with
-  //! varying permissions for different segments. This method searches for the
-  //! mapping with the highest address at or below \a mapping, which maps the
-  //! same file as \a mapping from file offset 0.
+  //! varying permissions for different segments. Portions of an ELF file may
+  //! be mapped multiple times as part of loading the file, for example, when
+  //! initializing GNU_RELRO segments.
   //!
-  //! If \a mapping is not found, `nullptr` is returned. If \a mapping is found
-  //! but does not map a file, \a mapping is returned.
+  //! This method searches for mappings at or below \a mapping in memory that
+  //! are mapped from the same file as \a mapping from offset 0.
+  //!
+  //! On Android, ELF modules may be loaded from within a zipfile, so this
+  //! method may return mappings whose offset is not 0.
+  //!
+  //! This method is intended to help identify the possible base address for
+  //! loaded modules, but it is the caller's responsibility to determine which
+  //! returned mapping is correct.
+  //!
+  //! If \a mapping does not refer to a valid mapping, an empty vector will be
+  //! returned and a message will be logged. If \a mapping is found but does not
+  //! map a file, \a mapping is returned in \a possible_starts.
   //!
   //! \param[in] mapping A Mapping whose series to find the start of.
-  //! \return The first Mapping in the series or `nullptr` on failure with a
-  //!     message logged.
-  const Mapping* FindFileMmapStart(const Mapping& mapping) const;
+  //! \return a vector of the possible mapping starts.
+  std::vector<const Mapping*> FindFilePossibleMmapStarts(
+      const Mapping& mapping) const;
 
  private:
   std::vector<Mapping> mappings_;

@@ -34,8 +34,8 @@ from utils import Freeze
 # Possible outcomes
 FAIL = "FAIL"
 PASS = "PASS"
-TIMEOUT = "TIMEOUT" # TODO(majeski): unused in status files
-CRASH = "CRASH" # TODO(majeski): unused in status files
+TIMEOUT = "TIMEOUT"
+CRASH = "CRASH"
 
 # Outcomes only for status file, need special handling
 FAIL_OK = "FAIL_OK"
@@ -44,54 +44,95 @@ FAIL_SLOPPY = "FAIL_SLOPPY"
 # Modifiers
 SKIP = "SKIP"
 SLOW = "SLOW"
-FAST_VARIANTS = "FAST_VARIANTS"
 NO_VARIANTS = "NO_VARIANTS"
 
 ALWAYS = "ALWAYS"
 
 KEYWORDS = {}
-for key in [SKIP, FAIL, PASS, CRASH, SLOW, FAIL_OK, FAST_VARIANTS, NO_VARIANTS,
-            FAIL_SLOPPY, ALWAYS]:
+for key in [SKIP, FAIL, PASS, CRASH, SLOW, FAIL_OK, NO_VARIANTS, FAIL_SLOPPY,
+            ALWAYS]:
   KEYWORDS[key] = key
 
 # Support arches, modes to be written as keywords instead of strings.
 VARIABLES = {ALWAYS: True}
-for var in ["debug", "release", "big", "little",
+for var in ["debug", "release", "big", "little", "android",
             "android_arm", "android_arm64", "android_ia32", "android_x64",
             "arm", "arm64", "ia32", "mips", "mipsel", "mips64", "mips64el",
             "x64", "ppc", "ppc64", "s390", "s390x", "macos", "windows",
-            "linux", "aix"]:
+            "linux", "aix", "r1", "r2", "r3", "r5", "r6"]:
   VARIABLES[var] = var
 
 # Allow using variants as keywords.
 for var in ALL_VARIANTS:
   VARIABLES[var] = var
 
+class StatusFile(object):
+  def __init__(self, path, variables):
+    """
+    _rules:        {variant: {test name: [rule]}}
+    _prefix_rules: {variant: {test name prefix: [rule]}}
+    """
+    with open(path) as f:
+      self._rules, self._prefix_rules = ReadStatusFile(f.read(), variables)
 
-def DoSkip(outcomes):
-  return SKIP in outcomes
+  def get_outcomes(self, testname, variant=None):
+    """Merges variant dependent and independent rules."""
+    outcomes = frozenset()
 
+    for key in set([variant or '', '']):
+      rules = self._rules.get(key, {})
+      prefix_rules = self._prefix_rules.get(key, {})
 
-def IsSlow(outcomes):
-  return SLOW in outcomes
+      if testname in rules:
+        outcomes |= rules[testname]
 
+      for prefix in prefix_rules:
+        if testname.startswith(prefix):
+          outcomes |= prefix_rules[prefix]
 
-def OnlyStandardVariant(outcomes):
-  return NO_VARIANTS in outcomes
+    return outcomes
 
+  def warn_unused_rules(self, tests, check_variant_rules=False):
+    """Finds and prints unused rules in status file.
 
-def OnlyFastVariants(outcomes):
-  return FAST_VARIANTS in outcomes
+    Rule X is unused when it doesn't apply to any tests, which can also mean
+    that all matching tests were skipped by another rule before evaluating X.
 
+    Args:
+      tests: list of pairs (testname, variant)
+      check_variant_rules: if set variant dependent rules are checked
+    """
 
-def IsPassOrFail(outcomes):
-  return (PASS in outcomes and
-          FAIL in outcomes and
-          CRASH not in outcomes)
+    if check_variant_rules:
+      variants = list(ALL_VARIANTS)
+    else:
+      variants = ['']
+    used_rules = set()
 
+    for testname, variant in tests:
+      variant = variant or ''
 
-def IsFailOk(outcomes):
-  return FAIL_OK in outcomes
+      if testname in self._rules.get(variant, {}):
+        used_rules.add((testname, variant))
+        if SKIP in self._rules[variant][testname]:
+          continue
+
+      for prefix in self._prefix_rules.get(variant, {}):
+        if testname.startswith(prefix):
+          used_rules.add((prefix, variant))
+          if SKIP in self._prefix_rules[variant][prefix]:
+            break
+
+    for variant in variants:
+      for rule, value in (
+          list(self._rules.get(variant, {}).iteritems()) +
+          list(self._prefix_rules.get(variant, {}).iteritems())):
+        if (rule, variant) not in used_rules:
+          if variant == '':
+            variant_desc = 'variant independent'
+          else:
+            variant_desc = 'variant: %s' % variant
+          print 'Unused rule: %s -> %s (%s)' % (rule, value, variant_desc)
 
 
 def _JoinsPassAndFail(outcomes1, outcomes2):

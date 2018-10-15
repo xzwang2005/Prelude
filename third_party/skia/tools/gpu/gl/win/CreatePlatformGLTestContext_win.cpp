@@ -39,7 +39,7 @@ private:
     HDC fDeviceContext;
     HGLRC fGlRenderContext;
     static ATOM gWC;
-    SkWGLPbufferContext* fPbufferContext;
+    sk_sp<SkWGLPbufferContext> fPbufferContext;
 };
 
 ATOM WinGLTestContext::gWC = 0;
@@ -127,8 +127,8 @@ WinGLTestContext::WinGLTestContext(GrGLStandard forcedGpuAPI, WinGLTestContext* 
         return;
     }
 
-    sk_sp<const GrGLInterface> gl(GrGLCreateNativeInterface());
-    if (nullptr == gl.get()) {
+    auto gl = GrGLMakeNativeInterface();
+    if (!gl) {
         SkDebugf("Could not create GL interface.\n");
         this->destroyGLContext();
         return;
@@ -139,7 +139,7 @@ WinGLTestContext::WinGLTestContext(GrGLStandard forcedGpuAPI, WinGLTestContext* 
         return;
     }
 
-    this->init(gl.release());
+    this->init(std::move(gl));
 }
 
 WinGLTestContext::~WinGLTestContext() {
@@ -148,7 +148,7 @@ WinGLTestContext::~WinGLTestContext() {
 }
 
 void WinGLTestContext::destroyGLContext() {
-    SkSafeSetNull(fPbufferContext);
+    fPbufferContext = nullptr;
     if (fGlRenderContext) {
         // This deletes the context immediately even if it is current.
         wglDeleteContext(fGlRenderContext);

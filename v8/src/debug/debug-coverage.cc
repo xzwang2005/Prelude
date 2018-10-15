@@ -49,14 +49,14 @@ class SharedToCounterMap
 namespace {
 int StartPosition(SharedFunctionInfo* info) {
   int start = info->function_token_position();
-  if (start == kNoSourcePosition) start = info->start_position();
+  if (start == kNoSourcePosition) start = info->StartPosition();
   return start;
 }
 
 bool CompareSharedFunctionInfo(SharedFunctionInfo* a, SharedFunctionInfo* b) {
   int a_start = StartPosition(a);
   int b_start = StartPosition(b);
-  if (a_start == b_start) return a->end_position() > b->end_position();
+  if (a_start == b_start) return a->EndPosition() > b->EndPosition();
   return a_start < b_start;
 }
 
@@ -67,8 +67,12 @@ bool CompareCoverageBlock(const CoverageBlock& a, const CoverageBlock& b) {
   return a.start < b.start;
 }
 
-std::vector<CoverageBlock> GetSortedBlockData(Isolate* isolate,
-                                              SharedFunctionInfo* shared) {
+void SortBlockData(std::vector<CoverageBlock>& v) {
+  // Sort according to the block nesting structure.
+  std::sort(v.begin(), v.end(), CompareCoverageBlock);
+}
+
+std::vector<CoverageBlock> GetSortedBlockData(SharedFunctionInfo* shared) {
   DCHECK(shared->HasCoverageInfo());
 
   CoverageInfo* coverage_info =
@@ -86,8 +90,7 @@ std::vector<CoverageBlock> GetSortedBlockData(Isolate* isolate,
     result.emplace_back(start_pos, until_pos, count);
   }
 
-  // Sort according to the block nesting structure.
-  std::sort(result.begin(), result.end(), CompareCoverageBlock);
+  SortBlockData(result);
 
   return result;
 }
@@ -243,6 +246,21 @@ void MergeDuplicateSingletons(CoverageFunction* function) {
   }
 }
 
+void MergeDuplicateRanges(CoverageFunction* function) {
+  CoverageBlockIterator iter(function);
+
+  while (iter.Next() && iter.HasNext()) {
+    CoverageBlock& block = iter.GetBlock();
+    CoverageBlock& next_block = iter.GetNextBlock();
+
+    if (!HaveSameSourceRange(block, next_block)) continue;
+
+    DCHECK_NE(kNoSourcePosition, block.end);  // Non-singleton range.
+    next_block.count = std::max(block.count, next_block.count);
+    iter.DeleteBlock();
+  }
+}
+
 // Rewrite position singletons (produced by unconditional control flow
 // like return statements, and by continuation counters) into source
 // ranges that end at the next sibling range or the end of the parent
@@ -274,16 +292,13 @@ void RewritePositionSingletonsToRanges(CoverageFunction* function) {
   }
 }
 
-void MergeNestedAndConsecutiveRanges(CoverageFunction* function) {
+void MergeConsecutiveRanges(CoverageFunction* function) {
   CoverageBlockIterator iter(function);
 
   while (iter.Next()) {
     CoverageBlock& block = iter.GetBlock();
-    CoverageBlock& parent = iter.GetParent();
 
-    if (parent.count == block.count) {
-      iter.DeleteBlock();
-    } else if (iter.HasSiblingOrChild()) {
+    if (iter.HasSiblingOrChild()) {
       CoverageBlock& sibling = iter.GetSiblingOrChild();
       if (sibling.start == block.end && sibling.count == block.count) {
         // Best-effort: this pass may miss mergeable siblings in the presence of
@@ -291,6 +306,21 @@ void MergeNestedAndConsecutiveRanges(CoverageFunction* function) {
         sibling.start = block.start;
         iter.DeleteBlock();
       }
+    }
+  }
+}
+
+void MergeNestedRanges(CoverageFunction* function) {
+  CoverageBlockIterator iter(function);
+
+  while (iter.Next()) {
+    CoverageBlock& block = iter.GetBlock();
+    CoverageBlock& parent = iter.GetParent();
+
+    if (parent.count == block.count) {
+      // Transformation may not be valid if sibling blocks exist with a
+      // differing count.
+      iter.DeleteBlock();
     }
   }
 }
@@ -354,13 +384,12 @@ bool IsBinaryMode(debug::Coverage::Mode mode) {
   }
 }
 
-void CollectBlockCoverage(Isolate* isolate, CoverageFunction* function,
-                          SharedFunctionInfo* info,
+void CollectBlockCoverage(CoverageFunction* function, SharedFunctionInfo* info,
                           debug::Coverage::Mode mode) {
   DCHECK(IsBlockMode(mode));
 
   function->has_block_coverage = true;
-  function->blocks = GetSortedBlockData(isolate, info);
+  function->blocks = GetSortedBlockData(info);
 
   // If in binary mode, only report counts of 0/1.
   if (mode == debug::Coverage::kBlockBinary) ClampToBinary(function);
@@ -373,7 +402,15 @@ void CollectBlockCoverage(Isolate* isolate, CoverageFunction* function,
   RewritePositionSingletonsToRanges(function);
 
   // Merge nested and consecutive ranges with identical counts.
-  MergeNestedAndConsecutiveRanges(function);
+  // Note that it's necessary to merge duplicate ranges prior to merging nested
+  // changes in order to avoid invalid transformations. See crbug.com/827530.
+  MergeConsecutiveRanges(function);
+
+  SortBlockData(function->blocks);
+  MergeDuplicateRanges(function);
+  MergeNestedRanges(function);
+
+  MergeConsecutiveRanges(function);
 
   // Filter out ranges with count == 0 unless the immediate parent range has
   // a count != 0.
@@ -381,7 +418,6 @@ void CollectBlockCoverage(Isolate* isolate, CoverageFunction* function,
 
   // Filter out ranges of zero length.
   FilterEmptyRanges(function);
-
 
   // Reset all counters on the DebugInfo to zero.
   ResetAllBlockCounts(info);
@@ -467,7 +503,7 @@ std::unique_ptr<Coverage> Coverage::Collect(
 
     {
       // Sort functions by start position, from outer to inner functions.
-      SharedFunctionInfo::ScriptIterator infos(script_handle);
+      SharedFunctionInfo::ScriptIterator infos(isolate, *script_handle);
       while (SharedFunctionInfo* info = infos.Next()) {
         sorted.push_back(info);
       }
@@ -480,7 +516,7 @@ std::unique_ptr<Coverage> Coverage::Collect(
     // Use sorted list to reconstruct function nesting.
     for (SharedFunctionInfo* info : sorted) {
       int start = StartPosition(info);
-      int end = info->end_position();
+      int end = info->EndPosition();
       uint32_t count = counter_map.Get(info);
       // Find the correct outer function based on start position.
       while (!nesting.empty() && functions->at(nesting.back()).end <= start) {
@@ -506,7 +542,7 @@ std::unique_ptr<Coverage> Coverage::Collect(
       CoverageFunction function(start, end, count, name);
 
       if (IsBlockMode(collectionMode) && info->HasCoverageInfo()) {
-        CollectBlockCoverage(isolate, &function, info, collectionMode);
+        CollectBlockCoverage(&function, info, collectionMode);
       }
 
       // Only include a function range if itself or its parent function is
@@ -537,7 +573,7 @@ void Coverage::SelectMode(Isolate* isolate, debug::Coverage::Mode mode) {
       isolate->debug()->RemoveAllCoverageInfos();
       if (!isolate->is_collecting_type_profile()) {
         isolate->SetFeedbackVectorsForProfilingTools(
-            isolate->heap()->undefined_value());
+            ReadOnlyRoots(isolate).undefined_value());
       }
       break;
     case debug::Coverage::kBlockBinary:

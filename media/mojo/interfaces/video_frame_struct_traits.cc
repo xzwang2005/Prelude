@@ -9,7 +9,8 @@
 
 #include "base/logging.h"
 #include "media/mojo/common/mojo_shared_buffer_video_frame.h"
-#include "mojo/common/time_struct_traits.h"
+#include "mojo/public/cpp/base/time_mojom_traits.h"
+#include "mojo/public/cpp/base/values_mojom_traits.h"
 
 namespace mojo {
 
@@ -26,7 +27,11 @@ media::mojom::VideoFrameDataPtr MakeVideoFrameData(
     media::MojoSharedBufferVideoFrame* mojo_frame =
         static_cast<media::MojoSharedBufferVideoFrame*>(input.get());
 
-    mojo::ScopedSharedBufferHandle dup = mojo_frame->Handle().Clone();
+    // TODO(https://crbug.com/803136): This should duplicate as READ_ONLY, but
+    // can't because there is no guarantee that the input handle is sharable as
+    // read-only.
+    mojo::ScopedSharedBufferHandle dup = mojo_frame->Handle().Clone(
+        mojo::SharedBufferHandle::AccessMode::READ_WRITE);
     DCHECK(dup.is_valid());
 
     return media::mojom::VideoFrameData::NewSharedBufferData(
@@ -136,10 +141,14 @@ bool StructTraits<media::mojom::VideoFrameDataView,
     return false;
   }
 
-  std::unique_ptr<base::DictionaryValue> metadata;
+  if (!frame)
+    return false;
+
+  base::Value metadata;
   if (!input.ReadMetadata(&metadata))
     return false;
-  frame->metadata()->MergeInternalValuesFrom(*metadata);
+
+  frame->metadata()->MergeInternalValuesFrom(metadata);
 
   *output = std::move(frame);
   return true;

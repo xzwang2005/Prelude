@@ -2,9 +2,6 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-import weakref
-
-from battor import battor_wrapper
 from telemetry.internal.forwarders import do_nothing_forwarder
 from telemetry.internal.platform import network_controller_backend
 from telemetry.internal.platform import tracing_controller_backend
@@ -27,7 +24,6 @@ class PlatformBackend(object):
     if device and not self.SupportsDevice(device):
       raise ValueError('Unsupported device: %s' % device.name)
     self._platform = None
-    self._running_browser_backends = weakref.WeakSet()
     self._network_controller_backend = None
     self._tracing_controller_backend = None
     self._forwarder_factory = None
@@ -55,7 +51,7 @@ class PlatformBackend(object):
     raise NotImplementedError
 
   def SetPlatform(self, platform):
-    assert self._platform == None
+    assert self._platform is None
     self._platform = platform
 
   @property
@@ -65,10 +61,6 @@ class PlatformBackend(object):
   @property
   def is_host_platform(self):
     return self._platform.is_host_platform
-
-  @property
-  def running_browser_backends(self):
-    return list(self._running_browser_backends)
 
   @property
   def network_controller_backend(self):
@@ -87,30 +79,12 @@ class PlatformBackend(object):
   def _CreateForwarderFactory(self):
     return do_nothing_forwarder.DoNothingForwarderFactory()
 
-  def GetPortPairForForwarding(self, local_port):
-    # TODO(#1977): Remove when all forwarders support default remote ports.
-    return (local_port, local_port)
-
   def GetRemotePort(self, port):
     return port
 
   def GetSystemLog(self):
     return None
 
-  def DidCreateBrowser(self, browser, browser_backend):
-    browser_options = browser_backend.browser_options
-    self.SetFullPerformanceModeEnabled(browser_options.full_performance_mode)
-
-  def DidStartBrowser(self, browser, browser_backend):
-    assert browser not in self._running_browser_backends
-    self._running_browser_backends.add(browser_backend)
-
-  def WillCloseBrowser(self, browser, browser_backend):
-    is_last_browser = len(self._running_browser_backends) <= 1
-    if is_last_browser:
-      self.SetFullPerformanceModeEnabled(False)
-
-    self._running_browser_backends.discard(browser_backend)
 
   def IsRemoteDevice(self):
     """Check if target platform is on remote device.
@@ -202,6 +176,9 @@ class PlatformBackend(object):
       self, application, parameters=None, elevate_privilege=False):
     raise NotImplementedError()
 
+  def StartActivity(self, intent, blocking):
+    raise NotImplementedError()
+
   def IsApplicationRunning(self, application):
     raise NotImplementedError()
 
@@ -279,9 +256,6 @@ class PlatformBackend(object):
       Whether the path exists on the target platform.
     """
     raise NotImplementedError()
-
-  def HasBattOrConnected(self):
-    return battor_wrapper.IsBattOrConnected(self.GetOSName())
 
   def WaitForBatteryTemperature(self, temp):
     pass

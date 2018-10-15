@@ -10,6 +10,7 @@
 
 #import "base/mac/foundation_util.h"
 #import "base/mac/mac_util.h"
+#import "base/mac/scoped_objc_class_swizzler.h"
 #import "base/mac/sdk_forward_declarations.h"
 #include "base/macros.h"
 #include "base/strings/stringprintf.h"
@@ -20,14 +21,16 @@
 #import "ui/base/cocoa/window_size_constants.h"
 #include "ui/base/ime/input_method.h"
 #include "ui/base/material_design/material_design_controller.h"
+#import "ui/base/test/cocoa_helper.h"
 #include "ui/base/test/material_design_controller_test_api.h"
 #include "ui/events/test/cocoa_test_event_utils.h"
 #import "ui/gfx/mac/coordinate_conversion.h"
-#import "ui/gfx/test/ui_cocoa_test_helper.h"
 #import "ui/views/cocoa/bridged_content_view.h"
+#import "ui/views/cocoa/bridged_native_widget_host_impl.h"
 #import "ui/views/cocoa/native_widget_mac_nswindow.h"
 #import "ui/views/cocoa/views_nswindow_delegate.h"
 #include "ui/views/controls/textfield/textfield.h"
+#include "ui/views/controls/textfield/textfield_controller.h"
 #include "ui/views/controls/textfield/textfield_model.h"
 #include "ui/views/test/test_views_delegate.h"
 #include "ui/views/view.h"
@@ -197,25 +200,89 @@ bool IsRTLSelectBuggy(SEL sel) {
          sel == @selector(moveLeftAndModifySelection:);
 }
 
+// Used by InterpretKeyEventsDonorForNSView to simulate IME behavior.
+using InterpretKeyEventsCallback = base::RepeatingCallback<void(id)>;
+InterpretKeyEventsCallback* g_fake_interpret_key_events = nullptr;
+
+// Used by UpdateWindowsDonorForNSApp to hook -[NSApp updateWindows].
+base::RepeatingClosure* g_update_windows_closure = nullptr;
+
+// Used to provide a return value for +[NSTextInputContext currentInputContext].
+NSTextInputContext* g_fake_current_input_context = nullptr;
+
 }  // namespace
+
+// Class to hook [NSView interpretKeyEvents:] to simulate it interacting with an
+// IME window.
+@interface InterpretKeyEventsDonorForNSView : NSView
+@end
+
+@implementation InterpretKeyEventsDonorForNSView
+
+- (void)interpretKeyEvents:(NSArray<NSEvent*>*)eventArray {
+  ASSERT_TRUE(g_fake_interpret_key_events);
+  g_fake_interpret_key_events->Run(self);
+}
+
+@end
+
+@interface UpdateWindowsDonorForNSApp : NSApplication
+@end
+
+@implementation UpdateWindowsDonorForNSApp
+
+- (void)updateWindows {
+  ASSERT_TRUE(g_update_windows_closure);
+  g_update_windows_closure->Run();
+}
+
+@end
+@interface CurrentInputContextDonorForNSTextInputContext : NSTextInputContext
+@end
+
+@implementation CurrentInputContextDonorForNSTextInputContext
+
++ (NSTextInputContext*)currentInputContext {
+  return g_fake_current_input_context;
+}
+
+@end
 
 // Class to override -[NSWindow toggleFullScreen:] to a no-op. This simulates
 // NSWindow's behavior when attempting to toggle fullscreen state again, when
 // the last attempt failed but Cocoa has not yet sent
 // windowDidFailToEnterFullScreen:.
-@interface BridgedNativeWidgetTestFullScreenWindow : NativeWidgetMacNSWindow {
+@interface BridgedNativeWidgetTestWindow : NativeWidgetMacNSWindow {
  @private
+  BOOL ignoreToggleFullScreen_;
   int ignoredToggleFullScreenCount_;
 }
+@property(assign, nonatomic) BOOL ignoreToggleFullScreen;
 @property(readonly, nonatomic) int ignoredToggleFullScreenCount;
 @end
 
-@implementation BridgedNativeWidgetTestFullScreenWindow
+@implementation BridgedNativeWidgetTestWindow
 
+@synthesize ignoreToggleFullScreen = ignoreToggleFullScreen_;
 @synthesize ignoredToggleFullScreenCount = ignoredToggleFullScreenCount_;
 
+- (void)performSelector:(SEL)aSelector
+             withObject:(id)anArgument
+             afterDelay:(NSTimeInterval)delay {
+  // This is used in simulations without a message loop. Don't start a message
+  // loop since that would expose the tests to system notifications and
+  // potential flakes. Instead, just pretend the message loop is flushed here.
+  if (ignoreToggleFullScreen_ && aSelector == @selector(toggleFullScreen:))
+    [self toggleFullScreen:anArgument];
+  else
+    [super performSelector:aSelector withObject:anArgument afterDelay:delay];
+}
+
 - (void)toggleFullScreen:(id)sender {
-  ++ignoredToggleFullScreenCount_;
+  if (ignoreToggleFullScreen_)
+    ++ignoredToggleFullScreenCount_;
+  else
+    [super toggleFullScreen:sender];
 }
 
 @end
@@ -223,25 +290,33 @@ bool IsRTLSelectBuggy(SEL sel) {
 namespace views {
 namespace test {
 
-// Provides the |parent| argument to construct a BridgedNativeWidget.
+// Provides the |parent| argument to construct a BridgedNativeWidgetImpl.
 class MockNativeWidgetMac : public NativeWidgetMac {
  public:
   explicit MockNativeWidgetMac(internal::NativeWidgetDelegate* delegate)
       : NativeWidgetMac(delegate) {}
-
-  // Expose a reference, so that it can be reset() independently.
-  std::unique_ptr<BridgedNativeWidget>& bridge() { return bridge_; }
+  using NativeWidgetMac::bridge_impl;
+  using NativeWidgetMac::bridge_host_for_testing;
 
   // internal::NativeWidgetPrivate:
   void InitNativeWidget(const Widget::InitParams& params) override {
     ownership_ = params.ownership;
+
+    base::scoped_nsobject<NativeWidgetMacNSWindow> window(
+        [[BridgedNativeWidgetTestWindow alloc]
+            initWithContentRect:ui::kWindowSizeDeterminedLater
+                      styleMask:NSBorderlessWindowMask
+                        backing:NSBackingStoreBuffered
+                          defer:NO]);
+    bridge_host_for_testing()->CreateLocalBridge(window, params.parent);
+    bridge_host_for_testing()->InitWindow(params);
 
     // Usually the bridge gets initialized here. It is skipped to run extra
     // checks in tests, and so that a second window isn't created.
     delegate()->OnNativeWidgetCreated(true);
 
     // To allow events to dispatch to a view, it needs a way to get focus.
-    bridge_->SetFocusManager(GetWidget()->GetFocusManager());
+    bridge_host_for_testing()->SetFocusManager(GetWidget()->GetFocusManager());
   }
 
   void ReorderNativeViews() override {
@@ -252,7 +327,7 @@ class MockNativeWidgetMac : public NativeWidgetMac {
   DISALLOW_COPY_AND_ASSIGN(MockNativeWidgetMac);
 };
 
-// Helper test base to construct a BridgedNativeWidget with a valid parent.
+// Helper test base to construct a BridgedNativeWidgetImpl with a valid parent.
 class BridgedNativeWidgetTestBase : public ui::CocoaTest {
  public:
   struct SkipInitialization {};
@@ -264,8 +339,11 @@ class BridgedNativeWidgetTestBase : public ui::CocoaTest {
   explicit BridgedNativeWidgetTestBase(SkipInitialization tag)
       : native_widget_mac_(nullptr) {}
 
-  std::unique_ptr<BridgedNativeWidget>& bridge() {
-    return native_widget_mac_->bridge();
+  BridgedNativeWidgetImpl* bridge() {
+    return native_widget_mac_->bridge_impl();
+  }
+  BridgedNativeWidgetHostImpl* bridge_host() {
+    return native_widget_mac_->bridge_host_for_testing();
   }
 
   // Overridden from testing::Test:
@@ -297,8 +375,18 @@ class BridgedNativeWidgetTestBase : public ui::CocoaTest {
   }
 
   void TearDown() override {
+    // ui::CocoaTest::TearDown will wait until all NSWindows are destroyed, so
+    // be sure to destroy the widget (which will destroy its NSWindow)
+    // beforehand.
+    widget_.reset();
     ui::test::MaterialDesignControllerTestAPI::Uninitialize();
     ui::CocoaTest::TearDown();
+  }
+
+  NSWindow* bridge_window() const {
+    if (native_widget_mac_->bridge_impl())
+      return native_widget_mac_->bridge_impl()->ns_window();
+    return nil;
   }
 
  protected:
@@ -314,22 +402,21 @@ class BridgedNativeWidgetTestBase : public ui::CocoaTest {
   DISALLOW_COPY_AND_ASSIGN(BridgedNativeWidgetTestBase);
 };
 
-class BridgedNativeWidgetTest : public BridgedNativeWidgetTestBase {
+class BridgedNativeWidgetTest : public BridgedNativeWidgetTestBase,
+                                public TextfieldController {
  public:
+  using HandleKeyEventCallback =
+      base::RepeatingCallback<bool(Textfield*, const ui::KeyEvent& key_event)>;
+
   BridgedNativeWidgetTest();
   ~BridgedNativeWidgetTest() override;
 
   // Install a textfield with input type |text_input_type| in the view hierarchy
   // and make it the text input client. Also initializes |dummy_text_view_|.
-  void InstallTextField(const base::string16& text,
-                        ui::TextInputType text_input_type);
-
-  // Install a textfield with input type ui::TEXT_INPUT_TYPE_TEXT in the view
-  // hierarchy and make it the text input client. Also initializes
-  // |dummy_text_view_|.
-  void InstallTextField(const base::string16& text);
-
-  void InstallTextField(const std::string& text);
+  Textfield* InstallTextField(
+      const base::string16& text,
+      ui::TextInputType text_input_type = ui::TEXT_INPUT_TYPE_TEXT);
+  Textfield* InstallTextField(const std::string& text);
 
   // Returns the actual current text for |ns_view_|, or the selected substring.
   NSString* GetActualText();
@@ -360,9 +447,16 @@ class BridgedNativeWidgetTest : public BridgedNativeWidgetTestBase {
   // Helper method to set the private |keyDownEvent_| field on |ns_view_|.
   void SetKeyDownEvent(NSEvent* event);
 
+  // Sets a callback to run on the next HandleKeyEvent().
+  void SetHandleKeyEventCallback(HandleKeyEventCallback callback);
+
   // testing::Test:
   void SetUp() override;
   void TearDown() override;
+
+  // TextfieldController:
+  bool HandleKeyEvent(Textfield* sender,
+                      const ui::KeyEvent& key_event) override;
 
  protected:
   // Test delete to beginning of line or paragraph based on |sel|. |sel| can be
@@ -390,6 +484,8 @@ class BridgedNativeWidgetTest : public BridgedNativeWidgetTestBase {
   // An NSTextView which helps set the expectations for our tests.
   base::scoped_nsobject<NSTextView> dummy_text_view_;
 
+  HandleKeyEventCallback handle_key_event_callback_;
+
   base::test::ScopedTaskEnvironment scoped_task_environment_;
 
  private:
@@ -403,12 +499,13 @@ BridgedNativeWidgetTest::BridgedNativeWidgetTest()
 BridgedNativeWidgetTest::~BridgedNativeWidgetTest() {
 }
 
-void BridgedNativeWidgetTest::InstallTextField(
+Textfield* BridgedNativeWidgetTest::InstallTextField(
     const base::string16& text,
     ui::TextInputType text_input_type) {
   Textfield* textfield = new Textfield();
   textfield->SetText(text);
   textfield->SetTextInputType(text_input_type);
+  textfield->set_controller(this);
   view_->RemoveAllChildViews(true);
   view_->AddChildView(textfield);
   textfield->SetBoundsRect(init_params_.bounds);
@@ -425,14 +522,11 @@ void BridgedNativeWidgetTest::InstallTextField(
   dummy_text_view_.reset(
       [[NSTextView alloc] initWithFrame:NSMakeRect(0, 0, 100, 100)]);
   [dummy_text_view_ setString:SysUTF16ToNSString(text)];
+  return textfield;
 }
 
-void BridgedNativeWidgetTest::InstallTextField(const base::string16& text) {
-  InstallTextField(text, ui::TEXT_INPUT_TYPE_TEXT);
-}
-
-void BridgedNativeWidgetTest::InstallTextField(const std::string& text) {
-  InstallTextField(base::ASCIIToUTF16(text), ui::TEXT_INPUT_TYPE_TEXT);
+Textfield* BridgedNativeWidgetTest::InstallTextField(const std::string& text) {
+  return InstallTextField(base::ASCIIToUTF16(text));
 }
 
 NSString* BridgedNativeWidgetTest::GetActualText() {
@@ -490,36 +584,45 @@ void BridgedNativeWidgetTest::SetKeyDownEvent(NSEvent* event) {
   [ns_view_ setValue:event forKey:@"keyDownEvent_"];
 }
 
+void BridgedNativeWidgetTest::SetHandleKeyEventCallback(
+    HandleKeyEventCallback callback) {
+  handle_key_event_callback_ = std::move(callback);
+}
+
 void BridgedNativeWidgetTest::SetUp() {
   BridgedNativeWidgetTestBase::SetUp();
 
   view_.reset(new views::internal::RootView(widget_.get()));
-  base::scoped_nsobject<NSWindow> window([test_window() retain]);
-
-  // BridgedNativeWidget expects to be initialized with a hidden (deferred)
-  // window.
-  [window orderOut:nil];
-  EXPECT_FALSE([window delegate]);
-  bridge()->Init(window, init_params_);
+  base::scoped_nsobject<NSWindow> window([bridge_window() retain]);
 
   // The delegate should exist before setting the root view.
   EXPECT_TRUE([window delegate]);
-  bridge()->SetRootView(view_.get());
+  bridge_host()->SetRootView(view_.get());
+  bridge()->CreateContentView(view_->bounds());
   ns_view_ = bridge()->ns_view();
 
   // Pretend it has been shown via NativeWidgetMac::Show().
   [window orderFront:nil];
-  [test_window() makePretendKeyWindowAndSetFirstResponder:bridge()->ns_view()];
+  [window makeFirstResponder:bridge()->ns_view()];
 }
 
 void BridgedNativeWidgetTest::TearDown() {
   // Clear kill buffer so that no state persists between tests.
   TextfieldModel::ClearKillBuffer();
 
-  if (bridge())
-    bridge()->SetRootView(nullptr);
+  if (bridge_host()) {
+    bridge_host()->SetRootView(nullptr);
+    bridge()->DestroyContentView();
+  }
   view_.reset();
   BridgedNativeWidgetTestBase::TearDown();
+}
+
+bool BridgedNativeWidgetTest::HandleKeyEvent(Textfield* sender,
+                                             const ui::KeyEvent& key_event) {
+  if (handle_key_event_callback_)
+    return handle_key_event_callback_.Run(sender, key_event);
+  return false;
 }
 
 void BridgedNativeWidgetTest::TestDeleteBeginning(SEL sel) {
@@ -662,12 +765,13 @@ void BridgedNativeWidgetTest::TestEditingCommands(NSArray* selectors) {
 // what TEST_VIEW usually does.
 TEST_F(BridgedNativeWidgetTest, BridgedNativeWidgetTest_TestViewAddRemove) {
   base::scoped_nsobject<BridgedContentView> view([bridge()->ns_view() retain]);
-  EXPECT_NSEQ([test_window() contentView], view);
-  EXPECT_NSEQ(test_window(), [view window]);
+  base::scoped_nsobject<NSWindow> window([bridge_window() retain]);
+  EXPECT_NSEQ([window contentView], view);
+  EXPECT_NSEQ(window, [view window]);
 
   // The superview of a contentView is an NSNextStepFrame.
   EXPECT_TRUE([view superview]);
-  EXPECT_TRUE([view hostedView]);
+  EXPECT_TRUE([view bridge]);
 
   // Ensure the tracking area to propagate mouseMoved: events to the RootView is
   // installed.
@@ -675,13 +779,13 @@ TEST_F(BridgedNativeWidgetTest, BridgedNativeWidgetTest_TestViewAddRemove) {
 
   // Closing the window should tear down the C++ bridge, remove references to
   // any C++ objects in the ObjectiveC object, and remove it from the hierarchy.
-  [test_window() close];
-  EXPECT_FALSE([view hostedView]);
+  [window close];
+  EXPECT_FALSE([view bridge]);
   EXPECT_FALSE([view superview]);
   EXPECT_FALSE([view window]);
   EXPECT_EQ(0u, [[view trackingAreas] count]);
-  EXPECT_FALSE([test_window() contentView]);
-  EXPECT_FALSE([test_window() delegate]);
+  EXPECT_FALSE([window contentView]);
+  EXPECT_FALSE([window delegate]);
 }
 
 TEST_F(BridgedNativeWidgetTest, BridgedNativeWidgetTest_TestViewDisplay) {
@@ -693,8 +797,8 @@ TEST_F(BridgedNativeWidgetTest, ViewSizeTracksWindow) {
   const int kTestNewWidth = 400;
   const int kTestNewHeight = 300;
 
-  // |test_window()| is borderless, so these should align.
-  NSSize window_size = [test_window() frame].size;
+  // |bridge_window()| is borderless, so these should align.
+  NSSize window_size = [bridge_window() frame].size;
   EXPECT_EQ(view_->width(), static_cast<int>(window_size.width));
   EXPECT_EQ(view_->height(), static_cast<int>(window_size.height));
 
@@ -702,14 +806,14 @@ TEST_F(BridgedNativeWidgetTest, ViewSizeTracksWindow) {
   EXPECT_NE(kTestNewWidth, view_->width());
   EXPECT_NE(kTestNewHeight, view_->height());
 
-  [test_window() setFrame:NSMakeRect(0, 0, kTestNewWidth, kTestNewHeight)
-                  display:NO];
+  [bridge_window() setFrame:NSMakeRect(0, 0, kTestNewWidth, kTestNewHeight)
+                    display:NO];
   EXPECT_EQ(kTestNewWidth, view_->width());
   EXPECT_EQ(kTestNewHeight, view_->height());
 }
 
 TEST_F(BridgedNativeWidgetTest, GetInputMethodShouldNotReturnNull) {
-  EXPECT_TRUE(bridge()->GetInputMethod());
+  EXPECT_TRUE(bridge_host()->GetInputMethod());
 }
 
 // A simpler test harness for testing initialization flows.
@@ -719,13 +823,7 @@ class BridgedNativeWidgetInitTest : public BridgedNativeWidgetTestBase {
       : BridgedNativeWidgetTestBase(SkipInitialization()) {}
 
   // Prepares a new |window_| and |widget_| for a call to PerformInit().
-  void CreateNewWidgetToInit(NSUInteger style_mask) {
-    window_.reset(
-        [[NSWindow alloc] initWithContentRect:ui::kWindowSizeDeterminedLater
-                                    styleMask:style_mask
-                                      backing:NSBackingStoreBuffered
-                                        defer:NO]);
-    [window_ setReleasedWhenClosed:NO];  // Owned by scoped_nsobject.
+  void CreateNewWidgetToInit() {
     widget_.reset(new Widget);
     native_widget_mac_ = new MockNativeWidgetMac(widget_.get());
     init_params_.native_widget = native_widget_mac_;
@@ -733,17 +831,13 @@ class BridgedNativeWidgetInitTest : public BridgedNativeWidgetTestBase {
 
   void PerformInit() {
     widget_->Init(init_params_);
-    bridge()->Init(window_, init_params_);
   }
-
- protected:
-  base::scoped_nsobject<NSWindow> window_;
 
  private:
   DISALLOW_COPY_AND_ASSIGN(BridgedNativeWidgetInitTest);
 };
 
-// Test that BridgedNativeWidget remains sane if Init() is never called.
+// Test that BridgedNativeWidgetImpl remains sane if Init() is never called.
 TEST_F(BridgedNativeWidgetInitTest, InitNotCalled) {
   // Don't use a Widget* as the delegate. ~Widget() checks for Widget::
   // |native_widget_destroyed_| being set to true. That can only happen with a
@@ -752,8 +846,8 @@ TEST_F(BridgedNativeWidgetInitTest, InitNotCalled) {
   std::unique_ptr<MockNativeWidgetMac> native_widget(
       new MockNativeWidgetMac(nullptr));
   native_widget_mac_ = native_widget.get();
-  EXPECT_FALSE(bridge()->ns_view());
-  EXPECT_FALSE(bridge()->ns_window());
+  EXPECT_FALSE(bridge());
+  EXPECT_FALSE(bridge_host()->GetLocalNSWindow());
 }
 
 // Tests the shadow type given in InitParams.
@@ -763,34 +857,32 @@ TEST_F(BridgedNativeWidgetInitTest, ShadowType) {
   EXPECT_EQ(Widget::InitParams::OPAQUE_WINDOW, init_params_.opacity);
   EXPECT_EQ(Widget::InitParams::SHADOW_TYPE_DEFAULT, init_params_.shadow_type);
 
-  CreateNewWidgetToInit(NSBorderlessWindowMask);
-  EXPECT_FALSE([window_ hasShadow]);  // Default for NSBorderlessWindowMask.
+  CreateNewWidgetToInit();
+  EXPECT_FALSE(
+      [bridge_window() hasShadow]);  // Default for NSBorderlessWindowMask.
   PerformInit();
 
   // Borderless is 0, so isn't really a mask. Check that nothing is set.
-  EXPECT_EQ(NSBorderlessWindowMask, [window_ styleMask]);
-  EXPECT_TRUE([window_ hasShadow]);  // SHADOW_TYPE_DEFAULT means a shadow.
+  EXPECT_EQ(NSBorderlessWindowMask, [bridge_window() styleMask]);
+  EXPECT_TRUE(
+      [bridge_window() hasShadow]);  // SHADOW_TYPE_DEFAULT means a shadow.
 
-  CreateNewWidgetToInit(NSBorderlessWindowMask);
+  CreateNewWidgetToInit();
   init_params_.shadow_type = Widget::InitParams::SHADOW_TYPE_NONE;
   PerformInit();
-  EXPECT_FALSE([window_ hasShadow]);  // Preserves lack of shadow.
+  EXPECT_FALSE([bridge_window() hasShadow]);  // Preserves lack of shadow.
 
   // Default for Widget::InitParams::TYPE_WINDOW.
-  NSUInteger kBorderedMask =
-      NSTitledWindowMask | NSClosableWindowMask | NSMiniaturizableWindowMask |
-      NSResizableWindowMask | NSTexturedBackgroundWindowMask;
-  CreateNewWidgetToInit(kBorderedMask);
-  EXPECT_TRUE([window_ hasShadow]);  // Default for non-borderless.
+  CreateNewWidgetToInit();
   PerformInit();
-  EXPECT_FALSE([window_ hasShadow]);  // SHADOW_TYPE_NONE removes shadow.
+  EXPECT_FALSE(
+      [bridge_window() hasShadow]);  // SHADOW_TYPE_NONE removes shadow.
 
   init_params_.shadow_type = Widget::InitParams::SHADOW_TYPE_DEFAULT;
-  CreateNewWidgetToInit(kBorderedMask);
+  CreateNewWidgetToInit();
   PerformInit();
-  EXPECT_TRUE([window_ hasShadow]);  // Preserves shadow.
+  EXPECT_TRUE([bridge_window() hasShadow]);  // Preserves shadow.
 
-  window_.reset();
   widget_.reset();
 }
 
@@ -1313,6 +1405,187 @@ TEST_F(BridgedNativeWidgetTest, TextInput_FirstRectForCharacterRange) {
   EXPECT_EQ_RANGE(query_range, actual_range);
 }
 
+// Test simulated codepaths for IMEs that do not always "mark" text. E.g.
+// phonetic languages such as Korean and Vietnamese.
+TEST_F(BridgedNativeWidgetTest, TextInput_SimulatePhoneticIme) {
+  Textfield* textfield = InstallTextField("");
+  EXPECT_TRUE([ns_view_ textInputClient]);
+
+  base::mac::ScopedObjCClassSwizzler interpret_key_events_swizzler(
+      [NSView class], [InterpretKeyEventsDonorForNSView class],
+      @selector(interpretKeyEvents:));
+
+  // Sequence of calls (and corresponding keyDown events) obtained via tracing
+  // with 2-Set Korean IME and pressing q, o, then Enter on the keyboard.
+  NSEvent* q_in_ime = cocoa_test_event_utils::KeyEventWithKeyCode(
+      12, [@"ㅂ" characterAtIndex:0], NSKeyDown, 0);
+  InterpretKeyEventsCallback handle_q_in_ime = base::BindRepeating([](id view) {
+    [view insertText:@"ㅂ" replacementRange:NSMakeRange(NSNotFound, 0)];
+  });
+
+  NSEvent* o_in_ime = cocoa_test_event_utils::KeyEventWithKeyCode(
+      31, [@"ㅐ" characterAtIndex:0], NSKeyDown, 0);
+  InterpretKeyEventsCallback handle_o_in_ime = base::BindRepeating([](id view) {
+    [view insertText:@"배" replacementRange:NSMakeRange(0, 1)];
+  });
+
+  NSEvent* return_in_ime = cocoa_test_event_utils::SynthesizeKeyEvent(
+      widget_->GetNativeWindow(), true, ui::VKEY_RETURN, 0);
+  InterpretKeyEventsCallback handle_return_in_ime =
+      base::BindRepeating([](id view) {
+        // When confirming the composition, AppKit repeats itself.
+        [view insertText:@"배" replacementRange:NSMakeRange(0, 1)];
+        [view insertText:@"배" replacementRange:NSMakeRange(0, 1)];
+        // Note: there is no insertText:@"\r", which we would normally see when
+        // not in an IME context for VKEY_RETURN.
+      });
+
+  // Add a hook for the KeyEvent being received by the TextfieldController. E.g.
+  // this is where the Omnibox would start to search when Return is pressed.
+  bool saw_vkey_return = false;
+  SetHandleKeyEventCallback(base::BindRepeating(
+      [](bool* saw_return, Textfield* textfield, const ui::KeyEvent& event) {
+        if (event.key_code() == ui::VKEY_RETURN) {
+          EXPECT_FALSE(*saw_return);
+          *saw_return = true;
+          EXPECT_EQ(base::SysNSStringToUTF16(@"배"), textfield->text());
+        }
+        return false;
+      },
+      &saw_vkey_return));
+
+  EXPECT_EQ(base::UTF8ToUTF16(""), textfield->text());
+
+  g_fake_interpret_key_events = &handle_q_in_ime;
+  [ns_view_ keyDown:q_in_ime];
+  EXPECT_EQ(base::SysNSStringToUTF16(@"ㅂ"), textfield->text());
+  EXPECT_FALSE(saw_vkey_return);
+
+  g_fake_interpret_key_events = &handle_o_in_ime;
+  [ns_view_ keyDown:o_in_ime];
+  EXPECT_EQ(base::SysNSStringToUTF16(@"배"), textfield->text());
+  EXPECT_FALSE(saw_vkey_return);
+
+  // Note the "Enter" should not replace the replacement range, even though a
+  // replacement range was set.
+  g_fake_interpret_key_events = &handle_return_in_ime;
+  [ns_view_ keyDown:return_in_ime];
+  EXPECT_EQ(base::SysNSStringToUTF16(@"배"), textfield->text());
+
+  // VKEY_RETURN should be seen by via the unhandled key event handler (but not
+  // via -insertText:.
+  EXPECT_TRUE(saw_vkey_return);
+
+  g_fake_interpret_key_events = nullptr;
+}
+
+// Test a codepath that could hypothetically cause [NSApp updateWindows] to be
+// called recursively due to IME dismissal during teardown triggering a focus
+// change. Twice.
+TEST_F(BridgedNativeWidgetTest, TextInput_RecursiveUpdateWindows) {
+  Textfield* textfield = InstallTextField("");
+  EXPECT_TRUE([ns_view_ textInputClient]);
+
+  base::mac::ScopedObjCClassSwizzler interpret_key_events_swizzler(
+      [NSView class], [InterpretKeyEventsDonorForNSView class],
+      @selector(interpretKeyEvents:));
+  base::mac::ScopedObjCClassSwizzler update_windows_swizzler(
+      [NSApplication class], [UpdateWindowsDonorForNSApp class],
+      @selector(updateWindows));
+  base::mac::ScopedObjCClassSwizzler current_input_context_swizzler(
+      [NSTextInputContext class],
+      [CurrentInputContextDonorForNSTextInputContext class],
+      @selector(currentInputContext));
+
+  int vkey_return_count = 0;
+
+  // Everything happens with this one event.
+  NSEvent* return_with_fake_ime = cocoa_test_event_utils::SynthesizeKeyEvent(
+      widget_->GetNativeWindow(), true, ui::VKEY_RETURN, 0);
+
+  InterpretKeyEventsCallback generate_return_and_fake_ime = base::BindRepeating(
+      [](int* saw_return_count, id view) {
+        EXPECT_EQ(0, *saw_return_count);
+        // First generate the return to simulate an input context change.
+        [view insertText:@"\r" replacementRange:NSMakeRange(NSNotFound, 0)];
+
+        EXPECT_EQ(1, *saw_return_count);
+      },
+      &vkey_return_count);
+
+  bool saw_update_windows = false;
+  base::RepeatingClosure update_windows_closure = base::BindRepeating(
+      [](bool* saw_update_windows, BridgedContentView* view,
+         Textfield* textfield) {
+        // Ensure updateWindows is not invoked recursively.
+        EXPECT_FALSE(*saw_update_windows);
+        *saw_update_windows = true;
+
+        // Inside updateWindows, assume the IME got dismissed and wants to
+        // insert its last bit of text for the old input context.
+        [view insertText:@"배" replacementRange:NSMakeRange(0, 1)];
+
+        // This is triggered by the setTextInputClient:nullptr in
+        // SetHandleKeyEventCallback(), so -inputContext should also be nil.
+        EXPECT_FALSE([view inputContext]);
+
+        // Ensure we can't recursively call updateWindows. A TextInputClient
+        // reacting to InsertChar could theoretically do this, but toolkit-views
+        // DCHECKs if there is recursive event dispatch, so call
+        // setTextInputClient directly.
+        [view setTextInputClient:textfield];
+
+        // Finally simulate what -[NSApp updateWindows] should _actually_ do,
+        // which is to update the input context (from the first responder).
+        g_fake_current_input_context = [view inputContext];
+
+        // Now, the |textfield| set above should have been set again.
+        EXPECT_TRUE(g_fake_current_input_context);
+      },
+      &saw_update_windows, ns_view_, textfield);
+
+  SetHandleKeyEventCallback(base::BindRepeating(
+      [](int* saw_return_count, BridgedContentView* view, Textfield* textfield,
+         const ui::KeyEvent& event) {
+        if (event.key_code() == ui::VKEY_RETURN) {
+          *saw_return_count += 1;
+          // Simulate Textfield::OnBlur() by clearing the input method.
+          // Textfield needs to be in a Widget to do this normally.
+          [view setTextInputClient:nullptr];
+        }
+        return false;
+      },
+      &vkey_return_count, ns_view_));
+
+  // Starting text (just insert it).
+  [ns_view_ insertText:@"ㅂ" replacementRange:NSMakeRange(NSNotFound, 0)];
+
+  EXPECT_EQ(base::SysNSStringToUTF16(@"ㅂ"), textfield->text());
+
+  g_fake_interpret_key_events = &generate_return_and_fake_ime;
+  g_update_windows_closure = &update_windows_closure;
+  g_fake_current_input_context = [ns_view_ inputContext];
+  EXPECT_TRUE(g_fake_current_input_context);
+  [ns_view_ keyDown:return_with_fake_ime];
+
+  // We should see one VKEY_RETURNs and one updateWindows. In particular, note
+  // that there is not a second VKEY_RETURN seen generated by keyDown: thinking
+  // the event has been unhandled. This is because it was handled when the fake
+  // IME sent \r.
+  EXPECT_TRUE(saw_update_windows);
+  EXPECT_EQ(1, vkey_return_count);
+
+  // The text inserted during updateWindows should have been inserted, even
+  // though we were trying to change the input context.
+  EXPECT_EQ(base::SysNSStringToUTF16(@"배"), textfield->text());
+
+  EXPECT_TRUE(g_fake_current_input_context);
+
+  g_fake_current_input_context = nullptr;
+  g_fake_interpret_key_events = nullptr;
+  g_update_windows_closure = nullptr;
+}
+
 typedef BridgedNativeWidgetTestBase BridgedNativeWidgetSimulateFullscreenTest;
 
 // Simulate the notifications that AppKit would send out if a fullscreen
@@ -1321,18 +1594,10 @@ typedef BridgedNativeWidgetTestBase BridgedNativeWidgetSimulateFullscreenTest;
 // mashing Ctrl+Left/Right to keep OSX in a transition between Spaces to cause
 // the fullscreen transition to fail.
 TEST_F(BridgedNativeWidgetSimulateFullscreenTest, FailToEnterAndExit) {
-  base::scoped_nsobject<NSWindow> owned_window(
-      [[BridgedNativeWidgetTestFullScreenWindow alloc]
-          initWithContentRect:NSMakeRect(50, 50, 400, 300)
-                    styleMask:NSBorderlessWindowMask
-                      backing:NSBackingStoreBuffered
-                        defer:NO]);
-  [owned_window setReleasedWhenClosed:NO];  // Owned by scoped_nsobject.
-  bridge()->Init(owned_window, init_params_);  // Transfers ownership.
-
-  BridgedNativeWidgetTestFullScreenWindow* window =
-      base::mac::ObjCCastStrict<BridgedNativeWidgetTestFullScreenWindow>(
+  BridgedNativeWidgetTestWindow* window =
+      base::mac::ObjCCastStrict<BridgedNativeWidgetTestWindow>(
           widget_->GetNativeWindow());
+  [window setIgnoreToggleFullScreen:YES];
   widget_->Show();
 
   NSNotificationCenter* center = [NSNotificationCenter defaultCenter];
@@ -1344,8 +1609,8 @@ TEST_F(BridgedNativeWidgetSimulateFullscreenTest, FailToEnterAndExit) {
                         object:window];
 
   // On a failure, Cocoa starts by sending an unexpected *exit* fullscreen, and
-  // BridgedNativeWidget will think it's just a delayed transition and try to go
-  // back into fullscreen but get ignored by Cocoa.
+  // BridgedNativeWidgetImpl will think it's just a delayed transition and try
+  // to go back into fullscreen but get ignored by Cocoa.
   EXPECT_EQ(0, [window ignoredToggleFullScreenCount]);
   EXPECT_TRUE(bridge()->target_fullscreen_state());
   [center postNotificationName:NSWindowDidExitFullScreenNotification

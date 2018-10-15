@@ -8,9 +8,9 @@
 #include "SkTypes.h"
 #include "Test.h"
 
-#if SK_SUPPORT_GPU
-
 #include "GrWindowRectangles.h"
+#include "SkRandom.h"
+#include "SkRectPriv.h"
 
 static SkIRect next_irect(SkRandom& r) {
     return {r.nextS(), r.nextS(), r.nextS(), r.nextS()};
@@ -47,7 +47,7 @@ DEF_TEST(WindowRectangles, reporter) {
         REPORTER_ASSERT(reporter, B.data() != A.data());
         REPORTER_ASSERT(reporter, B != A);
 
-        B.addWindow(SkIRect::MakeLargest());
+        B.addWindow(SkRectPriv::MakeILarge());
         REPORTER_ASSERT(reporter, B != A);
 
         REPORTER_ASSERT(reporter, !memcmp(A.data(), windowData,
@@ -55,7 +55,7 @@ DEF_TEST(WindowRectangles, reporter) {
         REPORTER_ASSERT(reporter, !memcmp(B.data(), windowData,
                                           (GrWindowRectangles::kMaxWindows - 1) * sizeof(SkIRect)));
         REPORTER_ASSERT(reporter,
-                        B.data()[GrWindowRectangles::kMaxWindows - 1] == SkIRect::MakeLargest());
+                        B.data()[GrWindowRectangles::kMaxWindows - 1] == SkRectPriv::MakeILarge());
     }
     {
         GrWindowRectangles A(wr), B(wr);
@@ -72,5 +72,3 @@ DEF_TEST(WindowRectangles, reporter) {
                                           GrWindowRectangles::kMaxWindows * sizeof(SkIRect)));
     }
 }
-
-#endif

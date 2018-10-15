@@ -5,7 +5,6 @@
 #include "media/audio/win/core_audio_util_win.h"
 
 #include <devicetopology.h>
-#include <dxdiag.h>
 #include <functiondiscoverykeys_devpkey.h>
 #include <objbase.h>
 #include <stddef.h>
@@ -15,7 +14,7 @@
 #include "base/command_line.h"
 #include "base/logging.h"
 #include "base/macros.h"
-#include "base/metrics/histogram_macros.h"
+#include "base/metrics/histogram_functions.h"
 #include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/win/scoped_co_mem.h"
@@ -63,31 +62,31 @@ void LogUMAEmptyCb(UmaLogStep step, HRESULT hr) {}
 void LogUMAPreferredOutputParams(UmaLogStep step, HRESULT hr) {
   switch (step) {
     case UmaLogStep::CREATE_DEVICE_ENUMERATOR:
-      UMA_HISTOGRAM_SPARSE_SLOWLY(
+      base::UmaHistogramSparse(
           "Media.AudioOutputStreamProxy."
           "GetPreferredOutputStreamParametersWin.CreateDeviceEnumeratorResult",
           hr);
       break;
     case UmaLogStep::CREATE_DEVICE:
-      UMA_HISTOGRAM_SPARSE_SLOWLY(
+      base::UmaHistogramSparse(
           "Media.AudioOutputStreamProxy."
           "GetPreferredOutputStreamParametersWin.CreateDeviceResult",
           hr);
       break;
     case UmaLogStep::CREATE_CLIENT:
-      UMA_HISTOGRAM_SPARSE_SLOWLY(
+      base::UmaHistogramSparse(
           "Media.AudioOutputStreamProxy."
           "GetPreferredOutputStreamParametersWin.CreateClientResult",
           hr);
       break;
     case UmaLogStep::GET_MIX_FORMAT:
-      UMA_HISTOGRAM_SPARSE_SLOWLY(
+      base::UmaHistogramSparse(
           "Media.AudioOutputStreamProxy."
           "GetPreferredOutputStreamParametersWin.GetMixFormatResult",
           hr);
       break;
     case UmaLogStep::GET_DEVICE_PERIOD:
-      UMA_HISTOGRAM_SPARSE_SLOWLY(
+      base::UmaHistogramSparse(
           "Media.AudioOutputStreamProxy."
           "GetPreferredOutputStreamParametersWin.GetDevicePeriodResult",
           hr);
@@ -405,11 +404,6 @@ HRESULT GetPreferredAudioParametersInternal(IAudioClient* client,
   // Preferred sample rate.
   int sample_rate = mix_format.Format.nSamplesPerSec;
 
-  // TODO(henrika): possibly use format.Format.wBitsPerSample here instead.
-  // We use a hard-coded value of 16 bits per sample today even if most audio
-  // engines does the actual mixing in 32 bits per sample.
-  int bits_per_sample = 16;
-
   // We are using the native device period to derive the smallest possible
   // buffer size in shared mode. Note that the actual endpoint buffer will be
   // larger than this size but it will be possible to fill it up in two calls.
@@ -420,8 +414,7 @@ HRESULT GetPreferredAudioParametersInternal(IAudioClient* client,
       0.5);
 
   AudioParameters audio_params(AudioParameters::AUDIO_PCM_LOW_LATENCY,
-                               channel_layout, sample_rate, bits_per_sample,
-                               frames_per_buffer);
+                               channel_layout, sample_rate, frames_per_buffer);
   *params = audio_params;
   DVLOG(1) << params->AsHumanReadableString();
 
@@ -477,9 +470,27 @@ ComPtr<IMMDeviceEnumerator> CoreAudioUtil::CreateDeviceEnumerator() {
                                         base::BindRepeating(&LogUMAEmptyCb));
 }
 
+std::string CoreAudioUtil::GetDefaultInputDeviceID() {
+  ComPtr<IMMDevice> device(CreateDevice(
+      AudioDeviceDescription::kDefaultDeviceId, eCapture, eConsole));
+  return device.Get() ? GetDeviceID(device.Get()) : std::string();
+}
+
 std::string CoreAudioUtil::GetDefaultOutputDeviceID() {
   ComPtr<IMMDevice> device(CreateDevice(
       AudioDeviceDescription::kDefaultDeviceId, eRender, eConsole));
+  return device.Get() ? GetDeviceID(device.Get()) : std::string();
+}
+
+std::string CoreAudioUtil::GetCommunicationsInputDeviceID() {
+  ComPtr<IMMDevice> device(
+      CreateDevice(std::string(), eCapture, eCommunications));
+  return device.Get() ? GetDeviceID(device.Get()) : std::string();
+}
+
+std::string CoreAudioUtil::GetCommunicationsOutputDeviceID() {
+  ComPtr<IMMDevice> device(
+      CreateDevice(std::string(), eRender, eCommunications));
   return device.Get() ? GetDeviceID(device.Get()) : std::string();
 }
 
@@ -654,7 +665,8 @@ HRESULT CoreAudioUtil::GetSharedModeMixFormat(
     return hr;
 
   size_t bytes = sizeof(WAVEFORMATEX) + format_pcmex->Format.cbSize;
-  DCHECK_EQ(bytes, sizeof(WAVEFORMATPCMEX));
+  DCHECK_EQ(bytes, sizeof(WAVEFORMATPCMEX))
+      << "Format tag: 0x" << std::hex << format_pcmex->Format.wFormatTag;
 
   memcpy(format, format_pcmex, bytes);
   DVLOG(2) << *format;
@@ -774,8 +786,7 @@ HRESULT CoreAudioUtil::GetPreferredAudioParameters(const std::string& device_id,
   // need to do the same thing?
   if (params->channels() != 1) {
     params->Reset(params->format(), CHANNEL_LAYOUT_STEREO,
-                  params->sample_rate(), params->bits_per_sample(),
-                  params->frames_per_buffer());
+                  params->sample_rate(), params->frames_per_buffer());
   }
 
   return hr;
@@ -879,78 +890,103 @@ ComPtr<IAudioCaptureClient> CoreAudioUtil::CreateCaptureClient(
 }
 
 bool CoreAudioUtil::FillRenderEndpointBufferWithSilence(
-    IAudioClient* client, IAudioRenderClient* render_client) {
+    IAudioClient* client,
+    IAudioRenderClient* render_client) {
   UINT32 endpoint_buffer_size = 0;
-  if (FAILED(client->GetBufferSize(&endpoint_buffer_size)))
+  if (FAILED(client->GetBufferSize(&endpoint_buffer_size))) {
+    PLOG(ERROR) << "Failed IAudioClient::GetBufferSize()";
     return false;
+  }
 
   UINT32 num_queued_frames = 0;
-  if (FAILED(client->GetCurrentPadding(&num_queued_frames)))
+  if (FAILED(client->GetCurrentPadding(&num_queued_frames))) {
+    PLOG(ERROR) << "Failed IAudioClient::GetCurrentPadding()";
     return false;
+  }
 
   BYTE* data = NULL;
   int num_frames_to_fill = endpoint_buffer_size - num_queued_frames;
-  if (FAILED(render_client->GetBuffer(num_frames_to_fill, &data)))
+  if (FAILED(render_client->GetBuffer(num_frames_to_fill, &data))) {
+    PLOG(ERROR) << "Failed IAudioRenderClient::GetBuffer()";
     return false;
+  }
 
   // Using the AUDCLNT_BUFFERFLAGS_SILENT flag eliminates the need to
   // explicitly write silence data to the rendering buffer.
-  DVLOG(2) << "filling up " << num_frames_to_fill << " frames with silence";
-  return SUCCEEDED(render_client->ReleaseBuffer(num_frames_to_fill,
-                                                AUDCLNT_BUFFERFLAGS_SILENT));
-}
-
-bool CoreAudioUtil::GetDxDiagDetails(std::string* driver_name,
-                                     std::string* driver_version) {
-  ComPtr<IDxDiagProvider> provider;
-  HRESULT hr =
-      ::CoCreateInstance(CLSID_DxDiagProvider, NULL, CLSCTX_INPROC_SERVER,
-                         IID_IDxDiagProvider, &provider);
-  if (FAILED(hr))
+  if (FAILED(render_client->ReleaseBuffer(num_frames_to_fill,
+                                          AUDCLNT_BUFFERFLAGS_SILENT))) {
+    PLOG(ERROR) << "Failed IAudioRenderClient::ReleaseBuffer()";
     return false;
-
-  DXDIAG_INIT_PARAMS params = {sizeof(params)};
-  params.dwDxDiagHeaderVersion = DXDIAG_DX9_SDK_VERSION;
-  params.bAllowWHQLChecks = FALSE;
-  params.pReserved = NULL;
-  hr = provider->Initialize(&params);
-  if (FAILED(hr))
-    return false;
-
-  ComPtr<IDxDiagContainer> root;
-  hr = provider->GetRootContainer(root.GetAddressOf());
-  if (FAILED(hr))
-    return false;
-
-  // Limit to the SoundDevices subtree. The tree in its entirity is
-  // enormous and only this branch contains useful information.
-  ComPtr<IDxDiagContainer> sound_devices;
-  hr = root->GetChildContainer(L"DxDiag_DirectSound.DxDiag_SoundDevices.0",
-                               sound_devices.GetAddressOf());
-  if (FAILED(hr))
-    return false;
-
-  base::win::ScopedVariant variant;
-  hr = sound_devices->GetProp(L"szDriverName", variant.Receive());
-  if (FAILED(hr))
-    return false;
-
-  if (variant.type() == VT_BSTR && variant.ptr()->bstrVal) {
-    base::WideToUTF8(variant.ptr()->bstrVal, wcslen(variant.ptr()->bstrVal),
-                     driver_name);
-  }
-
-  variant.Reset();
-  hr = sound_devices->GetProp(L"szDriverVersion", variant.Receive());
-  if (FAILED(hr))
-    return false;
-
-  if (variant.type() == VT_BSTR && variant.ptr()->bstrVal) {
-    base::WideToUTF8(variant.ptr()->bstrVal, wcslen(variant.ptr()->bstrVal),
-                     driver_version);
   }
 
   return true;
+}
+
+HRESULT CoreAudioUtil::GetDeviceCollectionIndex(const std::string& device_id,
+                                                EDataFlow data_flow,
+                                                WORD* index) {
+  ComPtr<IMMDeviceEnumerator> enumerator = CreateDeviceEnumerator();
+  if (!enumerator.Get()) {
+    DLOG(ERROR) << "Failed to create device enumerator.";
+    return E_FAIL;
+  }
+
+  ComPtr<IMMDeviceCollection> device_collection;
+  HRESULT hr = enumerator->EnumAudioEndpoints(data_flow, DEVICE_STATE_ACTIVE,
+                                              &device_collection);
+  if (FAILED(hr)) {
+    DLOG(ERROR) << "Failed to get device collection.";
+    return hr;
+  }
+
+  UINT number_of_devices = 0;
+  hr = device_collection->GetCount(&number_of_devices);
+  if (FAILED(hr)) {
+    DLOG(ERROR) << "Failed to get device collection count.";
+    return hr;
+  }
+
+  ComPtr<IMMDevice> device;
+  for (WORD i = 0; i < number_of_devices; ++i) {
+    hr = device_collection->Item(i, &device);
+    if (FAILED(hr)) {
+      DLOG(WARNING) << "Failed to get device.";
+      continue;
+    }
+    ScopedCoMem<WCHAR> current_device_id;
+    hr = device->GetId(&current_device_id);
+    if (FAILED(hr)) {
+      DLOG(WARNING) << "Failed to get device id.";
+      continue;
+    }
+    if (base::UTF16ToUTF8(current_device_id.get()) == device_id) {
+      *index = i;
+      return S_OK;
+    }
+  }
+
+  DVLOG(1) << "No matching device found.";
+  return S_FALSE;
+}
+
+HRESULT CoreAudioUtil::SetBoolProperty(IPropertyStore* property_store,
+                                       REFPROPERTYKEY key,
+                                       VARIANT_BOOL value) {
+  base::win::ScopedPropVariant pv;
+  PROPVARIANT* pv_ptr = pv.Receive();
+  pv_ptr->vt = VT_BOOL;
+  pv_ptr->boolVal = value;
+  return property_store->SetValue(key, pv.get());
+}
+
+HRESULT CoreAudioUtil::SetVtI4Property(IPropertyStore* property_store,
+                                       REFPROPERTYKEY key,
+                                       LONG value) {
+  base::win::ScopedPropVariant pv;
+  PROPVARIANT* pv_ptr = pv.Receive();
+  pv_ptr->vt = VT_I4;
+  pv_ptr->lVal = value;
+  return property_store->SetValue(key, pv.get());
 }
 
 }  // namespace media

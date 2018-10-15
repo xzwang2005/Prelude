@@ -20,8 +20,7 @@
 class SimpleTexture2DSample : public SampleApplication
 {
   public:
-    SimpleTexture2DSample()
-        : SampleApplication("SimpleTexture2D", 1280, 720)
+    SimpleTexture2DSample(int argc, char **argv) : SampleApplication("SimpleTexture2D", argc, argv)
     {
     }
 
@@ -132,6 +131,6 @@ class SimpleTexture2DSample : public SampleApplication
 
 int main(int argc, char **argv)
 {
-    SimpleTexture2DSample app;
+    SimpleTexture2DSample app(argc, argv);
     return app.run();
 }

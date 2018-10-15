@@ -2660,7 +2660,7 @@ namespace D3D9
 		void *bitmap = cursorSurface->lockExternal(0, 0, 0, sw::LOCK_READONLY, sw::PUBLIC);
 
 		delete cursor;
-		cursor = sw::Surface::create(nullptr, width, height, 1, 0, sw::FORMAT_A8R8G8B8, false, false);
+		cursor = sw::Surface::create(nullptr, width, height, 1, 0, 1, sw::FORMAT_A8R8G8B8, false, false);
 
 		void *buffer = cursor->lockExternal(0, 0, 0, sw::LOCK_DISCARD, sw::PUBLIC);
 		memcpy(buffer, bitmap, width * height * sizeof(unsigned int));
@@ -3207,13 +3207,13 @@ namespace D3D9
 				switch(value)
 				{
 				case D3DCULL_NONE:
-					renderer->setCullMode(sw::CULL_NONE);
+					renderer->setCullMode(sw::CULL_NONE, true);
 					break;
 				case D3DCULL_CCW:
-					renderer->setCullMode(sw::CULL_COUNTERCLOCKWISE);
+					renderer->setCullMode(sw::CULL_COUNTERCLOCKWISE, true);
 					break;
 				case D3DCULL_CW:
-					renderer->setCullMode(sw::CULL_CLOCKWISE);
+					renderer->setCullMode(sw::CULL_CLOCKWISE, true);
 					break;
 				default:
 					ASSERT(false);
@@ -6323,7 +6323,8 @@ namespace D3D9
 		}
 		else
 		{
-			renderer->blit(source, sRect, dest, dRect, filter >= D3DTEXF_LINEAR);
+			sw::SliceRectF sRectF((float)sRect.x0, (float)sRect.y0, (float)sRect.x1, (float)sRect.y1, 0);
+			renderer->blit(source, sRectF, dest, dRect, filter >= D3DTEXF_LINEAR);
 		}
 	}
 

@@ -2,16 +2,16 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
+import("//build/config/jumbo.gni")
 import("//media/media_options.gni")
 import("//third_party/libaom/options.gni")
 
-source_set("filters") {
+jumbo_source_set("filters") {
   # Do not expand the visibility here without double-checking with OWNERS, this
   # is a roll-up target which is part of the //media component. Most other DEPs
   # should be using //media and not directly DEP this roll-up target.
   visibility = [
     "//media",
-    "//media/muxers",
     "//media/renderers",
   ]
 
@@ -51,8 +51,6 @@ source_set("filters") {
     "memory_data_source.h",
     "offloading_video_decoder.cc",
     "offloading_video_decoder.h",
-    "opus_constants.cc",
-    "opus_constants.h",
     "pipeline_controller.cc",
     "pipeline_controller.h",
     "source_buffer_parse_warnings.h",
@@ -97,13 +95,14 @@ source_set("filters") {
   ]
 
   deps = [
+    "//cc/base",  # For MathUtil.
     "//gpu/command_buffer/common",
     "//media/base",
     "//media/cdm",
     "//media/formats",
     "//media/video",
     "//skia",
-    "//third_party/libaom:av1_features",
+    "//third_party/libaom:av1_buildflags",
     "//third_party/libyuv",
   ]
 
@@ -126,6 +125,8 @@ source_set("filters") {
     sources += [
       "audio_file_reader.cc",
       "audio_file_reader.h",
+      "audio_video_metadata_extractor.cc",
+      "audio_video_metadata_extractor.h",
       "blocking_url_protocol.cc",
       "blocking_url_protocol.h",
       "ffmpeg_audio_decoder.cc",
@@ -137,15 +138,9 @@ source_set("filters") {
       "ffmpeg_glue.h",
       "in_memory_url_protocol.cc",
       "in_memory_url_protocol.h",
+      "media_file_checker.cc",
+      "media_file_checker.h",
     ]
-    if (!is_android) {
-      sources += [
-        "audio_video_metadata_extractor.cc",
-        "audio_video_metadata_extractor.h",
-        "media_file_checker.cc",
-        "media_file_checker.h",
-      ]
-    }
   }
 
   if (media_use_libvpx) {
@@ -164,27 +159,29 @@ source_set("filters") {
     deps += [ "//third_party/libaom" ]
   }
 
-  if (proprietary_codecs && media_use_ffmpeg) {
-    sources += [
-      "ffmpeg_aac_bitstream_converter.cc",
-      "ffmpeg_aac_bitstream_converter.h",
-      "ffmpeg_h264_to_annex_b_bitstream_converter.cc",
-      "ffmpeg_h264_to_annex_b_bitstream_converter.h",
-    ]
-  }
+  if (media_use_ffmpeg) {
+    if (proprietary_codecs) {
+      sources += [
+        "ffmpeg_aac_bitstream_converter.cc",
+        "ffmpeg_aac_bitstream_converter.h",
+        "ffmpeg_h264_to_annex_b_bitstream_converter.cc",
+        "ffmpeg_h264_to_annex_b_bitstream_converter.h",
+      ]
 
-  if (media_use_ffmpeg && !disable_ffmpeg_video_decoders) {
-    sources += [
-      "ffmpeg_video_decoder.cc",
-      "ffmpeg_video_decoder.h",
-    ]
-  }
+      if (enable_hevc_demuxing) {
+        sources += [
+          "ffmpeg_h265_to_annex_b_bitstream_converter.cc",
+          "ffmpeg_h265_to_annex_b_bitstream_converter.h",
+        ]
+      }
+    }
 
-  if (proprietary_codecs && media_use_ffmpeg && enable_hevc_demuxing) {
-    sources += [
-      "ffmpeg_h265_to_annex_b_bitstream_converter.cc",
-      "ffmpeg_h265_to_annex_b_bitstream_converter.h",
-    ]
+    if (enable_ffmpeg_video_decoders) {
+      sources += [
+        "ffmpeg_video_decoder.cc",
+        "ffmpeg_video_decoder.h",
+      ]
+    }
   }
 
   if (is_android) {
@@ -197,6 +194,8 @@ source_set("filters") {
     sources += [
       "android/media_codec_audio_decoder.cc",
       "android/media_codec_audio_decoder.h",
+      "android/video_frame_extractor.cc",
+      "android/video_frame_extractor.h",
     ]
     deps += [ "//media/base/android" ]
   }
@@ -251,11 +250,12 @@ static_library("test_support") {
 source_set("unit_tests") {
   testonly = true
   sources = [
+    "audio_buffer_stream_unittest.cc",
     "audio_clock_unittest.cc",
-    "audio_decoder_selector_unittest.cc",
     "audio_renderer_algorithm_unittest.cc",
     "audio_timestamp_validator_unittest.cc",
     "chunk_demuxer_unittest.cc",
+    "decoder_selector_unittest.cc",
     "decrypting_audio_decoder_unittest.cc",
     "decrypting_demuxer_stream_unittest.cc",
     "decrypting_video_decoder_unittest.cc",
@@ -273,7 +273,6 @@ source_set("unit_tests") {
     "source_buffer_state_unittest.cc",
     "source_buffer_stream_unittest.cc",
     "video_cadence_estimator_unittest.cc",
-    "video_decoder_selector_unittest.cc",
     "video_frame_stream_unittest.cc",
     "video_renderer_algorithm_unittest.cc",
     "vp8_bool_decoder_unittest.cc",
@@ -281,6 +280,10 @@ source_set("unit_tests") {
     "vp9_parser_unittest.cc",
     "vp9_raw_bits_reader_unittest.cc",
   ]
+
+  if (is_android) {
+    sources += [ "android/video_frame_extractor_unittest.cc" ]
+  }
 
   deps = [
     "//base/test:test_support",
@@ -334,8 +337,7 @@ source_set("unit_tests") {
       ]
     }
 
-    if (!disable_ffmpeg_video_decoders) {
-      # FFmpeg on Android does not include video decoders.
+    if (enable_ffmpeg_video_decoders) {
       sources += [ "ffmpeg_video_decoder_unittest.cc" ]
     }
   }

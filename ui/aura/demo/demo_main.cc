@@ -13,9 +13,11 @@
 #include "base/power_monitor/power_monitor.h"
 #include "base/power_monitor/power_monitor_device_source.h"
 #include "base/run_loop.h"
-#include "base/task_scheduler/task_scheduler.h"
+#include "base/task/task_scheduler/task_scheduler.h"
 #include "build/build_config.h"
 #include "components/viz/host/host_frame_sink_manager.h"
+#include "components/viz/service/display_embedder/server_shared_bitmap_manager.h"
+#include "components/viz/service/frame_sinks/frame_sink_manager_impl.h"
 #include "third_party/skia/include/core/SkBlendMode.h"
 #include "ui/aura/client/default_capture_client.h"
 #include "ui/aura/client/window_parenting_client.h"
@@ -36,7 +38,7 @@
 #include "ui/gl/init/gl_factory.h"
 
 #if defined(USE_X11)
-#include "ui/gfx/x/x11_connection.h" // nogncheck
+#include "ui/gfx/x/x11_connection.h"  // nogncheck
 #endif
 
 #if defined(OS_WIN)
@@ -47,7 +49,7 @@ namespace {
 
 // Trivial WindowDelegate implementation that draws a colored background.
 class DemoWindowDelegate : public aura::WindowDelegate {
-public:
+ public:
   explicit DemoWindowDelegate(SkColor color) : color_(color) {}
 
   // Overridden from WindowDelegate:
@@ -55,24 +57,24 @@ public:
 
   gfx::Size GetMaximumSize() const override { return gfx::Size(); }
 
-  void OnBoundsChanged(const gfx::Rect &old_bounds,
-                       const gfx::Rect &new_bounds) override {
+  void OnBoundsChanged(const gfx::Rect& old_bounds,
+                       const gfx::Rect& new_bounds) override {
     window_bounds_ = new_bounds;
   }
-  gfx::NativeCursor GetCursor(const gfx::Point &point) override {
+  gfx::NativeCursor GetCursor(const gfx::Point& point) override {
     return gfx::kNullCursor;
   }
-  int GetNonClientComponent(const gfx::Point &point) const override {
+  int GetNonClientComponent(const gfx::Point& point) const override {
     return HTCAPTION;
   }
-  bool
-  ShouldDescendIntoChildForEventHandling(aura::Window *child,
-                                         const gfx::Point &location) override {
+  bool ShouldDescendIntoChildForEventHandling(
+      aura::Window* child,
+      const gfx::Point& location) override {
     return true;
   }
   bool CanFocus() override { return true; }
   void OnCaptureLost() override {}
-  void OnPaint(const ui::PaintContext &context) override {
+  void OnPaint(const ui::PaintContext& context) override {
     ui::PaintRecorder recorder(context, window_bounds_.size());
     recorder.canvas()->DrawColor(color_, SkBlendMode::kSrc);
     gfx::Rect r;
@@ -86,13 +88,13 @@ public:
   }
   void OnDeviceScaleFactorChanged(float old_device_scale_factor,
                                   float new_device_scale_factor) override {}
-  void OnWindowDestroying(aura::Window *window) override {}
-  void OnWindowDestroyed(aura::Window *window) override {}
+  void OnWindowDestroying(aura::Window* window) override {}
+  void OnWindowDestroyed(aura::Window* window) override {}
   void OnWindowTargetVisibilityChanged(bool visible) override {}
   bool HasHitTestMask() const override { return false; }
-  void GetHitTestMask(gfx::Path *mask) const override {}
+  void GetHitTestMask(gfx::Path* mask) const override {}
 
-private:
+ private:
   SkColor color_;
   gfx::Rect window_bounds_;
 
@@ -100,8 +102,8 @@ private:
 };
 
 class DemoWindowParentingClient : public aura::client::WindowParentingClient {
-public:
-  explicit DemoWindowParentingClient(aura::Window *window) : window_(window) {
+ public:
+  explicit DemoWindowParentingClient(aura::Window* window) : window_(window) {
     aura::client::SetWindowParentingClient(window_, this);
   }
 
@@ -110,8 +112,8 @@ public:
   }
 
   // Overridden from aura::client::WindowParentingClient:
-  aura::Window *GetDefaultParent(aura::Window *window,
-                                 const gfx::Rect &bounds) override {
+  aura::Window* GetDefaultParent(aura::Window* window,
+                                 const gfx::Rect& bounds) override {
     if (!capture_client_) {
       capture_client_.reset(
           new aura::client::DefaultCaptureClient(window_->GetRootWindow()));
@@ -119,8 +121,8 @@ public:
     return window_;
   }
 
-private:
-  aura::Window *window_;
+ private:
+  aura::Window* window_;
 
   std::unique_ptr<aura::client::DefaultCaptureClient> capture_client_;
 
@@ -142,15 +144,15 @@ int DemoMain() {
 
   // Create the message-loop here before creating the root window.
   base::MessageLoopForUI message_loop;
-  base::TaskScheduler::CreateAndStartWithDefaultParams("aura_demo");
+  base::TaskScheduler::CreateAndStartWithDefaultParams("demo");
   ui::InitializeInputMethodForTesting();
 
   // The ContextFactory must exist before any Compositors are created.
   viz::HostFrameSinkManager host_frame_sink_manager;
-  viz::FrameSinkManagerImpl frame_sink_manager;
+  viz::ServerSharedBitmapManager server_shared_bitmap_manager;
+  viz::FrameSinkManagerImpl frame_sink_manager(&server_shared_bitmap_manager);
   host_frame_sink_manager.SetLocalManager(&frame_sink_manager);
   frame_sink_manager.SetLocalClient(&host_frame_sink_manager);
-
   auto context_factory = std::make_unique<ui::InProcessContextFactory>(
       &host_frame_sink_manager, &frame_sink_manager);
   context_factory->set_use_test_surface(false);
@@ -205,9 +207,9 @@ int DemoMain() {
   return 0;
 }
 
-} // namespace
+}  // namespace
 
-int main(int argc, char **argv) {
+int main(int argc, char** argv) {
   base::CommandLine::Init(argc, argv);
 
   // The exit manager is in charge of calling the dtors of singleton objects.

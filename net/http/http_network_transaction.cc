@@ -11,9 +11,11 @@
 #include "base/base64url.h"
 #include "base/bind.h"
 #include "base/bind_helpers.h"
+#include "base/callback_helpers.h"
 #include "base/compiler_specific.h"
 #include "base/format_macros.h"
 #include "base/metrics/field_trial.h"
+#include "base/metrics/histogram_functions.h"
 #include "base/metrics/histogram_macros.h"
 #include "base/metrics/sparse_histogram.h"
 #include "base/stl_util.h"
@@ -28,6 +30,7 @@
 #include "net/base/load_flags.h"
 #include "net/base/load_timing_info.h"
 #include "net/base/net_errors.h"
+#include "net/base/proxy_server.h"
 #include "net/base/upload_data_stream.h"
 #include "net/base/url_util.h"
 #include "net/cert/cert_status_flags.h"
@@ -53,14 +56,13 @@
 #include "net/http/transport_security_state.h"
 #include "net/http/url_security_manager.h"
 #include "net/log/net_log_event_type.h"
-#include "net/proxy/proxy_server.h"
 #include "net/socket/client_socket_factory.h"
 #include "net/socket/next_proto.h"
 #include "net/socket/socks_client_socket_pool.h"
 #include "net/socket/transport_client_socket_pool.h"
-#include "net/spdy/chromium/spdy_http_stream.h"
-#include "net/spdy/chromium/spdy_session.h"
-#include "net/spdy/chromium/spdy_session_pool.h"
+#include "net/spdy/spdy_http_stream.h"
+#include "net/spdy/spdy_session.h"
+#include "net/spdy/spdy_session_pool.h"
 #include "net/ssl/ssl_cert_request_info.h"
 #include "net/ssl/ssl_connection_status_flags.h"
 #include "net/ssl/ssl_info.h"
@@ -70,22 +72,38 @@
 #include "url/url_canon.h"
 
 namespace {
+
 // Max number of |retry_attempts| (excluding the initial request) after which
 // we give up and show an error page.
 const size_t kMaxRetryAttempts = 2;
+
+// Max number of calls to RestartWith* allowed for a single connection. A single
+// HttpNetworkTransaction should not signal very many restartable errors, but it
+// may occur due to a bug (e.g. https://crbug.com/823387 or
+// https://crbug.com/488043) or simply if the server or proxy requests
+// authentication repeatedly. Although these calls are often associated with a
+// user prompt, in other scenarios (remembered preferences, extensions,
+// multi-leg authentication), they may be triggered automatically. To avoid
+// looping forever, bound the number of restarts.
+const size_t kMaxRestarts = 32;
+
 }  // namespace
 
 namespace net {
 
+const int HttpNetworkTransaction::kDrainBodyBufferSize;
+
 HttpNetworkTransaction::HttpNetworkTransaction(RequestPriority priority,
                                                HttpNetworkSession* session)
     : pending_auth_target_(HttpAuth::AUTH_NONE),
-      io_callback_(base::Bind(&HttpNetworkTransaction::OnIOComplete,
-                              base::Unretained(this))),
+      io_callback_(base::BindRepeating(&HttpNetworkTransaction::OnIOComplete,
+                                       base::Unretained(this))),
       session_(session),
       request_(NULL),
       priority_(priority),
       headers_valid_(false),
+      can_send_early_data_(false),
+      server_ssl_client_cert_was_cached_(false),
       request_headers_(),
       read_buf_len_(0),
       total_received_bytes_(0),
@@ -96,7 +114,9 @@ HttpNetworkTransaction::HttpNetworkTransaction(RequestPriority priority,
       enable_alternative_services_(true),
       websocket_handshake_stream_base_create_helper_(NULL),
       net_error_details_(),
-      retry_attempts_(0) {}
+      retry_attempts_(0),
+      num_restarts_(0),
+      ssl_version_interference_error_(OK) {}
 
 HttpNetworkTransaction::~HttpNetworkTransaction() {
   if (stream_.get()) {
@@ -119,8 +139,9 @@ HttpNetworkTransaction::~HttpNetworkTransaction() {
 }
 
 int HttpNetworkTransaction::Start(const HttpRequestInfo* request_info,
-                                  const CompletionCallback& callback,
+                                  CompletionOnceCallback callback,
                                   const NetLogWithSource& net_log) {
+  DCHECK(request_info->traffic_annotation.is_valid());
   net_log_ = net_log;
   request_ = request_info;
   url_ = request_->url;
@@ -128,44 +149,54 @@ int HttpNetworkTransaction::Start(const HttpRequestInfo* request_info,
   // Now that we have an HttpRequestInfo object, update server_ssl_config_.
   session_->GetSSLConfig(*request_, &server_ssl_config_, &proxy_ssl_config_);
 
-  if (request_->load_flags & LOAD_DISABLE_CERT_REVOCATION_CHECKING) {
-    server_ssl_config_.rev_checking_enabled = false;
-    proxy_ssl_config_.rev_checking_enabled = false;
+  if (request_->load_flags & LOAD_DISABLE_CERT_NETWORK_FETCHES) {
+    server_ssl_config_.disable_cert_verification_network_fetches = true;
+    proxy_ssl_config_.disable_cert_verification_network_fetches = true;
+  }
+
+  if (HttpUtil::IsMethodSafe(request_info->method)) {
+    can_send_early_data_ = true;
   }
 
   if (request_->load_flags & LOAD_PREFETCH)
     response_.unused_since_prefetch = true;
 
-  next_state_ = STATE_THROTTLE;
+  next_state_ = STATE_NOTIFY_BEFORE_CREATE_STREAM;
   int rv = DoLoop(OK);
   if (rv == ERR_IO_PENDING)
-    callback_ = callback;
+    callback_ = std::move(callback);
   return rv;
 }
 
 int HttpNetworkTransaction::RestartIgnoringLastError(
-    const CompletionCallback& callback) {
+    CompletionOnceCallback callback) {
   DCHECK(!stream_.get());
   DCHECK(!stream_request_.get());
   DCHECK_EQ(STATE_NONE, next_state_);
+
+  if (!CheckMaxRestarts())
+    return ERR_TOO_MANY_RETRIES;
 
   next_state_ = STATE_CREATE_STREAM;
 
   int rv = DoLoop(OK);
   if (rv == ERR_IO_PENDING)
-    callback_ = callback;
+    callback_ = std::move(callback);
   return rv;
 }
 
 int HttpNetworkTransaction::RestartWithCertificate(
     scoped_refptr<X509Certificate> client_cert,
     scoped_refptr<SSLPrivateKey> client_private_key,
-    const CompletionCallback& callback) {
+    CompletionOnceCallback callback) {
   // In HandleCertificateRequest(), we always tear down existing stream
   // requests to force a new connection.  So we shouldn't have one here.
   DCHECK(!stream_request_.get());
   DCHECK(!stream_.get());
   DCHECK_EQ(STATE_NONE, next_state_);
+
+  if (!CheckMaxRestarts())
+    return ERR_TOO_MANY_RETRIES;
 
   SSLConfig* ssl_config = response_.cert_request_info->is_proxy ?
       &proxy_ssl_config_ : &server_ssl_config_;
@@ -181,12 +212,15 @@ int HttpNetworkTransaction::RestartWithCertificate(
   next_state_ = STATE_CREATE_STREAM;
   int rv = DoLoop(OK);
   if (rv == ERR_IO_PENDING)
-    callback_ = callback;
+    callback_ = std::move(callback);
   return rv;
 }
 
-int HttpNetworkTransaction::RestartWithAuth(
-    const AuthCredentials& credentials, const CompletionCallback& callback) {
+int HttpNetworkTransaction::RestartWithAuth(const AuthCredentials& credentials,
+                                            CompletionOnceCallback callback) {
+  if (!CheckMaxRestarts())
+    return ERR_TOO_MANY_RETRIES;
+
   HttpAuth::Target target = pending_auth_target_;
   if (target == HttpAuth::AUTH_NONE) {
     NOTREACHED();
@@ -216,7 +250,7 @@ int HttpNetworkTransaction::RestartWithAuth(
   }
 
   if (rv == ERR_IO_PENDING)
-    callback_ = callback;
+    callback_ = std::move(callback);
   return rv;
 }
 
@@ -239,7 +273,8 @@ void HttpNetworkTransaction::PrepareForAuthRestart(HttpAuth::Target target) {
     // it first.
     if (!stream_->IsResponseBodyComplete()) {
       next_state_ = STATE_DRAIN_BODY_FOR_AUTH_RESTART;
-      read_buf_ = new IOBuffer(kDrainBodyBufferSize);  // A bit bucket.
+      read_buf_ = base::MakeRefCounted<IOBuffer>(
+          kDrainBodyBufferSize);  // A bit bucket.
       read_buf_len_ = kDrainBodyBufferSize;
       return;
     }
@@ -289,8 +324,9 @@ bool HttpNetworkTransaction::IsReadyToRestartForAuth() {
       HaveAuth(pending_auth_target_);
 }
 
-int HttpNetworkTransaction::Read(IOBuffer* buf, int buf_len,
-                                 const CompletionCallback& callback) {
+int HttpNetworkTransaction::Read(IOBuffer* buf,
+                                 int buf_len,
+                                 CompletionOnceCallback callback) {
   DCHECK(buf);
   DCHECK_LT(0, buf_len);
 
@@ -305,7 +341,8 @@ int HttpNetworkTransaction::Read(IOBuffer* buf, int buf_len,
     // also don't worry about this for an HTTPS Proxy, because the
     // communication with the proxy is secure.
     // See http://crbug.com/8473.
-    DCHECK(proxy_info_.is_http() || proxy_info_.is_https());
+    DCHECK(proxy_info_.is_http() || proxy_info_.is_https() ||
+           proxy_info_.is_quic());
     DCHECK_EQ(headers->response_code(), HTTP_PROXY_AUTHENTICATION_REQUIRED);
     LOG(WARNING) << "Blocked proxy response with status "
                  << headers->response_code() << " to CONNECT request for "
@@ -321,7 +358,7 @@ int HttpNetworkTransaction::Read(IOBuffer* buf, int buf_len,
 
   int rv = DoLoop(OK);
   if (rv == ERR_IO_PENDING)
-    callback_ = callback;
+    callback_ = std::move(callback);
   return rv;
 }
 
@@ -358,8 +395,6 @@ LoadState HttpNetworkTransaction::GetLoadState() const {
   // TODO(wtc): Define a new LoadState value for the
   // STATE_INIT_CONNECTION_COMPLETE state, which delays the HTTP request.
   switch (next_state_) {
-    case STATE_THROTTLE_COMPLETE:
-      return LOAD_STATE_THROTTLED;
     case STATE_CREATE_STREAM:
       return LOAD_STATE_WAITING_FOR_DELEGATE;
     case STATE_CREATE_STREAM_COMPLETE:
@@ -411,23 +446,11 @@ void HttpNetworkTransaction::PopulateNetErrorDetails(
 void HttpNetworkTransaction::SetPriority(RequestPriority priority) {
   priority_ = priority;
 
-  // TODO(rdsmith): Note that if any code indirectly executed by
-  // |stream_request_->SetPriority()| or |stream_->SetPriority()|
-  // ever implements a throttling mechanism where changing a request's
-  // priority may cause a this or another request to synchronously succeed
-  // or fail, that callback could synchronously delete |*this|, causing
-  // a crash on return to this code.
-  //
-  // |throttle_->SetPriority()| has exactly the above attributes, which
-  // is why it's the last call in this function.
-
   if (stream_request_)
     stream_request_->SetPriority(priority);
   if (stream_)
     stream_->SetPriority(priority);
 
-  if (throttle_)
-    throttle_->SetPriority(priority);
   // The above call may have resulted in deleting |*this|.
 }
 
@@ -609,18 +632,6 @@ void HttpNetworkTransaction::GetConnectionAttempts(
   *out = connection_attempts_;
 }
 
-void HttpNetworkTransaction::OnThrottleUnblocked(
-    NetworkThrottleManager::Throttle* throttle) {
-  // TODO(rdsmith): This DCHECK is dependent on the only transition
-  // being from blocked->unblocked.  That is true right now, but may not
-  // be so in the future.
-  DCHECK_EQ(STATE_THROTTLE_COMPLETE, next_state_);
-
-  net_log_.EndEvent(NetLogEventType::HTTP_TRANSACTION_THROTTLED);
-
-  DoLoop(OK);
-}
-
 bool HttpNetworkTransaction::IsSecureRequest() const {
   return request_->url.SchemeIsCryptographic();
 }
@@ -672,9 +683,7 @@ void HttpNetworkTransaction::DoCallback(int rv) {
   DCHECK(!callback_.is_null());
 
   // Since Run may result in Read being called, clear user_callback_ up front.
-  CompletionCallback c = callback_;
-  callback_.Reset();
-  c.Run(rv);
+  base::ResetAndReturn(&callback_).Run(rv);
 }
 
 void HttpNetworkTransaction::OnIOComplete(int result) {
@@ -691,14 +700,6 @@ int HttpNetworkTransaction::DoLoop(int result) {
     State state = next_state_;
     next_state_ = STATE_NONE;
     switch (state) {
-      case STATE_THROTTLE:
-        DCHECK_EQ(OK, rv);
-        rv = DoThrottle();
-        break;
-      case STATE_THROTTLE_COMPLETE:
-        DCHECK_EQ(OK, rv);
-        rv = DoThrottleComplete();
-        break;
       case STATE_NOTIFY_BEFORE_CREATE_STREAM:
         DCHECK_EQ(OK, rv);
         rv = DoNotifyBeforeCreateStream();
@@ -814,29 +815,6 @@ int HttpNetworkTransaction::DoLoop(int result) {
   return rv;
 }
 
-int HttpNetworkTransaction::DoThrottle() {
-  DCHECK(!throttle_);
-  throttle_ = session_->throttler()->CreateThrottle(
-      this, priority_, (request_->load_flags & LOAD_IGNORE_LIMITS) != 0);
-  next_state_ = STATE_THROTTLE_COMPLETE;
-
-  if (throttle_->IsBlocked()) {
-    net_log_.BeginEvent(NetLogEventType::HTTP_TRANSACTION_THROTTLED);
-    return ERR_IO_PENDING;
-  }
-
-  return OK;
-}
-
-int HttpNetworkTransaction::DoThrottleComplete() {
-  DCHECK(throttle_);
-  DCHECK(!throttle_->IsBlocked());
-
-  next_state_ = STATE_NOTIFY_BEFORE_CREATE_STREAM;
-
-  return OK;
-}
-
 int HttpNetworkTransaction::DoNotifyBeforeCreateStream() {
   next_state_ = STATE_CREATE_STREAM;
   bool defer = false;
@@ -858,12 +836,10 @@ int HttpNetworkTransaction::DoCreateStream() {
     DCHECK(!enable_alternative_services_);
   if (ForWebSocketHandshake()) {
     stream_request_ =
-        session_->http_stream_factory_for_websocket()
-            ->RequestWebSocketHandshakeStream(
-                *request_, priority_, server_ssl_config_, proxy_ssl_config_,
-                this, websocket_handshake_stream_base_create_helper_,
-                enable_ip_based_pooling_, enable_alternative_services_,
-                net_log_);
+        session_->http_stream_factory()->RequestWebSocketHandshakeStream(
+            *request_, priority_, server_ssl_config_, proxy_ssl_config_, this,
+            websocket_handshake_stream_base_create_helper_,
+            enable_ip_based_pooling_, enable_alternative_services_, net_log_);
   } else {
     stream_request_ = session_->http_stream_factory()->RequestStream(
         *request_, priority_, server_ssl_config_, proxy_ssl_config_, this,
@@ -874,6 +850,9 @@ int HttpNetworkTransaction::DoCreateStream() {
 }
 
 int HttpNetworkTransaction::DoCreateStreamComplete(int result) {
+  // Version interference probes should not result in success.
+  DCHECK(!server_ssl_config_.version_interference_probe || result != OK);
+
   // If |result| is ERR_HTTPS_PROXY_TUNNEL_RESPONSE, then
   // DoCreateStreamComplete is being called from OnHttpsProxyTunnelResponse,
   // which resets the stream request first. Therefore, we have to grab the
@@ -895,9 +874,44 @@ int HttpNetworkTransaction::DoCreateStreamComplete(int result) {
     return HandleHttp11Required(result);
   }
 
-  // Handle possible handshake errors that may have occurred if the stream
-  // used SSL for one or more of the layers.
-  result = HandleSSLHandshakeError(result);
+  // Perform a TLS 1.3 version interference probe on various connection
+  // errors. The retry will never produce a successful connection but may map
+  // errors to ERR_SSL_VERSION_INTERFERENCE, which signals a probable
+  // version-interfering middlebox.
+  if (IsSecureRequest() && !HasExceededMaxRetries() &&
+      server_ssl_config_.version_max == SSL_PROTOCOL_VERSION_TLS1_3 &&
+      !server_ssl_config_.version_interference_probe) {
+    if (result == ERR_CONNECTION_CLOSED || result == ERR_SSL_PROTOCOL_ERROR ||
+        result == ERR_SSL_VERSION_OR_CIPHER_MISMATCH ||
+        result == ERR_CONNECTION_RESET ||
+        result == ERR_SSL_BAD_RECORD_MAC_ALERT) {
+      // Report the error code for each time a version interference probe is
+      // triggered.
+      base::UmaHistogramSparse("Net.SSLVersionInterferenceProbeTrigger",
+                               std::abs(result));
+      net_log_.AddEventWithNetErrorCode(
+          NetLogEventType::SSL_VERSION_INTERFERENCE_PROBE, result);
+
+      retry_attempts_++;
+      server_ssl_config_.version_interference_probe = true;
+      server_ssl_config_.version_max = SSL_PROTOCOL_VERSION_TLS1_2;
+      ssl_version_interference_error_ = result;
+      ResetConnectionAndRequestForResend();
+      return OK;
+    }
+  }
+
+  if (result == ERR_SSL_VERSION_INTERFERENCE) {
+    // Record the error code version interference was detected at.
+    DCHECK(server_ssl_config_.version_interference_probe);
+    DCHECK_NE(OK, ssl_version_interference_error_);
+    base::UmaHistogramSparse("Net.SSLVersionInterferenceError",
+                             std::abs(ssl_version_interference_error_));
+  }
+
+  // Handle possible client certificate errors that may have occurred if the
+  // stream used SSL for one or more of the layers.
+  result = HandleSSLClientAuthError(result);
 
   // At this point we are done with the stream_request_.
   stream_request_.reset();
@@ -910,7 +924,8 @@ int HttpNetworkTransaction::DoInitStream() {
 
   stream_->GetRemoteEndpoint(&remote_endpoint_);
 
-  return stream_->InitializeStream(request_, priority_, net_log_, io_callback_);
+  return stream_->InitializeStream(request_, can_send_early_data_, priority_,
+                                   net_log_, io_callback_);
 }
 
 int HttpNetworkTransaction::DoInitStreamComplete(int result) {
@@ -1048,7 +1063,7 @@ int HttpNetworkTransaction::BuildRequestHeaders(
     } else {
       request_headers_.SetHeader(
           HttpRequestHeaders::kContentLength,
-          base::Uint64ToString(request_->upload_data_stream->size()));
+          base::NumberToString(request_->upload_data_stream->size()));
     }
   } else if (request_->method == "POST" || request_->method == "PUT") {
     // An empty POST/PUT request still needs a content length.  As for HEAD,
@@ -1146,7 +1161,10 @@ int HttpNetworkTransaction::DoInitRequestBody() {
   next_state_ = STATE_INIT_REQUEST_BODY_COMPLETE;
   int rv = OK;
   if (request_->upload_data_stream)
-    rv = request_->upload_data_stream->Init(io_callback_, net_log_);
+    rv = request_->upload_data_stream->Init(
+        base::BindOnce(&HttpNetworkTransaction::OnIOComplete,
+                       base::Unretained(this)),
+        net_log_);
   return rv;
 }
 
@@ -1280,6 +1298,11 @@ int HttpNetworkTransaction::DoReadHeadersComplete(int result) {
     // https://bugzilla.mozilla.org/show_bug.cgi?id=193921
     if (request_->method == "PUT")
       return ERR_METHOD_NOT_SUPPORTED;
+  }
+
+  if (can_send_early_data_ && response_.headers.get() &&
+      response_.headers->response_code() == HTTP_TOO_EARLY) {
+    return HandleIOError(ERR_EARLY_DATA_REJECTED);
   }
 
   // Check for an intermediate 100 Continue response.  An origin server is
@@ -1478,6 +1501,10 @@ int HttpNetworkTransaction::HandleCertificateRequest(int error) {
       return error;
   }
 
+  if (!response_.cert_request_info->is_proxy) {
+    server_ssl_client_cert_was_cached_ = true;
+  }
+
   // TODO(davidben): Add a unit test which covers this path; we need to be
   // able to send a legitimate certificate and also bypass/clear the
   // SSL session cache.
@@ -1506,21 +1533,31 @@ int HttpNetworkTransaction::HandleHttp11Required(int error) {
   return OK;
 }
 
-void HttpNetworkTransaction::HandleClientAuthError(int error) {
+int HttpNetworkTransaction::HandleSSLClientAuthError(int error) {
+  // TODO(davidben): This does handle client certificate errors from the
+  // proxy. https://crbug.com/814911.
   if (server_ssl_config_.send_client_cert &&
       (error == ERR_SSL_PROTOCOL_ERROR || IsClientCertificateError(error))) {
     session_->ssl_client_auth_cache()->Remove(
         HostPortPair::FromURL(request_->url));
-  }
-}
 
-// TODO(rch): This does not correctly handle errors when an SSL proxy is
-// being used, as all of the errors are handled as if they were generated
-// by the endpoint host, request_->url, rather than considering if they were
-// generated by the SSL proxy. http://crbug.com/69329
-int HttpNetworkTransaction::HandleSSLHandshakeError(int error) {
-  DCHECK(request_);
-  HandleClientAuthError(error);
+    // The private key handle may have gone stale due to, e.g., the user
+    // unplugging their smartcard. Operating systems do not provide reliable
+    // notifications for this, so if the signature failed and the private key
+    // came from SSLClientAuthCache, retry to ask the user for a new one.
+    if (error == ERR_SSL_CLIENT_AUTH_SIGNATURE_FAILED &&
+        server_ssl_client_cert_was_cached_ && !HasExceededMaxRetries()) {
+      server_ssl_client_cert_was_cached_ = false;
+      server_ssl_config_.send_client_cert = false;
+      server_ssl_config_.client_cert = nullptr;
+      server_ssl_config_.client_private_key = nullptr;
+      retry_attempts_++;
+      net_log_.AddEventWithNetErrorCode(
+          NetLogEventType::HTTP_TRANSACTION_RESTART_AFTER_ERROR, error);
+      ResetConnectionAndRequestForResend();
+      return OK;
+    }
+  }
   return error;
 }
 
@@ -1531,7 +1568,7 @@ int HttpNetworkTransaction::HandleSSLHandshakeError(int error) {
 int HttpNetworkTransaction::HandleIOError(int error) {
   // Because the peer may request renegotiation with client authentication at
   // any time, check and handle client authentication errors.
-  HandleClientAuthError(error);
+  error = HandleSSLClientAuthError(error);
 
   switch (error) {
     // If we try to reuse a connection that the server is in the process of
@@ -1560,8 +1597,20 @@ int HttpNetworkTransaction::HandleIOError(int error) {
         error = OK;
       }
       break;
+    case ERR_EARLY_DATA_REJECTED:
+    case ERR_WRONG_VERSION_ON_EARLY_DATA:
+      net_log_.AddEventWithNetErrorCode(
+          NetLogEventType::HTTP_TRANSACTION_RESTART_AFTER_ERROR, error);
+      // Disable early data on the SSLConfig on a reset.
+      can_send_early_data_ = false;
+      ResetConnectionAndRequestForResend();
+      error = OK;
+      break;
     case ERR_SPDY_PING_FAILED:
     case ERR_SPDY_SERVER_REFUSED_STREAM:
+    case ERR_SPDY_PUSHED_STREAM_NOT_AVAILABLE:
+    case ERR_SPDY_CLAIMED_PUSHED_STREAM_RESET_BY_SERVER:
+    case ERR_SPDY_PUSHED_RESPONSE_DOES_NOT_MATCH:
     case ERR_QUIC_HANDSHAKE_FAILED:
       if (HasExceededMaxRetries())
         break;
@@ -1630,7 +1679,7 @@ void HttpNetworkTransaction::ResetStateForAuthRestart() {
   establishing_tunnel_ = false;
   remote_endpoint_ = IPEndPoint();
   net_error_details_.quic_broken = false;
-  net_error_details_.quic_connection_error = QUIC_NO_ERROR;
+  net_error_details_.quic_connection_error = quic::QUIC_NO_ERROR;
   provided_token_binding_key_.reset();
   referred_token_binding_key_.reset();
 }
@@ -1659,6 +1708,11 @@ bool HttpNetworkTransaction::ShouldResendRequest() const {
 
 bool HttpNetworkTransaction::HasExceededMaxRetries() const {
   return (retry_attempts_ >= kMaxRetryAttempts);
+}
+
+bool HttpNetworkTransaction::CheckMaxRestarts() {
+  num_restarts_++;
+  return num_restarts_ < kMaxRestarts;
 }
 
 void HttpNetworkTransaction::ResetConnectionAndRequestForResend() {

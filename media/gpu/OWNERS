@@ -1,4 +1,6 @@
 dalecurtis@chromium.org
+dcastagna@chromium.org
+jcliang@chromium.org
 kcwu@chromium.org
 posciak@chromium.org
 sandersd@chromium.org
@@ -8,5 +10,5 @@ wuchengli@chromium.org
 per-file *android*=liberato@chromium.org
 per-file *avda*=liberato@chromium.org
 
-per-file *_messages*.h=set noparent
-per-file *_messages*.h=file://ipc/SECURITY_OWNERS
+# For Mac encoder files.
+per-file *vt_video_encode*=emircan@chromium.org

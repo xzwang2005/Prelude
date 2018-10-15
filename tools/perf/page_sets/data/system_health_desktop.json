@@ -1,5 +1,8 @@
 {
     "archives": {
+        "browse:media:flickr_infinite_scroll": {
+            "DEFAULT": "system_health_desktop_057.wprgo"
+        },
         "browse:media:imgur": {
             "DEFAULT": "system_health_desktop_025.wprgo"
         },
@@ -18,6 +21,9 @@
         "browse:news:cnn": {
             "DEFAULT": "system_health_desktop_013.wprgo"
         },
+        "browse:news:cnn:2018": {
+            "DEFAULT": "system_health_desktop_060.wprgo"
+        },
         "browse:news:flipboard": {
             "DEFAULT": "system_health_desktop_021.wprgo"
         },
@@ -33,11 +39,32 @@
         "browse:search:google": {
             "DEFAULT": "system_health_desktop_037.wprgo"
         },
+        "browse:search:google:2018": {
+            "DEFAULT": "system_health_desktop_066.wprgo"
+        },
         "browse:search:google_india": {
             "DEFAULT": "system_health_desktop_039.wprgo"
         },
+        "browse:social:facebook_infinite_scroll": {
+            "DEFAULT": "system_health_desktop_055.wprgo"
+        },
+        "browse:social:facebook_infinite_scroll:2018": {
+            "DEFAULT": "system_health_desktop_064.wprgo"
+        },
+        "browse:social:tumblr_infinite_scroll": {
+            "DEFAULT": "system_health_desktop_056.wprgo"
+        },
         "browse:social:twitter": {
             "DEFAULT": "system_health_desktop_053.wprgo"
+        },
+        "browse:social:twitter_infinite_scroll": {
+            "DEFAULT": "system_health_desktop_054.wprgo"
+        },
+        "browse:tech:discourse_infinite_scroll": {
+            "DEFAULT": "system_health_desktop_058.wprgo"
+        },
+        "browse:tech:discourse_infinite_scroll:2018": {
+            "DEFAULT": "system_health_desktop_065.wprgo"
         },
         "browse:tools:earth": {
             "DEFAULT": "system_health_desktop_050.wprgo"
@@ -45,23 +72,14 @@
         "browse:tools:maps": {
             "DEFAULT": "system_health_desktop_052.wprgo"
         },
-        "browse:tech:discourse_infinite_scroll": {
-            "DEFAULT": "system_health_desktop_058.wprgo"
-        },
-        "browse:social:facebook_infinite_scroll": {
-            "DEFAULT": "system_health_desktop_055.wprgo"
-        },
-        "browse:media:flickr_infinite_scroll": {
-            "DEFAULT": "system_health_desktop_057.wprgo"
-        },
-        "browse:social:tumblr_infinite_scroll": {
-            "DEFAULT": "system_health_desktop_056.wprgo"
-        },
-        "browse:social:twitter_infinite_scroll": {
-            "DEFAULT": "system_health_desktop_054.wprgo"
+        "browse_accessibility:media:youtube": {
+            "DEFAULT": "system_health_desktop_062.wprgo"
         },
         "browse_accessibility:tech:codesearch": {
             "DEFAULT": "system_health_desktop_059.wprgo"
+        },
+        "browse_accessibility:tech:codesearch:2018": {
+            "DEFAULT": "system_health_desktop_063.wprgo"
         },
         "browse_accessibility:tools:gmail_compose": {
             "DEFAULT": "system_health_desktop_059.wprgo"
@@ -194,6 +212,9 @@
         },
         "load_accessibility:media:wikipedia": {
             "DEFAULT": "system_health_desktop_059.wprgo"
+        },
+        "load_accessibility:media:wikipedia:2018": {
+            "DEFAULT": "system_health_desktop_6903b36338.wprgo"
         },
         "load_accessibility:shopping:amazon": {
             "DEFAULT": "system_health_desktop_059.wprgo"
