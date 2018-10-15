@@ -22,6 +22,7 @@ namespace wasm {
 #define CASE_I64_OP(name, str) CASE_OP(I64##name, "i64." str)
 #define CASE_F32_OP(name, str) CASE_OP(F32##name, "f32." str)
 #define CASE_F64_OP(name, str) CASE_OP(F64##name, "f64." str)
+#define CASE_REF_OP(name, str) CASE_OP(Ref##name, "ref." str)
 #define CASE_F32x4_OP(name, str) CASE_OP(F32x4##name, "f32x4." str)
 #define CASE_I32x4_OP(name, str) CASE_OP(I32x4##name, "i32x4." str)
 #define CASE_I16x8_OP(name, str) CASE_OP(I16x8##name, "i16x8." str)
@@ -49,6 +50,9 @@ namespace wasm {
 #define CASE_CONVERT_OP(name, RES, SRC, src_suffix, str) \
   CASE_##RES##_OP(U##name##SRC, str "_u/" src_suffix)    \
       CASE_##RES##_OP(S##name##SRC, str "_s/" src_suffix)
+#define CASE_CONVERT_SAT_OP(name, RES, SRC, src_suffix, str)   \
+  CASE_##RES##_OP(U##name##Sat##SRC, str "_u:sat/" src_suffix) \
+      CASE_##RES##_OP(S##name##Sat##SRC, str "_s:sat/" src_suffix)
 #define CASE_L32_OP(name, str)          \
   CASE_SIGN_OP(I32, name##8, str "8")   \
   CASE_SIGN_OP(I32, name##16, str "16") \
@@ -57,6 +61,12 @@ namespace wasm {
   CASE_I32_OP(name, str "32")             \
   CASE_UNSIGNED_OP(I32, name##8, str "8") \
   CASE_UNSIGNED_OP(I32, name##16, str "16")
+#define CASE_UNSIGNED_ALL_OP(name, str)     \
+  CASE_U32_OP(name, str)                    \
+  CASE_I64_OP(name, str "64")               \
+  CASE_UNSIGNED_OP(I64, name##8, str "8")   \
+  CASE_UNSIGNED_OP(I64, name##16, str "16") \
+  CASE_UNSIGNED_OP(I64, name##32, str "32")
 
 const char* WasmOpcodes::OpcodeName(WasmOpcode opcode) {
   switch (opcode) {
@@ -95,9 +105,17 @@ const char* WasmOpcodes::OpcodeName(WasmOpcode opcode) {
     CASE_FLOAT_OP(Min, "min")
     CASE_FLOAT_OP(Max, "max")
     CASE_FLOAT_OP(CopySign, "copysign")
+    CASE_REF_OP(Null, "null")
+    CASE_REF_OP(IsNull, "is_null")
     CASE_I32_OP(ConvertI64, "wrap/i64")
     CASE_CONVERT_OP(Convert, INT, F32, "f32", "trunc")
     CASE_CONVERT_OP(Convert, INT, F64, "f64", "trunc")
+    // TODO(kschimpf): Simplify after filling in other saturating operations.
+    CASE_CONVERT_SAT_OP(Convert, I32, F32, "f32", "trunc")
+    CASE_CONVERT_SAT_OP(Convert, I32, F64, "f64", "trunc")
+    CASE_CONVERT_SAT_OP(Convert, I64, F32, "f32", "trunc")
+    CASE_CONVERT_SAT_OP(Convert, I64, F64, "f64", "trunc")
+
     CASE_CONVERT_OP(Convert, I64, I32, "i32", "extend")
     CASE_CONVERT_OP(Convert, F32, I32, "i32", "convert")
     CASE_CONVERT_OP(Convert, F32, I64, "i64", "convert")
@@ -109,6 +127,9 @@ const char* WasmOpcodes::OpcodeName(WasmOpcode opcode) {
     CASE_I64_OP(ReinterpretF64, "reinterpret/f64")
     CASE_F32_OP(ReinterpretI32, "reinterpret/i32")
     CASE_F64_OP(ReinterpretI64, "reinterpret/i64")
+    CASE_INT_OP(SExtendI8, "sign_extend8")
+    CASE_INT_OP(SExtendI16, "sign_extend16")
+    CASE_I64_OP(SExtendI32, "sign_extend32")
     CASE_OP(Unreachable, "unreachable")
     CASE_OP(Nop, "nop")
     CASE_OP(Block, "block")
@@ -235,15 +256,15 @@ const char* WasmOpcodes::OpcodeName(WasmOpcode opcode) {
     CASE_S1x16_OP(AllTrue, "all_true")
 
     // Atomic operations.
-    CASE_U32_OP(AtomicLoad, "atomic_load")
-    CASE_U32_OP(AtomicStore, "atomic_store")
-    CASE_U32_OP(AtomicAdd, "atomic_add")
-    CASE_U32_OP(AtomicSub, "atomic_sub")
-    CASE_U32_OP(AtomicAnd, "atomic_and")
-    CASE_U32_OP(AtomicOr, "atomic_or")
-    CASE_U32_OP(AtomicXor, "atomic_xor")
-    CASE_U32_OP(AtomicExchange, "atomic_xchng")
-    CASE_U32_OP(AtomicCompareExchange, "atomic_cmpxchng")
+    CASE_UNSIGNED_ALL_OP(AtomicLoad, "atomic_load")
+    CASE_UNSIGNED_ALL_OP(AtomicStore, "atomic_store")
+    CASE_UNSIGNED_ALL_OP(AtomicAdd, "atomic_add")
+    CASE_UNSIGNED_ALL_OP(AtomicSub, "atomic_sub")
+    CASE_UNSIGNED_ALL_OP(AtomicAnd, "atomic_and")
+    CASE_UNSIGNED_ALL_OP(AtomicOr, "atomic_or")
+    CASE_UNSIGNED_ALL_OP(AtomicXor, "atomic_xor")
+    CASE_UNSIGNED_ALL_OP(AtomicExchange, "atomic_xchng")
+    CASE_UNSIGNED_ALL_OP(AtomicCompareExchange, "atomic_cmpxchng")
 
     default : return "unknown";
     // clang-format on
@@ -255,6 +276,7 @@ const char* WasmOpcodes::OpcodeName(WasmOpcode opcode) {
 #undef CASE_I64_OP
 #undef CASE_F32_OP
 #undef CASE_F64_OP
+#undef CASE_REF_OP
 #undef CASE_F32x4_OP
 #undef CASE_I32x4_OP
 #undef CASE_I16x8_OP
@@ -273,8 +295,10 @@ const char* WasmOpcodes::OpcodeName(WasmOpcode opcode) {
 #undef CASE_SIMDI_OP
 #undef CASE_SIGN_OP
 #undef CASE_UNSIGNED_OP
+#undef CASE_UNSIGNED_ALL_OP
 #undef CASE_ALL_SIGN_OP
 #undef CASE_CONVERT_OP
+#undef CASE_CONVERT_SAT_OP
 #undef CASE_L32_OP
 #undef CASE_U32_OP
 
@@ -312,22 +336,45 @@ bool WasmOpcodes::IsUnconditionalJump(WasmOpcode opcode) {
   }
 }
 
+bool WasmOpcodes::IsSignExtensionOpcode(WasmOpcode opcode) {
+  switch (opcode) {
+    case kExprI32SExtendI8:
+    case kExprI32SExtendI16:
+    case kExprI64SExtendI8:
+    case kExprI64SExtendI16:
+    case kExprI64SExtendI32:
+      return true;
+    default:
+      return false;
+  }
+}
+
+bool WasmOpcodes::IsAnyRefOpcode(WasmOpcode opcode) {
+  switch (opcode) {
+    case kExprRefNull:
+    case kExprRefIsNull:
+      return true;
+    default:
+      return false;
+  }
+}
+
 std::ostream& operator<<(std::ostream& os, const FunctionSig& sig) {
   if (sig.return_count() == 0) os << "v";
   for (auto ret : sig.returns()) {
-    os << WasmOpcodes::ShortNameOf(ret);
+    os << ValueTypes::ShortNameOf(ret);
   }
   os << "_";
   if (sig.parameter_count() == 0) os << "v";
   for (auto param : sig.parameters()) {
-    os << WasmOpcodes::ShortNameOf(param);
+    os << ValueTypes::ShortNameOf(param);
   }
   return os;
 }
 
 bool IsJSCompatibleSignature(const FunctionSig* sig) {
   for (auto type : sig->all()) {
-    if (type == wasm::kWasmI64 || type == wasm::kWasmS128) return false;
+    if (type == kWasmI64 || type == kWasmS128) return false;
   }
   return sig->return_count() <= 1;
 }
@@ -350,7 +397,7 @@ FOREACH_SIGNATURE(DECLARE_SIG)
 #undef DECLARE_SIG
 
 #define DECLARE_SIG_ENTRY(name, ...) &kSig_##name,
-constexpr const FunctionSig* kSimpleExprSigs[] = {
+constexpr const FunctionSig* kCachedSigs[] = {
     nullptr, FOREACH_SIGNATURE(DECLARE_SIG_ENTRY)};
 #undef DECLARE_SIG_ENTRY
 
@@ -359,10 +406,11 @@ constexpr const FunctionSig* kSimpleExprSigs[] = {
 // encapsulate these constexpr functions in functors.
 // TODO(clemensh): Remove this once we require gcc >= 5.0.
 
-struct GetOpcodeSigIndex {
+struct GetShortOpcodeSigIndex {
   constexpr WasmOpcodeSig operator()(byte opcode) const {
 #define CASE(name, opc, sig) opcode == opc ? kSigEnum_##sig:
-    return FOREACH_SIMPLE_OPCODE(CASE) kSigEnum_None;
+    return FOREACH_SIMPLE_OPCODE(CASE) FOREACH_SIMPLE_PROTOTYPE_OPCODE(CASE)
+        kSigEnum_None;
 #undef CASE
   }
 };
@@ -378,7 +426,8 @@ struct GetAsmJsOpcodeSigIndex {
 struct GetSimdOpcodeSigIndex {
   constexpr WasmOpcodeSig operator()(byte opcode) const {
 #define CASE(name, opc, sig) opcode == (opc & 0xFF) ? kSigEnum_##sig:
-    return FOREACH_SIMD_0_OPERAND_OPCODE(CASE) kSigEnum_None;
+    return FOREACH_SIMD_0_OPERAND_OPCODE(CASE) FOREACH_SIMD_MEM_OPCODE(CASE)
+        kSigEnum_None;
 #undef CASE
   }
 };
@@ -391,36 +440,71 @@ struct GetAtomicOpcodeSigIndex {
 }
 };
 
-constexpr std::array<WasmOpcodeSig, 256> kSimpleExprSigTable =
-    base::make_array<256>(GetOpcodeSigIndex{});
+struct GetNumericOpcodeSigIndex {
+  constexpr WasmOpcodeSig operator()(byte opcode) const {
+#define CASE(name, opc, sig) opcode == (opc & 0xFF) ? kSigEnum_##sig:
+    return FOREACH_NUMERIC_OPCODE(CASE) kSigEnum_None;
+#undef CASE
+  }
+};
+
+constexpr std::array<WasmOpcodeSig, 256> kShortSigTable =
+    base::make_array<256>(GetShortOpcodeSigIndex{});
 constexpr std::array<WasmOpcodeSig, 256> kSimpleAsmjsExprSigTable =
     base::make_array<256>(GetAsmJsOpcodeSigIndex{});
 constexpr std::array<WasmOpcodeSig, 256> kSimdExprSigTable =
     base::make_array<256>(GetSimdOpcodeSigIndex{});
 constexpr std::array<WasmOpcodeSig, 256> kAtomicExprSigTable =
     base::make_array<256>(GetAtomicOpcodeSigIndex{});
+constexpr std::array<WasmOpcodeSig, 256> kNumericExprSigTable =
+    base::make_array<256>(GetNumericOpcodeSigIndex{});
+
+// Computes a direct pointer to a cached signature for a simple opcode.
+struct GetSimpleOpcodeSig {
+  constexpr const FunctionSig* operator()(byte opcode) const {
+#define CASE(name, opc, sig) opcode == opc ? &kSig_##sig:
+    return FOREACH_SIMPLE_OPCODE(CASE) nullptr;
+#undef CASE
+  }
+};
 
 }  // namespace
 
+const std::array<const FunctionSig*, 256> kSimpleOpcodeSigs =
+    base::make_array<256>(GetSimpleOpcodeSig{});
+
 FunctionSig* WasmOpcodes::Signature(WasmOpcode opcode) {
-  if (opcode >> 8 == kSimdPrefix) {
-    return const_cast<FunctionSig*>(
-        kSimpleExprSigs[kSimdExprSigTable[opcode & 0xFF]]);
-  } else if (opcode >> 8 == kAtomicPrefix) {
-    return const_cast<FunctionSig*>(
-        kSimpleExprSigs[kAtomicExprSigTable[opcode & 0xFF]]);
-  } else {
-    DCHECK_GT(kSimpleExprSigTable.size(), opcode);
-    return const_cast<FunctionSig*>(
-        kSimpleExprSigs[kSimpleExprSigTable[opcode]]);
+  switch (opcode >> 8) {
+    case 0:
+      return const_cast<FunctionSig*>(kCachedSigs[kShortSigTable[opcode]]);
+    case kSimdPrefix:
+      return const_cast<FunctionSig*>(
+          kCachedSigs[kSimdExprSigTable[opcode & 0xFF]]);
+    case kAtomicPrefix:
+      return const_cast<FunctionSig*>(
+          kCachedSigs[kAtomicExprSigTable[opcode & 0xFF]]);
+    case kNumericPrefix:
+      return const_cast<FunctionSig*>(
+          kCachedSigs[kNumericExprSigTable[opcode & 0xFF]]);
+    default:
+      UNREACHABLE();  // invalid prefix.
+      return nullptr;
   }
 }
 
 FunctionSig* WasmOpcodes::AsmjsSignature(WasmOpcode opcode) {
   DCHECK_GT(kSimpleAsmjsExprSigTable.size(), opcode);
   return const_cast<FunctionSig*>(
-      kSimpleExprSigs[kSimpleAsmjsExprSigTable[opcode]]);
+      kCachedSigs[kSimpleAsmjsExprSigTable[opcode]]);
 }
+
+// Define constexpr arrays.
+constexpr uint8_t LoadType::kLoadSizeLog2[];
+constexpr ValueType LoadType::kValueType[];
+constexpr MachineType LoadType::kMemType[];
+constexpr uint8_t StoreType::kStoreSizeLog2[];
+constexpr ValueType StoreType::kValueType[];
+constexpr MachineRepresentation StoreType::kMemRep[];
 
 int WasmOpcodes::TrapReasonToMessageId(TrapReason reason) {
   switch (reason) {

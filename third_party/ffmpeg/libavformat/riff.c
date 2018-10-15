@@ -404,6 +404,12 @@ const AVCodecTag ff_codec_bmp_tags[] = {
     { AV_CODEC_ID_UTVIDEO,      MKTAG('U', 'Q', 'Y', '2') },
     { AV_CODEC_ID_UTVIDEO,      MKTAG('U', 'Q', 'R', 'A') },
     { AV_CODEC_ID_UTVIDEO,      MKTAG('U', 'Q', 'R', 'G') },
+    { AV_CODEC_ID_UTVIDEO,      MKTAG('U', 'M', 'Y', '2') },
+    { AV_CODEC_ID_UTVIDEO,      MKTAG('U', 'M', 'H', '2') },
+    { AV_CODEC_ID_UTVIDEO,      MKTAG('U', 'M', 'Y', '4') },
+    { AV_CODEC_ID_UTVIDEO,      MKTAG('U', 'M', 'H', '4') },
+    { AV_CODEC_ID_UTVIDEO,      MKTAG('U', 'M', 'R', 'A') },
+    { AV_CODEC_ID_UTVIDEO,      MKTAG('U', 'M', 'R', 'G') },
     { AV_CODEC_ID_VBLE,         MKTAG('V', 'B', 'L', 'E') },
     { AV_CODEC_ID_ESCAPE130,    MKTAG('E', '1', '3', '0') },
     { AV_CODEC_ID_DXTORY,       MKTAG('x', 't', 'o', 'r') },
@@ -580,6 +586,7 @@ const struct AVCodecTag *avformat_get_riff_audio_tags(void)
 const AVCodecGuid ff_codec_wav_guids[] = {
     { AV_CODEC_ID_AC3,      { 0x2C, 0x80, 0x6D, 0xE0, 0x46, 0xDB, 0xCF, 0x11, 0xB4, 0xD1, 0x00, 0x80, 0x5F, 0x6C, 0xBB, 0xEA } },
     { AV_CODEC_ID_ATRAC3P,  { 0xBF, 0xAA, 0x23, 0xE9, 0x58, 0xCB, 0x71, 0x44, 0xA1, 0x19, 0xFF, 0xFA, 0x01, 0xE4, 0xCE, 0x62 } },
+    { AV_CODEC_ID_ATRAC9,   { 0xD2, 0x42, 0xE1, 0x47, 0xBA, 0x36, 0x8D, 0x4D, 0x88, 0xFC, 0x61, 0x65, 0x4F, 0x8C, 0x83, 0x6C } },
     { AV_CODEC_ID_EAC3,     { 0xAF, 0x87, 0xFB, 0xA7, 0x02, 0x2D, 0xFB, 0x42, 0xA4, 0xD4, 0x05, 0xCD, 0x93, 0x84, 0x3B, 0xDD } },
     { AV_CODEC_ID_MP2,      { 0x2B, 0x80, 0x6D, 0xE0, 0x46, 0xDB, 0xCF, 0x11, 0xB4, 0xD1, 0x00, 0x80, 0x5F, 0x6C, 0xBB, 0xEA } },
     { AV_CODEC_ID_NONE }

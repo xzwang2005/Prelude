@@ -5,15 +5,17 @@
 #ifndef V8_JSON_PARSER_H_
 #define V8_JSON_PARSER_H_
 
-#include "src/factory.h"
+#include "src/heap/factory.h"
+#include "src/isolate.h"
 #include "src/objects.h"
+#include "src/zone/zone-containers.h"
 
 namespace v8 {
 namespace internal {
 
 enum ParseElementResult { kElementFound, kElementNotFound, kNullHandle };
 
-class JsonParseInternalizer BASE_EMBEDDED {
+class JsonParseInternalizer {
  public:
   static MaybeHandle<Object> Internalize(Isolate* isolate,
                                          Handle<Object> object,
@@ -34,12 +36,10 @@ class JsonParseInternalizer BASE_EMBEDDED {
 
 // A simple json parser.
 template <bool seq_one_byte>
-class JsonParser BASE_EMBEDDED {
+class JsonParser {
  public:
-  MUST_USE_RESULT static MaybeHandle<Object> Parse(Isolate* isolate,
-                                                   Handle<String> source,
-                                                   Handle<Object> reviver) {
-    PostponeInterruptsScope no_debug_breaks(isolate, StackGuard::DEBUGBREAK);
+  V8_WARN_UNUSED_RESULT static MaybeHandle<Object> Parse(
+      Isolate* isolate, Handle<String> source, Handle<Object> reviver) {
     Handle<Object> result;
     ASSIGN_RETURN_ON_EXCEPTION(isolate, result,
                                JsonParser(isolate, source).ParseJson(), Object);
@@ -57,37 +57,32 @@ class JsonParser BASE_EMBEDDED {
   // Parse a string containing a single JSON value.
   MaybeHandle<Object> ParseJson();
 
-  INLINE(void Advance());
+  V8_INLINE void Advance();
 
   // The JSON lexical grammar is specified in the ECMAScript 5 standard,
   // section 15.12.1.1. The only allowed whitespace characters between tokens
   // are tab, carriage-return, newline and space.
 
-  INLINE(void AdvanceSkipWhitespace());
-  INLINE(void SkipWhitespace());
-  INLINE(uc32 AdvanceGetChar());
+  V8_INLINE void AdvanceSkipWhitespace();
+  V8_INLINE void SkipWhitespace();
+  V8_INLINE uc32 AdvanceGetChar();
 
   // Checks that current charater is c.
   // If so, then consume c and skip whitespace.
-  INLINE(bool MatchSkipWhiteSpace(uc32 c));
+  V8_INLINE bool MatchSkipWhiteSpace(uc32 c);
 
   // A JSON string (production JSONString) is subset of valid JavaScript string
   // literals. The string must only be double-quoted (not single-quoted), and
   // the only allowed backslash-escapes are ", /, \, b, f, n, r, t and
   // four-digit hex escapes (uXXXX). Any other use of backslashes is invalid.
-  Handle<String> ParseJsonString() {
-    return ScanJsonString<false>();
-  }
-
   bool ParseJsonString(Handle<String> expected);
 
-  Handle<String> ParseJsonInternalizedString() {
-    Handle<String> result = ScanJsonString<true>();
+  Handle<String> ParseJsonString() {
+    Handle<String> result = ScanJsonString();
     if (result.is_null()) return result;
     return factory()->InternalizeString(result);
   }
 
-  template <bool is_internalized>
   Handle<String> ScanJsonString();
   // Creates a new string and copies prefix[start..end] into the beginning
   // of it. Then scans the rest of the string, adding characters after the
@@ -145,7 +140,7 @@ class JsonParser BASE_EMBEDDED {
   Zone* zone() { return &zone_; }
 
   void CommitStateToJsonObject(Handle<JSObject> json_object, Handle<Map> map,
-                               ZoneVector<Handle<Object>>* properties);
+                               Vector<const Handle<Object>> properties);
 
   Handle<String> source_;
   int source_length_;
@@ -157,6 +152,9 @@ class JsonParser BASE_EMBEDDED {
   Handle<JSFunction> object_constructor_;
   uc32 c0_;
   int position_;
+
+  // Property handles are stored here inside ParseJsonObject.
+  ZoneVector<Handle<Object>> properties_;
 };
 
 }  // namespace internal

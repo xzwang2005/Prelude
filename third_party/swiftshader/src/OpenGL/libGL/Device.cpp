@@ -45,7 +45,7 @@ namespace gl
 		setAlphaTestEnable(false);
 		setSourceBlendFactor(BLEND_ONE);
 		setDestBlendFactor(BLEND_ZERO);
-		setCullMode(CULL_COUNTERCLOCKWISE);
+		setCullMode(CULL_COUNTERCLOCKWISE, true);
 		setDepthCompare(DEPTH_LESSEQUAL);
 		setAlphaReference(0.0f);
 		setAlphaCompare(ALPHA_ALWAYS);
@@ -621,7 +621,8 @@ namespace gl
 		}
 		else
 		{
-			blit(source, sRect, dest, dRect, scaling && filter);
+			sw::SliceRectF sRectF((float)sRect.x0, (float)sRect.y0, (float)sRect.x1, (float)sRect.y1, sRect.slice);
+			blit(source, sRectF, dest, dRect, scaling && filter);
 		}
 
 		return true;

@@ -6,7 +6,7 @@
  */
 
 #include "SkTypes.h"
-#if defined(SK_BUILD_FOR_WIN32)
+#if defined(SK_BUILD_FOR_WIN)
 
 #include "SkWGL.h"
 
@@ -126,6 +126,7 @@ int SkWGLExtensions::selectFormat(const int formats[],
                                   int formatCount,
                                   HDC dc,
                                   int desiredSampleCount) const {
+    SkASSERT(desiredSampleCount >= 1);
     if (formatCount <= 0) {
         return -1;
     }
@@ -146,7 +147,7 @@ int SkWGLExtensions::selectFormat(const int formats[],
                                      &kQueryAttr,
                                      &numSamples);
         rankedFormats[i].fFormat =  formats[i];
-        rankedFormats[i].fSampleCnt = numSamples;
+        rankedFormats[i].fSampleCnt = SkTMax(1, numSamples);
         rankedFormats[i].fChoosePixelFormatRank = i;
     }
     SkTQSort(rankedFormats.begin(),
@@ -158,6 +159,10 @@ int SkWGLExtensions::selectFormat(const int formats[],
                                               sizeof(PixelFormat));
     if (idx < 0) {
         idx = ~idx;
+    }
+    // If the caller asked for non-MSAA fail if the closest format has MSAA.
+    if (desiredSampleCount == 1 && rankedFormats[idx].fSampleCnt != 1) {
+        return -1;
     }
     return rankedFormats[idx].fFormat;
 }
@@ -299,8 +304,8 @@ static void get_pixel_formats_to_try(HDC dc, const SkWGLExtensions& extensions,
                                      bool doubleBuffered, int msaaSampleCount, bool deepColor,
                                      int formatsToTry[2]) {
     auto appendAttr = [](SkTDArray<int>& attrs, int attr, int value) {
-        attrs.push(attr);
-        attrs.push(value);
+        attrs.push_back(attr);
+        attrs.push_back(value);
     };
 
     SkTDArray<int> iAttrs;
@@ -438,8 +443,9 @@ HGLRC SkCreateWGLContext(HDC dc, int msaaSampleCount, bool deepColor,
     return create_gl_context(dc, extensions, contextType, shareContext);
 }
 
-SkWGLPbufferContext* SkWGLPbufferContext::Create(HDC parentDC, SkWGLContextRequest contextType,
-                                                 HGLRC shareContext) {
+sk_sp<SkWGLPbufferContext> SkWGLPbufferContext::Create(HDC parentDC,
+                                                       SkWGLContextRequest contextType,
+                                                       HGLRC shareContext) {
     SkWGLExtensions extensions;
     if (!extensions.hasExtension(parentDC, "WGL_ARB_pixel_format") ||
         !extensions.hasExtension(parentDC, "WGL_ARB_pbuffer")) {
@@ -480,7 +486,7 @@ SkWGLPbufferContext* SkWGLPbufferContext::Create(HDC parentDC, SkWGLContextReque
             if (dc) {
                 HGLRC glrc = create_gl_context(dc, extensions, contextType, shareContext);
                 if (glrc) {
-                    return new SkWGLPbufferContext(pbuf, dc, glrc);
+                    return sk_sp<SkWGLPbufferContext>(new SkWGLPbufferContext(pbuf, dc, glrc));
                 }
                 extensions.releasePbufferDC(pbuf, dc);
             }
@@ -503,4 +509,4 @@ SkWGLPbufferContext::SkWGLPbufferContext(HPBUFFER pbuffer, HDC dc, HGLRC glrc)
     , fGLRC(glrc) {
 }
 
-#endif//defined(SK_BUILD_FOR_WIN32)
+#endif//defined(SK_BUILD_FOR_WIN)

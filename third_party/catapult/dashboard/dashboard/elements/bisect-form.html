@@ -197,6 +197,7 @@ the bisect process after the user clicks on the bisect button.
             type: Number,
             value: 20
           },
+          alerts: {},
           bugId: { notify: true },
           earlierRevision: {
             notify: true,
@@ -263,10 +264,18 @@ the bisect process after the user clicks on the bisect button.
          * Makes a request to /start_try_job to perform a bisect.
          */
         onSendToTrybot(event) {
+          const alerts = [];
+          if (this.alerts) {
+            for (const a of this.alerts) {
+              alerts.push(a.key);
+            }
+          }
+
           event.preventDefault();
           this.loading = true;
           const params = {
             'step': 'perform-bisect',
+            'alerts': JSON.stringify(alerts),
             'bisect_bot': this.bot,
             'suite': this.suite,
             'metric': this.metric,
@@ -329,7 +338,7 @@ the bisect process after the user clicks on the bisect button.
         onRevisionsChange() {
           if (this.earlierRevision == this.laterRevision) {
             this.error = (
-                '"Both "earlier" and "later" are the same.');
+              '"Both "earlier" and "later" are the same.');
           }
           if (!/^\d+$/.test(this.earlierRevision) ||
               !/^\d+$/.test(this.laterRevision)) {
@@ -337,7 +346,7 @@ the bisect process after the user clicks on the bisect button.
           }
           if (Number(this.earlierRevision) >= Number(this.laterRevision)) {
             this.error = (
-                '"Earlier revision" should be less than "later revision".');
+              '"Earlier revision" should be less than "later revision".');
           }
         },
 

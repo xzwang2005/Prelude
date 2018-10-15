@@ -12,7 +12,4 @@ const char kOzonePlatform[] = "ozone-platform";
 // Specify location for image dumps.
 const char kOzoneDumpFile[] = "ozone-dump-file";
 
-// Try to enable drm atomic. This works only with drm platform.
-const char kEnableDrmAtomic[] = "enable-drm-atomic";
-
 }  // namespace switches

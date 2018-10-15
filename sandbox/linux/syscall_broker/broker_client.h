@@ -14,7 +14,6 @@
 #include "sandbox/linux/syscall_broker/broker_command.h"
 
 namespace sandbox {
-
 namespace syscall_broker {
 
 class BrokerPermissionList;
@@ -33,12 +32,10 @@ class BrokerClient {
   // and save an IPC round trip.
   // |ipc_channel| needs to be a suitable SOCK_SEQPACKET unix socket.
   // |fast_check_in_client| should be set to true and
-  // |quiet_failures_for_tests| to false unless you are writing tests.
   BrokerClient(const BrokerPermissionList& policy,
                BrokerChannel::EndPoint ipc_channel,
                const BrokerCommandSet& allowed_command_set,
-               bool fast_check_in_client,
-               bool quiet_failures_for_tests);
+               bool fast_check_in_client);
   ~BrokerClient();
 
   // Get the file descriptor used for IPC. This is used for tests.
@@ -53,28 +50,44 @@ class BrokerClient {
   // doesn't support execute permissions.
   int Access(const char* pathname, int mode) const;
 
+  // Can be used in place of mkdir().
+  int Mkdir(const char* path, int mode) const;
+
   // Can be used in place of open().
   // The implementation only supports certain white listed flags and will
   // return -EPERM on other flags.
   int Open(const char* pathname, int flags) const;
 
-  // Can be used in place of stat()/stat64().
-  int Stat(const char* pathname, struct stat* sb);
-  int Stat64(const char* pathname, struct stat64* sb);
+  // Can be used in place of Readlink().
+  int Readlink(const char* path, char* buf, size_t bufsize) const;
 
   // Can be used in place of rename().
-  int Rename(const char* oldpath, const char* newpath);
+  int Rename(const char* oldpath, const char* newpath) const;
 
-  // Can be used in place of Readlink().
-  int Readlink(const char* path, char* buf, size_t bufsize);
+  // Can be used in place of rmdir().
+  int Rmdir(const char* path) const;
+
+  // Can be used in place of stat()/stat64()/lstat()/lstat64()
+  int Stat(const char* pathname, bool follow_links, struct stat* sb) const;
+  int Stat64(const char* pathname, bool folllow_links, struct stat64* sb) const;
+
+  // Can be used in place of rmdir().
+  int Unlink(const char* unlink) const;
 
  private:
+  int PathOnlySyscall(BrokerCommand syscall_type, const char* pathname) const;
+
   int PathAndFlagsSyscall(BrokerCommand syscall_type,
                           const char* pathname,
                           int flags) const;
 
+  int PathAndFlagsSyscallReturningFD(BrokerCommand syscall_type,
+                                     const char* pathname,
+                                     int flags) const;
+
   int StatFamilySyscall(BrokerCommand syscall_type,
                         const char* pathname,
+                        bool follow_links,
                         void* result_ptr,
                         size_t expected_result_size) const;
 
@@ -84,8 +97,6 @@ class BrokerClient {
   const bool fast_check_in_client_;  // Whether to forward a request that we
                                      // know will be denied to the broker. (Used
                                      // for tests).
-  const bool quiet_failures_for_tests_;  // Disable certain error message when
-                                         // testing for failures.
 
   DISALLOW_COPY_AND_ASSIGN(BrokerClient);
 };

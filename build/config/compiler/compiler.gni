@@ -2,10 +2,6 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-if (is_android) {
-  import("//build/config/android/abi.gni")
-}
-import("//build/config/arm.gni")
 import("//build/config/chrome_build.gni")
 import("//build/config/chromecast_build.gni")
 import("//build/config/compiler/pgo/pgo.gni")
@@ -13,6 +9,13 @@ import("//build/config/sanitizers/sanitizers.gni")
 import("//build/toolchain/goma.gni")
 import("//build/toolchain/toolchain.gni")
 import("//build_overrides/build.gni")
+
+if (is_android) {
+  import("//build/config/android/abi.gni")
+}
+if (current_cpu == "arm" || current_cpu == "arm64") {
+  import("//build/config/arm.gni")
+}
 
 declare_args() {
   # How many symbols to include in the build. This affects the performance of
@@ -24,6 +27,11 @@ declare_args() {
   #   0 means no symbols.
   #   -1 means auto-set according to debug/release and platform.
   symbol_level = -1
+
+  # Android-only: Strip the debug info of libraries within lib.unstripped to
+  # reduce size. As long as symbol_level > 0, this will still allow stacks to be
+  # symbolized.
+  strip_debug_info = false
 
   # Compile in such a way as to enable profiling of the generated code. For
   # example, don't omit the frame pointer and leave in symbols.
@@ -43,6 +51,7 @@ declare_args() {
 
   # Enables support for ThinLTO, which links 3x-10x faster than full LTO. See
   # also http://blog.llvm.org/2016/06/thinlto-scalable-and-incremental-lto.html
+  # TODO(https://crbug.com/887272): Reenable on is_android && is_official_build
   use_thin_lto = is_cfi
 
   # Tell VS to create a PDB that references information in .obj files rather
@@ -54,22 +63,15 @@ declare_args() {
   # Windows build.
   use_incremental_wpo = false
 
-  # Root directory that will store the MSVC link repro. This should only be
-  # used for debugging purposes on the builders where a MSVC linker flakyness
-  # has been observed. The targets for which a link repro should be generated
-  # should add somethink like this to their configuration:
-  #   if (linkrepro_root_dir != "") {
-  #     ldflags = ["/LINKREPRO:" + linkrepro_root_dir + "/" + target_name]
-  #   }
-  #
-  # Note that doing a link repro uses a lot of disk space and slows down the
-  # build, so this shouldn't be enabled on too many targets.
-  #
-  # See crbug.com/669854.
-  linkrepro_root_dir = ""
-
   # Whether or not we should use position independent code.
   use_pic = true
+
+  # Whether we're using a sample profile collected on an architecture different
+  # than the one we're compiling for.
+  #
+  # It's currently not possible to collect AFDO profiles on anything but
+  # x86{,_64}.
+  using_mismatched_sample_profile = current_cpu != "x64" && current_cpu != "x86"
 }
 
 assert(!is_cfi || use_thin_lto, "CFI requires ThinLTO")
@@ -87,7 +89,15 @@ exclude_unwind_tables =
 # Linux & Mac favor speed over size.
 # TODO(brettw) it's weird that Mac and desktop Linux are different. We should
 # explore favoring size over speed in this case as well.
-optimize_for_size = is_android || is_ios
+optimize_for_size = is_android || is_ios || is_fuchsia
+
+declare_args() {
+  # Whether we should consider the profile we're using to be accurate. Accurate
+  # profiles have the benefit of (potentially substantial) binary size
+  # reductions, by instructing the compiler to optimize cold and uncovered
+  # functions heavily for size. This often comes at the cost of performance.
+  sample_profile_is_accurate = optimize_for_size
+}
 
 # Determine whether to enable or disable frame pointers, based on the platform
 # and build arguments.
@@ -108,13 +118,15 @@ if (is_mac || is_ios || is_linux) {
   enable_frame_pointers = current_cpu != "arm"
 } else if (is_android) {
   enable_frame_pointers =
+      enable_profiling ||
       # Ensure that stacks from arm64 crash dumps are usable (crbug.com/391706).
       current_cpu == "arm64" ||
       # For x86 Android, unwind tables are huge without frame pointers
       # (crbug.com/762629). Enabling frame pointers grows the code size slightly
       # but overall shrinks binaries considerably by avoiding huge unwind
       # tables.
-      (current_cpu == "x86" && !exclude_unwind_tables && optimize_for_size)
+      (current_cpu == "x86" && !exclude_unwind_tables && optimize_for_size) ||
+      using_sanitizer
 } else {
   # Explicitly ask for frame pointers, otherwise:
   # * Stacks may be missing for sanitizer and profiling builds.
@@ -139,6 +151,11 @@ if (current_cpu == "arm" && arm_use_thumb) {
 
 assert(!can_unwind_with_frame_pointers || enable_frame_pointers)
 
+# Unwinding with CFI table is only possible on static library builds and
+# requried only when frame pointers are not enabled.
+can_unwind_with_cfi_table = is_android && !is_component_build &&
+                            !enable_frame_pointers && current_cpu == "arm"
+
 declare_args() {
   # Whether or not the official builds should be built with full WPO. Enabled by
   # default for the PGO and the x64 builds.
@@ -154,22 +171,23 @@ declare_args() {
   # Linux or Fuchsia.
   # TODO(pcc): Enable lld on more architectures on Linux. E.g. we probably need
   # to fix some of crbug.com/742655 to enable it on ARM.
-  # TODO(pcc): Remove !is_msan once crbug.com/772559 is fixed.
-  use_lld = is_clang && !is_msan &&
-            ((is_win && host_os != "win") || is_fuchsia ||
-             (use_thin_lto && target_os != "chromeos") ||
-             (is_linux && current_cpu == "x64" && target_os != "chromeos"))
+  use_lld =
+      is_clang &&
+      (is_win || is_fuchsia || (use_thin_lto && target_os != "chromeos") ||
+       (is_linux && current_cpu == "x64" && target_os != "chromeos") ||
+       (is_android && (current_cpu != "arm" || arm_version >= 7) &&
+        current_cpu != "mipsel" && current_cpu != "mips64el"))
 }
 
 declare_args() {
   # Whether to use the gold linker from binutils instead of lld or bfd.
-  use_gold =
-      (!use_lld && !(is_chromecast && is_linux &&
-                     (current_cpu == "arm" || current_cpu == "mipsel")) &&
-       (is_linux && (current_cpu == "x64" || current_cpu == "x86" ||
-                     current_cpu == "arm" || current_cpu == "mipsel"))) ||
-      (is_android && (current_cpu == "x86" || current_cpu == "x64" ||
-                      current_cpu == "arm" || current_cpu == "arm64"))
+  use_gold = !use_lld && !(is_chromecast && is_linux &&
+                           (current_cpu == "arm" || current_cpu == "mipsel")) &&
+             ((is_linux && (current_cpu == "x64" || current_cpu == "x86" ||
+                            current_cpu == "arm" || current_cpu == "mipsel" ||
+                            current_cpu == "mips64el")) ||
+              (is_android && (current_cpu == "x86" || current_cpu == "x64" ||
+                              current_cpu == "arm" || current_cpu == "arm64")))
 }
 
 # If it wasn't manually set, set to an appropriate default.
@@ -200,7 +218,9 @@ if (symbol_level == -1) {
     # them off, but keep them on for Official builds and Chromecast builds.
     symbol_level = 2
   } else if (using_sanitizer) {
-    # Sanitizers require symbols for filename suppressions to work.
+    # Sanitizers need line table info for stack traces. They don't need type
+    # info or variable info, so we can leave that out to speed up the build.
+    # Sanitizers also require symbols for filename suppressions to work.
     symbol_level = 1
   } else {
     symbol_level = 0
@@ -215,7 +235,9 @@ if (symbol_level == -1) {
 }
 
 # Assert that the configuration isn't going to hit https://crbug.com/648948.
-assert(ignore_elf32_limitations || !is_android ||
+# An exception is made when target_os == "chromeos" as we only use the Android
+# toolchain there to build relatively small binaries.
+assert(ignore_elf32_limitations || !is_android || target_os == "chromeos" ||
            (android_64bit_target_cpu && !build_apk_secondary_abi) ||
            is_component_build || symbol_level < 2,
        "Android 32-bit non-component builds cannot have symbol_level=2 " +

@@ -2,7 +2,6 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-
 """Recipe module to ensure a checkout is consistent on a bot."""
 
 from recipe_engine import recipe_api
@@ -10,23 +9,20 @@ from recipe_engine import recipe_api
 
 class BotUpdateApi(recipe_api.RecipeApi):
 
-  def __init__(self, issue, patch_issue, patchset, patch_set,
-               repository, patch_repository_url, gerrit_ref, patch_ref,
-               patch_gerrit_url, rietveld, revision, parent_got_revision,
-               deps_revision_overrides, fail_patch, *args, **kwargs):
-    self._issue = issue or patch_issue
-    self._patchset = patchset or patch_set
-    self._repository = repository or patch_repository_url
-    self._gerrit_ref = gerrit_ref or patch_ref
-    self._gerrit = patch_gerrit_url
-    self._rietveld = rietveld
-    self._revision = revision
-    self._parent_got_revision = parent_got_revision
+  def __init__(self, properties, deps_revision_overrides, fail_patch, *args,
+               **kwargs):
+    self._apply_patch_on_gclient = properties.get(
+        'apply_patch_on_gclient', True)
     self._deps_revision_overrides = deps_revision_overrides
     self._fail_patch = fail_patch
 
     self._last_returned_properties = {}
     super(BotUpdateApi, self).__init__(*args, **kwargs)
+
+  def initialize(self):
+    assert len(self.m.buildbucket.build.input.gerrit_changes) <= 1, (
+        'bot_update does not support more than one '
+        'buildbucket.build.input.gerrit_changes')
 
   def __call__(self, name, cmd, **kwargs):
     """Wrapper for easy calling of bot_update."""
@@ -34,69 +30,70 @@ class BotUpdateApi(recipe_api.RecipeApi):
     bot_update_path = self.resource('bot_update.py')
     kwargs.setdefault('infra_step', True)
 
-    env_prefixes = {
-        'PATH': [self.m.depot_tools.root],
-    }
-    with self.m.context(env_prefixes=env_prefixes):
+    with self.m.depot_tools.on_path():
       return self.m.python(name, bot_update_path, cmd, **kwargs)
 
   @property
   def last_returned_properties(self):
       return self._last_returned_properties
 
-  # DO NOT USE.
-  # TODO(tandrii): refactor this into tryserver.maybe_apply_patch
-  def apply_gerrit_ref(self, root, gerrit_no_reset=False,
-                       gerrit_no_rebase_patch_ref=False,
-                       gerrit_repo=None, gerrit_ref=None,
-                       step_name='apply_gerrit', **kwargs):
-    apply_gerrit_path = self.resource('apply_gerrit.py')
-    kwargs.setdefault('infra_step', True)
-    cmd = [
-        '--gerrit_repo', gerrit_repo or self._repository,
-        '--gerrit_ref', gerrit_ref or self._gerrit_ref or '',
-        '--root', str(root),
-    ]
-    if gerrit_no_reset:
-      cmd.append('--gerrit_no_reset')
-    if gerrit_no_rebase_patch_ref:
-      cmd.append('--gerrit_no_rebase_patch_ref')
+  def _get_commit_repo_path(self, commit, gclient_config):
+    """Returns local path to the repo that the commit is associated with.
 
-    env_prefixes = {
-        'PATH': [self.m.depot_tools.root],
-    }
-    with self.m.context(env_prefixes=env_prefixes):
-      return self.m.python(step_name, apply_gerrit_path, cmd, **kwargs)
+    The commit must be a self.m.buildbucket.common_pb2.GitilesCommit.
+    If commit does not specify any repo, returns name of the first solution.
+
+    Raises an InfraFailure if the commit specifies a repo unexpected by gclient.
+    """
+    assert gclient_config.solutions, 'gclient_config.solutions is empty'
+
+    # if repo is not specified, choose the first solution.
+    if not (commit.host and commit.project):
+      return gclient_config.solutions[0].name
+    assert commit.host and commit.project
+
+    repo_url = self.m.gitiles.unparse_repo_url(commit.host, commit.project)
+    repo_path = self.m.gclient.get_repo_path(
+        repo_url, gclient_config=gclient_config)
+    if not repo_path:
+      raise self.m.step.InfraFailure(
+          'invalid (host, project) pair in '
+          'buildbucket.build.input.gitiles_commit: '
+          '(%r, %r) does not match any of configured gclient solutions '
+          'and not present in gclient_config.repo_path_map' % (
+              commit.host, commit.project))
+
+    return repo_path
 
   def ensure_checkout(self, gclient_config=None, suffix=None,
                       patch=True, update_presentation=True,
-                      patch_root=None, no_shallow=False,
+                      patch_root=None,
                       with_branch_heads=False, with_tags=False, refs=None,
-                      patch_oauth2=False, oauth2_json=False,
-                      use_site_config_creds=True, clobber=False,
+                      patch_oauth2=None, oauth2_json=None,
+                      use_site_config_creds=None, clobber=False,
                       root_solution_revision=None, rietveld=None, issue=None,
                       patchset=None, gerrit_no_reset=False,
                       gerrit_no_rebase_patch_ref=False,
                       disable_syntax_validation=False, manifest_name=None,
+                      patch_refs=None, ignore_input_commit=False,
                       **kwargs):
     """
     Args:
-      use_site_config_creds: If the oauth2 credentials are in the buildbot
-        site_config. See crbug.com/624212 for more information.
       gclient_config: The gclient configuration to use when running bot_update.
         If omitted, the current gclient configuration is used.
-      rietveld: The rietveld server to use. If omitted, will infer from
-        the 'rietveld' property.
-      issue: The rietveld issue number to use. If omitted, will infer from
-        the 'issue' property.
-      patchset: The rietveld issue patchset to use. If omitted, will infer from
-        the 'patchset' property.
       disable_syntax_validation: (legacy) Disables syntax validation for DEPS.
         Needed as migration paths for recipes dealing with older revisions,
         such as bisect.
       manifest_name: The name of the manifest to upload to LogDog.  This must
         be unique for the whole build.
     """
+    assert use_site_config_creds is None, "use_site_config_creds is deprecated"
+    assert rietveld is None, "rietveld is deprecated"
+    assert issue is None, "issue is deprecated"
+    assert patchset is None, "patchset is deprecated"
+    assert patch_oauth2 is None, "patch_oauth2 is deprecated"
+    assert oauth2_json is None, "oauth2_json is deprecated"
+
     refs = refs or []
     # We can re-use the gclient spec from the gclient module, since all the
     # data bot_update needs is already configured into the gclient spec.
@@ -104,75 +101,15 @@ class BotUpdateApi(recipe_api.RecipeApi):
     assert cfg is not None, (
         'missing gclient_config or forgot api.gclient.set_config(...) before?')
 
-    # Only one of these should exist.
-    assert not (oauth2_json and patch_oauth2)
-
     # Construct our bot_update command.  This basically be inclusive of
     # everything required for bot_update to know:
-    root = patch_root
-    if root is None:
-      root = self.m.gclient.calculate_patch_root(
-          self.m.properties.get('patch_project'), cfg, self._repository)
-
-    if patch:
-      issue = issue or self._issue
-      patchset = patchset or self._patchset
-      gerrit_repo = self._repository
-      gerrit_ref = self._gerrit_ref
-    else:
-      # The trybot recipe sometimes wants to de-apply the patch. In which case
-      # we pretend the issue/patchset never existed.
-      issue = patchset = email_file = key_file = None
-      gerrit_repo = gerrit_ref = None
-
-    # Issue and patchset must come together.
-    if issue:
-      assert patchset
-    if patchset:
-      assert issue
-
-    # The gerrit_ref and gerrit_repo must be together or not at all.  If one is
-    # missing, clear both of them.
-    if not gerrit_ref or not gerrit_repo:
-      gerrit_repo = gerrit_ref = None
-    assert (gerrit_ref != None) == (gerrit_repo != None)
-    if gerrit_ref:
-      # Gerrit patches have historically not specified issue and patchset.
-      # resourece/bot_update has as a result implicit assumption that set issue
-      # implies Rietveld patch.
-      # TODO(tandrii): fix this madness.
-      issue = patchset = None
-
-    # Point to the oauth2 auth files if specified.
-    # These paths are where the bots put their credential files.
-    oauth2_json_file = email_file = key_file = None
-    if oauth2_json:
-      if self.m.platform.is_win:
-        oauth2_json_file = 'C:\\creds\\refresh_tokens\\internal-try'
-      else:
-        oauth2_json_file = '/creds/refresh_tokens/internal-try'
-    elif patch_oauth2:
-      # TODO(martiniss): remove this hack :(. crbug.com/624212
-      if use_site_config_creds:
-        try:
-          build_path = self.m.path['build']
-        except KeyError:
-          raise self.m.step.StepFailure(
-              'build path is not defined. This is normal for LUCI builds. '
-              'In LUCI, use_site_config_creds parameter of '
-              'bot_update.ensure_checkout is not supported')
-        email_file = build_path.join('site_config', '.rietveld_client_email')
-        key_file = build_path.join('site_config', '.rietveld_secret_key')
-      else: #pragma: no cover
-        #TODO(martiniss): make this use path.join, so it works on windows
-        email_file = '/creds/rietveld/client_email'
-        key_file = '/creds/rietveld/secret_key'
+    patch_root = patch_root or self.m.gclient.get_gerrit_patch_root(
+        gclient_config=cfg)
 
     # Allow patch_project's revision if necessary.
     # This is important for projects which are checked out as DEPS of the
     # gclient solution.
-    self.m.gclient.set_patch_project_revision(
-        self.m.properties.get('patch_project'), cfg)
+    self.m.gclient.set_patch_repo_revision(cfg)
 
     reverse_rev_map = self.m.gclient.got_revision_reverse_mapping(cfg)
 
@@ -180,44 +117,60 @@ class BotUpdateApi(recipe_api.RecipeApi):
         # What do we want to check out (spec/root/rev/reverse_rev_map).
         ['--spec-path', self.m.raw_io.input(
             self.m.gclient.config_to_pythonish(cfg))],
-        ['--patch_root', root],
+        ['--patch_root', patch_root],
         ['--revision_mapping_file', self.m.json.input(reverse_rev_map)],
         ['--git-cache-dir', cfg.cache_dir],
         ['--cleanup-dir', self.m.path['cleanup'].join('bot_update')],
 
-        # How to find the patch, if any (issue/patchset).
-        ['--issue', issue],
-        ['--patchset', patchset],
-        ['--rietveld_server', rietveld or self._rietveld],
-        ['--gerrit_repo', gerrit_repo],
-        ['--gerrit_ref', gerrit_ref],
-        ['--apply_issue_email_file', email_file],
-        ['--apply_issue_key_file', key_file],
-        ['--apply_issue_oauth2_file', oauth2_json_file],
-
         # Hookups to JSON output back into recipes.
         ['--output_json', self.m.json.output()],
     ]
+
+    # How to find the patch, if any
+    if patch:
+      repo_url = self.m.tryserver.gerrit_change_repo_url
+      fetch_ref = self.m.tryserver.gerrit_change_fetch_ref
+      if repo_url and fetch_ref:
+        flags.append(['--patch_ref', '%s@%s' % (repo_url, fetch_ref)])
+      if patch_refs:
+        flags.extend(
+            ['--patch_ref', patch_ref]
+            for patch_ref in patch_refs)
 
     # Compute requested revisions.
     revisions = {}
     for solution in cfg.solutions:
       if solution.revision:
         revisions[solution.name] = solution.revision
-      elif solution == cfg.solutions[0]:
-        # TODO(machenbach): We should explicitly pass HEAD for ALL solutions
-        # that don't specify anything else.
-        revisions[solution.name] = (
-            self._parent_got_revision or
-            self._revision or
-            'HEAD')
-    if self.m.gclient.c and self.m.gclient.c.revisions:
+
+    # HACK: ensure_checkout API must be redesigned so that we don't pass such
+    # parameters. Existing semantics is too opiniated.
+    if not ignore_input_commit:
+      # Apply input gitiles_commit, if any.
+      input_commit = self.m.buildbucket.build.input.gitiles_commit
+      if input_commit.id or input_commit.ref:
+        repo_path = self._get_commit_repo_path(input_commit, cfg)
+        # Note: this is not entirely correct. build.input.gitiles_commit
+        # definition says "The Gitiles commit to run against.".
+        # However, here we ignore it if the config specified a revision.
+        # This is necessary because existing builders rely on this behavior,
+        # e.g. they want to force refs/heads/master at the config level.
+        revisions[repo_path] = (
+            revisions.get(repo_path) or input_commit.id or input_commit.ref)
+
+    # Guarantee that first solution has a revision.
+    # TODO(machenbach): We should explicitly pass HEAD for ALL solutions
+    # that don't specify anything else.
+    first_sol = cfg.solutions[0].name
+    revisions[first_sol] = revisions.get(first_sol) or 'HEAD'
+
+    if cfg.revisions:
       # Only update with non-empty values. Some recipe might otherwise
       # overwrite the HEAD default with an empty string.
       revisions.update(
-          (k, v) for k, v in self.m.gclient.c.revisions.iteritems() if v)
+          (k, v) for k, v in cfg.revisions.iteritems() if v)
     if cfg.solutions and root_solution_revision:
-      revisions[cfg.solutions[0].name] = root_solution_revision
+      revisions[first_sol] = root_solution_revision
     # Allow for overrides required to bisect into rolls.
     revisions.update(self._deps_revision_overrides)
 
@@ -233,7 +186,26 @@ class BotUpdateApi(recipe_api.RecipeApi):
         if fixed_revision.upper() == 'HEAD':
           # Sync to correct destination branch if HEAD was specified.
           fixed_revision = self._destination_branch(cfg, name)
+        # If we're syncing to a ref, we want to make sure it exists before
+        # trying to check it out.
+        if (fixed_revision.startswith('refs/') and
+            # TODO(crbug.com/874501): fetching additional refs is currently
+            # only supported for the root solution. We should investigate
+            # supporting it for other dependencies.
+            cfg.solutions and
+            cfg.solutions[0].name == name):
+          # Handle the "ref:revision" syntax, e.g.
+          # refs/branch-heads/4.2:deadbeef
+          refs.append(fixed_revision.split(':')[0])
         flags.append(['--revision', '%s@%s' % (name, fixed_revision)])
+
+    for ref in refs:
+      assert not ref.startswith('refs/remotes/'), (
+          'The "refs/remotes/*" syntax is not supported.\n'
+          'The "remotes" syntax is dependent on the way the local repo is '
+          'configured, and while there are defaults that can often be '
+          'assumed, there is no guarantee the mapping will always be done in '
+          'a particular way.')
 
     # Add extra fetch refspecs.
     for ref in refs:
@@ -245,11 +217,9 @@ class BotUpdateApi(recipe_api.RecipeApi):
 
     if clobber:
       cmd.append('--clobber')
-    if no_shallow:
-      cmd.append('--no_shallow')
     if with_branch_heads or cfg.with_branch_heads:
       cmd.append('--with_branch_heads')
-    if with_tags:
+    if with_tags or cfg.with_tags:
       cmd.append('--with_tags')
     if gerrit_no_reset:
       cmd.append('--gerrit_no_reset')
@@ -257,11 +227,13 @@ class BotUpdateApi(recipe_api.RecipeApi):
       cmd.append('--gerrit_no_rebase_patch_ref')
     if disable_syntax_validation or cfg.disable_syntax_validation:
       cmd.append('--disable-syntax-validation')
+    if not self._apply_patch_on_gclient:
+      cmd.append('--no-apply-patch-on-gclient')
 
     # Inject Json output for testing.
     first_sln = cfg.solutions[0].name
     step_test_data = lambda: self.test_api.output_json(
-        root, first_sln, reverse_rev_map, self._fail_patch,
+        patch_root, first_sln, reverse_rev_map, self._fail_patch,
         fixed_revisions=fixed_revisions)
 
     name = 'bot_update'
@@ -345,7 +317,7 @@ class BotUpdateApi(recipe_api.RecipeApi):
     """Returns the destination branch of a CL for the matching project
     if available or HEAD otherwise.
 
-    This is a noop if there's no Gerrit CL associated with the run.
+    If there's no Gerrit CL associated with the run, returns 'HEAD'.
     Otherwise this queries Gerrit for the correct destination branch, which
     might differ from master.
 
@@ -358,26 +330,22 @@ class BotUpdateApi(recipe_api.RecipeApi):
         A destination branch as understood by bot_update.py if available
         and if different from master, returns 'HEAD' otherwise.
     """
-    # Bail out if this is not a gerrit issue.
-    if (not self.m.tryserver.is_gerrit_issue or
-        not self._gerrit or not self._issue):
+    # Ignore project paths other than the one belonging to the current CL.
+    patch_path = self.m.gclient.get_gerrit_patch_root(gclient_config=cfg)
+    if not patch_path or path != patch_path:
       return 'HEAD'
 
-    # Ignore other project paths than the one belonging to the CL.
-    if path != cfg.patch_projects.get(
-        self.m.properties.get('patch_project'),
-        (cfg.solutions[0].name, None))[0]:
+    target_ref = self.m.tryserver.gerrit_change_target_ref
+    if target_ref == 'refs/heads/master':
       return 'HEAD'
 
-    # Query Gerrit to check if a CL's destination branch differs from master.
-    destination_branch = self.m.gerrit.get_change_destination_branch(
-        host=self._gerrit,
-        change=self._issue,
-        name='get_patch_destination_branch',
-    )
+    # TODO: Remove. Return ref, not branch.
+    ret = target_ref
+    prefix = 'refs/heads/'
+    if ret.startswith(prefix):
+      ret = ret[len(prefix):]
 
-    # Only use prefix if different from bot_update.py's default.
-    return destination_branch if destination_branch != 'master' else 'HEAD'
+    return ret
 
   def _resolve_fixed_revisions(self, bot_update_json):
     """Set all fixed revisions from the first sync to their respective

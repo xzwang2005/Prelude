@@ -9,9 +9,9 @@
 #define GrResourceProvider_DEFINED
 
 #include "GrBuffer.h"
-#include "GrPathRange.h"
+#include "GrContextOptions.h"
 #include "GrResourceCache.h"
-#include "SkImageInfo.h"
+#include "SkImageInfoPriv.h"
 #include "SkScalerContext.h"
 
 class GrBackendRenderTarget;
@@ -20,12 +20,11 @@ class GrBackendTexture;
 class GrGpu;
 class GrPath;
 class GrRenderTarget;
+class GrResourceProviderPriv;
 class GrSemaphore;
 class GrSingleOwner;
 class GrStencilAttachment;
-class GrSurfaceProxy;
 class GrTexture;
-class GrTextureProxy;
 
 class GrStyle;
 class SkDescriptor;
@@ -40,7 +39,8 @@ class SkTypeface;
  */
 class GrResourceProvider {
 public:
-    GrResourceProvider(GrGpu* gpu, GrResourceCache* cache, GrSingleOwner* owner);
+    GrResourceProvider(GrGpu*, GrResourceCache*, GrSingleOwner*,
+                       GrContextOptions::Enable explicitlyAllocateGPUResources);
 
     /**
      * Finds a resource in the cache, based on the specified key. Prior to calling this, the caller
@@ -51,29 +51,6 @@ public:
     sk_sp<T> findByUniqueKey(const GrUniqueKey& key) {
         return sk_sp<T>(static_cast<T*>(this->findResourceByUniqueKey(key).release()));
     }
-
-    /*
-     * Assigns a unique key to a proxy. The proxy will be findable via this key using
-     * findProxyByUniqueKey(). It is an error if an existing proxy already has a key.
-     */
-    void assignUniqueKeyToProxy(const GrUniqueKey&, GrTextureProxy*);
-
-    /*
-     * Removes a unique key from a proxy. If the proxy has already been instantiated, it will
-     * also remove the unique key from the target GrSurface.
-     */
-    void removeUniqueKeyFromProxy(const GrUniqueKey&, GrTextureProxy*);
-
-    /*
-     * Finds a proxy by unique key.
-     */
-    sk_sp<GrTextureProxy> findProxyByUniqueKey(const GrUniqueKey&, GrSurfaceOrigin);
-
-    /*
-     * Finds a proxy by unique key or creates a new one that wraps a resource matching the unique
-     * key.
-     */
-    sk_sp<GrTextureProxy> findOrCreateProxyByUniqueKey(const GrUniqueKey&, GrSurfaceOrigin);
 
     ///////////////////////////////////////////////////////////////////////////
     // Textures
@@ -90,11 +67,12 @@ public:
      */
     sk_sp<GrTexture> createTexture(const GrSurfaceDesc&, SkBudgeted, uint32_t flags = 0);
 
-    sk_sp<GrTexture> createTexture(const GrSurfaceDesc&, SkBudgeted,
-                                   const GrMipLevel texels[], int mipLevelCount,
-                                   SkDestinationSurfaceColorMode mipColorMode);
+    sk_sp<GrTexture> createTexture(const GrSurfaceDesc&, SkBudgeted, const GrMipLevel texels[],
+                                   int mipLevelCount);
 
-    sk_sp<GrTextureProxy> createTextureProxy(const GrSurfaceDesc&, SkBudgeted, const GrMipLevel&);
+    // Create a potentially loose fit texture with the provided data
+    sk_sp<GrTexture> createTexture(const GrSurfaceDesc&, SkBudgeted, SkBackingFit,
+                                   const GrMipLevel&);
 
     ///////////////////////////////////////////////////////////////////////////
     // Wrapped Backend Surfaces
@@ -111,7 +89,7 @@ public:
                                         GrWrapOwnership = kBorrow_GrWrapOwnership);
 
     /**
-     * This makes the backend texture be renderable. If sampleCnt is > 0 and the underlying API
+     * This makes the backend texture be renderable. If sampleCnt is > 1 and the underlying API
      * uses separate MSAA render buffers then a MSAA render buffer is created that resolves
      * to the texture.
      */
@@ -133,6 +111,19 @@ public:
     static const uint32_t kMinScratchTextureSize;
 
     /**
+     * Either finds and refs, or creates a static buffer with the given parameters and contents.
+     *
+     * @param intendedType    hint to the graphics subsystem about what the buffer will be used for.
+     * @param size            minimum size of buffer to return.
+     * @param data            optional data with which to initialize the buffer.
+     * @param key             Key to be assigned to the buffer.
+     *
+     * @return The buffer if successful, otherwise nullptr.
+     */
+    sk_sp<const GrBuffer> findOrMakeStaticBuffer(GrBufferType intendedType, size_t size,
+                                                 const void* data, const GrUniqueKey& key);
+
+    /**
      * Either finds and refs, or creates an index buffer with a repeating pattern for drawing
      * contiguous vertices of a repeated mesh. If the return is non-null, the caller owns a ref on
      * the returned GrBuffer.
@@ -151,7 +142,7 @@ public:
                                                            int vertCount,
                                                            const GrUniqueKey& key) {
         if (auto buffer = this->findByUniqueKey<GrBuffer>(key)) {
-            return buffer;
+            return std::move(buffer);
         }
         return this->createPatternedIndexBuffer(pattern, patternSize, reps, vertCount, key);
     }
@@ -173,16 +164,15 @@ public:
     static int QuadCountOfQuadBuffer();
 
     /**
-     * Factories for GrPath and GrPathRange objects. It's an error to call these if path rendering
+     * Factories for GrPath objects. It's an error to call these if path rendering
      * is not supported.
      */
     sk_sp<GrPath> createPath(const SkPath&, const GrStyle&);
-    sk_sp<GrPathRange> createPathRange(GrPathRange::PathGenerator*, const GrStyle&);
-    sk_sp<GrPathRange> createGlyphs(const SkTypeface*, const SkScalerContextEffects&,
-                                    const SkDescriptor*, const GrStyle&);
 
     /** These flags govern which scratch resources we are allowed to return */
     enum Flags {
+        kNone_Flag            = 0x0,
+
         /** If the caller intends to do direct reads/writes to/from the CPU then this flag must be
          *  set when accessing resources during a GrOpList flush. This includes the execution of
          *  GrOp objects. The reason is that these memory operations are done immediately and
@@ -238,29 +228,30 @@ public:
 
     sk_sp<GrSemaphore> SK_WARN_UNUSED_RESULT makeSemaphore(bool isOwned = true);
 
-    sk_sp<GrSemaphore> wrapBackendSemaphore(const GrBackendSemaphore&,
-                                            GrWrapOwnership = kBorrow_GrWrapOwnership);
+    enum class SemaphoreWrapType {
+        kWillSignal,
+        kWillWait,
+    };
 
-    // Takes the GrSemaphore and sets the ownership of the semaphore to the GrGpu object used by
-    // this class. This call is only used when passing a GrSemaphore from one context to another.
-    void takeOwnershipOfSemaphore(sk_sp<GrSemaphore>);
-    // Takes the GrSemaphore and resets the ownership of the semaphore so that it is not owned by
-    // any GrGpu. A follow up call to takeOwnershipofSemaphore must be made so that the underlying
-    // semaphore can be deleted. This call is only used when passing a GrSemaphore from one context
-    // to another.
-    void releaseOwnershipOfSemaphore(sk_sp<GrSemaphore>);
+    sk_sp<GrSemaphore> wrapBackendSemaphore(const GrBackendSemaphore&,
+                                            SemaphoreWrapType wrapType,
+                                            GrWrapOwnership = kBorrow_GrWrapOwnership);
 
     void abandon() {
         fCache = nullptr;
         fGpu = nullptr;
     }
 
-    // 'proxy' is about to be used as a texture src or drawn to. This query can be used to
-    // determine if it is going to need a texture domain or a full clear.
-    static bool IsFunctionallyExact(GrSurfaceProxy* proxy);
-
+    uint32_t contextUniqueID() const { return fCache->contextUniqueID(); }
     const GrCaps* caps() const { return fCaps.get(); }
     bool overBudget() const { return fCache->overBudget(); }
+
+    inline GrResourceProviderPriv priv();
+    inline const GrResourceProviderPriv priv() const;
+
+    bool explicitlyAllocateGPUResources() const { return fExplicitlyAllocateGPUResources; }
+
+    bool testingOnly_setExplicitlyAllocateGPUResources(bool newValue);
 
 private:
     sk_sp<GrGpuResource> findResourceByUniqueKey(const GrUniqueKey&);
@@ -278,6 +269,9 @@ private:
     GrResourceCache* cache() { return fCache; }
     const GrResourceCache* cache() const { return fCache; }
 
+    friend class GrResourceProviderPriv;
+
+    // Method made available via GrResourceProviderPriv
     GrGpu* gpu() { return fGpu; }
     const GrGpu* gpu() const { return fGpu; }
 
@@ -298,6 +292,7 @@ private:
     GrGpu*              fGpu;
     sk_sp<const GrCaps> fCaps;
     GrUniqueKey         fQuadIndexBufferKey;
+    bool                fExplicitlyAllocateGPUResources;
 
     // In debug builds we guard against improper thread handling
     SkDEBUGCODE(mutable GrSingleOwner* fSingleOwner;)

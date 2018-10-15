@@ -239,6 +239,8 @@ class Config {
     return GetTraceMethodType(method) != NOT_TRACE_METHOD;
   }
 
+  static bool IsTraceWrappersMethod(const clang::FunctionDecl* method);
+
   static bool StartsWith(const std::string& str, const std::string& prefix) {
     if (prefix.size() > str.size())
       return false;

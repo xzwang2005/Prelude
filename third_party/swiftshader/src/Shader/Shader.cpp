@@ -1136,10 +1136,10 @@ namespace sw
 
 	Shader::~Shader()
 	{
-		for(unsigned int i = 0; i < instruction.size(); i++)
+		for(auto &inst : instruction)
 		{
-			delete instruction[i];
-			instruction[i] = 0;
+			delete inst;
+			inst = 0;
 		}
 	}
 
@@ -1183,12 +1183,12 @@ namespace sw
 
 	int Shader::size(unsigned long opcode) const
 	{
-		return size(opcode, version);
+		return size(opcode, shaderModel);
 	}
 
-	int Shader::size(unsigned long opcode, unsigned short version)
+	int Shader::size(unsigned long opcode, unsigned short shaderModel)
 	{
-		if(version > 0x0300)
+		if(shaderModel > 0x0300)
 		{
 			ASSERT(false);
 		}
@@ -1335,7 +1335,7 @@ namespace sw
 		   opcode != OPCODE_PHASE &&
 		   opcode != OPCODE_END)
 		{
-			if(version >= 0x0200)
+			if(shaderModel >= 0x0200)
 			{
 				length = (opcode & 0x0F000000) >> 24;
 			}
@@ -1350,7 +1350,7 @@ namespace sw
 			ASSERT(false);
 		}
 
-		if(version == 0x0104)
+		if(shaderModel == 0x0104)
 		{
 			switch(opcode & 0x0000FFFF)
 			{
@@ -1438,9 +1438,9 @@ namespace sw
 		return shaderType;
 	}
 
-	unsigned short Shader::getVersion() const
+	unsigned short Shader::getShaderModel() const
 	{
-		return version;
+		return shaderModel;
 	}
 
 	void Shader::print(const char *fileName, ...) const
@@ -1454,9 +1454,9 @@ namespace sw
 
 		std::ofstream file(fullName, std::ofstream::out);
 
-		for(unsigned int i = 0; i < instruction.size(); i++)
+		for(const auto &inst : instruction)
 		{
-			file << instruction[i]->string(shaderType, version) << std::endl;
+			file << inst->string(shaderType, shaderModel) << std::endl;
 		}
 	}
 
@@ -1464,7 +1464,7 @@ namespace sw
 	{
 		std::ofstream file(fileName, std::ofstream::out | std::ofstream::app);
 
-		file << instruction[index]->string(shaderType, version) << std::endl;
+		file << instruction[index]->string(shaderType, shaderModel) << std::endl;
 	}
 
 	void Shader::append(Instruction *instruction)
@@ -1474,7 +1474,10 @@ namespace sw
 
 	void Shader::declareSampler(int i)
 	{
-		usedSamplers |= 1 << i;
+		if(i >= 0 && i < 16)
+		{
+			usedSamplers |= 1 << i;
+		}
 	}
 
 	const Shader::Instruction *Shader::getInstruction(size_t i) const
@@ -1517,11 +1520,11 @@ namespace sw
 			calledFunctions.clear();
 			rescan = false;
 
-			for(unsigned int i = 0; i < instruction.size(); i++)
+			for(const auto &inst : instruction)
 			{
-				if(instruction[i]->isCall())
+				if(inst->isCall())
 				{
-					calledFunctions.insert(instruction[i]->dst.label);
+					calledFunctions.insert(inst->dst.label);
 				}
 			}
 
@@ -1594,26 +1597,26 @@ namespace sw
 		dirtyConstantsI = 0;
 		dirtyConstantsB = 0;
 
-		for(unsigned int i = 0; i < instruction.size(); i++)
+		for(const auto &inst : instruction)
 		{
-			switch(instruction[i]->opcode)
+			switch(inst->opcode)
 			{
 			case OPCODE_DEF:
-				if(instruction[i]->dst.index + 1 > dirtyConstantsF)
+				if(inst->dst.index + 1 > dirtyConstantsF)
 				{
-					dirtyConstantsF = instruction[i]->dst.index + 1;
+					dirtyConstantsF = inst->dst.index + 1;
 				}
 				break;
 			case OPCODE_DEFI:
-				if(instruction[i]->dst.index + 1 > dirtyConstantsI)
+				if(inst->dst.index + 1 > dirtyConstantsI)
 				{
-					dirtyConstantsI = instruction[i]->dst.index + 1;
+					dirtyConstantsI = inst->dst.index + 1;
 				}
 				break;
 			case OPCODE_DEFB:
-				if(instruction[i]->dst.index + 1 > dirtyConstantsB)
+				if(inst->dst.index + 1 > dirtyConstantsB)
 				{
-					dirtyConstantsB = instruction[i]->dst.index + 1;
+					dirtyConstantsB = inst->dst.index + 1;
 				}
 				break;
 			default:
@@ -1631,9 +1634,9 @@ namespace sw
 		containsDefine = false;
 
 		// Determine global presence of branching instructions
-		for(unsigned int i = 0; i < instruction.size(); i++)
+		for(const auto &inst : instruction)
 		{
-			switch(instruction[i]->opcode)
+			switch(inst->opcode)
 			{
 			case OPCODE_CALLNZ:
 			case OPCODE_IF:
@@ -1644,22 +1647,22 @@ namespace sw
 			case OPCODE_BREAKP:
 			case OPCODE_LEAVE:
 			case OPCODE_CONTINUE:
-				if(instruction[i]->src[0].type != PARAMETER_CONSTBOOL)
+				if(inst->src[0].type != PARAMETER_CONSTBOOL)
 				{
 					dynamicBranching = true;
 				}
 
-				if(instruction[i]->opcode == OPCODE_LEAVE)
+				if(inst->opcode == OPCODE_LEAVE)
 				{
 					containsLeave = true;
 				}
 
-				if(instruction[i]->isBreak())
+				if(inst->isBreak())
 				{
 					containsBreak = true;
 				}
 
-				if(instruction[i]->opcode == OPCODE_CONTINUE)
+				if(inst->opcode == OPCODE_CONTINUE)
 				{
 					containsContinue = true;
 				}
@@ -1681,12 +1684,12 @@ namespace sw
 
 		for(unsigned int i = 0; i < instruction.size(); i++)
 		{
-			// If statements
-			if(instruction[i]->isBranch())
+			// If statements and loops
+			if(instruction[i]->isBranch() || instruction[i]->isLoop())
 			{
 				branchDepth++;
 			}
-			else if(instruction[i]->opcode == OPCODE_ENDIF)
+			else if(instruction[i]->opcode == OPCODE_ENDIF || instruction[i]->isEndLoop())
 			{
 				branchDepth--;
 			}
@@ -1794,36 +1797,36 @@ namespace sw
 	void Shader::markFunctionAnalysis(unsigned int functionLabel, Analysis flag)
 	{
 		bool marker = false;
-		for(unsigned int i = 0; i < instruction.size(); i++)
+		for(auto &inst : instruction)
 		{
 			if(!marker)
 			{
-				if(instruction[i]->opcode == OPCODE_LABEL && instruction[i]->dst.label == functionLabel)
+				if(inst->opcode == OPCODE_LABEL && inst->dst.label == functionLabel)
 				{
 					marker = true;
 				}
 			}
 			else
 			{
-				if(instruction[i]->opcode == OPCODE_RET)
+				if(inst->opcode == OPCODE_RET)
 				{
 					break;
 				}
-				else if(instruction[i]->isCall())
+				else if(inst->isCall())
 				{
-					markFunctionAnalysis(instruction[i]->dst.label, flag);
+					markFunctionAnalysis(inst->dst.label, flag);
 				}
 
-				instruction[i]->analysis |= flag;
+				inst->analysis |= flag;
 			}
 		}
 	}
 
 	void Shader::analyzeSamplers()
 	{
-		for(unsigned int i = 0; i < instruction.size(); i++)
+		for(const auto &inst : instruction)
 		{
-			switch(instruction[i]->opcode)
+			switch(inst->opcode)
 			{
 			case OPCODE_TEX:
 			case OPCODE_TEXBEM:
@@ -1848,12 +1851,15 @@ namespace sw
 			case OPCODE_TEXGRAD:
 			case OPCODE_TEXGRADOFFSET:
 				{
-					Parameter &dst = instruction[i]->dst;
-					Parameter &src1 = instruction[i]->src[1];
+					Parameter &dst = inst->dst;
+					Parameter &src1 = inst->src[1];
 
 					if(majorVersion >= 2)
 					{
-						usedSamplers |= 1 << src1.index;
+						if(src1.type == PARAMETER_SAMPLER)
+						{
+							usedSamplers |= 1 << src1.index;
+						}
 					}
 					else
 					{
@@ -1873,51 +1879,45 @@ namespace sw
 	{
 		int callSiteIndex[2048] = {0};
 
-		for(unsigned int i = 0; i < instruction.size(); i++)
+		for(auto &inst : instruction)
 		{
-			if(instruction[i]->opcode == OPCODE_CALL || instruction[i]->opcode == OPCODE_CALLNZ)
+			if(inst->opcode == OPCODE_CALL || inst->opcode == OPCODE_CALLNZ)
 			{
-				int label = instruction[i]->dst.label;
+				int label = inst->dst.label;
 
-				instruction[i]->dst.callSite = callSiteIndex[label]++;
+				inst->dst.callSite = callSiteIndex[label]++;
 			}
 		}
 	}
 
-	void Shader::analyzeDynamicIndexing()
+	void Shader::analyzeIndirectAddressing()
 	{
-		dynamicallyIndexedTemporaries = false;
-		dynamicallyIndexedInput = false;
-		dynamicallyIndexedOutput = false;
+		indirectAddressableTemporaries = false;
+		indirectAddressableInput = false;
+		indirectAddressableOutput = false;
 
-		for(unsigned int i = 0; i < instruction.size(); i++)
+		for(const auto &inst : instruction)
 		{
-			if(instruction[i]->dst.rel.type == PARAMETER_ADDR ||
-			   instruction[i]->dst.rel.type == PARAMETER_LOOP ||
-			   instruction[i]->dst.rel.type == PARAMETER_TEMP ||
-			   instruction[i]->dst.rel.type == PARAMETER_CONST)
+			if(inst->dst.rel.type != PARAMETER_VOID)
 			{
-				switch(instruction[i]->dst.type)
+				switch(inst->dst.type)
 				{
-				case PARAMETER_TEMP:   dynamicallyIndexedTemporaries = true; break;
-				case PARAMETER_INPUT:  dynamicallyIndexedInput = true;       break;
-				case PARAMETER_OUTPUT: dynamicallyIndexedOutput = true;      break;
+				case PARAMETER_TEMP:   indirectAddressableTemporaries = true; break;
+				case PARAMETER_INPUT:  indirectAddressableInput = true;       break;
+				case PARAMETER_OUTPUT: indirectAddressableOutput = true;      break;
 				default: break;
 				}
 			}
 
 			for(int j = 0; j < 3; j++)
 			{
-				if(instruction[i]->src[j].rel.type == PARAMETER_ADDR ||
-				   instruction[i]->src[j].rel.type == PARAMETER_LOOP ||
-				   instruction[i]->src[j].rel.type == PARAMETER_TEMP ||
-				   instruction[i]->src[j].rel.type == PARAMETER_CONST)
+				if(inst->src[j].rel.type != PARAMETER_VOID)
 				{
-					switch(instruction[i]->src[j].type)
+					switch(inst->src[j].type)
 					{
-					case PARAMETER_TEMP:   dynamicallyIndexedTemporaries = true; break;
-					case PARAMETER_INPUT:  dynamicallyIndexedInput = true;       break;
-					case PARAMETER_OUTPUT: dynamicallyIndexedOutput = true;      break;
+					case PARAMETER_TEMP:   indirectAddressableTemporaries = true; break;
+					case PARAMETER_INPUT:  indirectAddressableInput = true;       break;
+					case PARAMETER_OUTPUT: indirectAddressableOutput = true;      break;
 					default: break;
 					}
 				}

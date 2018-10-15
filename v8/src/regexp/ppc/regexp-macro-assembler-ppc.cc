@@ -86,8 +86,7 @@ namespace internal {
  *              bool direct_call = false,
  *              Isolate* isolate);
  * The call is performed by NativeRegExpMacroAssembler::Execute()
- * (in regexp-macro-assembler.cc) via the CALL_GENERATED_REGEXP_CODE macro
- * in ppc/simulator-ppc.h.
+ * (in regexp-macro-assembler.cc) via the GeneratedCode wrapper.
  */
 
 #define __ ACCESS_MASM(masm_)
@@ -592,7 +591,8 @@ bool RegExpMacroAssemblerPPC::CheckSpecialCharacterClass(uc16 type,
         __ cmpi(current_character(), Operand('z'));
         BranchOrBacktrack(gt, on_no_match);
       }
-      ExternalReference map = ExternalReference::re_word_character_map();
+      ExternalReference map =
+          ExternalReference::re_word_character_map(isolate());
       __ mov(r3, Operand(map));
       __ lbzx(r3, MemOperand(r3, current_character()));
       __ cmpli(r3, Operand::Zero());
@@ -606,7 +606,8 @@ bool RegExpMacroAssemblerPPC::CheckSpecialCharacterClass(uc16 type,
         __ cmpli(current_character(), Operand('z'));
         __ bgt(&done);
       }
-      ExternalReference map = ExternalReference::re_word_character_map();
+      ExternalReference map =
+          ExternalReference::re_word_character_map(isolate());
       __ mov(r3, Operand(map));
       __ lbzx(r3, MemOperand(r3, current_character()));
       __ cmpli(r3, Operand::Zero());
@@ -1142,7 +1143,7 @@ void RegExpMacroAssemblerPPC::CallCheckStackGuardState(Register scratch) {
 // Helper function for reading a value out of a stack frame.
 template <typename T>
 static T& frame_entry(Address re_frame, int frame_offset) {
-  return reinterpret_cast<T&>(Memory::int32_at(re_frame + frame_offset));
+  return reinterpret_cast<T&>(Memory<int32_t>(re_frame + frame_offset));
 }
 
 

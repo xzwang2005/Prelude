@@ -1707,14 +1707,15 @@ bool Context::applyRenderTarget()
 void Context::applyState(GLenum drawMode)
 {
 	Framebuffer *framebuffer = getDrawFramebuffer();
+	bool frontFaceCCW = (mState.frontFace == GL_CCW);
 
 	if(mState.cullFaceEnabled)
 	{
-		device->setCullMode(es2sw::ConvertCullMode(mState.cullMode, mState.frontFace));
+		device->setCullMode(es2sw::ConvertCullMode(mState.cullMode, mState.frontFace), frontFaceCCW);
 	}
 	else
 	{
-		device->setCullMode(sw::CULL_NONE);
+		device->setCullMode(sw::CULL_NONE, frontFaceCCW);
 	}
 
 	if(mDepthStateDirty)
@@ -2109,7 +2110,7 @@ void Context::applyTexture(sw::SamplerType type, int index, Texture *baseTexture
 
 	if(baseTexture && textureUsed)
 	{
-		int levelCount = baseTexture->getLevelCount();
+		int topLevel = baseTexture->getTopLevel();
 
 		if(baseTexture->getTarget() == GL_TEXTURE_2D)
 		{
@@ -2123,9 +2124,9 @@ void Context::applyTexture(sw::SamplerType type, int index, Texture *baseTexture
 				{
 					surfaceLevel = 0;
 				}
-				else if(surfaceLevel >= levelCount)
+				else if(surfaceLevel > topLevel)
 				{
-					surfaceLevel = levelCount - 1;
+					surfaceLevel = topLevel;
 				}
 
 				Image *surface = texture->getImage(surfaceLevel);
@@ -2146,9 +2147,9 @@ void Context::applyTexture(sw::SamplerType type, int index, Texture *baseTexture
 					{
 						surfaceLevel = 0;
 					}
-					else if(surfaceLevel >= levelCount)
+					else if(surfaceLevel > topLevel)
 					{
-						surfaceLevel = levelCount - 1;
+						surfaceLevel = topLevel;
 					}
 
 					Image *surface = cubeTexture->getImage(face, surfaceLevel);

@@ -13,15 +13,14 @@ namespace aura {
 class InputMethodMusTestApi {
  public:
   static void SetInputMethod(InputMethodMus* input_method_mus,
-                             ui::mojom::InputMethod* input_method) {
+                             ws::mojom::InputMethod* input_method) {
     input_method_mus->input_method_ = input_method;
   }
 
   static ui::EventDispatchDetails CallSendKeyEventToInputMethod(
       InputMethodMus* input_method_mus,
       const ui::KeyEvent& event,
-      std::unique_ptr<InputMethodMus::EventResultCallback> ack_callback)
-      WARN_UNUSED_RESULT {
+      InputMethodMus::EventResultCallback ack_callback) WARN_UNUSED_RESULT {
     return input_method_mus->SendKeyEventToInputMethod(event,
                                                        std::move(ack_callback));
   }

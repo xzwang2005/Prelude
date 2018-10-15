@@ -6,12 +6,13 @@
  * found in the LICENSE file.
  */
 
-#include <EGL/egl.h>
-#include <EGL/eglext.h>
 #include "../GLWindowContext.h"
 #include "WindowContextFactory_win.h"
 #include "gl/GrGLAssembleInterface.h"
 #include "gl/GrGLDefines.h"
+
+#include <EGL/egl.h>
+#include <EGL/eglext.h>
 
 using sk_app::GLWindowContext;
 using sk_app::DisplayParams;
@@ -76,7 +77,8 @@ sk_sp<const GrGLInterface> ANGLEGLWindowContext_win::onInitializeContext() {
     }
     EGLint numConfigs;
     fSampleCount = this->getDisplayParams().fMSAASampleCount;
-    const int sampleBuffers = fSampleCount > 0 ? 1 : 0;
+    const int sampleBuffers = fSampleCount > 1 ? 1 : 0;
+    const int eglSampleCnt = fSampleCount > 1 ? fSampleCount : 0;
     const EGLint configAttribs[] = {EGL_RENDERABLE_TYPE,
                                     // We currently only support ES3.
                                     EGL_OPENGL_ES3_BIT,
@@ -91,7 +93,7 @@ sk_sp<const GrGLInterface> ANGLEGLWindowContext_win::onInitializeContext() {
                                     EGL_SAMPLE_BUFFERS,
                                     sampleBuffers,
                                     EGL_SAMPLES,
-                                    fSampleCount,
+                                    eglSampleCnt,
                                     EGL_NONE};
 
     EGLConfig surfaceConfig;
@@ -116,7 +118,7 @@ sk_sp<const GrGLInterface> ANGLEGLWindowContext_win::onInitializeContext() {
         return nullptr;
     }
 
-    sk_sp<const GrGLInterface> interface(GrGLAssembleInterface(
+    sk_sp<const GrGLInterface> interface(GrGLMakeAssembledInterface(
             nullptr,
             [](void* ctx, const char name[]) -> GrGLFuncPtr { return eglGetProcAddress(name); }));
     if (interface) {

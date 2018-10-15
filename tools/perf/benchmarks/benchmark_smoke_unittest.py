@@ -13,6 +13,8 @@ import os
 import sys
 import unittest
 
+from core import path_util
+
 from telemetry import benchmark as benchmark_module
 from telemetry import decorators
 from telemetry.testing import options_for_unittests
@@ -20,7 +22,6 @@ from telemetry.testing import progress_reporter
 
 from py_utils import discover
 
-from benchmarks import battor
 from benchmarks import jetstream
 from benchmarks import kraken
 from benchmarks import octane
@@ -49,7 +50,12 @@ def SmokeTestGenerator(benchmark, num_pages=1):
   @decorators.Disabled('android')  # crbug.com/641934
   def BenchmarkSmokeTest(self):
     # Only measure a single page so that this test cycles reasonably quickly.
-    benchmark.options['pageset_repeat'] = 1
+    benchmark.options['smoke_test_mode'] = True
+
+    # Some benchmarks are running multiple iterations
+    # which is not needed for a smoke test
+    if hasattr(benchmark, 'enable_smoke_test_mode'):
+      benchmark.enable_smoke_test_mode = True
 
     class SinglePageBenchmark(benchmark):  # pylint: disable=no-init
 
@@ -87,7 +93,11 @@ def SmokeTestGenerator(benchmark, num_pages=1):
     benchmark.ProcessCommandLineArgs(None, options)
     benchmark_module.ProcessCommandLineArgs(None, options)
 
-    self.assertEqual(0, SinglePageBenchmark().Run(options),
+    single_page_benchmark = SinglePageBenchmark()
+    with open(path_util.GetExpectationsPath()) as fp:
+      single_page_benchmark.AugmentExpectationsWithParser(fp.read())
+
+    self.assertEqual(0, single_page_benchmark.Run(options),
                      msg='Failed: %s' % benchmark)
 
   return BenchmarkSmokeTest
@@ -101,7 +111,6 @@ _BLACK_LIST_TEST_MODULES = {
     jetstream,  # Take 206 seconds.
     kraken,  # Flaky on Android, crbug.com/626174.
     v8_browsing, # Flaky on Android, crbug.com/628368.
-    battor #Flaky on android, crbug.com/618330.
 }
 
 # The list of benchmark names to be excluded from our smoke tests.

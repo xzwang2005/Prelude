@@ -10,7 +10,6 @@
 #include <memory>
 
 #include "base/macros.h"
-#include "net/base/completion_callback.h"
 #include "net/base/io_buffer.h"
 #include "net/socket/ssl_server_socket.h"
 #include "net/ssl/ssl_server_config.h"
@@ -23,6 +22,9 @@ class SSLServerContextImpl : public SSLServerContext {
   SSLServerContextImpl(X509Certificate* certificate,
                        const crypto::RSAPrivateKey& key,
                        const SSLServerConfig& ssl_server_config);
+  SSLServerContextImpl(X509Certificate* certificate,
+                       scoped_refptr<SSLPrivateKey> key,
+                       const SSLServerConfig& ssl_server_config);
   ~SSLServerContextImpl() override;
 
   std::unique_ptr<SSLServerSocket> CreateSSLServerSocket(
@@ -30,6 +32,8 @@ class SSLServerContextImpl : public SSLServerContext {
 
  private:
   class SocketImpl;
+
+  void Init();
 
   bssl::UniquePtr<SSL_CTX> ssl_ctx_;
 
@@ -40,7 +44,9 @@ class SSLServerContextImpl : public SSLServerContext {
   scoped_refptr<X509Certificate> cert_;
 
   // Private key used by the server.
+  // Only one representation should be set at any time.
   std::unique_ptr<crypto::RSAPrivateKey> key_;
+  const scoped_refptr<SSLPrivateKey> private_key_;
 };
 
 }  // namespace net

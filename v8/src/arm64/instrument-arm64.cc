@@ -69,6 +69,7 @@ static const CounterDescriptor kCounterList[] = {
     {"Logical DP", Gauge},
     {"Other Int DP", Gauge},
     {"FP DP", Gauge},
+    {"NEON", Gauge},
 
     {"Conditional Select", Gauge},
     {"Conditional Compare", Gauge},
@@ -91,7 +92,6 @@ static const CounterDescriptor kCounterList[] = {
 
     {"PC Addressing", Gauge},
     {"Other", Gauge},
-    {"SP Adjust", Gauge},
 };
 
 Instrument::Instrument(const char* datafile, uint64_t sample_period)
@@ -238,16 +238,8 @@ void Instrument::VisitPCRelAddressing(Instruction* instr) {
 
 void Instrument::VisitAddSubImmediate(Instruction* instr) {
   Update();
-  static Counter* sp_counter = GetCounter("SP Adjust");
-  static Counter* add_sub_counter = GetCounter("Add/Sub DP");
-  if (((instr->Mask(AddSubOpMask) == SUB) ||
-       (instr->Mask(AddSubOpMask) == ADD)) &&
-      (instr->Rd() == 31) && (instr->Rn() == 31)) {
-    // Count adjustments to the C stack pointer caused by V8 needing two SPs.
-    sp_counter->Increment();
-  } else {
-    add_sub_counter->Increment();
-  }
+  static Counter* counter = GetCounter("Add/Sub DP");
+  counter->Increment();
 }
 
 
@@ -470,16 +462,8 @@ void Instrument::VisitAddSubShifted(Instruction* instr) {
 
 void Instrument::VisitAddSubExtended(Instruction* instr) {
   Update();
-  static Counter* sp_counter = GetCounter("SP Adjust");
-  static Counter* add_sub_counter = GetCounter("Add/Sub DP");
-  if (((instr->Mask(AddSubOpMask) == SUB) ||
-       (instr->Mask(AddSubOpMask) == ADD)) &&
-      (instr->Rd() == 31) && (instr->Rn() == 31)) {
-    // Count adjustments to the C stack pointer caused by V8 needing two SPs.
-    sp_counter->Increment();
-  } else {
-    add_sub_counter->Increment();
-  }
+  static Counter* counter = GetCounter("Add/Sub DP");
+  counter->Increment();
 }
 
 

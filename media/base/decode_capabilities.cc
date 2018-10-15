@@ -7,17 +7,13 @@
 #include "base/command_line.h"
 #include "base/feature_list.h"
 #include "media/base/media_switches.h"
-#include "third_party/libaom/av1_features.h"
+#include "media/media_buildflags.h"
+#include "third_party/libaom/av1_buildflags.h"
 #include "ui/display/display_switches.h"
 
-#if !defined(MEDIA_DISABLE_LIBVPX)
-// VPX_CODEC_DISABLE_COMPAT excludes parts of the libvpx API that provide
-// backwards compatibility for legacy applications using the library.
-#define VPX_CODEC_DISABLE_COMPAT 1
-extern "C" {
-#include "third_party/libvpx/source/libvpx/vpx/vp8dx.h"      // nogncheck
-#include "third_party/libvpx/source/libvpx/vpx/vpx_codec.h"  // nogncheck
-}
+#if BUILDFLAG(ENABLE_LIBVPX)
+#include "third_party/libvpx/source/libvpx/vpx/vp8dx.h"
+#include "third_party/libvpx/source/libvpx/vpx/vpx_codec.h"
 #endif
 
 namespace media {
@@ -105,7 +101,7 @@ bool IsColorSpaceSupported(const media::VideoColorSpace& color_space) {
 }
 
 bool IsVp9ProfileSupported(VideoCodecProfile profile) {
-#if !defined(MEDIA_DISABLE_LIBVPX)
+#if BUILDFLAG(ENABLE_LIBVPX)
   // High bit depth capabilities may be toggled via LibVPX config flags.
   static bool vpx_supports_high_bit_depth =
       (vpx_codec_get_caps(vpx_codec_vp9_dx()) & VPX_CODEC_CAP_HIGHBITDEPTH) !=
@@ -152,6 +148,7 @@ bool IsSupportedAudioConfig(const AudioConfig& config) {
     case media::kCodecEAC3:
     case media::kCodecALAC:
     case media::kCodecAC3:
+    case media::kCodecMpegHAudio:
     case media::kUnknownAudioCodec:
       return false;
   }

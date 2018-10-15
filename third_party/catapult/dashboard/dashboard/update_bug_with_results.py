@@ -13,15 +13,12 @@ import traceback
 from google.appengine.api import mail
 from google.appengine.ext import ndb
 
-from dashboard import bisect_fyi
 from dashboard import bisect_report
 from dashboard import email_template
-from dashboard import layered_cache
-from dashboard import quick_logger
 from dashboard.common import datastore_hooks
+from dashboard.common import layered_cache
 from dashboard.common import request_handler
 from dashboard.common import utils
-from dashboard.models import alert_group
 from dashboard.models import anomaly
 from dashboard.models import bug_data
 from dashboard.models import try_job
@@ -44,6 +41,12 @@ Hi %(author)s, the bisect results pointed to your CL, please take a look at the
 results.
 
 """
+
+_NOT_DUPLICATE_MULTIPLE_BUGS_MSG = """
+Possible duplicate of crbug.com/%s, but not merging issues due to multiple
+culprits in destination issue.
+"""
+
 
 _CONFIDENCE_LEVEL_TO_CC_AUTHOR = 95
 
@@ -145,12 +148,13 @@ def _CheckJob(job, issue_tracker):
   if job.job_type == 'perf-try':
     logging.info('Sending perf try job mail')
     _SendPerfTryJobEmail(job)
-  elif job.job_type == 'bisect-fyi':
-    logging.info('Checking FYI bisect job')
-    _CheckFYIBisectJob(job, issue_tracker)
-  else:
+  elif job.job_type == 'bisect':
     logging.info('Checking bisect job')
     _CheckBisectJob(job, issue_tracker)
+  else:
+    logging.error('Unknown job type: %s - %s', job.key.id(), job.job_type)
+    job.SetCompleted()
+    return
 
   if results_data and results_data.get('status') == COMPLETED:
     job.SetCompleted()
@@ -168,37 +172,6 @@ def _CheckBisectJob(job, issue_tracker):
   _PostSuccessfulResult(job, issue_tracker)
 
 
-def _CheckFYIBisectJob(job, issue_tracker):
-  try:
-    if not job.buildbucket_job_id:
-      job.key.delete()
-      return
-
-    if not job.results_data:
-      raise BisectJobFailure('Bisect job completed, but results data is not '
-                             'found, bot might have failed to post results.')
-    # FAILED implies failed or cancelled jobs.
-    if job.status == FAILED:
-      raise BisectJobFailure(
-          _BUILD_FAILURE_REASON.get(
-              job.results_data.get('failure_reason'), 'Unknown'))
-    error_message = bisect_fyi.VerifyBisectFYIResults(job)
-    _PostSuccessfulResult(job, issue_tracker)
-    if not bisect_fyi.IsBugUpdated(job, issue_tracker):
-      error_message += '\nFailed to update bug with bisect results.'
-  except BisectJobFailure as e:
-    error_message = 'Bisect job failed because, %s' % e
-  except BugUpdateFailure as e:
-    error_message = 'Failed to update bug with bisect results: %s' % e
-  except Exception as e:  # pylint: disable=broad-except
-    error_message = 'Failed to update bug with bisect results: %s' % e
-  finally:
-    if ((job.results_data and job.results_data.get('status') == FAILED) or
-        error_message):
-      job.SetFailed()
-      _SendFYIBisectEmail(job, error_message)
-
-
 def _SendPerfTryJobEmail(job):
   """Sends an email to the user who started the perf try job."""
   if not job.email:
@@ -213,12 +186,49 @@ def _SendPerfTryJobEmail(job):
                  html=email_report['html'])
 
 
-def _GetMergeIssue(issue_tracker, commit_cache_key):
-  """Get's the issue this one might be merged into."""
-  merge_issue = layered_cache.GetExternal(commit_cache_key)
-  if merge_issue:
-    return issue_tracker.GetIssue(merge_issue)
-  return {}
+def _GetMergeIssueDetails(issue_tracker, commit_cache_key):
+  """Get's the issue this one might be merged into.
+
+  Returns: A dict with the following fields:
+    issue: The issue details from the issue tracker service.
+    id: The id of the issue we should merge into. This may be set to None if
+        either there is no other bug with this culprit, or we shouldn't try to
+        merge into that bug.
+    comments: Additional comments to add to the bug.
+  """
+  merge_issue_key = layered_cache.GetExternal(commit_cache_key)
+  if not merge_issue_key:
+    return {'issue': {}, 'id': None, 'comments': ''}
+
+  merge_issue = issue_tracker.GetIssue(merge_issue_key)
+  if not merge_issue:
+    return {'issue': {}, 'id': None, 'comments': ''}
+
+  # Check if we can duplicate this issue against an existing issue.
+  merge_issue_id = None
+  additional_comments = ""
+
+  # We won't duplicate against an issue that itself is already
+  # a duplicate though. Could follow the whole chain through but we'll
+  # just keep things simple and flat for now.
+  if merge_issue.get('status') != issue_tracker_service.STATUS_DUPLICATE:
+    merge_issue_id = str(merge_issue.get('id'))
+
+  # We also don't want to duplicate against an issue that already has a bunch
+  # of bisects pointing at different culprits.
+  if merge_issue_id:
+    jobs = try_job.TryJob.query(
+        try_job.TryJob.bug_id == int(merge_issue_id)).fetch()
+    culprits = set([j.GetCulpritCL() for j in jobs if j.GetCulpritCL()])
+    if len(culprits) >= 2:
+      additional_comments += _NOT_DUPLICATE_MULTIPLE_BUGS_MSG % merge_issue_id
+      merge_issue_id = None
+
+  return {
+      'issue': merge_issue,
+      'id': merge_issue_id,
+      'comments': additional_comments
+  }
 
 
 def _GetCulpritCLOwnerAndComment(job, authors_to_cc):
@@ -244,21 +254,12 @@ def _PostSuccessfulResult(job, issue_tracker):
 
   # Check to see if there's already an issue for this commit, if so we can
   # potentially merge the bugs.
-  merge_issue = _GetMergeIssue(issue_tracker, commit_cache_key)
-
-  # Check if we can duplicate this issue against an existing issue.
-  # We won't duplicate against an issue that itself is already
-  # a duplicate though. Could follow the whole chain through but we'll
-  # just keep things simple and flat for now.
-  merge_issue_id = None
-  if merge_issue:
-    if merge_issue.get('status') != issue_tracker_service.STATUS_DUPLICATE:
-      merge_issue_id = str(merge_issue.get('id'))
+  merge_details = _GetMergeIssueDetails(issue_tracker, commit_cache_key)
 
   # Only skip cc'ing the authors if we're going to merge this isn't another
   # issue.
   authors_to_cc = []
-  if not merge_issue_id:
+  if not merge_details['id']:
     authors_to_cc = _GetAuthorsToCC(job.results_data)
 
   # Add a friendly message to author of culprit CL.
@@ -274,8 +275,9 @@ def _PostSuccessfulResult(job, issue_tracker):
   # https://github.com/catapult-project/catapult/issues/3781
   logging.info('Adding comment to bug %s: %s', job.bug_id, comment)
   comment_added = issue_tracker.AddBugComment(
-      job.bug_id, comment, cc_list=authors_to_cc, merge_issue=merge_issue_id,
-      labels=labels, owner=owner, status=status)
+      job.bug_id, comment + merge_details['comments'],
+      cc_list=authors_to_cc, merge_issue=merge_details['id'], labels=labels,
+      owner=owner, status=status)
   if not comment_added:
     raise BugUpdateFailure('Failed to update bug %s with comment %s'
                            % (job.bug_id, comment))
@@ -285,9 +287,15 @@ def _PostSuccessfulResult(job, issue_tracker):
 
   # If the issue we were going to merge into was itself a duplicate, we don't
   # dup against it but we also don't merge existing anomalies to it or cache it.
-  if merge_issue.get('status') == issue_tracker_service.STATUS_DUPLICATE:
+  if merge_details['issue'].get('status') == (
+      issue_tracker_service.STATUS_DUPLICATE):
     return
 
+  _MapAnomaliesAndUpdateBug(merge_details['id'], job)
+  _UpdateCacheKeyForIssue(merge_details['id'], commit_cache_key, job)
+
+
+def _MapAnomaliesAndUpdateBug(merge_issue_id, job):
   if merge_issue_id:
     _MapAnomaliesToMergeIntoBug(merge_issue_id, job.bug_id)
     # Mark the duplicate bug's Bug entity status as closed so that
@@ -297,6 +305,8 @@ def _PostSuccessfulResult(job, issue_tracker):
       bug.status = bug_data.BUG_STATUS_CLOSED
       bug.put()
 
+
+def _UpdateCacheKeyForIssue(merge_issue_id, commit_cache_key, job):
   # Cache the commit info and bug ID to datastore when there is no duplicate
   # issue that this issue is getting merged into. This has to be done only
   # after the issue is updated successfully with bisect information.
@@ -336,12 +346,14 @@ def _MapAnomaliesToMergeIntoBug(dest_bug_id, source_bug_id):
     dest_bug_id: Merge into bug (base bug) number.
     source_bug_id: The bug to be merged.
   """
-  query = anomaly.Anomaly.query(
-      anomaly.Anomaly.bug_id == int(source_bug_id))
-  anomalies = query.fetch()
+  anomalies, _, _ = anomaly.Anomaly.QueryAsync(
+      bug_id=source_bug_id).get_result()
 
-  alert_group.ModifyAlertsAndAssociatedGroups(
-      anomalies, bug_id=int(dest_bug_id))
+  bug_id = int(dest_bug_id)
+  for a in anomalies:
+    a.bug_id = bug_id
+
+  ndb.put_multi(anomalies)
 
 
 def _GetCommitHashCacheKey(results_data):
@@ -418,35 +430,6 @@ def _GetReviewersFromCulpritData(culprit_data):
       issue_data = json.loads(issue_response.content)
       reviewer_list.extend([str(item) for item in issue_data['reviewers']])
   return reviewer_list
-
-
-def _SendFYIBisectEmail(job, message):
-  """Sends an email to chrome-performance-monitoring-alerts with FYI results."""
-  email_data = email_template.GetBisectFYITryJobEmailReport(job, message)
-  mail.send_mail(sender='gasper-alerts@google.com',
-                 to='chrome-performance-monitoring-alerts@google.com',
-                 subject=email_data['subject'],
-                 body=email_data['body'],
-                 html=email_data['html'])
-
-
-def UpdateQuickLog(job, in_progress=False):
-  if not job.bug_id or job.bug_id < 0:
-    return
-  report = bisect_report.GetReport(job, in_progress)
-  if not report:
-    logging.error('Bisect report returns empty for job id %s, bug_id %s.',
-                  job.key.id(), job.bug_id)
-    return
-  formatter = quick_logger.Formatter()
-  logger = quick_logger.QuickLogger('bisect_result', job.bug_id, formatter)
-  if job.log_record_id:
-    logger.Log(report, record_id=job.log_record_id)
-    logger.Save()
-  else:
-    job.log_record_id = logger.Log(report)
-    logger.Save()
-    job.put()
 
 
 def _IsJobCompleted(job):

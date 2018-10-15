@@ -20,9 +20,11 @@ TSymbolUniqueId::TSymbolUniqueId(const TSymbol &symbol) : mId(symbol.uniqueId().
 {
 }
 
-int TSymbolUniqueId::get() const
+TSymbolUniqueId &TSymbolUniqueId::operator=(const TSymbolUniqueId &) = default;
+
+bool TSymbolUniqueId::operator==(const TSymbolUniqueId &other) const
 {
-    return mId;
+    return mId == other.mId;
 }
 
 }  // namespace sh

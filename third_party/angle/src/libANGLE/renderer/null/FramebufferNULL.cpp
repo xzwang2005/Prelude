@@ -148,12 +148,12 @@ gl::Error FramebufferNULL::readPixels(const gl::Context *context,
     const gl::InternalFormat &glFormat = gl::GetInternalFormatInfo(format, type);
 
     GLuint rowBytes = 0;
-    ANGLE_TRY_RESULT(
-        glFormat.computeRowPitch(type, origArea.width, packState.alignment, packState.rowLength),
-        rowBytes);
+    ANGLE_TRY_CHECKED_MATH(glFormat.computeRowPitch(type, origArea.width, packState.alignment,
+                                                    packState.rowLength, &rowBytes));
 
     GLuint skipBytes = 0;
-    ANGLE_TRY_RESULT(glFormat.computeSkipBytes(rowBytes, 0, packState, false), skipBytes);
+    ANGLE_TRY_CHECKED_MATH(
+        glFormat.computeSkipBytes(type, rowBytes, 0, packState, false, &skipBytes));
     pixels += skipBytes;
 
     // Skip OOB region up to first in bounds pixel
@@ -185,12 +185,15 @@ bool FramebufferNULL::checkStatus(const gl::Context *context) const
     return true;
 }
 
-void FramebufferNULL::syncState(const gl::Context *context,
-                                const gl::Framebuffer::DirtyBits &dirtyBits)
+gl::Error FramebufferNULL::syncState(const gl::Context *context,
+                                     const gl::Framebuffer::DirtyBits &dirtyBits)
 {
+    return gl::NoError();
 }
 
-gl::Error FramebufferNULL::getSamplePosition(size_t index, GLfloat *xy) const
+gl::Error FramebufferNULL::getSamplePosition(const gl::Context *context,
+                                             size_t index,
+                                             GLfloat *xy) const
 {
     return gl::NoError();
 }

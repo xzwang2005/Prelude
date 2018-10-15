@@ -170,6 +170,11 @@ ResultExpr BaselinePolicyAndroid::EvaluateSyscall(int sysno) const {
     return RestrictClockID();
   }
 
+  // https://crbug.com/826289
+  if (sysno == __NR_getrusage) {
+    return RestrictGetrusage();
+  }
+
 #if defined(__x86_64__)
   if (sysno == __NR_arch_prctl) {
     const Arg<int> code(0);
@@ -205,6 +210,7 @@ ResultExpr BaselinePolicyAndroid::EvaluateSyscall(int sysno) const {
     return If(AllOf(level == SOL_SOCKET,
                     AnyOf(option == SO_SNDTIMEO,
                           option == SO_RCVTIMEO,
+                          option == SO_SNDBUF,
                           option == SO_REUSEADDR)),
               Allow())
            .Else(BaselinePolicy::EvaluateSyscall(sysno));

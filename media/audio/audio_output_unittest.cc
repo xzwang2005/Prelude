@@ -11,6 +11,7 @@
 #include "base/run_loop.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "base/time/time.h"
+#include "build/build_config.h"
 #include "media/audio/audio_device_info_accessor_for_tests.h"
 #include "media/audio/audio_io.h"
 #include "media/audio/audio_manager.h"
@@ -26,9 +27,9 @@ class AudioOutputTest : public ::testing::Test {
  public:
   AudioOutputTest() {
     audio_manager_ =
-        AudioManager::CreateForTesting(base::MakeUnique<TestAudioThread>());
+        AudioManager::CreateForTesting(std::make_unique<TestAudioThread>());
     audio_manager_device_info_ =
-        base::MakeUnique<AudioDeviceInfoAccessorForTests>(audio_manager_.get());
+        std::make_unique<AudioDeviceInfoAccessorForTests>(audio_manager_.get());
     base::RunLoop().RunUntilIdle();
   }
   ~AudioOutputTest() override {
@@ -53,7 +54,7 @@ class AudioOutputTest : public ::testing::Test {
   }
 
  protected:
-  base::MessageLoop message_loop_;
+  base::MessageLoopForIO message_loop_;
   std::unique_ptr<AudioManager> audio_manager_;
   std::unique_ptr<AudioDeviceInfoAccessorForTests> audio_manager_device_info_;
   AudioParameters stream_params_;
@@ -74,6 +75,26 @@ TEST_F(AudioOutputTest, OpenAndClose) {
   CreateWithDefaultParameters();
   ASSERT_TRUE(stream_);
   EXPECT_TRUE(stream_->Open());
+}
+
+// Verify that Stop() can be called before Start().
+TEST_F(AudioOutputTest, StopBeforeStart) {
+  ABORT_AUDIO_TEST_IF_NOT(audio_manager_device_info_->HasAudioOutputDevices());
+  CreateWithDefaultParameters();
+  EXPECT_TRUE(stream_->Open());
+  stream_->Stop();
+}
+
+// Verify that Stop() can be called more than once.
+TEST_F(AudioOutputTest, StopTwice) {
+  ABORT_AUDIO_TEST_IF_NOT(audio_manager_device_info_->HasAudioOutputDevices());
+  CreateWithDefaultParameters();
+  EXPECT_TRUE(stream_->Open());
+  SineWaveAudioSource source(1, 200.0, stream_params_.sample_rate());
+
+  stream_->Start(&source);
+  stream_->Stop();
+  stream_->Stop();
 }
 
 // This test produces actual audio for .25 seconds on the default device.

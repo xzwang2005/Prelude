@@ -174,9 +174,11 @@ ResultExpr EvaluateSyscallImpl(int fs_denied_errno,
   }
 
   if (sysno == __NR_madvise) {
-    // Only allow MADV_DONTNEED and MADV_FREE.
+    // Only allow MADV_DONTNEED, MADV_RANDOM, MADV_NORMAL and MADV_FREE.
     const Arg<int> advice(2);
-    return If(AnyOf(advice == MADV_DONTNEED
+    return If(AnyOf(advice == MADV_DONTNEED,
+                    advice == MADV_RANDOM,
+                    advice == MADV_NORMAL
 #if defined(MADV_FREE)
                     // MADV_FREE was introduced in Linux 4.5 and started being
                     // defined in glibc 2.24.
@@ -213,7 +215,8 @@ ResultExpr EvaluateSyscallImpl(int fs_denied_errno,
   }
 #endif
 
-  // crbug.com/701137
+  // On Android, for https://crbug.com/701137.
+  // On Desktop, for https://crbug.com/741984.
   if (sysno == __NR_mincore) {
     return Allow();
   }
@@ -268,9 +271,10 @@ ResultExpr EvaluateSyscallImpl(int fs_denied_errno,
 
 }  // namespace.
 
-// Unfortunately C++03 doesn't allow delegated constructors.
-// Call other constructor when C++11 lands.
-BaselinePolicy::BaselinePolicy() : BaselinePolicy(EPERM) {}
+BaselinePolicy::BaselinePolicy() : BaselinePolicy(EPERM) {
+  // Allocate crash keys set by Seccomp signal handlers.
+  AllocateCrashKeys();
+}
 
 BaselinePolicy::BaselinePolicy(int fs_denied_errno)
     : fs_denied_errno_(fs_denied_errno), policy_pid_(sys_getpid()) {

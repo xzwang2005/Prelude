@@ -2,8 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifndef V8_STUB_CACHE_H_
-#define V8_STUB_CACHE_H_
+#ifndef V8_IC_STUB_CACHE_H_
+#define V8_IC_STUB_CACHE_H_
 
 #include "src/macro-assembler.h"
 #include "src/objects/name.h"
@@ -34,14 +34,14 @@ class StubCache {
  public:
   struct Entry {
     Name* key;
-    Object* value;
+    MaybeObject* value;
     Map* map;
   };
 
   void Initialize();
   // Access cache for entry hash(name, map).
-  Object* Set(Name* name, Map* map, Object* handler);
-  Object* Get(Name* name, Map* map);
+  MaybeObject* Set(Name* name, Map* map, MaybeObject* handler);
+  MaybeObject* Get(Name* name, Map* map);
   // Clear the lookup table (@ mark compact collection).
   void Clear();
 
@@ -84,8 +84,7 @@ class StubCache {
   static const int kSecondaryTableBits = 9;
   static const int kSecondaryTableSize = (1 << kSecondaryTableBits);
 
-  // Some magic number used in primary and secondary hash computations.
-  static const int kPrimaryMagic = 0x3d532433;
+  // Some magic number used in the secondary hash computation.
   static const int kSecondaryMagic = 0xb16ca6e5;
 
   static int PrimaryOffsetForTesting(Name* name, Map* map) {
@@ -141,4 +140,4 @@ class StubCache {
 }  // namespace internal
 }  // namespace v8
 
-#endif  // V8_STUB_CACHE_H_
+#endif  // V8_IC_STUB_CACHE_H_

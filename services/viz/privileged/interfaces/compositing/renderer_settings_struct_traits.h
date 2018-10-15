@@ -4,19 +4,16 @@
 #ifndef SERVICES_VIZ_PRIVILEGED_INTERFACES_COMPOSITING_RENDERER_SETTINGS_STRUCT_TRAITS_H_
 #define SERVICES_VIZ_PRIVILEGED_INTERFACES_COMPOSITING_RENDERER_SETTINGS_STRUCT_TRAITS_H_
 
+#include "build/build_config.h"
 #include "components/viz/common/display/renderer_settings.h"
 #include "services/viz/privileged/interfaces/compositing/renderer_settings.mojom.h"
 #include "services/viz/privileged/interfaces/compositing/renderer_settings_struct_traits.h"
+#include "ui/gfx/geometry/mojo/geometry_struct_traits.h"
 
 namespace mojo {
 template <>
 struct StructTraits<viz::mojom::RendererSettingsDataView,
                     viz::RendererSettings> {
-  static const viz::ResourceSettings& resource_settings(
-      const viz::RendererSettings& input) {
-    return input.resource_settings;
-  }
-
   static bool allow_antialiasing(const viz::RendererSettings& input) {
     return input.allow_antialiasing;
   }
@@ -47,22 +44,20 @@ struct StructTraits<viz::mojom::RendererSettingsDataView,
     return input.release_overlay_resources_after_gpu_query;
   }
 
-  static bool gl_composited_overlay_candidate_quad_border(
-      const viz::RendererSettings& input) {
-    return input.gl_composited_overlay_candidate_quad_border;
+  static bool tint_gl_composited_content(const viz::RendererSettings& input) {
+    return input.tint_gl_composited_content;
   }
 
   static bool show_overdraw_feedback(const viz::RendererSettings& input) {
     return input.show_overdraw_feedback;
   }
 
-  static int highp_threshold_min(const viz::RendererSettings& input) {
-    return input.highp_threshold_min;
+  static bool enable_draw_occlusion(const viz::RendererSettings& input) {
+    return input.enable_draw_occlusion;
   }
 
-  static bool disallow_non_exact_resource_reuse(
-      const viz::RendererSettings& input) {
-    return input.disallow_non_exact_resource_reuse;
+  static int highp_threshold_min(const viz::RendererSettings& input) {
+    return input.highp_threshold_min;
   }
 
   static int slow_down_compositing_scale_factor(
@@ -73,6 +68,25 @@ struct StructTraits<viz::mojom::RendererSettingsDataView,
   static bool use_skia_renderer(const viz::RendererSettings& input) {
     return input.use_skia_renderer;
   }
+
+  static bool use_skia_deferred_display_list(
+      const viz::RendererSettings& input) {
+    return input.use_skia_deferred_display_list;
+  }
+
+  static bool allow_overlays(const viz::RendererSettings& input) {
+    return input.allow_overlays;
+  }
+
+  static bool requires_alpha_channel(const viz::RendererSettings& input) {
+    return input.requires_alpha_channel;
+  }
+
+#if defined(OS_ANDROID)
+  static gfx::Size initial_screen_size(const viz::RendererSettings& input) {
+    return input.initial_screen_size;
+  }
+#endif
 
   static bool Read(viz::mojom::RendererSettingsDataView data,
                    viz::RendererSettings* out);

@@ -6,11 +6,12 @@
 
 #include "base/bind.h"
 #include "base/command_line.h"
+#include "base/single_thread_task_runner.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "build/build_config.h"
 #include "media/base/media_switches.h"
+#include "media/gpu/buildflags.h"
 #include "media/gpu/fake_jpeg_decode_accelerator.h"
-#include "media/gpu/features.h"
 
 #if BUILDFLAG(USE_V4L2_CODEC) && defined(ARCH_CPU_ARM_FAMILY)
 #define USE_V4L2_JDA
@@ -21,8 +22,8 @@
 #endif
 
 #if defined(USE_V4L2_JDA)
-#include "media/gpu/v4l2_device.h"
-#include "media/gpu/v4l2_jpeg_decode_accelerator.h"
+#include "media/gpu/v4l2/v4l2_device.h"
+#include "media/gpu/v4l2/v4l2_jpeg_decode_accelerator.h"
 #endif
 
 namespace media {
@@ -45,14 +46,14 @@ std::unique_ptr<JpegDecodeAccelerator> CreateV4L2JDA(
 #if BUILDFLAG(USE_VAAPI)
 std::unique_ptr<JpegDecodeAccelerator> CreateVaapiJDA(
     scoped_refptr<base::SingleThreadTaskRunner> io_task_runner) {
-  return base::MakeUnique<VaapiJpegDecodeAccelerator>(
+  return std::make_unique<VaapiJpegDecodeAccelerator>(
       std::move(io_task_runner));
 }
 #endif
 
 std::unique_ptr<JpegDecodeAccelerator> CreateFakeJDA(
     scoped_refptr<base::SingleThreadTaskRunner> io_task_runner) {
-  return base::MakeUnique<FakeJpegDecodeAccelerator>(std::move(io_task_runner));
+  return std::make_unique<FakeJpegDecodeAccelerator>(std::move(io_task_runner));
 }
 
 }  // namespace

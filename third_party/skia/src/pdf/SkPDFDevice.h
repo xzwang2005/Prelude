@@ -18,10 +18,12 @@
 #include "SkRefCnt.h"
 #include "SkSinglyLinkedList.h"
 #include "SkStream.h"
-#include "SkTDArray.h"
-#include "SkTextBlob.h"
+#include "SkTextBlobPriv.h"
 #include "SkKeyedImage.h"
 
+#include <vector>
+
+class SkGlyphRunList;
 class SkKeyedImage;
 class SkPath;
 class SkPDFArray;
@@ -50,17 +52,13 @@ public:
      *         de-duplicating across pages (via the SkPDFCanon) and
      *         for early serializing of large immutable objects, such
      *         as images (via SkPDFDocument::serialize()).
+     *  @param initialTransform Transform to be applied to the entire page.
      */
-    SkPDFDevice(SkISize pageSize, SkPDFDocument* document);
-
-    /**
-     *  Apply a scale-and-translate transform to move the origin from the
-     *  bottom left (PDF default) to the top left (Skia default).
-     */
-    void setFlip();
+    SkPDFDevice(SkISize pageSize, SkPDFDocument* document,
+                const SkMatrix& initialTransform = SkMatrix::I());
 
     sk_sp<SkPDFDevice> makeCongruentDevice() {
-        return sk_make_sp<SkPDFDevice>(fPageSize, fDocument);
+        return sk_make_sp<SkPDFDevice>(this->imageInfo().dimensions(), fDocument);
     }
 
     ~SkPDFDevice() override;
@@ -68,8 +66,7 @@ public:
     /**
      *  These are called inside the per-device-layer loop for each draw call.
      *  When these are called, we have already applied any saveLayer
-     *  operations, and are handling any looping from the paint, and any
-     *  effects from the DrawFilter.
+     *  operations, and are handling any looping from the paint.
      */
     void drawPaint(const SkPaint& paint) override;
     void drawPoints(SkCanvas::PointMode mode,
@@ -78,9 +75,7 @@ public:
     void drawRect(const SkRect& r, const SkPaint& paint) override;
     void drawOval(const SkRect& oval, const SkPaint& paint) override;
     void drawRRect(const SkRRect& rr, const SkPaint& paint) override;
-    void drawPath(const SkPath& origpath,
-                  const SkPaint& paint, const SkMatrix* prePathMatrix,
-                  bool pathIsMutable) override;
+    void drawPath(const SkPath& origpath, const SkPaint& paint, bool pathIsMutable) override;
     void drawBitmapRect(const SkBitmap& bitmap, const SkRect* src,
                         const SkRect& dst, const SkPaint&, SkCanvas::SrcRectConstraint) override;
     void drawBitmap(const SkBitmap& bitmap, SkScalar x, SkScalar y, const SkPaint&) override;
@@ -95,36 +90,25 @@ public:
                        const SkRect& dst,
                        const SkPaint&,
                        SkCanvas::SrcRectConstraint) override;
-    void drawText(const void* text, size_t len,
-                  SkScalar x, SkScalar y, const SkPaint&) override;
-    void drawPosText(const void* text, size_t len,
-                     const SkScalar pos[], int scalarsPerPos,
-                     const SkPoint& offset, const SkPaint&) override;
-    void drawTextBlob(const SkTextBlob*, SkScalar x, SkScalar y,
-                      const SkPaint &, SkDrawFilter*) override;
-    void drawVertices(const SkVertices*, SkBlendMode, const SkPaint&) override;
+    void drawGlyphRunList(const SkGlyphRunList& glyphRunList) override;
+    void drawVertices(const SkVertices*, const SkVertices::Bone bones[], int boneCount, SkBlendMode,
+                      const SkPaint&) override;
     void drawDevice(SkBaseDevice*, int x, int y,
                     const SkPaint&) override;
 
     // PDF specific methods.
 
-    /** Create the resource dictionary for this device. */
-    sk_sp<SkPDFDict> makeResourceDict() const;
+    /** Create the resource dictionary for this device. Destructive. */
+    sk_sp<SkPDFDict> makeResourceDict();
 
-    /** Add our annotations (link to urls and destinations) to the supplied
-     *  array.
-     *  @param array Array to add annotations to.
-     */
-    void appendAnnotations(SkPDFArray* array) const;
+    /** return annotations (link to urls and destinations) or nulltpr */
+    sk_sp<SkPDFArray> getAnnotations();
 
     /** Add our named destinations to the supplied dictionary.
      *  @param dict  Dictionary to add destinations to.
      *  @param page  The PDF object representing the page for this device.
      */
     void appendDestinations(SkPDFDict* dict, SkPDFObject* page) const;
-
-    /** Returns a copy of the media box for this device. */
-    sk_sp<SkPDFArray> copyMediaBox() const;
 
     /** Returns a SkStream with the page contents.
      */
@@ -185,18 +169,17 @@ private:
     // order to get the right access levels without using friend.
     friend class ScopedContentEntry;
 
-    SkISize fPageSize;
     SkMatrix fInitialTransform;
     SkClipStack fExistingClipStack;
 
-    SkTArray<RectWithData> fLinkToURLs;
-    SkTArray<RectWithData> fLinkToDestinations;
-    SkTArray<NamedDestination> fNamedDestinations;
+    std::vector<RectWithData> fLinkToURLs;
+    std::vector<RectWithData> fLinkToDestinations;
+    std::vector<NamedDestination> fNamedDestinations;
 
-    SkTDArray<SkPDFObject*> fGraphicStateResources;
-    SkTDArray<SkPDFObject*> fXObjectResources;
-    SkTDArray<SkPDFFont*> fFontResources;
-    SkTDArray<SkPDFObject*> fShaderResources;
+    std::vector<sk_sp<SkPDFObject>> fGraphicStateResources;
+    std::vector<sk_sp<SkPDFObject>> fXObjectResources;
+    std::vector<sk_sp<SkPDFObject>> fShaderResources;
+    std::vector<sk_sp<SkPDFFont>> fFontResources;
 
     struct ContentEntry {
         GraphicStateEntry fState;
@@ -210,8 +193,6 @@ private:
 
     SkBaseDevice* onCreateDevice(const CreateInfo&, const SkPaint*) override;
 
-    void init();
-    void cleanUp();
     // Set alpha to true if making a transparency group form x-objects.
     sk_sp<SkPDFObject> makeFormXObjectFromDevice(bool alpha = false);
 
@@ -238,15 +219,8 @@ private:
                                             const SkPaint& paint,
                                             bool hasText,
                                             GraphicStateEntry* entry);
-    int addGraphicStateResource(SkPDFObject* gs);
-    int addXObjectResource(SkPDFObject* xObject);
 
-    int getFontResourceIndex(SkTypeface* typeface, uint16_t glyphID);
-
-
-    void internalDrawText( const void*, size_t, const SkScalar pos[],
-                          SkTextBlob::GlyphPositioning, SkPoint, const SkPaint&,
-                          const uint32_t*, uint32_t, const char*);
+    void internalDrawGlyphRun(const SkGlyphRun& glyphRun, SkPoint offset);
 
     void internalDrawPaint(const SkPaint& paint, ContentEntry* contentEntry);
 
@@ -260,21 +234,21 @@ private:
                           const SkMatrix&,
                           const SkPath&,
                           const SkPaint&,
-                          const SkMatrix* prePathMatrix,
                           bool pathIsMutable);
 
     void internalDrawPathWithFilter(const SkClipStack& clipStack,
                                     const SkMatrix& ctm,
                                     const SkPath& origPath,
-                                    const SkPaint& paint,
-                                    const SkMatrix* prePathMatrix);
+                                    const SkPaint& paint);
 
-    bool handleInversePath(const SkPath& origPath,
-                           const SkPaint& paint, bool pathIsMutable,
-                           const SkMatrix* prePathMatrix = nullptr);
+    bool handleInversePath(const SkPath& origPath, const SkPaint& paint, bool pathIsMutable);
 
     void addSMaskGraphicState(sk_sp<SkPDFDevice> maskDevice, SkDynamicMemoryWStream*);
     void clearMaskOnGraphicState(SkDynamicMemoryWStream*);
+
+    bool hasEmptyClip() const { return this->cs().isEmpty(this->bounds()); }
+
+    void reset();
 
     typedef SkClipStackDevice INHERITED;
 };

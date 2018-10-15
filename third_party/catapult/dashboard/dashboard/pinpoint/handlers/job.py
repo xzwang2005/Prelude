@@ -10,9 +10,7 @@ from dashboard.pinpoint.models import job as job_module
 
 class Job(webapp2.RequestHandler):
 
-  def get(self):
-    job_id = self.request.get('job_id')
-
+  def get(self, job_id):
     # Validate parameters.
     try:
       job = job_module.JobFromId(job_id)
@@ -26,4 +24,5 @@ class Job(webapp2.RequestHandler):
       self.response.write(json.dumps({'error': 'Unknown job id.'}))
       return
 
-    self.response.write(json.dumps(job.AsDict()))
+    opts = self.request.get_all('o')
+    self.response.write(json.dumps(job.AsDict(opts)))

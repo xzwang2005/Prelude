@@ -153,12 +153,12 @@ void SkPM4f::assertIsUnit() const {
 
 SkColor4f SkColor4f::FromColor(SkColor bgra) {
     SkColor4f rgba;
-    swizzle_rb(Sk4f_fromS32(bgra)).store(rgba.vec());
+    swizzle_rb(Sk4f_fromL32(bgra)).store(rgba.vec());
     return rgba;
 }
 
 SkColor SkColor4f::toSkColor() const {
-    return Sk4f_toS32(swizzle_rb(Sk4f::Load(this->vec())));
+    return Sk4f_toL32(swizzle_rb(Sk4f::Load(this->vec())));
 }
 
 SkColor4f SkColor4f::Pin(float r, float g, float b, float a) {
@@ -168,9 +168,6 @@ SkColor4f SkColor4f::Pin(float r, float g, float b, float a) {
 }
 
 SkPM4f SkColor4f::premul() const {
-    auto src = Sk4f::Load(this->pin().vec());
-    float srcAlpha = src[3];  // need the pinned version of our alpha
-    src = src * Sk4f(srcAlpha, srcAlpha, srcAlpha, 1);
-
-    return SkPM4f::From4f(src);
+    auto rgba = Sk4f::Load(this->vec());
+    return SkPM4f::From4f(rgba * Sk4f(rgba[3], rgba[3], rgba[3], 1));
 }

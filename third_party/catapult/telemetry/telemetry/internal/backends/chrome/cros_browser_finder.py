@@ -4,15 +4,21 @@
 """Finds CrOS browsers that can be controlled by telemetry."""
 
 import logging
+import os
+import posixpath
 
 from telemetry.core import cros_interface
 from telemetry.core import platform as platform_module
+from telemetry.internal.backends.chrome import chrome_startup_args
 from telemetry.internal.backends.chrome import cros_browser_backend
 from telemetry.internal.backends.chrome import cros_browser_with_oobe
+from telemetry.internal.backends.chrome import gpu_compositing_checker
 from telemetry.internal.browser import browser
 from telemetry.internal.browser import browser_finder_exceptions
 from telemetry.internal.browser import possible_browser
 from telemetry.internal.platform import cros_device
+
+import py_utils
 
 
 class PossibleCrOSBrowser(possible_browser.PossibleBrowser):
@@ -31,25 +37,120 @@ class PossibleCrOSBrowser(possible_browser.PossibleBrowser):
   def __repr__(self):
     return 'PossibleCrOSBrowser(browser_type=%s)' % self.browser_type
 
+  @property
+  def browser_directory(self):
+    result = self._platform_backend.cri.GetChromeProcess()
+    if result and 'path' in result:
+      return posixpath.dirname(result['path'])
+    return None
+
+  @property
+  def profile_directory(self):
+    return '/home/chronos/Default'
+
   def _InitPlatformIfNeeded(self):
     pass
 
-  def Create(self, finder_options):
-    if finder_options.browser_options.output_profile_path:
-      raise NotImplementedError(
-          'Profile generation is not yet supported on CrOS.')
+  def _GetPathsForOsPageCacheFlushing(self):
+    return [self.profile_directory, self.browser_directory]
 
-    browser_options = finder_options.browser_options
+  def SetUpEnvironment(self, browser_options):
+    super(PossibleCrOSBrowser, self).SetUpEnvironment(browser_options)
+
+    # Copy extensions to temp directories on the device.
+    # Note that we also perform this copy locally to ensure that
+    # the owner of the extensions is set to chronos.
+    cri = self._platform_backend.cri
+    for extension in self._browser_options.extensions_to_load:
+      extension_dir = cri.RunCmdOnDevice(
+          ['mktemp', '-d', '/tmp/extension_XXXXX'])[0].rstrip()
+      # TODO(crbug.com/807645): We should avoid having mutable objects
+      # stored within the browser options.
+      extension.local_path = posixpath.join(
+          extension_dir, os.path.basename(extension.path))
+      cri.PushFile(extension.path, extension_dir)
+      cri.Chown(extension_dir)
+
+    def browser_ready():
+      return cri.GetChromePid() is not None
+
+    cri.RestartUI(self._browser_options.clear_enterprise_policy)
+    py_utils.WaitFor(browser_ready, timeout=20)
+
+    # Delete test user's cryptohome vault (user data directory).
+    if not self._browser_options.dont_override_profile:
+      cri.RunCmdOnDevice(['cryptohome', '--action=remove', '--force',
+                          '--user=%s' % self._browser_options.username])
+
+  def _TearDownEnvironment(self):
+    for extension in self._browser_options.extensions_to_load:
+      self._platform_backend.cri.RmRF(posixpath.dirname(extension.local_path))
+
+  def Create(self, clear_caches=True):
+    startup_args = self.GetBrowserStartupArgs(self._browser_options)
+
     browser_backend = cros_browser_backend.CrOSBrowserBackend(
-        self._platform_backend, browser_options, self._platform_backend.cri,
+        self._platform_backend, self._browser_options,
+        self.browser_directory, self.profile_directory,
         self._is_guest)
 
-    browser_backend.ClearCaches()
+    # TODO(crbug.com/811244): Remove when this is handled by shared state.
+    if clear_caches:
+      self._ClearCachesOnStart()
 
-    if browser_options.create_browser_with_oobe:
+    if self._browser_options.create_browser_with_oobe:
       return cros_browser_with_oobe.CrOSBrowserWithOOBE(
-          browser_backend, self._platform_backend)
-    return browser.Browser(browser_backend, self._platform_backend)
+          browser_backend, self._platform_backend, startup_args)
+    returned_browser = browser.Browser(
+        browser_backend, self._platform_backend, startup_args)
+    if self._browser_options.assert_gpu_compositing:
+      gpu_compositing_checker.AssertGpuCompositingEnabled(
+          returned_browser.GetSystemInfo())
+    return returned_browser
+
+  def GetBrowserStartupArgs(self, browser_options):
+    startup_args = chrome_startup_args.GetFromBrowserOptions(browser_options)
+    startup_args.extend(chrome_startup_args.GetReplayArgs(
+        self._platform_backend.network_controller_backend))
+
+    vmodule = ','.join('%s=2' % pattern for pattern in [
+        '*/chromeos/net/*',
+        '*/chromeos/login/*',
+        'chrome_browser_main_posix'])
+
+    startup_args.extend([
+        '--enable-smooth-scrolling',
+        '--enable-threaded-compositing',
+        # Allow devtools to connect to chrome.
+        '--remote-debugging-port=0',
+        # Open a maximized window.
+        '--start-maximized',
+        # Disable system startup sound.
+        '--ash-disable-system-sounds',
+        # Skip user image selection screen, and post login screens.
+        '--oobe-skip-postlogin',
+        # Disable chrome logging redirect. crbug.com/724273.
+        '--disable-logging-redirect',
+        # Debug logging.
+        '--vmodule=%s' % vmodule,
+    ])
+
+    if not browser_options.expect_policy_fetch:
+      startup_args.append('--allow-failed-policy-fetch-for-test')
+
+    # If we're using GAIA, skip to login screen, and do not disable GAIA
+    # services.
+    if browser_options.gaia_login:
+      startup_args.append('--oobe-skip-to-login')
+    elif browser_options.disable_gaia_services:
+      startup_args.append('--disable-gaia-services')
+
+    trace_config_file = (self._platform_backend.tracing_controller_backend
+                         .GetChromeTraceConfigFile())
+    if trace_config_file:
+      startup_args.append('--trace-config-file=%s' % trace_config_file)
+
+    return startup_args
 
   def SupportsOptions(self, browser_options):
     return (len(browser_options.extensions_to_load) == 0) or not self._is_guest

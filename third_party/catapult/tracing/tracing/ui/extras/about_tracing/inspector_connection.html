@@ -14,35 +14,20 @@ found in the LICENSE file.
  * tracing, and that tracing can use to talk to inspector.
  */
 tr.exportTo('tr.ui.e.about_tracing', function() {
-  // Interface used by inspector when it hands data to us from the backend.
-  window.DevToolsAPI = {
-    setToolbarColors() { },
-    addExtensions() { },
-    setInspectedPageId() { },
+  class InspectorConnection {
+    constructor(windowGlobal) {
+      if (!windowGlobal.DevToolsHost) {
+        throw new Error('Requires window.DevToolsHost');
+      }
+      this.devToolsHost_ = windowGlobal.DevToolsHost;
+      this.installDevToolsAPI_(windowGlobal);
 
-    dispatchMessage(payload) {
-      throw new Error('Should have been patched by InspectorConnection');
-    }
-  };
-  // Temporary until inspector backend switches to DevToolsAPI.
-  window.InspectorFrontendAPI = window.DevToolsAPI;
+      this.nextRequestId_ = 1;
+      this.pendingRequestResolversId_ = {};
 
-  /**
-   * @constructor
-   */
-  function InspectorConnection() {
-    if (InspectorConnection.instance) {
-      throw new Error('Singleton');
+      this.notificationListenersByMethodName_ = {};
     }
 
-    this.nextRequestId_ = 1;
-    this.pendingRequestResolversId_ = {};
-
-    this.notificationListenersByMethodName_ = {};
-    DevToolsAPI.dispatchMessage = this.dispatchMessage_.bind(this);
-  }
-
-  InspectorConnection.prototype = {
     req(method, params) {
       const id = this.nextRequestId_++;
       const msg = JSON.stringify({
@@ -51,8 +36,8 @@ tr.exportTo('tr.ui.e.about_tracing', function() {
         params
       });
       const devtoolsMessageStr = JSON.stringify(
-        {id, 'method': 'dispatchProtocolMessage', 'params': [msg]});
-      DevToolsHost.sendMessageToEmbedder(devtoolsMessageStr);
+          {id, 'method': 'dispatchProtocolMessage', 'params': [msg]});
+      this.devToolsHost_.sendMessageToEmbedder(devtoolsMessageStr);
 
       return new Promise(function(resolve, reject) {
         this.pendingRequestResolversId_[id] = {
@@ -60,19 +45,19 @@ tr.exportTo('tr.ui.e.about_tracing', function() {
           reject
         };
       }.bind(this));
-    },
+    }
 
     setNotificationListener(method, listener) {
       this.notificationListenersByMethodName_[method] = listener;
-    },
+    }
 
     dispatchMessage_(payload) {
       const isStringPayload = typeof payload === 'string';
       // Special handling for Tracing.dataCollected because it is high
       // bandwidth.
       const isDataCollectedMessage = isStringPayload ?
-          payload.includes('"method": "Tracing.dataCollected"') :
-          payload.method === 'Tracing.dataCollected';
+        payload.includes('"method": "Tracing.dataCollected"') :
+        payload.method === 'Tracing.dataCollected';
       if (isDataCollectedMessage) {
         const listener = this.notificationListenersByMethodName_[
             'Tracing.dataCollected'];
@@ -102,18 +87,25 @@ tr.exportTo('tr.ui.e.about_tracing', function() {
 
       if (message.method) {
         const listener = this.notificationListenersByMethodName_[
-          message.method];
+            message.method];
         if (listener === undefined) return;
         listener(message.params);
         return;
       }
     }
-  };
 
-  if (window.DevToolsHost) {
-    InspectorConnection.instance = new InspectorConnection();
-  } else {
-    InspectorConnection.instance = undefined;
+    installDevToolsAPI_(windowGlobal) {
+      // Interface used by inspector when it hands data to us from the backend.
+      windowGlobal.DevToolsAPI = {
+        setToolbarColors() { },
+        addExtensions() { },
+        setInspectedPageId() { },
+        dispatchMessage: this.dispatchMessage_.bind(this),
+      };
+
+      // Temporary until inspector backend switches to DevToolsAPI.
+      windowGlobal.InspectorFrontendAPI = windowGlobal.DevToolsAPI;
+    }
   }
 
   return {

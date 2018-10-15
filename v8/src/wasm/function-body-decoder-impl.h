@@ -8,9 +8,11 @@
 // Do only include this header for implementing new Interface of the
 // WasmFullDecoder.
 
+#include "src/base/platform/elapsed-timer.h"
 #include "src/bit-vector.h"
 #include "src/wasm/decoder.h"
 #include "src/wasm/function-body-decoder.h"
+#include "src/wasm/wasm-features.h"
 #include "src/wasm/wasm-limits.h"
 #include "src/wasm/wasm-module.h"
 #include "src/wasm/wasm-opcodes.h"
@@ -27,6 +29,8 @@ struct WasmException;
     if (FLAG_trace_wasm_decoder) PrintF(__VA_ARGS__); \
   } while (false)
 
+#define TRACE_INST_FORMAT "  @%-8d #%-20s|"
+
 // Return the evaluation of `condition` if validate==true, DCHECK that it's
 // true and always return true otherwise.
 #define VALIDATE(condition)       \
@@ -35,100 +39,145 @@ struct WasmException;
     return true;                  \
   }())
 
-#define CHECK_PROTOTYPE_OPCODE(flag)                                           \
-  DCHECK(!this->module_ || !this->module_->is_asm_js());                       \
-  if (!FLAG_experimental_wasm_##flag) {                                        \
-    this->error("Invalid opcode (enable with --experimental-wasm-" #flag ")"); \
+#define RET_ON_PROTOTYPE_OPCODE(feat)                                          \
+  DCHECK(!this->module_ || this->module_->origin == kWasmOrigin);              \
+  if (!this->enabled_.feat) {                                                  \
+    this->error("Invalid opcode (enable with --experimental-wasm-" #feat ")"); \
+  } else {                                                                     \
+    this->detected_->feat = true;                                              \
+  }
+
+#define CHECK_PROTOTYPE_OPCODE(feat)                                           \
+  DCHECK(!this->module_ || this->module_->origin == kWasmOrigin);              \
+  if (!this->enabled_.feat) {                                                  \
+    this->error("Invalid opcode (enable with --experimental-wasm-" #feat ")"); \
     break;                                                                     \
+  } else {                                                                     \
+    this->detected_->feat = true;                                              \
   }
 
 #define OPCODE_ERROR(opcode, message)                                 \
   (this->errorf(this->pc_, "%s: %s", WasmOpcodes::OpcodeName(opcode), \
                 (message)))
 
-#define ATOMIC_OP_LIST(V)              \
-  V(I32AtomicLoad, Uint32)             \
-  V(I32AtomicAdd, Uint32)              \
-  V(I32AtomicSub, Uint32)              \
-  V(I32AtomicAnd, Uint32)              \
-  V(I32AtomicOr, Uint32)               \
-  V(I32AtomicXor, Uint32)              \
-  V(I32AtomicExchange, Uint32)         \
-  V(I32AtomicLoad8U, Uint8)            \
-  V(I32AtomicAdd8U, Uint8)             \
-  V(I32AtomicSub8U, Uint8)             \
-  V(I32AtomicAnd8U, Uint8)             \
-  V(I32AtomicOr8U, Uint8)              \
-  V(I32AtomicXor8U, Uint8)             \
-  V(I32AtomicExchange8U, Uint8)        \
-  V(I32AtomicLoad16U, Uint16)          \
-  V(I32AtomicAdd16U, Uint16)           \
-  V(I32AtomicSub16U, Uint16)           \
-  V(I32AtomicAnd16U, Uint16)           \
-  V(I32AtomicOr16U, Uint16)            \
-  V(I32AtomicXor16U, Uint16)           \
-  V(I32AtomicExchange16U, Uint16)      \
-  V(I32AtomicCompareExchange, Uint32)  \
-  V(I32AtomicCompareExchange8U, Uint8) \
-  V(I32AtomicCompareExchange16U, Uint16)
+#define ATOMIC_OP_LIST(V)                \
+  V(I32AtomicLoad, Uint32)               \
+  V(I64AtomicLoad, Uint64)               \
+  V(I32AtomicLoad8U, Uint8)              \
+  V(I32AtomicLoad16U, Uint16)            \
+  V(I64AtomicLoad8U, Uint8)              \
+  V(I64AtomicLoad16U, Uint16)            \
+  V(I64AtomicLoad32U, Uint32)            \
+  V(I32AtomicAdd, Uint32)                \
+  V(I32AtomicAdd8U, Uint8)               \
+  V(I32AtomicAdd16U, Uint16)             \
+  V(I64AtomicAdd, Uint64)                \
+  V(I64AtomicAdd8U, Uint8)               \
+  V(I64AtomicAdd16U, Uint16)             \
+  V(I64AtomicAdd32U, Uint32)             \
+  V(I32AtomicSub, Uint32)                \
+  V(I64AtomicSub, Uint64)                \
+  V(I32AtomicSub8U, Uint8)               \
+  V(I32AtomicSub16U, Uint16)             \
+  V(I64AtomicSub8U, Uint8)               \
+  V(I64AtomicSub16U, Uint16)             \
+  V(I64AtomicSub32U, Uint32)             \
+  V(I32AtomicAnd, Uint32)                \
+  V(I64AtomicAnd, Uint64)                \
+  V(I32AtomicAnd8U, Uint8)               \
+  V(I32AtomicAnd16U, Uint16)             \
+  V(I64AtomicAnd8U, Uint8)               \
+  V(I64AtomicAnd16U, Uint16)             \
+  V(I64AtomicAnd32U, Uint32)             \
+  V(I32AtomicOr, Uint32)                 \
+  V(I64AtomicOr, Uint64)                 \
+  V(I32AtomicOr8U, Uint8)                \
+  V(I32AtomicOr16U, Uint16)              \
+  V(I64AtomicOr8U, Uint8)                \
+  V(I64AtomicOr16U, Uint16)              \
+  V(I64AtomicOr32U, Uint32)              \
+  V(I32AtomicXor, Uint32)                \
+  V(I64AtomicXor, Uint64)                \
+  V(I32AtomicXor8U, Uint8)               \
+  V(I32AtomicXor16U, Uint16)             \
+  V(I64AtomicXor8U, Uint8)               \
+  V(I64AtomicXor16U, Uint16)             \
+  V(I64AtomicXor32U, Uint32)             \
+  V(I32AtomicExchange, Uint32)           \
+  V(I64AtomicExchange, Uint64)           \
+  V(I32AtomicExchange8U, Uint8)          \
+  V(I32AtomicExchange16U, Uint16)        \
+  V(I64AtomicExchange8U, Uint8)          \
+  V(I64AtomicExchange16U, Uint16)        \
+  V(I64AtomicExchange32U, Uint32)        \
+  V(I32AtomicCompareExchange, Uint32)    \
+  V(I64AtomicCompareExchange, Uint64)    \
+  V(I32AtomicCompareExchange8U, Uint8)   \
+  V(I32AtomicCompareExchange16U, Uint16) \
+  V(I64AtomicCompareExchange8U, Uint8)   \
+  V(I64AtomicCompareExchange16U, Uint16) \
+  V(I64AtomicCompareExchange32U, Uint32)
 
 #define ATOMIC_STORE_OP_LIST(V) \
   V(I32AtomicStore, Uint32)     \
+  V(I64AtomicStore, Uint64)     \
   V(I32AtomicStore8U, Uint8)    \
-  V(I32AtomicStore16U, Uint16)
+  V(I32AtomicStore16U, Uint16)  \
+  V(I64AtomicStore8U, Uint8)    \
+  V(I64AtomicStore16U, Uint16)  \
+  V(I64AtomicStore32U, Uint32)
 
 template <typename T, typename Allocator>
 Vector<T> vec2vec(std::vector<T, Allocator>& vec) {
   return Vector<T>(vec.data(), vec.size());
 }
 
-
-// Helpers for decoding different kinds of operands which follow bytecodes.
+// Helpers for decoding different kinds of immediates which follow bytecodes.
 template <Decoder::ValidateFlag validate>
-struct LocalIndexOperand {
+struct LocalIndexImmediate {
   uint32_t index;
   ValueType type = kWasmStmt;
   unsigned length;
 
-  inline LocalIndexOperand(Decoder* decoder, const byte* pc) {
+  inline LocalIndexImmediate(Decoder* decoder, const byte* pc) {
     index = decoder->read_u32v<validate>(pc + 1, &length, "local index");
   }
 };
 
 template <Decoder::ValidateFlag validate>
-struct ExceptionIndexOperand {
+struct ExceptionIndexImmediate {
   uint32_t index;
   const WasmException* exception = nullptr;
   unsigned length;
 
-  inline ExceptionIndexOperand(Decoder* decoder, const byte* pc) {
+  inline ExceptionIndexImmediate(Decoder* decoder, const byte* pc) {
     index = decoder->read_u32v<validate>(pc + 1, &length, "exception index");
   }
 };
 
 template <Decoder::ValidateFlag validate>
-struct ImmI32Operand {
+struct ImmI32Immediate {
   int32_t value;
   unsigned length;
-  inline ImmI32Operand(Decoder* decoder, const byte* pc) {
+  inline ImmI32Immediate(Decoder* decoder, const byte* pc) {
     value = decoder->read_i32v<validate>(pc + 1, &length, "immi32");
   }
 };
 
 template <Decoder::ValidateFlag validate>
-struct ImmI64Operand {
+struct ImmI64Immediate {
   int64_t value;
   unsigned length;
-  inline ImmI64Operand(Decoder* decoder, const byte* pc) {
+  inline ImmI64Immediate(Decoder* decoder, const byte* pc) {
     value = decoder->read_i64v<validate>(pc + 1, &length, "immi64");
   }
 };
 
 template <Decoder::ValidateFlag validate>
-struct ImmF32Operand {
+struct ImmF32Immediate {
   float value;
   unsigned length = 4;
-  inline ImmF32Operand(Decoder* decoder, const byte* pc) {
+  inline ImmF32Immediate(Decoder* decoder, const byte* pc) {
     // Avoid bit_cast because it might not preserve the signalling bit of a NaN.
     uint32_t tmp = decoder->read_u32<validate>(pc + 1, "immf32");
     memcpy(&value, &tmp, sizeof(value));
@@ -136,10 +185,10 @@ struct ImmF32Operand {
 };
 
 template <Decoder::ValidateFlag validate>
-struct ImmF64Operand {
+struct ImmF64Immediate {
   double value;
   unsigned length = 8;
-  inline ImmF64Operand(Decoder* decoder, const byte* pc) {
+  inline ImmF64Immediate(Decoder* decoder, const byte* pc) {
     // Avoid bit_cast because it might not preserve the signalling bit of a NaN.
     uint64_t tmp = decoder->read_u64<validate>(pc + 1, "immf64");
     memcpy(&value, &tmp, sizeof(value));
@@ -147,32 +196,34 @@ struct ImmF64Operand {
 };
 
 template <Decoder::ValidateFlag validate>
-struct GlobalIndexOperand {
+struct GlobalIndexImmediate {
   uint32_t index;
   ValueType type = kWasmStmt;
   const WasmGlobal* global = nullptr;
   unsigned length;
 
-  inline GlobalIndexOperand(Decoder* decoder, const byte* pc) {
+  inline GlobalIndexImmediate(Decoder* decoder, const byte* pc) {
     index = decoder->read_u32v<validate>(pc + 1, &length, "global index");
   }
 };
 
 template <Decoder::ValidateFlag validate>
-struct BlockTypeOperand {
+struct BlockTypeImmediate {
   unsigned length = 1;
   ValueType type = kWasmStmt;
   uint32_t sig_index = 0;
   FunctionSig* sig = nullptr;
 
-  inline BlockTypeOperand(Decoder* decoder, const byte* pc) {
+  inline BlockTypeImmediate(const WasmFeatures& enabled, Decoder* decoder,
+                            const byte* pc) {
     uint8_t val = decoder->read_u8<validate>(pc + 1, "block type");
     if (!decode_local_type(val, &type)) {
       // Handle multi-value blocks.
-      if (!VALIDATE(FLAG_experimental_wasm_mv)) {
+      if (!VALIDATE(enabled.mv)) {
         decoder->error(pc + 1, "invalid block type");
         return;
       }
+      if (!VALIDATE(decoder->ok())) return;
       int32_t index =
           decoder->read_i32v<validate>(pc + 1, &length, "block arity");
       if (!VALIDATE(length > 0 && index >= 0)) {
@@ -205,6 +256,12 @@ struct BlockTypeOperand {
       case kLocalS128:
         *result = kWasmS128;
         return true;
+      case kLocalAnyFunc:
+        *result = kWasmAnyFunc;
+        return true;
+      case kLocalAnyRef:
+        *result = kWasmAnyRef;
+        return true;
       default:
         *result = kWasmVar;
         return false;
@@ -233,23 +290,24 @@ struct BlockTypeOperand {
 };
 
 template <Decoder::ValidateFlag validate>
-struct BreakDepthOperand {
+struct BreakDepthImmediate {
   uint32_t depth;
   unsigned length;
-  inline BreakDepthOperand(Decoder* decoder, const byte* pc) {
+  inline BreakDepthImmediate(Decoder* decoder, const byte* pc) {
     depth = decoder->read_u32v<validate>(pc + 1, &length, "break depth");
   }
 };
 
 template <Decoder::ValidateFlag validate>
-struct CallIndirectOperand {
+struct CallIndirectImmediate {
   uint32_t table_index;
-  uint32_t index;
+  uint32_t sig_index;
   FunctionSig* sig = nullptr;
-  unsigned length;
-  inline CallIndirectOperand(Decoder* decoder, const byte* pc) {
+  unsigned length = 0;
+  inline CallIndirectImmediate(Decoder* decoder, const byte* pc) {
     unsigned len = 0;
-    index = decoder->read_u32v<validate>(pc + 1, &len, "signature index");
+    sig_index = decoder->read_u32v<validate>(pc + 1, &len, "signature index");
+    if (!VALIDATE(decoder->ok())) return;
     table_index = decoder->read_u8<validate>(pc + 1 + len, "table index");
     if (!VALIDATE(table_index == 0)) {
       decoder->errorf(pc + 1 + len, "expected table index 0, found %u",
@@ -260,20 +318,20 @@ struct CallIndirectOperand {
 };
 
 template <Decoder::ValidateFlag validate>
-struct CallFunctionOperand {
+struct CallFunctionImmediate {
   uint32_t index;
   FunctionSig* sig = nullptr;
   unsigned length;
-  inline CallFunctionOperand(Decoder* decoder, const byte* pc) {
+  inline CallFunctionImmediate(Decoder* decoder, const byte* pc) {
     index = decoder->read_u32v<validate>(pc + 1, &length, "function index");
   }
 };
 
 template <Decoder::ValidateFlag validate>
-struct MemoryIndexOperand {
+struct MemoryIndexImmediate {
   uint32_t index;
   unsigned length = 1;
-  inline MemoryIndexOperand(Decoder* decoder, const byte* pc) {
+  inline MemoryIndexImmediate(Decoder* decoder, const byte* pc) {
     index = decoder->read_u8<validate>(pc + 1, "memory index");
     if (!VALIDATE(index == 0)) {
       decoder->errorf(pc + 1, "expected memory index 0, found %u", index);
@@ -282,11 +340,11 @@ struct MemoryIndexOperand {
 };
 
 template <Decoder::ValidateFlag validate>
-struct BranchTableOperand {
+struct BranchTableImmediate {
   uint32_t table_count;
   const byte* start;
   const byte* table;
-  inline BranchTableOperand(Decoder* decoder, const byte* pc) {
+  inline BranchTableImmediate(Decoder* decoder, const byte* pc) {
     DCHECK_EQ(kExprBrTable, decoder->read_u8<validate>(pc, "opcode"));
     start = pc + 1;
     unsigned len = 0;
@@ -300,7 +358,7 @@ template <Decoder::ValidateFlag validate>
 class BranchTableIterator {
  public:
   unsigned cur_index() { return index_; }
-  bool has_next() { return decoder_->ok() && index_ <= table_count_; }
+  bool has_next() { return VALIDATE(decoder_->ok()) && index_ <= table_count_; }
   uint32_t next() {
     DCHECK(has_next());
     index_++;
@@ -310,7 +368,7 @@ class BranchTableIterator {
     pc_ += length;
     return result;
   }
-  // length, including the length of the {BranchTableOperand}, but not the
+  // length, including the length of the {BranchTableImmediate}, but not the
   // opcode.
   unsigned length() {
     while (has_next()) next();
@@ -319,28 +377,27 @@ class BranchTableIterator {
   const byte* pc() { return pc_; }
 
   BranchTableIterator(Decoder* decoder,
-                      const BranchTableOperand<validate>& operand)
+                      const BranchTableImmediate<validate>& imm)
       : decoder_(decoder),
-        start_(operand.start),
-        pc_(operand.table),
-        index_(0),
-        table_count_(operand.table_count) {}
+        start_(imm.start),
+        pc_(imm.table),
+        table_count_(imm.table_count) {}
 
  private:
   Decoder* decoder_;
   const byte* start_;
   const byte* pc_;
-  uint32_t index_;        // the current index.
+  uint32_t index_ = 0;    // the current index.
   uint32_t table_count_;  // the count of entries, not including default.
 };
 
 template <Decoder::ValidateFlag validate>
-struct MemoryAccessOperand {
+struct MemoryAccessImmediate {
   uint32_t alignment;
   uint32_t offset;
-  unsigned length;
-  inline MemoryAccessOperand(Decoder* decoder, const byte* pc,
-                             uint32_t max_alignment) {
+  unsigned length = 0;
+  inline MemoryAccessImmediate(Decoder* decoder, const byte* pc,
+                               uint32_t max_alignment) {
     unsigned alignment_length;
     alignment =
         decoder->read_u32v<validate>(pc + 1, &alignment_length, "alignment");
@@ -350,6 +407,7 @@ struct MemoryAccessOperand {
                       "actual alignment is %u",
                       max_alignment, alignment);
     }
+    if (!VALIDATE(decoder->ok())) return;
     unsigned offset_length;
     offset = decoder->read_u32v<validate>(pc + 1 + alignment_length,
                                           &offset_length, "offset");
@@ -357,36 +415,37 @@ struct MemoryAccessOperand {
   }
 };
 
-// Operand for SIMD lane operations.
+// Immediate for SIMD lane operations.
 template <Decoder::ValidateFlag validate>
-struct SimdLaneOperand {
+struct SimdLaneImmediate {
   uint8_t lane;
   unsigned length = 1;
 
-  inline SimdLaneOperand(Decoder* decoder, const byte* pc) {
+  inline SimdLaneImmediate(Decoder* decoder, const byte* pc) {
     lane = decoder->read_u8<validate>(pc + 2, "lane");
   }
 };
 
-// Operand for SIMD shift operations.
+// Immediate for SIMD shift operations.
 template <Decoder::ValidateFlag validate>
-struct SimdShiftOperand {
+struct SimdShiftImmediate {
   uint8_t shift;
   unsigned length = 1;
 
-  inline SimdShiftOperand(Decoder* decoder, const byte* pc) {
+  inline SimdShiftImmediate(Decoder* decoder, const byte* pc) {
     shift = decoder->read_u8<validate>(pc + 2, "shift");
   }
 };
 
-// Operand for SIMD S8x16 shuffle operations.
+// Immediate for SIMD S8x16 shuffle operations.
 template <Decoder::ValidateFlag validate>
-struct Simd8x16ShuffleOperand {
-  uint8_t shuffle[kSimd128Size];
+struct Simd8x16ShuffleImmediate {
+  uint8_t shuffle[kSimd128Size] = {0};
 
-  inline Simd8x16ShuffleOperand(Decoder* decoder, const byte* pc) {
+  inline Simd8x16ShuffleImmediate(Decoder* decoder, const byte* pc) {
     for (uint32_t i = 0; i < kSimd128Size; ++i) {
       shuffle[i] = decoder->read_u8<validate>(pc + 2 + i, "shuffle");
+      if (!VALIDATE(decoder->ok())) return;
     }
   }
 };
@@ -540,83 +599,87 @@ struct ControlWithNamedConstructors : public ControlBase<Value> {
 // This is the list of callback functions that an interface for the
 // WasmFullDecoder should implement.
 // F(Name, args...)
-#define INTERFACE_FUNCTIONS(F)                                                 \
-  /* General: */                                                               \
-  F(StartFunction)                                                             \
-  F(StartFunctionBody, Control* block)                                         \
-  F(FinishFunction)                                                            \
-  F(OnFirstError)                                                              \
-  /* Control: */                                                               \
-  F(Block, Control* block)                                                     \
-  F(Loop, Control* block)                                                      \
-  F(Try, Control* block)                                                       \
-  F(If, const Value& cond, Control* if_block)                                  \
-  F(FallThruTo, Control* c)                                                    \
-  F(PopControl, Control* block)                                                \
-  F(EndControl, Control* block)                                                \
-  /* Instructions: */                                                          \
-  F(UnOp, WasmOpcode opcode, FunctionSig*, const Value& value, Value* result)  \
-  F(BinOp, WasmOpcode opcode, FunctionSig*, const Value& lhs,                  \
-    const Value& rhs, Value* result)                                           \
-  F(I32Const, Value* result, int32_t value)                                    \
-  F(I64Const, Value* result, int64_t value)                                    \
-  F(F32Const, Value* result, float value)                                      \
-  F(F64Const, Value* result, double value)                                     \
-  F(Drop, const Value& value)                                                  \
-  F(DoReturn, Vector<Value> values, bool implicit)                             \
-  F(GetLocal, Value* result, const LocalIndexOperand<validate>& operand)       \
-  F(SetLocal, const Value& value, const LocalIndexOperand<validate>& operand)  \
-  F(TeeLocal, const Value& value, Value* result,                               \
-    const LocalIndexOperand<validate>& operand)                                \
-  F(GetGlobal, Value* result, const GlobalIndexOperand<validate>& operand)     \
-  F(SetGlobal, const Value& value,                                             \
-    const GlobalIndexOperand<validate>& operand)                               \
-  F(Unreachable)                                                               \
-  F(Select, const Value& cond, const Value& fval, const Value& tval,           \
-    Value* result)                                                             \
-  F(Br, Control* target)                                                       \
-  F(BrIf, const Value& cond, Control* target)                                  \
-  F(BrTable, const BranchTableOperand<validate>& operand, const Value& key)    \
-  F(Else, Control* if_block)                                                   \
-  F(LoadMem, ValueType type, MachineType mem_type,                             \
-    const MemoryAccessOperand<validate>& operand, const Value& index,          \
-    Value* result)                                                             \
-  F(StoreMem, ValueType type, MachineType mem_type,                            \
-    const MemoryAccessOperand<validate>& operand, const Value& index,          \
-    const Value& value)                                                        \
-  F(CurrentMemoryPages, Value* result)                                         \
-  F(GrowMemory, const Value& value, Value* result)                             \
-  F(CallDirect, const CallFunctionOperand<validate>& operand,                  \
-    const Value args[], Value returns[])                                       \
-  F(CallIndirect, const Value& index,                                          \
-    const CallIndirectOperand<validate>& operand, const Value args[],          \
-    Value returns[])                                                           \
-  F(SimdOp, WasmOpcode opcode, Vector<Value> args, Value* result)              \
-  F(SimdLaneOp, WasmOpcode opcode, const SimdLaneOperand<validate>& operand,   \
-    const Vector<Value> inputs, Value* result)                                 \
-  F(SimdShiftOp, WasmOpcode opcode, const SimdShiftOperand<validate>& operand, \
-    const Value& input, Value* result)                                         \
-  F(Simd8x16ShuffleOp, const Simd8x16ShuffleOperand<validate>& operand,        \
-    const Value& input0, const Value& input1, Value* result)                   \
-  F(Throw, const ExceptionIndexOperand<validate>&, Control* block,             \
-    const Vector<Value>& args)                                                 \
-  F(CatchException, const ExceptionIndexOperand<validate>& operand,            \
-    Control* block, Vector<Value> caught_values)                               \
-  F(AtomicOp, WasmOpcode opcode, Vector<Value> args,                           \
-    const MemoryAccessOperand<validate>& operand, Value* result)
+#define INTERFACE_FUNCTIONS(F)                                                \
+  /* General: */                                                              \
+  F(StartFunction)                                                            \
+  F(StartFunctionBody, Control* block)                                        \
+  F(FinishFunction)                                                           \
+  F(OnFirstError)                                                             \
+  F(NextInstruction, WasmOpcode)                                              \
+  /* Control: */                                                              \
+  F(Block, Control* block)                                                    \
+  F(Loop, Control* block)                                                     \
+  F(Try, Control* block)                                                      \
+  F(If, const Value& cond, Control* if_block)                                 \
+  F(FallThruTo, Control* c)                                                   \
+  F(PopControl, Control* block)                                               \
+  F(EndControl, Control* block)                                               \
+  /* Instructions: */                                                         \
+  F(UnOp, WasmOpcode opcode, FunctionSig*, const Value& value, Value* result) \
+  F(BinOp, WasmOpcode opcode, FunctionSig*, const Value& lhs,                 \
+    const Value& rhs, Value* result)                                          \
+  F(I32Const, Value* result, int32_t value)                                   \
+  F(I64Const, Value* result, int64_t value)                                   \
+  F(F32Const, Value* result, float value)                                     \
+  F(F64Const, Value* result, double value)                                    \
+  F(RefNull, Value* result)                                                   \
+  F(Drop, const Value& value)                                                 \
+  F(DoReturn, Vector<Value> values, bool implicit)                            \
+  F(GetLocal, Value* result, const LocalIndexImmediate<validate>& imm)        \
+  F(SetLocal, const Value& value, const LocalIndexImmediate<validate>& imm)   \
+  F(TeeLocal, const Value& value, Value* result,                              \
+    const LocalIndexImmediate<validate>& imm)                                 \
+  F(GetGlobal, Value* result, const GlobalIndexImmediate<validate>& imm)      \
+  F(SetGlobal, const Value& value, const GlobalIndexImmediate<validate>& imm) \
+  F(Unreachable)                                                              \
+  F(Select, const Value& cond, const Value& fval, const Value& tval,          \
+    Value* result)                                                            \
+  F(Br, Control* target)                                                      \
+  F(BrIf, const Value& cond, Control* target)                                 \
+  F(BrTable, const BranchTableImmediate<validate>& imm, const Value& key)     \
+  F(Else, Control* if_block)                                                  \
+  F(LoadMem, LoadType type, const MemoryAccessImmediate<validate>& imm,       \
+    const Value& index, Value* result)                                        \
+  F(StoreMem, StoreType type, const MemoryAccessImmediate<validate>& imm,     \
+    const Value& index, const Value& value)                                   \
+  F(CurrentMemoryPages, Value* result)                                        \
+  F(GrowMemory, const Value& value, Value* result)                            \
+  F(CallDirect, const CallFunctionImmediate<validate>& imm,                   \
+    const Value args[], Value returns[])                                      \
+  F(CallIndirect, const Value& index,                                         \
+    const CallIndirectImmediate<validate>& imm, const Value args[],           \
+    Value returns[])                                                          \
+  F(SimdOp, WasmOpcode opcode, Vector<Value> args, Value* result)             \
+  F(SimdLaneOp, WasmOpcode opcode, const SimdLaneImmediate<validate>& imm,    \
+    const Vector<Value> inputs, Value* result)                                \
+  F(SimdShiftOp, WasmOpcode opcode, const SimdShiftImmediate<validate>& imm,  \
+    const Value& input, Value* result)                                        \
+  F(Simd8x16ShuffleOp, const Simd8x16ShuffleImmediate<validate>& imm,         \
+    const Value& input0, const Value& input1, Value* result)                  \
+  F(Throw, const ExceptionIndexImmediate<validate>&, Control* block,          \
+    const Vector<Value>& args)                                                \
+  F(CatchException, const ExceptionIndexImmediate<validate>& imm,             \
+    Control* block, Vector<Value> caught_values)                              \
+  F(AtomicOp, WasmOpcode opcode, Vector<Value> args,                          \
+    const MemoryAccessImmediate<validate>& imm, Value* result)
 
-// Generic Wasm bytecode decoder with utilities for decoding operands,
+// Generic Wasm bytecode decoder with utilities for decoding immediates,
 // lengths, etc.
 template <Decoder::ValidateFlag validate>
 class WasmDecoder : public Decoder {
  public:
-  WasmDecoder(const WasmModule* module, FunctionSig* sig, const byte* start,
+  WasmDecoder(const WasmModule* module, const WasmFeatures& enabled,
+              WasmFeatures* detected, FunctionSig* sig, const byte* start,
               const byte* end, uint32_t buffer_offset = 0)
       : Decoder(start, end, buffer_offset),
         module_(module),
+        enabled_(enabled),
+        detected_(detected),
         sig_(sig),
         local_types_(nullptr) {}
   const WasmModule* module_;
+  const WasmFeatures enabled_;
+  WasmFeatures* detected_;
   FunctionSig* sig_;
 
   ZoneVector<ValueType>* local_types_;
@@ -627,7 +690,8 @@ class WasmDecoder : public Decoder {
                : static_cast<uint32_t>(local_types_->size());
   }
 
-  static bool DecodeLocals(Decoder* decoder, const FunctionSig* sig,
+  static bool DecodeLocals(const WasmFeatures& enabled, Decoder* decoder,
+                           const FunctionSig* sig,
                            ZoneVector<ValueType>* type_list) {
     DCHECK_NOT_NULL(type_list);
     DCHECK_EQ(0, type_list->size());
@@ -640,11 +704,12 @@ class WasmDecoder : public Decoder {
     if (decoder->failed()) return false;
 
     TRACE("local decls count: %u\n", entries);
-    while (entries-- > 0 && decoder->ok() && decoder->more()) {
+    while (entries-- > 0 && VALIDATE(decoder->ok()) && decoder->more()) {
       uint32_t count = decoder->consume_u32v("local count");
       if (decoder->failed()) return false;
 
-      if ((count + type_list->size()) > kV8MaxWasmFunctionLocals) {
+      DCHECK_LE(type_list->size(), kV8MaxWasmFunctionLocals);
+      if (count > kV8MaxWasmFunctionLocals - type_list->size()) {
         decoder->error(decoder->pc() - 1, "local count too large");
         return false;
       }
@@ -665,12 +730,26 @@ class WasmDecoder : public Decoder {
         case kLocalF64:
           type = kWasmF64;
           break;
+        case kLocalAnyRef:
+          if (enabled.anyref) {
+            type = kWasmAnyRef;
+            break;
+          }
+          decoder->error(decoder->pc() - 1, "invalid local type");
+          return false;
+        case kLocalExceptRef:
+          if (enabled.eh) {
+            type = kWasmExceptRef;
+            break;
+          }
+          decoder->error(decoder->pc() - 1, "invalid local type");
+          return false;
         case kLocalS128:
-          if (FLAG_experimental_wasm_simd) {
+          if (enabled.simd) {
             type = kWasmS128;
             break;
           }
-        // else fall through to default.
+          V8_FALLTHROUGH;
         default:
           decoder->error(decoder->pc() - 1, "invalid local type");
           return false;
@@ -691,7 +770,7 @@ class WasmDecoder : public Decoder {
     BitVector* assigned = new (zone) BitVector(locals_count, zone);
     int depth = 0;
     // Iteratively process all AST nodes nested inside the loop.
-    while (pc < decoder->end() && decoder->ok()) {
+    while (pc < decoder->end() && VALIDATE(decoder->ok())) {
       WasmOpcode opcode = static_cast<WasmOpcode>(*pc);
       unsigned length = 1;
       switch (opcode) {
@@ -704,21 +783,21 @@ class WasmDecoder : public Decoder {
           break;
         case kExprSetLocal:  // fallthru
         case kExprTeeLocal: {
-          LocalIndexOperand<Decoder::kValidate> operand(decoder, pc);
+          LocalIndexImmediate<validate> imm(decoder, pc);
           if (assigned->length() > 0 &&
-              operand.index < static_cast<uint32_t>(assigned->length())) {
+              imm.index < static_cast<uint32_t>(assigned->length())) {
             // Unverified code might have an out-of-bounds index.
-            assigned->Add(operand.index);
+            assigned->Add(imm.index);
           }
-          length = 1 + operand.length;
+          length = 1 + imm.length;
           break;
         }
         case kExprGrowMemory:
         case kExprCallFunction:
         case kExprCallIndirect:
-          // Add mem_size and mem_start to the assigned set.
-          assigned->Add(locals_count - 2);  // mem_size
-          assigned->Add(locals_count - 1);  // mem_start
+          // Add instance cache nodes to the assigned set.
+          // TODO(titzer): make this more clear.
+          assigned->Add(locals_count - 1);
           length = OpcodeLength(decoder, pc);
           break;
         case kExprEnd:
@@ -731,100 +810,97 @@ class WasmDecoder : public Decoder {
       if (depth <= 0) break;
       pc += length;
     }
-    return decoder->ok() ? assigned : nullptr;
+    return VALIDATE(decoder->ok()) ? assigned : nullptr;
   }
 
-  inline bool Validate(const byte* pc,
-                       LocalIndexOperand<Decoder::kValidate>& operand) {
-    if (!VALIDATE(operand.index < total_locals())) {
-      errorf(pc + 1, "invalid local index: %u", operand.index);
+  inline bool Validate(const byte* pc, LocalIndexImmediate<validate>& imm) {
+    if (!VALIDATE(imm.index < total_locals())) {
+      errorf(pc + 1, "invalid local index: %u", imm.index);
       return false;
     }
-    operand.type = local_types_ ? local_types_->at(operand.index) : kWasmStmt;
+    imm.type = local_types_ ? local_types_->at(imm.index) : kWasmStmt;
     return true;
   }
 
-  inline bool Validate(const byte* pc,
-                       ExceptionIndexOperand<validate>& operand) {
+  inline bool Validate(const byte* pc, ExceptionIndexImmediate<validate>& imm) {
     if (!VALIDATE(module_ != nullptr &&
-                  operand.index < module_->exceptions.size())) {
-      errorf(pc + 1, "Invalid exception index: %u", operand.index);
+                  imm.index < module_->exceptions.size())) {
+      errorf(pc + 1, "Invalid exception index: %u", imm.index);
       return false;
     }
-    operand.exception = &module_->exceptions[operand.index];
+    imm.exception = &module_->exceptions[imm.index];
     return true;
   }
 
-  inline bool Validate(const byte* pc, GlobalIndexOperand<validate>& operand) {
+  inline bool Validate(const byte* pc, GlobalIndexImmediate<validate>& imm) {
+    if (!VALIDATE(module_ != nullptr && imm.index < module_->globals.size())) {
+      errorf(pc + 1, "invalid global index: %u", imm.index);
+      return false;
+    }
+    imm.global = &module_->globals[imm.index];
+    imm.type = imm.global->type;
+    return true;
+  }
+
+  inline bool Complete(const byte* pc, CallFunctionImmediate<validate>& imm) {
     if (!VALIDATE(module_ != nullptr &&
-                  operand.index < module_->globals.size())) {
-      errorf(pc + 1, "invalid global index: %u", operand.index);
+                  imm.index < module_->functions.size())) {
       return false;
     }
-    operand.global = &module_->globals[operand.index];
-    operand.type = operand.global->type;
+    imm.sig = module_->functions[imm.index].sig;
     return true;
   }
 
-  inline bool Complete(const byte* pc, CallFunctionOperand<validate>& operand) {
-    if (!VALIDATE(module_ != nullptr &&
-                  operand.index < module_->functions.size())) {
-      return false;
-    }
-    operand.sig = module_->functions[operand.index].sig;
-    return true;
-  }
-
-  inline bool Validate(const byte* pc, CallFunctionOperand<validate>& operand) {
-    if (Complete(pc, operand)) {
+  inline bool Validate(const byte* pc, CallFunctionImmediate<validate>& imm) {
+    if (Complete(pc, imm)) {
       return true;
     }
-    errorf(pc + 1, "invalid function index: %u", operand.index);
+    errorf(pc + 1, "invalid function index: %u", imm.index);
     return false;
   }
 
-  inline bool Complete(const byte* pc, CallIndirectOperand<validate>& operand) {
+  inline bool Complete(const byte* pc, CallIndirectImmediate<validate>& imm) {
     if (!VALIDATE(module_ != nullptr &&
-                  operand.index < module_->signatures.size())) {
+                  imm.sig_index < module_->signatures.size())) {
       return false;
     }
-    operand.sig = module_->signatures[operand.index];
+    imm.sig = module_->signatures[imm.sig_index];
     return true;
   }
 
-  inline bool Validate(const byte* pc, CallIndirectOperand<validate>& operand) {
-    if (!VALIDATE(module_ != nullptr && !module_->function_tables.empty())) {
+  inline bool Validate(const byte* pc, CallIndirectImmediate<validate>& imm) {
+    if (!VALIDATE(module_ != nullptr && !module_->tables.empty())) {
       error("function table has to exist to execute call_indirect");
       return false;
     }
-    if (!Complete(pc, operand)) {
-      errorf(pc + 1, "invalid signature index: #%u", operand.index);
+    if (!Complete(pc, imm)) {
+      errorf(pc + 1, "invalid signature index: #%u", imm.sig_index);
       return false;
     }
     return true;
   }
 
-  inline bool Validate(const byte* pc, BreakDepthOperand<validate>& operand,
+  inline bool Validate(const byte* pc, BreakDepthImmediate<validate>& imm,
                        size_t control_depth) {
-    if (!VALIDATE(operand.depth < control_depth)) {
-      errorf(pc + 1, "invalid break depth: %u", operand.depth);
+    if (!VALIDATE(imm.depth < control_depth)) {
+      errorf(pc + 1, "invalid break depth: %u", imm.depth);
       return false;
     }
     return true;
   }
 
-  bool Validate(const byte* pc, BranchTableOperand<validate>& operand,
+  bool Validate(const byte* pc, BranchTableImmediate<validate>& imm,
                 size_t block_depth) {
-    if (!VALIDATE(operand.table_count < kV8MaxWasmFunctionSize)) {
+    if (!VALIDATE(imm.table_count < kV8MaxWasmFunctionSize)) {
       errorf(pc + 1, "invalid table count (> max function size): %u",
-             operand.table_count);
+             imm.table_count);
       return false;
     }
-    return checkAvailable(operand.table_count);
+    return checkAvailable(imm.table_count);
   }
 
   inline bool Validate(const byte* pc, WasmOpcode opcode,
-                       SimdLaneOperand<validate>& operand) {
+                       SimdLaneImmediate<validate>& imm) {
     uint8_t num_lanes = 0;
     switch (opcode) {
       case kExprF32x4ExtractLane:
@@ -845,7 +921,7 @@ class WasmDecoder : public Decoder {
         UNREACHABLE();
         break;
     }
-    if (!VALIDATE(operand.lane >= 0 && operand.lane < num_lanes)) {
+    if (!VALIDATE(imm.lane >= 0 && imm.lane < num_lanes)) {
       error(pc_ + 2, "invalid lane index");
       return false;
     } else {
@@ -854,7 +930,7 @@ class WasmDecoder : public Decoder {
   }
 
   inline bool Validate(const byte* pc, WasmOpcode opcode,
-                       SimdShiftOperand<validate>& operand) {
+                       SimdShiftImmediate<validate>& imm) {
     uint8_t max_shift = 0;
     switch (opcode) {
       case kExprI32x4Shl:
@@ -876,7 +952,7 @@ class WasmDecoder : public Decoder {
         UNREACHABLE();
         break;
     }
-    if (!VALIDATE(operand.shift >= 0 && operand.shift < max_shift)) {
+    if (!VALIDATE(imm.shift >= 0 && imm.shift < max_shift)) {
       error(pc_ + 2, "invalid shift amount");
       return false;
     } else {
@@ -885,13 +961,32 @@ class WasmDecoder : public Decoder {
   }
 
   inline bool Validate(const byte* pc,
-                       Simd8x16ShuffleOperand<validate>& operand) {
+                       Simd8x16ShuffleImmediate<validate>& imm) {
     uint8_t max_lane = 0;
-    for (uint32_t i = 0; i < kSimd128Size; ++i)
-      max_lane = std::max(max_lane, operand.shuffle[i]);
+    for (uint32_t i = 0; i < kSimd128Size; ++i) {
+      max_lane = std::max(max_lane, imm.shuffle[i]);
+    }
     // Shuffle indices must be in [0..31] for a 16 lane shuffle.
     if (!VALIDATE(max_lane <= 2 * kSimd128Size)) {
       error(pc_ + 2, "invalid shuffle mask");
+      return false;
+    }
+    return true;
+  }
+
+  inline bool Complete(BlockTypeImmediate<validate>& imm) {
+    if (imm.type != kWasmVar) return true;
+    if (!VALIDATE((module_ && imm.sig_index < module_->signatures.size()))) {
+      return false;
+    }
+    imm.sig = module_->signatures[imm.sig_index];
+    return true;
+  }
+
+  inline bool Validate(BlockTypeImmediate<validate>& imm) {
+    if (!Complete(imm)) {
+      errorf(pc_, "block type index %u out of bounds (%zu signatures)",
+             imm.sig_index, module_ ? module_->signatures.size() : 0);
       return false;
     }
     return true;
@@ -905,71 +1000,76 @@ class WasmDecoder : public Decoder {
       FOREACH_STORE_MEM_OPCODE(DECLARE_OPCODE_CASE)
 #undef DECLARE_OPCODE_CASE
       {
-        MemoryAccessOperand<validate> operand(decoder, pc, UINT32_MAX);
-        return 1 + operand.length;
+        MemoryAccessImmediate<validate> imm(decoder, pc, UINT32_MAX);
+        return 1 + imm.length;
       }
       case kExprBr:
       case kExprBrIf: {
-        BreakDepthOperand<validate> operand(decoder, pc);
-        return 1 + operand.length;
+        BreakDepthImmediate<validate> imm(decoder, pc);
+        return 1 + imm.length;
       }
       case kExprSetGlobal:
       case kExprGetGlobal: {
-        GlobalIndexOperand<validate> operand(decoder, pc);
-        return 1 + operand.length;
+        GlobalIndexImmediate<validate> imm(decoder, pc);
+        return 1 + imm.length;
       }
 
       case kExprCallFunction: {
-        CallFunctionOperand<validate> operand(decoder, pc);
-        return 1 + operand.length;
+        CallFunctionImmediate<validate> imm(decoder, pc);
+        return 1 + imm.length;
       }
       case kExprCallIndirect: {
-        CallIndirectOperand<validate> operand(decoder, pc);
-        return 1 + operand.length;
+        CallIndirectImmediate<validate> imm(decoder, pc);
+        return 1 + imm.length;
       }
 
       case kExprTry:
       case kExprIf:  // fall through
       case kExprLoop:
       case kExprBlock: {
-        BlockTypeOperand<validate> operand(decoder, pc);
-        return 1 + operand.length;
+        BlockTypeImmediate<validate> imm(kAllWasmFeatures, decoder, pc);
+        return 1 + imm.length;
       }
 
       case kExprThrow:
       case kExprCatch: {
-        ExceptionIndexOperand<validate> operand(decoder, pc);
-        return 1 + operand.length;
+        ExceptionIndexImmediate<validate> imm(decoder, pc);
+        return 1 + imm.length;
       }
 
       case kExprSetLocal:
       case kExprTeeLocal:
       case kExprGetLocal: {
-        LocalIndexOperand<Decoder::kValidate> operand(decoder, pc);
-        return 1 + operand.length;
+        LocalIndexImmediate<validate> imm(decoder, pc);
+        return 1 + imm.length;
       }
       case kExprBrTable: {
-        BranchTableOperand<validate> operand(decoder, pc);
-        BranchTableIterator<validate> iterator(decoder, operand);
+        BranchTableImmediate<validate> imm(decoder, pc);
+        BranchTableIterator<validate> iterator(decoder, imm);
         return 1 + iterator.length();
       }
       case kExprI32Const: {
-        ImmI32Operand<validate> operand(decoder, pc);
-        return 1 + operand.length;
+        ImmI32Immediate<validate> imm(decoder, pc);
+        return 1 + imm.length;
       }
       case kExprI64Const: {
-        ImmI64Operand<validate> operand(decoder, pc);
-        return 1 + operand.length;
+        ImmI64Immediate<validate> imm(decoder, pc);
+        return 1 + imm.length;
+      }
+      case kExprRefNull: {
+        return 1;
       }
       case kExprGrowMemory:
       case kExprMemorySize: {
-        MemoryIndexOperand<validate> operand(decoder, pc);
-        return 1 + operand.length;
+        MemoryIndexImmediate<validate> imm(decoder, pc);
+        return 1 + imm.length;
       }
       case kExprF32Const:
         return 5;
       case kExprF64Const:
         return 9;
+      case kNumericPrefix:
+        return 2;
       case kSimdPrefix: {
         byte simd_index = decoder->read_u8<validate>(pc + 1, "simd_index");
         WasmOpcode opcode =
@@ -987,8 +1087,8 @@ class WasmDecoder : public Decoder {
           FOREACH_SIMD_MEM_OPCODE(DECLARE_OPCODE_CASE)
 #undef DECLARE_OPCODE_CASE
           {
-            MemoryAccessOperand<validate> operand(decoder, pc + 1, UINT32_MAX);
-            return 2 + operand.length;
+            MemoryAccessImmediate<validate> imm(decoder, pc + 1, UINT32_MAX);
+            return 2 + imm.length;
           }
           // Shuffles require a byte per lane, or 16 immediate bytes.
           case kExprS8x16Shuffle:
@@ -1007,8 +1107,8 @@ class WasmDecoder : public Decoder {
           FOREACH_ATOMIC_OPCODE(DECLARE_OPCODE_CASE)
 #undef DECLARE_OPCODE_CASE
           {
-            MemoryAccessOperand<validate> operand(decoder, pc + 1, UINT32_MAX);
-            return 2 + operand.length;
+            MemoryAccessImmediate<validate> imm(decoder, pc + 1, UINT32_MAX);
+            return 2 + imm.length;
           }
           default:
             decoder->error(pc, "invalid Atomics opcode");
@@ -1051,19 +1151,20 @@ class WasmDecoder : public Decoder {
       case kExprI64Const:
       case kExprF32Const:
       case kExprF64Const:
+      case kExprRefNull:
       case kExprMemorySize:
         return {0, 1};
       case kExprCallFunction: {
-        CallFunctionOperand<validate> operand(this, pc);
-        CHECK(Complete(pc, operand));
-        return {operand.sig->parameter_count(), operand.sig->return_count()};
+        CallFunctionImmediate<validate> imm(this, pc);
+        CHECK(Complete(pc, imm));
+        return {imm.sig->parameter_count(), imm.sig->return_count()};
       }
       case kExprCallIndirect: {
-        CallIndirectOperand<validate> operand(this, pc);
-        CHECK(Complete(pc, operand));
+        CallIndirectImmediate<validate> imm(this, pc);
+        CHECK(Complete(pc, imm));
         // Indirect calls pop an additional argument for the table index.
-        return {operand.sig->parameter_count() + 1,
-                operand.sig->return_count()};
+        return {imm.sig->parameter_count() + 1,
+                imm.sig->return_count()};
       }
       case kExprBr:
       case kExprBlock:
@@ -1074,15 +1175,16 @@ class WasmDecoder : public Decoder {
       case kExprReturn:
       case kExprUnreachable:
         return {0, 0};
+      case kNumericPrefix:
       case kAtomicPrefix:
       case kSimdPrefix: {
         opcode = static_cast<WasmOpcode>(opcode << 8 | *(pc + 1));
         switch (opcode) {
-          case kExprI32AtomicStore:
-          case kExprI32AtomicStore8U:
-          case kExprI32AtomicStore16U:
-          case kExprS128StoreMem:
-            return {2, 0};
+          FOREACH_SIMD_1_OPERAND_1_PARAM_OPCODE(DECLARE_OPCODE_CASE)
+            return {1, 1};
+          FOREACH_SIMD_1_OPERAND_2_PARAM_OPCODE(DECLARE_OPCODE_CASE)
+          FOREACH_SIMD_MASK_OPERAND_OPCODE(DECLARE_OPCODE_CASE)
+            return {2, 1};
           default: {
             sig = WasmOpcodes::Signature(opcode);
             if (sig) {
@@ -1090,6 +1192,7 @@ class WasmDecoder : public Decoder {
             }
           }
         }
+        V8_FALLTHROUGH;
       }
       default:
         V8_Fatal(__FILE__, __LINE__, "unimplemented opcode: %x (%s)", opcode,
@@ -1102,19 +1205,20 @@ class WasmDecoder : public Decoder {
 };
 
 #define CALL_INTERFACE(name, ...) interface_.name(this, ##__VA_ARGS__)
-#define CALL_INTERFACE_IF_REACHABLE(name, ...)       \
-  do {                                               \
-    DCHECK(!control_.empty());                       \
-    if (this->ok() && control_.back().reachable()) { \
-      interface_.name(this, ##__VA_ARGS__);          \
-    }                                                \
+#define CALL_INTERFACE_IF_REACHABLE(name, ...)                 \
+  do {                                                         \
+    DCHECK(!control_.empty());                                 \
+    if (VALIDATE(this->ok()) && control_.back().reachable()) { \
+      interface_.name(this, ##__VA_ARGS__);                    \
+    }                                                          \
   } while (false)
-#define CALL_INTERFACE_IF_PARENT_REACHABLE(name, ...)                         \
-  do {                                                                        \
-    DCHECK(!control_.empty());                                                \
-    if (this->ok() && (control_.size() == 1 || control_at(1)->reachable())) { \
-      interface_.name(this, ##__VA_ARGS__);                                   \
-    }                                                                         \
+#define CALL_INTERFACE_IF_PARENT_REACHABLE(name, ...)           \
+  do {                                                          \
+    DCHECK(!control_.empty());                                  \
+    if (VALIDATE(this->ok()) &&                                 \
+        (control_.size() == 1 || control_at(1)->reachable())) { \
+      interface_.name(this, ##__VA_ARGS__);                     \
+    }                                                           \
   } while (false)
 
 template <Decoder::ValidateFlag validate, typename Interface>
@@ -1125,15 +1229,15 @@ class WasmFullDecoder : public WasmDecoder<validate> {
 
   // All Value types should be trivially copyable for performance. We push, pop,
   // and store them in local variables.
-  static_assert(IS_TRIVIALLY_COPYABLE(Value),
-                "all Value<...> types should be trivially copyable");
+  ASSERT_TRIVIALLY_COPYABLE(Value);
 
  public:
   template <typename... InterfaceArgs>
-  WasmFullDecoder(Zone* zone, const wasm::WasmModule* module,
+  WasmFullDecoder(Zone* zone, const WasmModule* module,
+                  const WasmFeatures& enabled, WasmFeatures* detected,
                   const FunctionBody& body, InterfaceArgs&&... interface_args)
-      : WasmDecoder<validate>(module, body.sig, body.start, body.end,
-                              body.offset),
+      : WasmDecoder<validate>(module, enabled, detected, body.sig, body.start,
+                              body.end, body.offset),
         zone_(zone),
         interface_(std::forward<InterfaceArgs>(interface_args)...),
         local_type_vec_(zone),
@@ -1150,9 +1254,6 @@ class WasmFullDecoder : public WasmDecoder<validate> {
     DCHECK(stack_.empty());
     DCHECK(control_.empty());
 
-    if (FLAG_wasm_code_fuzzer_gen_test) {
-      PrintRawWasmCode(this->start_, this->end_);
-    }
     base::ElapsedTimer decode_timer;
     if (FLAG_trace_wasm_decode_time) {
       decode_timer.Start();
@@ -1164,7 +1265,8 @@ class WasmFullDecoder : public WasmDecoder<validate> {
     }
 
     DCHECK_EQ(0, this->local_types_->size());
-    WasmDecoder<validate>::DecodeLocals(this, this->sig_, this->local_types_);
+    WasmDecoder<validate>::DecodeLocals(this->enabled_, this, this->sig_,
+                                        this->local_types_);
     CALL_INTERFACE(StartFunction);
     DecodeFunctionBody();
     if (!this->failed()) CALL_INTERFACE(FinishFunction);
@@ -1189,9 +1291,10 @@ class WasmFullDecoder : public WasmDecoder<validate> {
 
     if (FLAG_trace_wasm_decode_time) {
       double ms = decode_timer.Elapsed().InMillisecondsF();
-      PrintF("wasm-decode %s (%0.3f ms)\n\n", this->ok() ? "ok" : "failed", ms);
+      PrintF("wasm-decode %s (%0.3f ms)\n\n",
+             VALIDATE(this->ok()) ? "ok" : "failed", ms);
     } else {
-      TRACE("wasm-decode %s\n\n", this->ok() ? "ok" : "failed");
+      TRACE("wasm-decode %s\n\n", VALIDATE(this->ok()) ? "ok" : "failed");
     }
 
     return true;
@@ -1219,7 +1322,7 @@ class WasmFullDecoder : public WasmDecoder<validate> {
     return local_type_vec_[index];
   }
 
-  inline wasm::WasmCodePosition position() {
+  inline WasmCodePosition position() {
     int offset = static_cast<int>(this->pc_ - this->start_);
     DCHECK_EQ(this->pc_ - this->start_, offset);  // overflows cannot happen
     return offset;
@@ -1281,6 +1384,32 @@ class WasmFullDecoder : public WasmDecoder<validate> {
     return true;
   }
 
+  class TraceLine {
+   public:
+    static constexpr int kMaxLen = 512;
+    ~TraceLine() {
+      if (!FLAG_trace_wasm_decoder) return;
+      PrintF("%.*s\n", len_, buffer_);
+    }
+
+    // Appends a formatted string.
+    PRINTF_FORMAT(2, 3)
+    void Append(const char* format, ...) {
+      if (!FLAG_trace_wasm_decoder) return;
+      va_list va_args;
+      va_start(va_args, format);
+      size_t remaining_len = kMaxLen - len_;
+      Vector<char> remaining_msg_space(buffer_ + len_, remaining_len);
+      int len = VSNPrintF(remaining_msg_space, format, va_args);
+      va_end(va_args);
+      len_ += len < 0 ? remaining_len : len;
+    }
+
+   private:
+    char buffer_[kMaxLen];
+    int len_ = 0;
+  };
+
   // Decodes the body of a function.
   void DecodeFunctionBody() {
     TRACE("wasm-decode %p...%p (module+%u, %d bytes)\n",
@@ -1302,14 +1431,21 @@ class WasmFullDecoder : public WasmDecoder<validate> {
     while (this->pc_ < this->end_) {  // decoding loop.
       unsigned len = 1;
       WasmOpcode opcode = static_cast<WasmOpcode>(*this->pc_);
+
+      CALL_INTERFACE_IF_REACHABLE(NextInstruction, opcode);
+
 #if DEBUG
-      if (FLAG_trace_wasm_decoder && !WasmOpcodes::IsPrefixOpcode(opcode)) {
-        TRACE("  @%-8d #%-20s|", startrel(this->pc_),
-              WasmOpcodes::OpcodeName(opcode));
+      TraceLine trace_msg;
+#define TRACE_PART(...) trace_msg.Append(__VA_ARGS__)
+      if (!WasmOpcodes::IsPrefixOpcode(opcode)) {
+        TRACE_PART(TRACE_INST_FORMAT, startrel(this->pc_),
+                   WasmOpcodes::OpcodeName(opcode));
       }
+#else
+#define TRACE_PART(...)
 #endif
 
-      FunctionSig* sig = WasmOpcodes::Signature(opcode);
+      FunctionSig* sig = const_cast<FunctionSig*>(kSimpleOpcodeSigs[opcode]);
       if (sig) {
         BuildSimpleOperator(opcode, sig);
       } else {
@@ -1318,14 +1454,14 @@ class WasmFullDecoder : public WasmDecoder<validate> {
           case kExprNop:
             break;
           case kExprBlock: {
-            BlockTypeOperand<validate> operand(this, this->pc_);
-            if (!LookupBlockType(&operand)) break;
-            PopArgs(operand.sig);
+            BlockTypeImmediate<validate> imm(this->enabled_, this, this->pc_);
+            if (!this->Validate(imm)) break;
+            PopArgs(imm.sig);
             auto* block = PushBlock();
-            SetBlockType(block, operand, args_);
+            SetBlockType(block, imm);
             CALL_INTERFACE_IF_REACHABLE(Block, block);
             PushMergeValues(block, &block->start_merge);
-            len = 1 + operand.length;
+            len = 1 + imm.length;
             break;
           }
           case kExprRethrow: {
@@ -1336,23 +1472,23 @@ class WasmFullDecoder : public WasmDecoder<validate> {
           }
           case kExprThrow: {
             CHECK_PROTOTYPE_OPCODE(eh);
-            ExceptionIndexOperand<Decoder::kValidate> operand(this, this->pc_);
-            len = 1 + operand.length;
-            if (!this->Validate(this->pc_, operand)) break;
-            PopArgs(operand.exception->ToFunctionSig());
-            CALL_INTERFACE_IF_REACHABLE(Throw, operand, &control_.back(),
+            ExceptionIndexImmediate<validate> imm(this, this->pc_);
+            len = 1 + imm.length;
+            if (!this->Validate(this->pc_, imm)) break;
+            PopArgs(imm.exception->ToFunctionSig());
+            CALL_INTERFACE_IF_REACHABLE(Throw, imm, &control_.back(),
                                         vec2vec(args_));
             EndControl();
             break;
           }
           case kExprTry: {
             CHECK_PROTOTYPE_OPCODE(eh);
-            BlockTypeOperand<validate> operand(this, this->pc_);
-            if (!LookupBlockType(&operand)) break;
-            PopArgs(operand.sig);
+            BlockTypeImmediate<validate> imm(this->enabled_, this, this->pc_);
+            if (!this->Validate(imm)) break;
+            PopArgs(imm.sig);
             auto* try_block = PushTry();
-            SetBlockType(try_block, operand, args_);
-            len = 1 + operand.length;
+            SetBlockType(try_block, imm);
+            len = 1 + imm.length;
             CALL_INTERFACE_IF_REACHABLE(Try, try_block);
             PushMergeValues(try_block, &try_block->start_merge);
             break;
@@ -1360,10 +1496,10 @@ class WasmFullDecoder : public WasmDecoder<validate> {
           case kExprCatch: {
             // TODO(kschimpf): Fix to use type signature of exception.
             CHECK_PROTOTYPE_OPCODE(eh);
-            ExceptionIndexOperand<Decoder::kValidate> operand(this, this->pc_);
-            len = 1 + operand.length;
+            ExceptionIndexImmediate<validate> imm(this, this->pc_);
+            len = 1 + imm.length;
 
-            if (!this->Validate(this->pc_, operand)) break;
+            if (!this->Validate(this->pc_, imm)) break;
 
             if (!VALIDATE(!control_.empty())) {
               this->error("catch does not match any try");
@@ -1383,14 +1519,13 @@ class WasmFullDecoder : public WasmDecoder<validate> {
             c->kind = kControlTryCatch;
             FallThruTo(c);
             stack_.resize(c->stack_depth);
-            const WasmExceptionSig* sig = operand.exception->sig;
+            const WasmExceptionSig* sig = imm.exception->sig;
             for (size_t i = 0, e = sig->parameter_count(); i < e; ++i) {
               Push(sig->GetParam(i));
             }
             Vector<Value> values(stack_.data() + c->stack_depth,
                                  sig->parameter_count());
-            CALL_INTERFACE_IF_PARENT_REACHABLE(CatchException, operand, c,
-                                               values);
+            CALL_INTERFACE_IF_PARENT_REACHABLE(CatchException, imm, c, values);
             c->reachability = control_at(1)->innerReachability();
             break;
           }
@@ -1401,26 +1536,26 @@ class WasmFullDecoder : public WasmDecoder<validate> {
             break;
           }
           case kExprLoop: {
-            BlockTypeOperand<validate> operand(this, this->pc_);
-            if (!LookupBlockType(&operand)) break;
-            PopArgs(operand.sig);
+            BlockTypeImmediate<validate> imm(this->enabled_, this, this->pc_);
+            if (!this->Validate(imm)) break;
+            PopArgs(imm.sig);
             auto* block = PushLoop();
-            SetBlockType(&control_.back(), operand, args_);
-            len = 1 + operand.length;
+            SetBlockType(&control_.back(), imm);
+            len = 1 + imm.length;
             CALL_INTERFACE_IF_REACHABLE(Loop, block);
             PushMergeValues(block, &block->start_merge);
             break;
           }
           case kExprIf: {
-            BlockTypeOperand<validate> operand(this, this->pc_);
-            if (!LookupBlockType(&operand)) break;
+            BlockTypeImmediate<validate> imm(this->enabled_, this, this->pc_);
+            if (!this->Validate(imm)) break;
             auto cond = Pop(0, kWasmI32);
-            PopArgs(operand.sig);
-            if (!this->ok()) break;
+            PopArgs(imm.sig);
+            if (!VALIDATE(this->ok())) break;
             auto* if_block = PushIf();
-            SetBlockType(if_block, operand, args_);
+            SetBlockType(if_block, imm);
             CALL_INTERFACE_IF_REACHABLE(If, cond, if_block);
-            len = 1 + operand.length;
+            len = 1 + imm.length;
             PushMergeValues(if_block, &if_block->start_merge);
             break;
           }
@@ -1438,8 +1573,8 @@ class WasmFullDecoder : public WasmDecoder<validate> {
               this->error(this->pc_, "else already present for if");
               break;
             }
-            c->kind = kControlIfElse;
             FallThruTo(c);
+            c->kind = kControlIfElse;
             CALL_INTERFACE_IF_PARENT_REACHABLE(Else, c);
             PushMergeValues(c, &c->start_merge);
             c->reachability = control_at(1)->innerReachability();
@@ -1458,6 +1593,7 @@ class WasmFullDecoder : public WasmDecoder<validate> {
             if (c->is_onearmed_if()) {
               // Emulate empty else arm.
               FallThruTo(c);
+              if (this->failed()) break;
               CALL_INTERFACE_IF_PARENT_REACHABLE(Else, c);
               PushMergeValues(c, &c->start_merge);
               c->reachability = control_at(1)->innerReachability();
@@ -1475,10 +1611,9 @@ class WasmFullDecoder : public WasmDecoder<validate> {
               }
               last_end_found_ = true;
               // The result of the block is the return value.
-              TRACE("  @%-8d #xx:%-20s|", startrel(this->pc_),
-                    "(implicit) return");
+              TRACE_PART("\n" TRACE_INST_FORMAT, startrel(this->pc_),
+                         "(implicit) return");
               DoReturn(c, true);
-              TRACE("\n");
             }
 
             PopControl(c);
@@ -1493,41 +1628,53 @@ class WasmFullDecoder : public WasmDecoder<validate> {
             break;
           }
           case kExprBr: {
-            BreakDepthOperand<validate> operand(this, this->pc_);
-            if (!this->Validate(this->pc_, operand, control_.size())) break;
-            Control* c = control_at(operand.depth);
+            BreakDepthImmediate<validate> imm(this, this->pc_);
+            if (!this->Validate(this->pc_, imm, control_.size())) break;
+            Control* c = control_at(imm.depth);
             if (!TypeCheckBreak(c)) break;
-            CALL_INTERFACE_IF_REACHABLE(Br, c);
-            BreakTo(c);
-            len = 1 + operand.length;
+            if (control_.back().reachable()) {
+              CALL_INTERFACE(Br, c);
+              c->br_merge()->reached = true;
+            }
+            len = 1 + imm.length;
             EndControl();
             break;
           }
           case kExprBrIf: {
-            BreakDepthOperand<validate> operand(this, this->pc_);
+            BreakDepthImmediate<validate> imm(this, this->pc_);
             auto cond = Pop(0, kWasmI32);
-            if (!this->Validate(this->pc_, operand, control_.size())) break;
-            Control* c = control_at(operand.depth);
+            if (this->failed()) break;
+            if (!this->Validate(this->pc_, imm, control_.size())) break;
+            Control* c = control_at(imm.depth);
             if (!TypeCheckBreak(c)) break;
-            CALL_INTERFACE_IF_REACHABLE(BrIf, cond, c);
-            BreakTo(c);
-            len = 1 + operand.length;
+            if (control_.back().reachable()) {
+              CALL_INTERFACE(BrIf, cond, c);
+              c->br_merge()->reached = true;
+            }
+            len = 1 + imm.length;
             break;
           }
           case kExprBrTable: {
-            BranchTableOperand<validate> operand(this, this->pc_);
-            BranchTableIterator<validate> iterator(this, operand);
-            if (!this->Validate(this->pc_, operand, control_.size())) break;
+            BranchTableImmediate<validate> imm(this, this->pc_);
+            BranchTableIterator<validate> iterator(this, imm);
             auto key = Pop(0, kWasmI32);
+            if (this->failed()) break;
+            if (!this->Validate(this->pc_, imm, control_.size())) break;
             uint32_t br_arity = 0;
+            std::vector<bool> br_targets(control_.size());
             while (iterator.has_next()) {
               const uint32_t i = iterator.cur_index();
               const byte* pos = iterator.pc();
               uint32_t target = iterator.next();
               if (!VALIDATE(target < control_.size())) {
-                this->error(pos, "improper branch in br_table");
+                this->errorf(pos,
+                             "improper branch in br_table target %u (depth %u)",
+                             i, target);
                 break;
               }
+              // Avoid redundant break target checks.
+              if (br_targets[target]) continue;
+              br_targets[target] = true;
               // Check that label types match up.
               Control* c = control_at(target);
               uint32_t arity = c->br_merge()->arity;
@@ -1535,15 +1682,22 @@ class WasmFullDecoder : public WasmDecoder<validate> {
                 br_arity = arity;
               } else if (!VALIDATE(br_arity == arity)) {
                 this->errorf(pos,
-                             "inconsistent arity in br_table target %d"
+                             "inconsistent arity in br_table target %u"
                              " (previous was %u, this one %u)",
                              i, br_arity, arity);
               }
               if (!TypeCheckBreak(c)) break;
-              BreakTo(c);
             }
+            if (this->failed()) break;
 
-            CALL_INTERFACE_IF_REACHABLE(BrTable, operand, key);
+            if (control_.back().reachable()) {
+              CALL_INTERFACE(BrTable, imm, key);
+
+              for (uint32_t depth = control_depth(); depth-- > 0;) {
+                if (!br_targets[depth]) continue;
+                control_at(depth)->br_merge()->reached = true;
+              }
+            }
 
             len = 1 + iterator.length();
             EndControl();
@@ -1559,56 +1713,63 @@ class WasmFullDecoder : public WasmDecoder<validate> {
             break;
           }
           case kExprI32Const: {
-            ImmI32Operand<validate> operand(this, this->pc_);
+            ImmI32Immediate<validate> imm(this, this->pc_);
             auto* value = Push(kWasmI32);
-            CALL_INTERFACE_IF_REACHABLE(I32Const, value, operand.value);
-            len = 1 + operand.length;
+            CALL_INTERFACE_IF_REACHABLE(I32Const, value, imm.value);
+            len = 1 + imm.length;
             break;
           }
           case kExprI64Const: {
-            ImmI64Operand<validate> operand(this, this->pc_);
+            ImmI64Immediate<validate> imm(this, this->pc_);
             auto* value = Push(kWasmI64);
-            CALL_INTERFACE_IF_REACHABLE(I64Const, value, operand.value);
-            len = 1 + operand.length;
+            CALL_INTERFACE_IF_REACHABLE(I64Const, value, imm.value);
+            len = 1 + imm.length;
             break;
           }
           case kExprF32Const: {
-            ImmF32Operand<validate> operand(this, this->pc_);
+            ImmF32Immediate<validate> imm(this, this->pc_);
             auto* value = Push(kWasmF32);
-            CALL_INTERFACE_IF_REACHABLE(F32Const, value, operand.value);
-            len = 1 + operand.length;
+            CALL_INTERFACE_IF_REACHABLE(F32Const, value, imm.value);
+            len = 1 + imm.length;
             break;
           }
           case kExprF64Const: {
-            ImmF64Operand<validate> operand(this, this->pc_);
+            ImmF64Immediate<validate> imm(this, this->pc_);
             auto* value = Push(kWasmF64);
-            CALL_INTERFACE_IF_REACHABLE(F64Const, value, operand.value);
-            len = 1 + operand.length;
+            CALL_INTERFACE_IF_REACHABLE(F64Const, value, imm.value);
+            len = 1 + imm.length;
+            break;
+          }
+          case kExprRefNull: {
+            CHECK_PROTOTYPE_OPCODE(anyref);
+            auto* value = Push(kWasmAnyRef);
+            CALL_INTERFACE_IF_REACHABLE(RefNull, value);
+            len = 1;
             break;
           }
           case kExprGetLocal: {
-            LocalIndexOperand<Decoder::kValidate> operand(this, this->pc_);
-            if (!this->Validate(this->pc_, operand)) break;
-            auto* value = Push(operand.type);
-            CALL_INTERFACE_IF_REACHABLE(GetLocal, value, operand);
-            len = 1 + operand.length;
+            LocalIndexImmediate<validate> imm(this, this->pc_);
+            if (!this->Validate(this->pc_, imm)) break;
+            auto* value = Push(imm.type);
+            CALL_INTERFACE_IF_REACHABLE(GetLocal, value, imm);
+            len = 1 + imm.length;
             break;
           }
           case kExprSetLocal: {
-            LocalIndexOperand<Decoder::kValidate> operand(this, this->pc_);
-            if (!this->Validate(this->pc_, operand)) break;
-            auto value = Pop(0, local_type_vec_[operand.index]);
-            CALL_INTERFACE_IF_REACHABLE(SetLocal, value, operand);
-            len = 1 + operand.length;
+            LocalIndexImmediate<validate> imm(this, this->pc_);
+            if (!this->Validate(this->pc_, imm)) break;
+            auto value = Pop(0, local_type_vec_[imm.index]);
+            CALL_INTERFACE_IF_REACHABLE(SetLocal, value, imm);
+            len = 1 + imm.length;
             break;
           }
           case kExprTeeLocal: {
-            LocalIndexOperand<Decoder::kValidate> operand(this, this->pc_);
-            if (!this->Validate(this->pc_, operand)) break;
-            auto value = Pop(0, local_type_vec_[operand.index]);
+            LocalIndexImmediate<validate> imm(this, this->pc_);
+            if (!this->Validate(this->pc_, imm)) break;
+            auto value = Pop(0, local_type_vec_[imm.index]);
             auto* result = Push(value.type);
-            CALL_INTERFACE_IF_REACHABLE(TeeLocal, value, result, operand);
-            len = 1 + operand.length;
+            CALL_INTERFACE_IF_REACHABLE(TeeLocal, value, result, imm);
+            len = 1 + imm.length;
             break;
           }
           case kExprDrop: {
@@ -1617,101 +1778,101 @@ class WasmFullDecoder : public WasmDecoder<validate> {
             break;
           }
           case kExprGetGlobal: {
-            GlobalIndexOperand<validate> operand(this, this->pc_);
-            len = 1 + operand.length;
-            if (!this->Validate(this->pc_, operand)) break;
-            auto* result = Push(operand.type);
-            CALL_INTERFACE_IF_REACHABLE(GetGlobal, result, operand);
+            GlobalIndexImmediate<validate> imm(this, this->pc_);
+            len = 1 + imm.length;
+            if (!this->Validate(this->pc_, imm)) break;
+            auto* result = Push(imm.type);
+            CALL_INTERFACE_IF_REACHABLE(GetGlobal, result, imm);
             break;
           }
           case kExprSetGlobal: {
-            GlobalIndexOperand<validate> operand(this, this->pc_);
-            len = 1 + operand.length;
-            if (!this->Validate(this->pc_, operand)) break;
-            if (!VALIDATE(operand.global->mutability)) {
+            GlobalIndexImmediate<validate> imm(this, this->pc_);
+            len = 1 + imm.length;
+            if (!this->Validate(this->pc_, imm)) break;
+            if (!VALIDATE(imm.global->mutability)) {
               this->errorf(this->pc_, "immutable global #%u cannot be assigned",
-                           operand.index);
+                           imm.index);
               break;
             }
-            auto value = Pop(0, operand.type);
-            CALL_INTERFACE_IF_REACHABLE(SetGlobal, value, operand);
+            auto value = Pop(0, imm.type);
+            CALL_INTERFACE_IF_REACHABLE(SetGlobal, value, imm);
             break;
           }
           case kExprI32LoadMem8S:
-            len = DecodeLoadMem(kWasmI32, MachineType::Int8());
+            len = 1 + DecodeLoadMem(LoadType::kI32Load8S);
             break;
           case kExprI32LoadMem8U:
-            len = DecodeLoadMem(kWasmI32, MachineType::Uint8());
+            len = 1 + DecodeLoadMem(LoadType::kI32Load8U);
             break;
           case kExprI32LoadMem16S:
-            len = DecodeLoadMem(kWasmI32, MachineType::Int16());
+            len = 1 + DecodeLoadMem(LoadType::kI32Load16S);
             break;
           case kExprI32LoadMem16U:
-            len = DecodeLoadMem(kWasmI32, MachineType::Uint16());
+            len = 1 + DecodeLoadMem(LoadType::kI32Load16U);
             break;
           case kExprI32LoadMem:
-            len = DecodeLoadMem(kWasmI32, MachineType::Int32());
+            len = 1 + DecodeLoadMem(LoadType::kI32Load);
             break;
           case kExprI64LoadMem8S:
-            len = DecodeLoadMem(kWasmI64, MachineType::Int8());
+            len = 1 + DecodeLoadMem(LoadType::kI64Load8S);
             break;
           case kExprI64LoadMem8U:
-            len = DecodeLoadMem(kWasmI64, MachineType::Uint8());
+            len = 1 + DecodeLoadMem(LoadType::kI64Load8U);
             break;
           case kExprI64LoadMem16S:
-            len = DecodeLoadMem(kWasmI64, MachineType::Int16());
+            len = 1 + DecodeLoadMem(LoadType::kI64Load16S);
             break;
           case kExprI64LoadMem16U:
-            len = DecodeLoadMem(kWasmI64, MachineType::Uint16());
+            len = 1 + DecodeLoadMem(LoadType::kI64Load16U);
             break;
           case kExprI64LoadMem32S:
-            len = DecodeLoadMem(kWasmI64, MachineType::Int32());
+            len = 1 + DecodeLoadMem(LoadType::kI64Load32S);
             break;
           case kExprI64LoadMem32U:
-            len = DecodeLoadMem(kWasmI64, MachineType::Uint32());
+            len = 1 + DecodeLoadMem(LoadType::kI64Load32U);
             break;
           case kExprI64LoadMem:
-            len = DecodeLoadMem(kWasmI64, MachineType::Int64());
+            len = 1 + DecodeLoadMem(LoadType::kI64Load);
             break;
           case kExprF32LoadMem:
-            len = DecodeLoadMem(kWasmF32, MachineType::Float32());
+            len = 1 + DecodeLoadMem(LoadType::kF32Load);
             break;
           case kExprF64LoadMem:
-            len = DecodeLoadMem(kWasmF64, MachineType::Float64());
+            len = 1 + DecodeLoadMem(LoadType::kF64Load);
             break;
           case kExprI32StoreMem8:
-            len = DecodeStoreMem(kWasmI32, MachineType::Int8());
+            len = 1 + DecodeStoreMem(StoreType::kI32Store8);
             break;
           case kExprI32StoreMem16:
-            len = DecodeStoreMem(kWasmI32, MachineType::Int16());
+            len = 1 + DecodeStoreMem(StoreType::kI32Store16);
             break;
           case kExprI32StoreMem:
-            len = DecodeStoreMem(kWasmI32, MachineType::Int32());
+            len = 1 + DecodeStoreMem(StoreType::kI32Store);
             break;
           case kExprI64StoreMem8:
-            len = DecodeStoreMem(kWasmI64, MachineType::Int8());
+            len = 1 + DecodeStoreMem(StoreType::kI64Store8);
             break;
           case kExprI64StoreMem16:
-            len = DecodeStoreMem(kWasmI64, MachineType::Int16());
+            len = 1 + DecodeStoreMem(StoreType::kI64Store16);
             break;
           case kExprI64StoreMem32:
-            len = DecodeStoreMem(kWasmI64, MachineType::Int32());
+            len = 1 + DecodeStoreMem(StoreType::kI64Store32);
             break;
           case kExprI64StoreMem:
-            len = DecodeStoreMem(kWasmI64, MachineType::Int64());
+            len = 1 + DecodeStoreMem(StoreType::kI64Store);
             break;
           case kExprF32StoreMem:
-            len = DecodeStoreMem(kWasmF32, MachineType::Float32());
+            len = 1 + DecodeStoreMem(StoreType::kF32Store);
             break;
           case kExprF64StoreMem:
-            len = DecodeStoreMem(kWasmF64, MachineType::Float64());
+            len = 1 + DecodeStoreMem(StoreType::kF64Store);
             break;
           case kExprGrowMemory: {
             if (!CheckHasMemory()) break;
-            MemoryIndexOperand<validate> operand(this, this->pc_);
-            len = 1 + operand.length;
+            MemoryIndexImmediate<validate> imm(this, this->pc_);
+            len = 1 + imm.length;
             DCHECK_NOT_NULL(this->module_);
-            if (!VALIDATE(this->module_->is_wasm())) {
+            if (!VALIDATE(this->module_->origin == kWasmOrigin)) {
               this->error("grow_memory is not supported for asmjs modules");
               break;
             }
@@ -1722,32 +1883,48 @@ class WasmFullDecoder : public WasmDecoder<validate> {
           }
           case kExprMemorySize: {
             if (!CheckHasMemory()) break;
-            MemoryIndexOperand<validate> operand(this, this->pc_);
+            MemoryIndexImmediate<validate> imm(this, this->pc_);
             auto* result = Push(kWasmI32);
-            len = 1 + operand.length;
+            len = 1 + imm.length;
             CALL_INTERFACE_IF_REACHABLE(CurrentMemoryPages, result);
             break;
           }
           case kExprCallFunction: {
-            CallFunctionOperand<validate> operand(this, this->pc_);
-            len = 1 + operand.length;
-            if (!this->Validate(this->pc_, operand)) break;
+            CallFunctionImmediate<validate> imm(this, this->pc_);
+            len = 1 + imm.length;
+            if (!this->Validate(this->pc_, imm)) break;
             // TODO(clemensh): Better memory management.
-            PopArgs(operand.sig);
-            auto* returns = PushReturns(operand.sig);
-            CALL_INTERFACE_IF_REACHABLE(CallDirect, operand, args_.data(),
-                                        returns);
+            PopArgs(imm.sig);
+            auto* returns = PushReturns(imm.sig);
+            CALL_INTERFACE_IF_REACHABLE(CallDirect, imm, args_.data(), returns);
             break;
           }
           case kExprCallIndirect: {
-            CallIndirectOperand<validate> operand(this, this->pc_);
-            len = 1 + operand.length;
-            if (!this->Validate(this->pc_, operand)) break;
+            CallIndirectImmediate<validate> imm(this, this->pc_);
+            len = 1 + imm.length;
+            if (!this->Validate(this->pc_, imm)) break;
             auto index = Pop(0, kWasmI32);
-            PopArgs(operand.sig);
-            auto* returns = PushReturns(operand.sig);
-            CALL_INTERFACE_IF_REACHABLE(CallIndirect, index, operand,
-                                        args_.data(), returns);
+            PopArgs(imm.sig);
+            auto* returns = PushReturns(imm.sig);
+            CALL_INTERFACE_IF_REACHABLE(CallIndirect, index, imm, args_.data(),
+                                        returns);
+            break;
+          }
+          case kNumericPrefix: {
+            CHECK_PROTOTYPE_OPCODE(sat_f2i_conversions);
+            ++len;
+            byte numeric_index = this->template read_u8<validate>(
+                this->pc_ + 1, "numeric index");
+            opcode = static_cast<WasmOpcode>(opcode << 8 | numeric_index);
+            TRACE_PART(TRACE_INST_FORMAT, startrel(this->pc_),
+                       WasmOpcodes::OpcodeName(opcode));
+            sig = WasmOpcodes::Signature(opcode);
+            if (sig == nullptr) {
+              this->errorf(this->pc_, "Unrecognized numeric opcode: %x\n",
+                           opcode);
+              return;
+            }
+            BuildSimpleOperator(opcode, sig);
             break;
           }
           case kSimdPrefix: {
@@ -1756,8 +1933,8 @@ class WasmFullDecoder : public WasmDecoder<validate> {
             byte simd_index =
                 this->template read_u8<validate>(this->pc_ + 1, "simd index");
             opcode = static_cast<WasmOpcode>(opcode << 8 | simd_index);
-            TRACE("  @%-4d #%-20s|", startrel(this->pc_),
-                  WasmOpcodes::OpcodeName(opcode));
+            TRACE_PART(TRACE_INST_FORMAT, startrel(this->pc_),
+                       WasmOpcodes::OpcodeName(opcode));
             len += DecodeSimdOpcode(opcode);
             break;
           }
@@ -1768,14 +1945,23 @@ class WasmFullDecoder : public WasmDecoder<validate> {
             byte atomic_index =
                 this->template read_u8<validate>(this->pc_ + 1, "atomic index");
             opcode = static_cast<WasmOpcode>(opcode << 8 | atomic_index);
-            TRACE("  @%-4d #%-20s|", startrel(this->pc_),
-                  WasmOpcodes::OpcodeName(opcode));
+            TRACE_PART(TRACE_INST_FORMAT, startrel(this->pc_),
+                       WasmOpcodes::OpcodeName(opcode));
             len += DecodeAtomicOpcode(opcode);
             break;
           }
+// Note that prototype opcodes are not handled in the fastpath
+// above this switch, to avoid checking a feature flag.
+#define SIMPLE_PROTOTYPE_CASE(name, opc, sig) \
+  case kExpr##name: /* fallthrough */
+            FOREACH_SIMPLE_PROTOTYPE_OPCODE(SIMPLE_PROTOTYPE_CASE)
+#undef SIMPLE_PROTOTYPE_CASE
+            BuildSimplePrototypeOperator(opcode);
+            break;
           default: {
             // Deal with special asmjs opcodes.
-            if (this->module_ != nullptr && this->module_->is_asm_js()) {
+            if (this->module_ != nullptr &&
+                this->module_->origin == kAsmJsOrigin) {
               sig = WasmOpcodes::AsmjsSignature(opcode);
               if (sig) {
                 BuildSimpleOperator(opcode, sig);
@@ -1790,67 +1976,71 @@ class WasmFullDecoder : public WasmDecoder<validate> {
 
 #if DEBUG
       if (FLAG_trace_wasm_decoder) {
-        PrintF(" ");
+        TRACE_PART(" ");
         for (Control& c : control_) {
           switch (c.kind) {
             case kControlIf:
-              PrintF("I");
+              TRACE_PART("I");
               break;
             case kControlBlock:
-              PrintF("B");
+              TRACE_PART("B");
               break;
             case kControlLoop:
-              PrintF("L");
+              TRACE_PART("L");
               break;
             case kControlTry:
-              PrintF("T");
+              TRACE_PART("T");
               break;
             default:
               break;
           }
-          if (c.start_merge.arity) PrintF("%u-", c.start_merge.arity);
-          PrintF("%u", c.end_merge.arity);
-          if (!c.reachable()) PrintF("%c", c.unreachable() ? '*' : '#');
+          if (c.start_merge.arity) TRACE_PART("%u-", c.start_merge.arity);
+          TRACE_PART("%u", c.end_merge.arity);
+          if (!c.reachable()) TRACE_PART("%c", c.unreachable() ? '*' : '#');
         }
-        PrintF(" | ");
+        TRACE_PART(" | ");
         for (size_t i = 0; i < stack_.size(); ++i) {
           auto& val = stack_[i];
           WasmOpcode opcode = static_cast<WasmOpcode>(*val.pc);
           if (WasmOpcodes::IsPrefixOpcode(opcode)) {
             opcode = static_cast<WasmOpcode>(opcode << 8 | *(val.pc + 1));
           }
-          PrintF(" %c@%d:%s", WasmOpcodes::ShortNameOf(val.type),
-                 static_cast<int>(val.pc - this->start_),
-                 WasmOpcodes::OpcodeName(opcode));
+          TRACE_PART(" %c@%d:%s", ValueTypes::ShortNameOf(val.type),
+                     static_cast<int>(val.pc - this->start_),
+                     WasmOpcodes::OpcodeName(opcode));
+          // If the decoder failed, don't try to decode the immediates, as this
+          // can trigger a DCHECK failure.
+          if (this->failed()) continue;
           switch (opcode) {
             case kExprI32Const: {
-              ImmI32Operand<validate> operand(this, val.pc);
-              PrintF("[%d]", operand.value);
+              ImmI32Immediate<Decoder::kNoValidate> imm(this, val.pc);
+              TRACE_PART("[%d]", imm.value);
               break;
             }
             case kExprGetLocal:
             case kExprSetLocal:
             case kExprTeeLocal: {
-              LocalIndexOperand<Decoder::kValidate> operand(this, val.pc);
-              PrintF("[%u]", operand.index);
+              LocalIndexImmediate<Decoder::kNoValidate> imm(this, val.pc);
+              TRACE_PART("[%u]", imm.index);
               break;
             }
             case kExprGetGlobal:
             case kExprSetGlobal: {
-              GlobalIndexOperand<validate> operand(this, val.pc);
-              PrintF("[%u]", operand.index);
+              GlobalIndexImmediate<Decoder::kNoValidate> imm(this, val.pc);
+              TRACE_PART("[%u]", imm.index);
               break;
             }
             default:
               break;
           }
         }
-        PrintF("\n");
       }
 #endif
       this->pc_ += len;
     }  // end decode loop
-    if (this->pc_ > this->end_ && this->ok()) this->error("Beyond end of code");
+    if (!VALIDATE(this->pc_ == this->end_) && this->ok()) {
+      this->error("Beyond end of code");
+    }
   }
 
   void EndControl() {
@@ -1859,22 +2049,6 @@ class WasmFullDecoder : public WasmDecoder<validate> {
     stack_.resize(current->stack_depth);
     CALL_INTERFACE_IF_REACHABLE(EndControl, current);
     current->reachability = kUnreachable;
-  }
-
-  bool LookupBlockType(BlockTypeOperand<validate>* operand) {
-    if (operand->type == kWasmVar) {
-      if (!VALIDATE(this->module_ &&
-                    operand->sig_index < this->module_->signatures.size())) {
-        this->errorf(
-            this->pc_, "block type index %u out of bounds (%d signatures)",
-            operand->sig_index,
-            static_cast<int>(this->module_
-                                 ? this->module_->signatures.size() : 0));
-        return false;
-      }
-      operand->sig = this->module_->signatures[operand->sig_index];
-    }
-    return true;
   }
 
   template<typename func>
@@ -1890,13 +2064,15 @@ class WasmFullDecoder : public WasmDecoder<validate> {
     }
   }
 
-  void SetBlockType(Control* c, BlockTypeOperand<validate>& operand,
-                    ZoneVector<Value>& params) {
-    InitMerge(&c->end_merge, operand.out_arity(),
-              [&] (uint32_t i) {
-                  return Value::New(this->pc_, operand.out_type(i)); });
-    InitMerge(&c->start_merge, operand.in_arity(),
-              [&] (uint32_t i) { return params[i]; });
+  void SetBlockType(Control* c, BlockTypeImmediate<validate>& imm) {
+    DCHECK_EQ(imm.in_arity(), this->args_.size());
+    const byte* pc = this->pc_;
+    Value* args = this->args_.data();
+    InitMerge(&c->end_merge, imm.out_arity(), [pc, &imm](uint32_t i) {
+      return Value::New(pc, imm.out_type(i));
+    });
+    InitMerge(&c->start_merge, imm.in_arity(),
+              [args](uint32_t i) { return args[i]; });
   }
 
   // Pops arguments as required by signature into {args_}.
@@ -1949,93 +2125,67 @@ class WasmFullDecoder : public WasmDecoder<validate> {
     }
   }
 
-  int DecodeLoadMem(ValueType type, MachineType mem_type) {
+  int DecodeLoadMem(LoadType type, int prefix_len = 0) {
     if (!CheckHasMemory()) return 0;
-    MemoryAccessOperand<validate> operand(
-        this, this->pc_, ElementSizeLog2Of(mem_type.representation()));
-
+    MemoryAccessImmediate<validate> imm(this, this->pc_ + prefix_len,
+                                        type.size_log_2());
     auto index = Pop(0, kWasmI32);
-    auto* result = Push(type);
-    CALL_INTERFACE_IF_REACHABLE(LoadMem, type, mem_type, operand, index,
-                                result);
-    return 1 + operand.length;
+    auto* result = Push(type.value_type());
+    CALL_INTERFACE_IF_REACHABLE(LoadMem, type, imm, index, result);
+    return imm.length;
   }
 
-  int DecodeStoreMem(ValueType type, MachineType mem_type) {
+  int DecodeStoreMem(StoreType store, int prefix_len = 0) {
     if (!CheckHasMemory()) return 0;
-    MemoryAccessOperand<validate> operand(
-        this, this->pc_, ElementSizeLog2Of(mem_type.representation()));
-    auto value = Pop(1, type);
+    MemoryAccessImmediate<validate> imm(this, this->pc_ + prefix_len,
+                                        store.size_log_2());
+    auto value = Pop(1, store.value_type());
     auto index = Pop(0, kWasmI32);
-    CALL_INTERFACE_IF_REACHABLE(StoreMem, type, mem_type, operand, index,
-                                value);
-    return 1 + operand.length;
-  }
-
-  int DecodePrefixedLoadMem(ValueType type, MachineType mem_type) {
-    if (!CheckHasMemory()) return 0;
-    MemoryAccessOperand<validate> operand(
-        this, this->pc_ + 1, ElementSizeLog2Of(mem_type.representation()));
-
-    auto index = Pop(0, kWasmI32);
-    auto* result = Push(type);
-    CALL_INTERFACE_IF_REACHABLE(LoadMem, type, mem_type, operand, index,
-                                result);
-    return operand.length;
-  }
-
-  int DecodePrefixedStoreMem(ValueType type, MachineType mem_type) {
-    if (!CheckHasMemory()) return 0;
-    MemoryAccessOperand<validate> operand(
-        this, this->pc_ + 1, ElementSizeLog2Of(mem_type.representation()));
-    auto value = Pop(1, type);
-    auto index = Pop(0, kWasmI32);
-    CALL_INTERFACE_IF_REACHABLE(StoreMem, type, mem_type, operand, index,
-                                value);
-    return operand.length;
+    CALL_INTERFACE_IF_REACHABLE(StoreMem, store, imm, index, value);
+    return imm.length;
   }
 
   unsigned SimdExtractLane(WasmOpcode opcode, ValueType type) {
-    SimdLaneOperand<validate> operand(this, this->pc_);
-    if (this->Validate(this->pc_, opcode, operand)) {
-      Value inputs[] = {Pop(0, ValueType::kSimd128)};
+    SimdLaneImmediate<validate> imm(this, this->pc_);
+    if (this->Validate(this->pc_, opcode, imm)) {
+      Value inputs[] = {Pop(0, kWasmS128)};
       auto* result = Push(type);
-      CALL_INTERFACE_IF_REACHABLE(SimdLaneOp, opcode, operand,
-                                  ArrayVector(inputs), result);
+      CALL_INTERFACE_IF_REACHABLE(SimdLaneOp, opcode, imm, ArrayVector(inputs),
+                                  result);
     }
-    return operand.length;
+    return imm.length;
   }
 
   unsigned SimdReplaceLane(WasmOpcode opcode, ValueType type) {
-    SimdLaneOperand<validate> operand(this, this->pc_);
-    if (this->Validate(this->pc_, opcode, operand)) {
+    SimdLaneImmediate<validate> imm(this, this->pc_);
+    if (this->Validate(this->pc_, opcode, imm)) {
       Value inputs[2];
       inputs[1] = Pop(1, type);
-      inputs[0] = Pop(0, ValueType::kSimd128);
-      auto* result = Push(ValueType::kSimd128);
-      CALL_INTERFACE_IF_REACHABLE(SimdLaneOp, opcode, operand,
-                                  ArrayVector(inputs), result);
+      inputs[0] = Pop(0, kWasmS128);
+      auto* result = Push(kWasmS128);
+      CALL_INTERFACE_IF_REACHABLE(SimdLaneOp, opcode, imm, ArrayVector(inputs),
+                                  result);
     }
-    return operand.length;
+    return imm.length;
   }
 
   unsigned SimdShiftOp(WasmOpcode opcode) {
-    SimdShiftOperand<validate> operand(this, this->pc_);
-    if (this->Validate(this->pc_, opcode, operand)) {
-      auto input = Pop(0, ValueType::kSimd128);
-      auto* result = Push(ValueType::kSimd128);
-      CALL_INTERFACE_IF_REACHABLE(SimdShiftOp, opcode, operand, input, result);
+    SimdShiftImmediate<validate> imm(this, this->pc_);
+    if (this->Validate(this->pc_, opcode, imm)) {
+      auto input = Pop(0, kWasmS128);
+      auto* result = Push(kWasmS128);
+      CALL_INTERFACE_IF_REACHABLE(SimdShiftOp, opcode, imm, input, result);
     }
-    return operand.length;
+    return imm.length;
   }
 
   unsigned Simd8x16ShuffleOp() {
-    Simd8x16ShuffleOperand<validate> operand(this, this->pc_);
-    if (this->Validate(this->pc_, operand)) {
-      auto input1 = Pop(1, ValueType::kSimd128);
-      auto input0 = Pop(0, ValueType::kSimd128);
-      auto* result = Push(ValueType::kSimd128);
-      CALL_INTERFACE_IF_REACHABLE(Simd8x16ShuffleOp, operand, input0, input1,
+    Simd8x16ShuffleImmediate<validate> imm(this, this->pc_);
+    if (this->Validate(this->pc_, imm)) {
+      auto input1 = Pop(1, kWasmS128);
+      auto input0 = Pop(0, kWasmS128);
+      auto* result = Push(kWasmS128);
+      CALL_INTERFACE_IF_REACHABLE(Simd8x16ShuffleOp, imm, input0, input1,
                                   result);
     }
     return 16;
@@ -2045,23 +2195,23 @@ class WasmFullDecoder : public WasmDecoder<validate> {
     unsigned len = 0;
     switch (opcode) {
       case kExprF32x4ExtractLane: {
-        len = SimdExtractLane(opcode, ValueType::kFloat32);
+        len = SimdExtractLane(opcode, kWasmF32);
         break;
       }
       case kExprI32x4ExtractLane:
       case kExprI16x8ExtractLane:
       case kExprI8x16ExtractLane: {
-        len = SimdExtractLane(opcode, ValueType::kWord32);
+        len = SimdExtractLane(opcode, kWasmI32);
         break;
       }
       case kExprF32x4ReplaceLane: {
-        len = SimdReplaceLane(opcode, ValueType::kFloat32);
+        len = SimdReplaceLane(opcode, kWasmF32);
         break;
       }
       case kExprI32x4ReplaceLane:
       case kExprI16x8ReplaceLane:
       case kExprI8x16ReplaceLane: {
-        len = SimdReplaceLane(opcode, ValueType::kWord32);
+        len = SimdReplaceLane(opcode, kWasmI32);
         break;
       }
       case kExprI32x4Shl:
@@ -2081,10 +2231,10 @@ class WasmFullDecoder : public WasmDecoder<validate> {
         break;
       }
       case kExprS128LoadMem:
-        len = DecodePrefixedLoadMem(kWasmS128, MachineType::Simd128());
+        len = DecodeLoadMem(LoadType::kS128Load, 1);
         break;
       case kExprS128StoreMem:
-        len = DecodePrefixedStoreMem(kWasmS128, MachineType::Simd128());
+        len = DecodeStoreMem(StoreType::kS128Store, 1);
         break;
       default: {
         FunctionSig* sig = WasmOpcodes::Signature(opcode);
@@ -2108,11 +2258,11 @@ class WasmFullDecoder : public WasmDecoder<validate> {
     if (sig != nullptr) {
       MachineType memtype;
       switch (opcode) {
-#define CASE_ATOMIC_STORE_OP(Name, Type)     \
-  case kExpr##Name: {                        \
-    memtype = MachineType::Type();           \
-    ret_type = MachineRepresentation::kNone; \
-    break;                                   \
+#define CASE_ATOMIC_STORE_OP(Name, Type) \
+  case kExpr##Name: {                    \
+    memtype = MachineType::Type();       \
+    ret_type = kWasmStmt;                \
+    break;                               \
   }
         ATOMIC_STORE_OP_LIST(CASE_ATOMIC_STORE_OP)
 #undef CASE_ATOMIC_OP
@@ -2128,14 +2278,12 @@ class WasmFullDecoder : public WasmDecoder<validate> {
           this->error("invalid atomic opcode");
           return 0;
       }
-      MemoryAccessOperand<validate> operand(
+      MemoryAccessImmediate<validate> imm(
           this, this->pc_ + 1, ElementSizeLog2Of(memtype.representation()));
-      len += operand.length;
+      len += imm.length;
       PopArgs(sig);
-      auto result = ret_type == MachineRepresentation::kNone
-                        ? nullptr
-                        : Push(GetReturnType(sig));
-      CALL_INTERFACE_IF_REACHABLE(AtomicOp, opcode, vec2vec(args_), operand,
+      auto result = ret_type == kWasmStmt ? nullptr : Push(GetReturnType(sig));
+      CALL_INTERFACE_IF_REACHABLE(AtomicOp, opcode, vec2vec(args_), imm,
                                   result);
     } else {
       this->error("invalid atomic opcode");
@@ -2195,8 +2343,8 @@ class WasmFullDecoder : public WasmDecoder<validate> {
                   expected == kWasmVar)) {
       this->errorf(val.pc, "%s[%d] expected type %s, found %s of type %s",
                    SafeOpcodeNameAt(this->pc_), index,
-                   WasmOpcodes::TypeName(expected), SafeOpcodeNameAt(val.pc),
-                   WasmOpcodes::TypeName(val.type));
+                   ValueTypes::TypeName(expected), SafeOpcodeNameAt(val.pc),
+                   ValueTypes::TypeName(val.type));
     }
     return val;
   }
@@ -2218,10 +2366,6 @@ class WasmFullDecoder : public WasmDecoder<validate> {
   }
 
   int startrel(const byte* ptr) { return static_cast<int>(ptr - this->start_); }
-
-  inline void BreakTo(Control* c) {
-    if (control_.back().reachable()) c->br_merge()->reached = true;
-  }
 
   void FallThruTo(Control* c) {
     DCHECK_EQ(c, &control_.back());
@@ -2246,7 +2390,7 @@ class WasmFullDecoder : public WasmDecoder<validate> {
         if (!VALIDATE(val.type == kWasmVar)) {
           this->errorf(
               this->pc_, "type error in merge[%u] (expected %s, got %s)", i,
-              WasmOpcodes::TypeName(old.type), WasmOpcodes::TypeName(val.type));
+              ValueTypes::TypeName(old.type), ValueTypes::TypeName(val.type));
           return false;
         }
         val.type = old.type;
@@ -2307,10 +2451,21 @@ class WasmFullDecoder : public WasmDecoder<validate> {
     return true;
   }
 
-  virtual void onFirstError() {
+  void onFirstError() override {
     this->end_ = this->pc_;  // Terminate decoding loop.
     TRACE(" !%s\n", this->error_msg_.c_str());
     CALL_INTERFACE(OnFirstError);
+  }
+
+  void BuildSimplePrototypeOperator(WasmOpcode opcode) {
+    if (WasmOpcodes::IsSignExtensionOpcode(opcode)) {
+      RET_ON_PROTOTYPE_OPCODE(se);
+    }
+    if (WasmOpcodes::IsAnyRefOpcode(opcode)) {
+      RET_ON_PROTOTYPE_OPCODE(anyref);
+    }
+    FunctionSig* sig = WasmOpcodes::Signature(opcode);
+    BuildSimpleOperator(opcode, sig);
   }
 
   inline void BuildSimpleOperator(WasmOpcode opcode, FunctionSig* sig) {
@@ -2342,19 +2497,19 @@ class WasmFullDecoder : public WasmDecoder<validate> {
 
 class EmptyInterface {
  public:
-  static constexpr wasm::Decoder::ValidateFlag validate =
-      wasm::Decoder::kValidate;
+  static constexpr Decoder::ValidateFlag validate = Decoder::kValidate;
   using Value = ValueBase;
   using Control = ControlBase<Value>;
-  using Decoder = WasmFullDecoder<validate, EmptyInterface>;
+  using FullDecoder = WasmFullDecoder<validate, EmptyInterface>;
 
 #define DEFINE_EMPTY_CALLBACK(name, ...) \
-  void name(Decoder* decoder, ##__VA_ARGS__) {}
+  void name(FullDecoder* decoder, ##__VA_ARGS__) {}
   INTERFACE_FUNCTIONS(DEFINE_EMPTY_CALLBACK)
 #undef DEFINE_EMPTY_CALLBACK
 };
 
 #undef TRACE
+#undef TRACE_INST_FORMAT
 #undef VALIDATE
 #undef CHECK_PROTOTYPE_OPCODE
 #undef OPCODE_ERROR

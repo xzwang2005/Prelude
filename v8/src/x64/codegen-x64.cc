@@ -13,14 +13,14 @@ namespace internal {
 
 #define __ masm.
 
-UnaryMathFunctionWithIsolate CreateSqrtFunction(Isolate* isolate) {
+UnaryMathFunction CreateSqrtFunction() {
+  v8::PageAllocator* page_allocator = GetPlatformPageAllocator();
   size_t allocated = 0;
-  byte* buffer =
-      AllocateSystemPage(isolate->heap()->GetRandomMmapAddr(), &allocated);
+  byte* buffer = AllocatePage(page_allocator,
+                              page_allocator->GetRandomMmapAddr(), &allocated);
   if (buffer == nullptr) return nullptr;
 
-  MacroAssembler masm(isolate, buffer, static_cast<int>(allocated),
-                      CodeObjectRequired::kNo);
+  MacroAssembler masm(AssemblerOptions{}, buffer, static_cast<int>(allocated));
 
   // xmm0: raw double input.
   // Move double input into registers.
@@ -28,13 +28,13 @@ UnaryMathFunctionWithIsolate CreateSqrtFunction(Isolate* isolate) {
   __ Ret();
 
   CodeDesc desc;
-  masm.GetCode(isolate, &desc);
-  DCHECK(!RelocInfo::RequiresRelocation(isolate, desc));
+  masm.GetCode(nullptr, &desc);
+  DCHECK(!RelocInfo::RequiresRelocationAfterCodegen(desc));
 
-  Assembler::FlushICache(isolate, buffer, allocated);
-  CHECK(base::OS::SetPermissions(buffer, allocated,
-                                 base::OS::MemoryPermission::kReadExecute));
-  return FUNCTION_CAST<UnaryMathFunctionWithIsolate>(buffer);
+  Assembler::FlushICache(buffer, allocated);
+  CHECK(SetPermissions(page_allocator, buffer, allocated,
+                       PageAllocator::kReadExecute));
+  return FUNCTION_CAST<UnaryMathFunction>(buffer);
 }
 
 #undef __

@@ -254,7 +254,7 @@ def _MatchesSelectedTest(name, selected_tests, selected_tests_are_exact):
   if not selected_tests:
     return False
   if selected_tests_are_exact:
-    return any(name in selected_tests)
+    return name in selected_tests
   else:
     return any(test in name for test in selected_tests)
 
@@ -293,9 +293,6 @@ def _SetUpProcess(child, context): # pylint: disable=unused-argument
 
 
 def _TearDownProcess(child, context): # pylint: disable=unused-argument
-  # It's safe to call teardown_browser even if we did not start any browser
-  # in any of the tests.
-  browser_test_case.teardown_browser()
   options_for_unittests.Pop()
 
 

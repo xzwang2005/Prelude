@@ -18,7 +18,6 @@
 #include "base/time/time.h"
 #include "media/midi/midi_input_port_android.h"
 #include "media/midi/midi_manager.h"
-#include "media/midi/midi_scheduler.h"
 
 namespace midi {
 
@@ -40,7 +39,7 @@ class MidiManagerAndroid final : public MidiManager,
   void DispatchSendMidiData(MidiManagerClient* client,
                             uint32_t port_index,
                             const std::vector<uint8_t>& data,
-                            double timestamp) override;
+                            base::TimeTicks timestamp) override;
 
   // MidiInputPortAndroid::Delegate implementation.
   void OnReceivedData(MidiInputPortAndroid*,

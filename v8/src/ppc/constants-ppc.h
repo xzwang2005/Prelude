@@ -23,6 +23,9 @@
 namespace v8 {
 namespace internal {
 
+// TODO(sigurds): Change this value once we use relative jumps.
+constexpr size_t kMaxPCRelativeCodeRangeInMB = 0;
+
 // Number of registers
 const int kNumRegisters = 32;
 
@@ -36,8 +39,16 @@ const int kNoRegister = -1;
 const int kLoadPtrMaxReachBits = 15;
 const int kLoadDoubleMaxReachBits = 15;
 
+// Actual value of root register is offset from the root array's start
+// to take advantage of negative displacement values.
+// TODO(sigurds): Choose best value.
+constexpr int kRootRegisterBias = 128;
+
 // sign-extend the least significant 16-bits of value <imm>
 #define SIGN_EXT_IMM16(imm) ((static_cast<int>(imm) << 16) >> 16)
+
+// sign-extend the least significant 22-bits of value <imm>
+#define SIGN_EXT_IMM22(imm) ((static_cast<int>(imm) << 10) >> 10)
 
 // sign-extend the least significant 26-bits of value <imm>
 #define SIGN_EXT_IMM26(imm) ((static_cast<int>(imm) << 6) >> 6)
@@ -76,22 +87,6 @@ inline Condition NegateCondition(Condition cond) {
   return static_cast<Condition>(cond ^ ne);
 }
 
-
-// Commute a condition such that {a cond b == b cond' a}.
-inline Condition CommuteCondition(Condition cond) {
-  switch (cond) {
-    case lt:
-      return gt;
-    case gt:
-      return lt;
-    case ge:
-      return le;
-    case le:
-      return ge;
-    default:
-      return cond;
-  }
-}
 
 // -----------------------------------------------------------------------------
 // Instructions encoding.
@@ -2596,6 +2591,7 @@ enum {
   kImm24Mask = (1 << 24) - 1,
   kOff16Mask = (1 << 16) - 1,
   kImm16Mask = (1 << 16) - 1,
+  kImm22Mask = (1 << 22) - 1,
   kImm26Mask = (1 << 26) - 1,
   kBOfieldMask = 0x1f << 21,
   kOpcodeMask = 0x3f << 26,
@@ -2744,10 +2740,13 @@ const Instr rtCallRedirInstr = TWI;
 //   return ((type == 0) || (type == 1)) && instr->HasS();
 // }
 //
+
+constexpr uint8_t kInstrSize = 4;
+constexpr uint8_t kInstrSizeLog2 = 2;
+constexpr uint8_t kPcLoadDelta = 8;
+
 class Instruction {
  public:
-  enum { kInstrSize = 4, kInstrSizeLog2 = 2, kPCReadOffset = 8 };
-
 // Helper macro to define static accessors.
 // We use the cast to char* trick to bypass the strict anti-aliasing rules.
 #define DECLARE_STATIC_TYPED_ACCESSOR(return_type, Name) \

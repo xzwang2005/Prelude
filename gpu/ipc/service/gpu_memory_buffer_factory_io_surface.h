@@ -15,7 +15,7 @@
 #include "base/memory/ref_counted.h"
 #include "base/synchronization/lock.h"
 #include "gpu/command_buffer/service/image_factory.h"
-#include "gpu/gpu_export.h"
+#include "gpu/ipc/service/gpu_ipc_service_export.h"
 #include "gpu/ipc/service/gpu_memory_buffer_factory.h"
 #include "ui/gfx/geometry/size.h"
 #include "ui/gfx/gpu_memory_buffer.h"
@@ -27,7 +27,7 @@ class GLImage;
 
 namespace gpu {
 
-class GPU_EXPORT GpuMemoryBufferFactoryIOSurface
+class GPU_IPC_SERVICE_EXPORT GpuMemoryBufferFactoryIOSurface
     : public GpuMemoryBufferFactory,
       public ImageFactory {
  public:
@@ -48,12 +48,13 @@ class GPU_EXPORT GpuMemoryBufferFactoryIOSurface
 
   // Overridden from ImageFactory:
   scoped_refptr<gl::GLImage> CreateImageForGpuMemoryBuffer(
-      const gfx::GpuMemoryBufferHandle& handle,
+      gfx::GpuMemoryBufferHandle handle,
       const gfx::Size& size,
       gfx::BufferFormat format,
       unsigned internalformat,
       int client_id,
       SurfaceHandle surface_handle) override;
+  bool SupportsCreateAnonymousImage() const override;
   scoped_refptr<gl::GLImage> CreateAnonymousImage(const gfx::Size& size,
                                                   gfx::BufferFormat format,
                                                   gfx::BufferUsage usage,

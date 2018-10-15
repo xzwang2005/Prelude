@@ -168,6 +168,7 @@ BackendImpl::BackendImpl(
       new_eviction_(false),
       first_timer_(true),
       user_load_(false),
+      consider_evicting_at_op_end_(false),
       net_log_(net_log),
       done_(base::WaitableEvent::ResetPolicy::MANUAL,
             base::WaitableEvent::InitialState::NOT_SIGNALED),
@@ -195,6 +196,7 @@ BackendImpl::BackendImpl(
       new_eviction_(false),
       first_timer_(true),
       user_load_(false),
+      consider_evicting_at_op_end_(false),
       net_log_(net_log),
       done_(base::WaitableEvent::ResetPolicy::MANUAL,
             base::WaitableEvent::InitialState::NOT_SIGNALED),
@@ -216,15 +218,16 @@ BackendImpl::~BackendImpl() {
     CleanupCache();
   } else {
     background_queue_.background_thread()->PostTask(
-        FROM_HERE, base::Bind(&FinalCleanupCallback, base::Unretained(this)));
+        FROM_HERE,
+        base::BindOnce(&FinalCleanupCallback, base::Unretained(this)));
     // http://crbug.com/74623
     base::ThreadRestrictions::ScopedAllowWait allow_wait;
     done_.Wait();
   }
 }
 
-int BackendImpl::Init(const CompletionCallback& callback) {
-  background_queue_.Init(callback);
+int BackendImpl::Init(CompletionOnceCallback callback) {
+  background_queue_.Init(std::move(callback));
   return net::ERR_IO_PENDING;
 }
 
@@ -706,10 +709,8 @@ scoped_refptr<EntryImpl> BackendImpl::OpenNextEntryImpl(
   return next_entry;
 }
 
-bool BackendImpl::SetMaxSize(int max_bytes) {
-  static_assert(sizeof(max_bytes) == sizeof(max_size_),
-                "unsupported int model");
-  if (max_bytes < 0)
+bool BackendImpl::SetMaxSize(int64_t max_bytes) {
+  if (max_bytes < 0 || max_bytes > std::numeric_limits<int>::max())
     return false;
 
   // Zero size means use the default.
@@ -913,9 +914,16 @@ void BackendImpl::OnEntryDestroyBegin(Addr address) {
 
 void BackendImpl::OnEntryDestroyEnd() {
   DecreaseNumRefs();
-  if (data_->header.num_bytes > max_size_ && !read_only_ &&
-      (up_ticks_ > kTrimDelay || user_flags_ & kNoRandom))
-    eviction_.TrimCache(false);
+  consider_evicting_at_op_end_ = true;
+}
+
+void BackendImpl::OnSyncBackendOpComplete() {
+  if (consider_evicting_at_op_end_) {
+    if (data_->header.num_bytes > max_size_ && !read_only_ &&
+        (up_ticks_ > kTrimDelay || user_flags_ & kNoRandom))
+      eviction_.TrimCache(false);
+    consider_evicting_at_op_end_ = false;
+  }
 }
 
 EntryImpl* BackendImpl::GetOpenEntry(CacheRankingsBlock* rankings) const {
@@ -1067,7 +1075,8 @@ void BackendImpl::CriticalError(int error) {
 
   if (!num_refs_)
     base::ThreadTaskRunnerHandle::Get()->PostTask(
-        FROM_HERE, base::Bind(&BackendImpl::RestartCache, GetWeakPtr(), true));
+        FROM_HERE,
+        base::BindOnce(&BackendImpl::RestartCache, GetWeakPtr(), true));
 }
 
 void BackendImpl::ReportError(int error) {
@@ -1169,14 +1178,14 @@ void BackendImpl::ClearRefCountForTest() {
   num_refs_ = 0;
 }
 
-int BackendImpl::FlushQueueForTest(const CompletionCallback& callback) {
-  background_queue_.FlushQueue(callback);
+int BackendImpl::FlushQueueForTest(CompletionOnceCallback callback) {
+  background_queue_.FlushQueue(std::move(callback));
   return net::ERR_IO_PENDING;
 }
 
-int BackendImpl::RunTaskForTest(const base::Closure& task,
-                                const CompletionCallback& callback) {
-  background_queue_.RunTask(task, callback);
+int BackendImpl::RunTaskForTest(base::OnceClosure task,
+                                CompletionOnceCallback callback) {
+  background_queue_.RunTask(std::move(task), std::move(callback));
   return net::ERR_IO_PENDING;
 }
 
@@ -1244,51 +1253,62 @@ int32_t BackendImpl::GetEntryCount() const {
   return not_deleted;
 }
 
-int BackendImpl::OpenEntry(const std::string& key, Entry** entry,
-                           const CompletionCallback& callback) {
+int BackendImpl::OpenEntry(const std::string& key,
+                           net::RequestPriority request_priority,
+                           Entry** entry,
+                           CompletionOnceCallback callback) {
   DCHECK(!callback.is_null());
-  background_queue_.OpenEntry(key, entry, callback);
+  background_queue_.OpenEntry(key, entry, std::move(callback));
   return net::ERR_IO_PENDING;
 }
 
-int BackendImpl::CreateEntry(const std::string& key, Entry** entry,
-                             const CompletionCallback& callback) {
+int BackendImpl::CreateEntry(const std::string& key,
+                             net::RequestPriority request_priority,
+                             Entry** entry,
+                             CompletionOnceCallback callback) {
   DCHECK(!callback.is_null());
-  background_queue_.CreateEntry(key, entry, callback);
+  background_queue_.CreateEntry(key, entry, std::move(callback));
   return net::ERR_IO_PENDING;
 }
 
 int BackendImpl::DoomEntry(const std::string& key,
-                           const CompletionCallback& callback) {
+                           net::RequestPriority priority,
+                           CompletionOnceCallback callback) {
   DCHECK(!callback.is_null());
-  background_queue_.DoomEntry(key, callback);
+  background_queue_.DoomEntry(key, std::move(callback));
   return net::ERR_IO_PENDING;
 }
 
-int BackendImpl::DoomAllEntries(const CompletionCallback& callback) {
+int BackendImpl::DoomAllEntries(CompletionOnceCallback callback) {
   DCHECK(!callback.is_null());
-  background_queue_.DoomAllEntries(callback);
+  background_queue_.DoomAllEntries(std::move(callback));
   return net::ERR_IO_PENDING;
 }
 
 int BackendImpl::DoomEntriesBetween(const base::Time initial_time,
                                     const base::Time end_time,
-                                    const CompletionCallback& callback) {
+                                    CompletionOnceCallback callback) {
   DCHECK(!callback.is_null());
-  background_queue_.DoomEntriesBetween(initial_time, end_time, callback);
+  background_queue_.DoomEntriesBetween(initial_time, end_time,
+                                       std::move(callback));
   return net::ERR_IO_PENDING;
 }
 
 int BackendImpl::DoomEntriesSince(const base::Time initial_time,
-                                  const CompletionCallback& callback) {
+                                  CompletionOnceCallback callback) {
   DCHECK(!callback.is_null());
-  background_queue_.DoomEntriesSince(initial_time, callback);
+  background_queue_.DoomEntriesSince(initial_time, std::move(callback));
   return net::ERR_IO_PENDING;
 }
 
-int BackendImpl::CalculateSizeOfAllEntries(const CompletionCallback& callback) {
+int64_t BackendImpl::CalculateSizeOfAllEntries(
+    Int64CompletionOnceCallback callback) {
   DCHECK(!callback.is_null());
-  background_queue_.CalculateSizeOfAllEntries(callback);
+  background_queue_.CalculateSizeOfAllEntries(BindOnce(
+      [](Int64CompletionOnceCallback callback, int result) {
+        std::move(callback).Run(static_cast<int64_t>(result));
+      },
+      std::move(callback)));
   return net::ERR_IO_PENDING;
 }
 
@@ -1305,10 +1325,11 @@ class BackendImpl::IteratorImpl : public Backend::Iterator {
   }
 
   int OpenNextEntry(Entry** next_entry,
-                    const net::CompletionCallback& callback) override {
+                    net::CompletionOnceCallback callback) override {
     if (!background_queue_)
       return net::ERR_FAILED;
-    background_queue_->OpenNextEntry(iterator_.get(), next_entry, callback);
+    background_queue_->OpenNextEntry(iterator_.get(), next_entry,
+                                     std::move(callback));
     return net::ERR_IO_PENDING;
   }
 
@@ -1855,7 +1876,8 @@ void BackendImpl::DecreaseNumRefs() {
 
   if (!num_refs_ && disabled_)
     base::ThreadTaskRunnerHandle::Get()->PostTask(
-        FROM_HERE, base::Bind(&BackendImpl::RestartCache, GetWeakPtr(), true));
+        FROM_HERE,
+        base::BindOnce(&BackendImpl::RestartCache, GetWeakPtr(), true));
 }
 
 void BackendImpl::IncreaseNumEntries() {
@@ -2139,3 +2161,5 @@ void BackendImpl::FlushForTesting() {
 }
 
 }  // namespace disk_cache
+
+#undef CACHE_UMA_BACKEND_IMPL_OBJ  // undef for jumbo builds

@@ -23,8 +23,13 @@ class MockImageGenerator : public FakePaintImageGenerator {
       : FakePaintImageGenerator(
             SkImageInfo::MakeN32Premul(size.width(), size.height())) {}
 
-  MOCK_METHOD5(GetPixels,
-               bool(const SkImageInfo&, void*, size_t, size_t, uint32_t));
+  MOCK_METHOD6(GetPixels,
+               bool(const SkImageInfo&,
+                    void*,
+                    size_t,
+                    size_t,
+                    PaintImage::GeneratorClientId,
+                    uint32_t));
 };
 
 class MockImageProvider : public ImageProvider {
@@ -42,7 +47,7 @@ class MockImageProvider : public ImageProvider {
     sk_sp<SkImage> image = SkImage::MakeFromBitmap(bitmap);
     return ScopedDecodedDrawImage(
         DecodedDrawImage(image, SkSize::MakeEmpty(), SkSize::Make(1.0f, 1.0f),
-                         draw_image.filter_quality()));
+                         draw_image.filter_quality(), true));
   }
 
   const DrawImage& draw_image() const { return draw_image_; }
@@ -84,6 +89,7 @@ TEST(PaintShaderTest, DecodePaintRecord) {
   auto record_shader = PaintShader::MakePaintRecord(
       record, SkRect::MakeWH(100, 100), SkShader::TileMode::kClamp_TileMode,
       SkShader::TileMode::kClamp_TileMode, &local_matrix);
+  record_shader->set_has_animated_images(true);
 
   PaintOpBuffer buffer;
   PaintFlags flags;
@@ -93,7 +99,7 @@ TEST(PaintShaderTest, DecodePaintRecord) {
 
   MockImageProvider image_provider;
   SaveCountingCanvas canvas;
-  buffer.Playback(&canvas, &image_provider);
+  buffer.Playback(&canvas, PlaybackParams(&image_provider));
 
   EXPECT_EQ(canvas.draw_rect_, SkRect::MakeWH(100, 100));
   SkShader* shader = canvas.paint_.getShader();
@@ -114,7 +120,8 @@ TEST(PaintShaderTest, DecodePaintRecord) {
 
   // Using the shader requests decode for images at the correct scale.
   EXPECT_EQ(image_provider.draw_image().paint_image(), paint_image);
-  EXPECT_EQ(image_provider.draw_image().scale(), SkSize::Make(0.25f, 0.25f));
+  EXPECT_EQ(image_provider.draw_image().scale().width(), 0.25f);
+  EXPECT_EQ(image_provider.draw_image().scale().height(), 0.25f);
 }
 
 }  // namespace cc

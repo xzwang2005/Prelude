@@ -74,6 +74,13 @@ const char kStabilityBreakpadRegistrationSuccess[] =
 const char kStabilityBreakpadRegistrationFail[] =
     "user_experience_metrics.stability.breakpad_registration_fail";
 
+// A time stamp at which time the browser was known to be alive. Used to
+// evaluate whether the browser crash was due to a whole system crash.
+// At minimum this is updated each time the "exited_cleanly" preference is
+// modified, but can also be optionally updated on a slow schedule.
+const char kStabilityBrowserLastLiveTimeStamp[] =
+    "user_experience_metrics.stability.browser_last_live_timestamp";
+
 // Total number of child process crashes (other than renderer / extension
 // renderer ones, and plugin children, which are counted separately) since the
 // last report.
@@ -81,8 +88,20 @@ const char kStabilityChildProcessCrashCount[] =
     "user_experience_metrics.stability.child_process_crash_count";
 
 // Number of times the application exited uncleanly since the last report.
+// On Android this does not count the ones due to Gms Core updates (below).
 const char kStabilityCrashCount[] =
     "user_experience_metrics.stability.crash_count";
+
+// Number of times the application exited uncleanly since the last report
+// due to a gms core update.
+const char kStabilityCrashCountDueToGmsCoreUpdate[] =
+    "user_experience_metrics.stability.crash_count_due_to_gms_core_update";
+
+// Number of times the application exited uncleanly since the last report
+// without gms core update (Deprecated 2018-09).
+// TODO(wnwen): Remove this after 2019-09.
+const char kStabilityCrashCountWithoutGmsCoreUpdateObsolete[] =
+    "user_experience_metrics.stability.crash_count_without_gms_core_update";
 
 // Number of times the initial stability log upload was deferred to the next
 // startup.
@@ -123,6 +142,15 @@ const char kStabilityExtensionRendererFailedLaunchCount[] =
 // last report.
 const char kStabilityExtensionRendererLaunchCount[] =
     "user_experience_metrics.stability.extension_renderer_launch_count";
+
+// The GMS core version used in Chrome.
+const char kStabilityGmsCoreVersion[] =
+    "user_experience_metrics.stability.gms_core_version";
+
+// Number of times a gpu process crashed since the last report. Currently only
+// recorded on Android.
+const char kStabilityGpuCrashCount[] =
+    "user_experience_metrics.stability.gpu_crash_count";
 
 // Number of times the session end did not complete.
 const char kStabilityIncompleteSessionEndCount[] =
@@ -176,6 +204,12 @@ const char kStabilityStatsBuildTime[] =
 // metrics reported under current version reflect stability of the same version.
 const char kStabilityStatsVersion[] =
     "user_experience_metrics.stability.stats_version";
+
+// Number of times the application exited uncleanly and the system session
+// embedding the browser session ended abnormally since the last report.
+// Windows only.
+const char kStabilitySystemCrashCount[] =
+    "user_experience_metrics.stability.system_crash_count";
 
 // Number of times the version number stored in prefs did not match the
 // serialized system profile version number.

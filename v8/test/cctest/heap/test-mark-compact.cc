@@ -96,6 +96,41 @@ HEAP_TEST(NoPromotion) {
   }
 }
 
+// This is the same as Factory::NewMap, except it doesn't retry on
+// allocation failure.
+AllocationResult HeapTester::AllocateMapForTest(Isolate* isolate) {
+  Heap* heap = isolate->heap();
+  HeapObject* obj;
+  AllocationResult alloc = heap->AllocateRaw(Map::kSize, MAP_SPACE);
+  if (!alloc.To(&obj)) return alloc;
+  obj->set_map_after_allocation(ReadOnlyRoots(heap).meta_map(),
+                                SKIP_WRITE_BARRIER);
+  return isolate->factory()->InitializeMap(Map::cast(obj), JS_OBJECT_TYPE,
+                                           JSObject::kHeaderSize,
+                                           TERMINAL_FAST_ELEMENTS_KIND, 0);
+}
+
+// This is the same as Factory::NewFixedArray, except it doesn't retry
+// on allocation failure.
+AllocationResult HeapTester::AllocateFixedArrayForTest(
+    Heap* heap, int length, PretenureFlag pretenure) {
+  DCHECK(length >= 0 && length <= FixedArray::kMaxLength);
+  int size = FixedArray::SizeFor(length);
+  AllocationSpace space = heap->SelectSpace(pretenure);
+  HeapObject* obj;
+  {
+    AllocationResult result = heap->AllocateRaw(size, space);
+    if (!result.To(&obj)) return result;
+  }
+  obj->set_map_after_allocation(ReadOnlyRoots(heap).fixed_array_map(),
+                                SKIP_WRITE_BARRIER);
+  FixedArray* array = FixedArray::cast(obj);
+  array->set_length(length);
+  MemsetPointer(array->data_start(), ReadOnlyRoots(heap).undefined_value(),
+                length);
+  return array;
+}
+
 HEAP_TEST(MarkCompactCollector) {
   FLAG_incremental_marking = false;
   FLAG_retain_maps_for_n_gc = 0;
@@ -105,7 +140,7 @@ HEAP_TEST(MarkCompactCollector) {
   Factory* factory = isolate->factory();
 
   v8::HandleScope sc(CcTest::isolate());
-  Handle<JSGlobalObject> global(isolate->context()->global_object());
+  Handle<JSGlobalObject> global(isolate->context()->global_object(), isolate);
 
   // call mark-compact when heap is empty
   CcTest::CollectGarbage(OLD_SPACE);
@@ -114,23 +149,24 @@ HEAP_TEST(MarkCompactCollector) {
   const int arraysize = 100;
   AllocationResult allocation;
   do {
-    allocation = heap->AllocateFixedArray(arraysize);
+    allocation = AllocateFixedArrayForTest(heap, arraysize, NOT_TENURED);
   } while (!allocation.IsRetry());
   CcTest::CollectGarbage(NEW_SPACE);
-  heap->AllocateFixedArray(arraysize).ToObjectChecked();
+  AllocateFixedArrayForTest(heap, arraysize, NOT_TENURED).ToObjectChecked();
 
   // keep allocating maps until it fails
   do {
-    allocation = heap->AllocateMap(JS_OBJECT_TYPE, JSObject::kHeaderSize);
+    allocation = AllocateMapForTest(isolate);
   } while (!allocation.IsRetry());
   CcTest::CollectGarbage(MAP_SPACE);
-  heap->AllocateMap(JS_OBJECT_TYPE, JSObject::kHeaderSize).ToObjectChecked();
+  AllocateMapForTest(isolate).ToObjectChecked();
 
   { HandleScope scope(isolate);
     // allocate a garbage
     Handle<String> func_name = factory->InternalizeUtf8String("theFunction");
     Handle<JSFunction> function = factory->NewFunctionForTest(func_name);
-    JSReceiver::SetProperty(global, func_name, function, LanguageMode::kSloppy)
+    JSReceiver::SetProperty(isolate, global, func_name, function,
+                            LanguageMode::kSloppy)
         .Check();
 
     factory->NewJSObject(function);
@@ -142,17 +178,19 @@ HEAP_TEST(MarkCompactCollector) {
     Handle<String> func_name = factory->InternalizeUtf8String("theFunction");
     CHECK(Just(true) == JSReceiver::HasOwnProperty(global, func_name));
     Handle<Object> func_value =
-        Object::GetProperty(global, func_name).ToHandleChecked();
+        Object::GetProperty(isolate, global, func_name).ToHandleChecked();
     CHECK(func_value->IsJSFunction());
     Handle<JSFunction> function = Handle<JSFunction>::cast(func_value);
     Handle<JSObject> obj = factory->NewJSObject(function);
 
     Handle<String> obj_name = factory->InternalizeUtf8String("theObject");
-    JSReceiver::SetProperty(global, obj_name, obj, LanguageMode::kSloppy)
+    JSReceiver::SetProperty(isolate, global, obj_name, obj,
+                            LanguageMode::kSloppy)
         .Check();
     Handle<String> prop_name = factory->InternalizeUtf8String("theSlot");
     Handle<Smi> twenty_three(Smi::FromInt(23), isolate);
-    JSReceiver::SetProperty(obj, prop_name, twenty_three, LanguageMode::kSloppy)
+    JSReceiver::SetProperty(isolate, obj, prop_name, twenty_three,
+                            LanguageMode::kSloppy)
         .Check();
   }
 
@@ -162,10 +200,10 @@ HEAP_TEST(MarkCompactCollector) {
     Handle<String> obj_name = factory->InternalizeUtf8String("theObject");
     CHECK(Just(true) == JSReceiver::HasOwnProperty(global, obj_name));
     Handle<Object> object =
-        Object::GetProperty(global, obj_name).ToHandleChecked();
+        Object::GetProperty(isolate, global, obj_name).ToHandleChecked();
     CHECK(object->IsJSObject());
     Handle<String> prop_name = factory->InternalizeUtf8String("theSlot");
-    CHECK_EQ(*Object::GetProperty(object, prop_name).ToHandleChecked(),
+    CHECK_EQ(*Object::GetProperty(isolate, object, prop_name).ToHandleChecked(),
              Smi::FromInt(23));
   }
 }
@@ -331,7 +369,7 @@ TEST(Regress5829) {
   array->set_length(9);
   heap->CreateFillerObjectAt(old_end - kPointerSize, kPointerSize,
                              ClearRecordedSlots::kNo);
-  heap->old_space()->EmptyAllocationInfo();
+  heap->old_space()->FreeLinearAllocationArea();
   Page* page = Page::FromAddress(array->address());
   IncrementalMarking::MarkingState* marking_state = marking->marking_state();
   for (auto object_and_size :

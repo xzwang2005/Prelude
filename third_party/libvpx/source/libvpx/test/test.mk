@@ -1,4 +1,6 @@
 LIBVPX_TEST_SRCS-yes += acm_random.h
+LIBVPX_TEST_SRCS-yes += bench.h
+LIBVPX_TEST_SRCS-yes += bench.cc
 LIBVPX_TEST_SRCS-yes += buffer.h
 LIBVPX_TEST_SRCS-yes += clear_system_state.h
 LIBVPX_TEST_SRCS-yes += codec_factory.h
@@ -22,7 +24,8 @@ LIBVPX_TEST_SRCS-$(CONFIG_ENCODERS)    += ../y4minput.h ../y4minput.c
 LIBVPX_TEST_SRCS-$(CONFIG_ENCODERS)    += altref_test.cc
 LIBVPX_TEST_SRCS-$(CONFIG_ENCODERS)    += aq_segment_test.cc
 LIBVPX_TEST_SRCS-$(CONFIG_ENCODERS)    += alt_ref_aq_segment_test.cc
-LIBVPX_TEST_SRCS-$(CONFIG_ENCODERS)    += datarate_test.cc
+LIBVPX_TEST_SRCS-$(CONFIG_ENCODERS)    += vp8_datarate_test.cc
+LIBVPX_TEST_SRCS-$(CONFIG_ENCODERS)    += vp9_datarate_test.cc
 LIBVPX_TEST_SRCS-$(CONFIG_ENCODERS)    += encode_api_test.cc
 LIBVPX_TEST_SRCS-$(CONFIG_ENCODERS)    += error_resilience_test.cc
 LIBVPX_TEST_SRCS-$(CONFIG_ENCODERS)    += i420_video_source.h
@@ -46,9 +49,14 @@ LIBVPX_TEST_SRCS-$(CONFIG_VP9_ENCODER) += cpu_speed_test.cc
 LIBVPX_TEST_SRCS-$(CONFIG_VP9_ENCODER) += frame_size_tests.cc
 LIBVPX_TEST_SRCS-$(CONFIG_VP9_ENCODER) += vp9_lossless_test.cc
 LIBVPX_TEST_SRCS-$(CONFIG_VP9_ENCODER) += vp9_end_to_end_test.cc
+LIBVPX_TEST_SRCS-$(CONFIG_VP9_ENCODER) += decode_corrupted.cc
 LIBVPX_TEST_SRCS-$(CONFIG_VP9_ENCODER) += vp9_ethread_test.cc
 LIBVPX_TEST_SRCS-$(CONFIG_VP9_ENCODER) += vp9_motion_vector_test.cc
 LIBVPX_TEST_SRCS-$(CONFIG_VP9_ENCODER) += level_test.cc
+LIBVPX_TEST_SRCS-$(CONFIG_VP9_ENCODER) += svc_datarate_test.cc
+LIBVPX_TEST_SRCS-$(CONFIG_VP9_ENCODER) += svc_test.cc
+LIBVPX_TEST_SRCS-$(CONFIG_VP9_ENCODER) += svc_test.h
+LIBVPX_TEST_SRCS-$(CONFIG_VP9_ENCODER) += svc_end_to_end_test.cc
 
 LIBVPX_TEST_SRCS-yes                   += decode_test_driver.cc
 LIBVPX_TEST_SRCS-yes                   += decode_test_driver.h
@@ -169,7 +177,6 @@ LIBVPX_TEST_SRCS-$(CONFIG_VP9_ENCODER) += vp9_quantize_test.cc
 LIBVPX_TEST_SRCS-$(CONFIG_VP9_ENCODER) += vp9_subtract_test.cc
 
 ifeq ($(CONFIG_VP9_ENCODER),yes)
-LIBVPX_TEST_SRCS-$(CONFIG_SPATIAL_SVC) += svc_test.cc
 LIBVPX_TEST_SRCS-$(CONFIG_INTERNAL_STATS) += blockiness_test.cc
 LIBVPX_TEST_SRCS-$(CONFIG_INTERNAL_STATS) += consistency_test.cc
 endif

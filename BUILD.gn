@@ -28,17 +28,11 @@ group("gn_all") {
   testonly = true
 
   deps = [
-    "//mojo/public:public", 
-    "//ipc:ipc",
-    "//url",
-    "//mojo/edk/test:run_all_unittests",
-    "//mojo/edk/system",
-    "//ui/gfx",
-    "//media",
-    "//gpu:gpu",
-    "//ui/aura",
-    "//ui/views",  
+    "//device/vr/buildflags",
+    "//skia",
+    "//ui/views",
     "//ui/views/examples:views_examples_exe",
+    "//third_party/angle/samples:all",
     "//prelude",
   ]
 }

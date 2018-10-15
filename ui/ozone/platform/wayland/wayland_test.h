@@ -7,10 +7,16 @@
 
 #include "base/message_loop/message_loop.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "ui/base/ui_features.h"
 #include "ui/ozone/platform/wayland/fake_server.h"
-#include "ui/ozone/platform/wayland/mock_platform_window_delegate.h"
+#include "ui/ozone/platform/wayland/gpu/wayland_connection_proxy.h"
 #include "ui/ozone/platform/wayland/wayland_connection.h"
 #include "ui/ozone/platform/wayland/wayland_window.h"
+#include "ui/ozone/test/mock_platform_window_delegate.h"
+
+#if BUILDFLAG(USE_XKBCOMMON)
+#include "ui/events/ozone/layout/xkb/xkb_evdev_codes.h"
+#endif
 
 namespace ui {
 
@@ -30,19 +36,24 @@ class WaylandTest : public ::testing::TestWithParam<uint32_t> {
   void Sync();
 
  private:
-  bool initialized = false;
-  base::MessageLoopForUI message_loop;
+  base::MessageLoopForUI message_loop_;
+  bool initialized_ = false;
 
  protected:
-  wl::FakeServer server;
-  wl::MockSurface* surface;
+  wl::FakeServer server_;
+  wl::MockSurface* surface_;
 
-  WaylandConnection connection;
-  MockPlatformWindowDelegate delegate;
-  WaylandWindow window;
-  gfx::AcceleratedWidget widget = gfx::kNullAcceleratedWidget;
+  MockPlatformWindowDelegate delegate_;
+  std::unique_ptr<WaylandConnectionProxy> connection_proxy_;
+  std::unique_ptr<WaylandConnection> connection_;
+  std::unique_ptr<WaylandWindow> window_;
+  gfx::AcceleratedWidget widget_ = gfx::kNullAcceleratedWidget;
 
  private:
+#if BUILDFLAG(USE_XKBCOMMON)
+  XkbEvdevCodes xkb_evdev_code_converter_;
+#endif
+
   DISALLOW_COPY_AND_ASSIGN(WaylandTest);
 };
 

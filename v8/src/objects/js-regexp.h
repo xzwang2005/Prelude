@@ -48,14 +48,15 @@ class JSRegExp : public JSObject {
   };
   typedef base::Flags<Flag> Flags;
 
-  static int FlagCount() { return 6; }
+  static constexpr int FlagCount() { return 6; }
 
   DECL_ACCESSORS(data, Object)
   DECL_ACCESSORS(flags, Object)
   DECL_ACCESSORS(last_index, Object)
   DECL_ACCESSORS(source, Object)
 
-  V8_EXPORT_PRIVATE static MaybeHandle<JSRegExp> New(Handle<String> source,
+  V8_EXPORT_PRIVATE static MaybeHandle<JSRegExp> New(Isolate* isolate,
+                                                     Handle<String> source,
                                                      Flags flags);
   static Handle<JSRegExp> Copy(Handle<JSRegExp> regexp);
 
@@ -144,13 +145,20 @@ DEFINE_OPERATORS_FOR_FLAGS(JSRegExp::Flags)
 // After creation the result must be treated as a JSArray in all regards.
 class JSRegExpResult : public JSArray {
  public:
-  // Offsets of object fields.
-  static const int kIndexOffset = JSArray::kSize;
-  static const int kInputOffset = kIndexOffset + kPointerSize;
-  static const int kSize = kInputOffset + kPointerSize;
+#define REG_EXP_RESULT_FIELDS(V) \
+  V(kIndexOffset, kPointerSize)  \
+  V(kInputOffset, kPointerSize)  \
+  V(kGroupsOffset, kPointerSize) \
+  V(kSize, 0)
+
+  DEFINE_FIELD_OFFSET_CONSTANTS(JSArray::kSize, REG_EXP_RESULT_FIELDS)
+#undef REG_EXP_RESULT_FIELDS
+
   // Indices of in-object properties.
   static const int kIndexIndex = 0;
   static const int kInputIndex = 1;
+  static const int kGroupsIndex = 2;
+  static const int kInObjectPropertyCount = 3;
 
  private:
   DISALLOW_IMPLICIT_CONSTRUCTORS(JSRegExpResult);

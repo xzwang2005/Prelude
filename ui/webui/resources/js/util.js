@@ -33,6 +33,18 @@ function getSVGElement(id) {
 }
 
 /**
+ * @return {?Element} The currently focused element (including elements that are
+ *     behind a shadow root), or null if nothing is focused.
+ */
+function getDeepActiveElement() {
+  var a = document.activeElement;
+  while (a && a.shadowRoot && a.shadowRoot.activeElement) {
+    a = a.shadowRoot.activeElement;
+  }
+  return a;
+}
+
+/**
  * Add an accessible message to the page that will be announced to
  * users who have spoken feedback on, but will be invisible to all
  * other users. It's removed right away so it doesn't clutter the DOM.
@@ -56,7 +68,7 @@ function announceAccessibleMessage(msg) {
  * @param {string} s The URL to generate the CSS url for.
  * @return {string} The CSS url string.
  */
-function url(s) {
+function getUrlForCss(s) {
   // http://www.w3.org/TR/css3-values/#uris
   // Parentheses, commas, whitespace characters, single quotes (') and double
   // quotes (") appearing in a URI must be escaped with a backslash

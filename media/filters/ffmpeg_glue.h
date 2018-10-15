@@ -17,10 +17,6 @@
 //
 // The glue in turn processes those read and seek requests using the
 // FFmpegURLProtocol provided during construction.
-//
-// FFmpegGlue is also responsible for initializing FFmpeg, which is done once
-// per process.  Initialization includes: turning off log messages, registering
-// a lock manager, and finally registering all demuxers and codecs.
 
 #ifndef MEDIA_FILTERS_FFMPEG_GLUE_H_
 #define MEDIA_FILTERS_FFMPEG_GLUE_H_
@@ -63,15 +59,14 @@ class MEDIA_EXPORT FFmpegURLProtocol {
 
 class MEDIA_EXPORT FFmpegGlue {
  public:
-  static void InitializeFFmpeg();
-
   // See file documentation for usage.  |protocol| must outlive FFmpegGlue.
   explicit FFmpegGlue(FFmpegURLProtocol* protocol);
   ~FFmpegGlue();
 
   // Opens an AVFormatContext specially prepared to process reads and seeks
   // through the FFmpegURLProtocol provided during construction.
-  bool OpenContext();
+  // |is_local_file| is an optional parameter used for metrics reporting.
+  bool OpenContext(bool is_local_file = false);
   AVFormatContext* format_context() { return format_context_; }
   // Returns the container name.
   // Note that it is only available after calling OpenContext.

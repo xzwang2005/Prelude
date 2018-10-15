@@ -12,13 +12,14 @@ namespace internal {
 
 class TestTransitionsAccessor : public TransitionsAccessor {
  public:
-  TestTransitionsAccessor(Map* map, DisallowHeapAllocation* no_gc)
-      : TransitionsAccessor(map, no_gc) {}
-  explicit TestTransitionsAccessor(Handle<Map> map)
-      : TransitionsAccessor(map) {}
+  TestTransitionsAccessor(Isolate* isolate, Map* map,
+                          DisallowHeapAllocation* no_gc)
+      : TransitionsAccessor(isolate, map, no_gc) {}
+  TestTransitionsAccessor(Isolate* isolate, Handle<Map> map)
+      : TransitionsAccessor(isolate, map) {}
 
   // Expose internals for tests.
-  bool IsWeakCellEncoding() { return encoding() == kWeakCell; }
+  bool IsWeakRefEncoding() { return encoding() == kWeakRef; }
 
   bool IsFullTransitionArrayEncoding() {
     return encoding() == kFullTransitionArray;

@@ -9,6 +9,7 @@
 #endif
 
 #include "compiler/translator/Types.h"
+#include "compiler/translator/ImmutableString.h"
 #include "compiler/translator/InfoSink.h"
 #include "compiler/translator/IntermNode.h"
 #include "compiler/translator/SymbolTable.h"
@@ -51,6 +52,8 @@ const char *getBasicString(TBasicType t)
             return "sampler2DArray";
         case EbtSampler2DMS:
             return "sampler2DMS";
+        case EbtSampler2DMSArray:
+            return "sampler2DMSArray";
         case EbtISampler2D:
             return "isampler2D";
         case EbtISampler3D:
@@ -61,6 +64,8 @@ const char *getBasicString(TBasicType t)
             return "isampler2DArray";
         case EbtISampler2DMS:
             return "isampler2DMS";
+        case EbtISampler2DMSArray:
+            return "isampler2DMSArray";
         case EbtUSampler2D:
             return "usampler2D";
         case EbtUSampler3D:
@@ -71,6 +76,8 @@ const char *getBasicString(TBasicType t)
             return "usampler2DArray";
         case EbtUSampler2DMS:
             return "usampler2DMS";
+        case EbtUSampler2DMSArray:
+            return "usampler2DMSArray";
         case EbtSampler2DShadow:
             return "sampler2DShadow";
         case EbtSamplerCubeShadow:
@@ -193,7 +200,7 @@ TType::TType(const TPublicType &p)
     }
 }
 
-TType::TType(TStructure *userDef)
+TType::TType(const TStructure *userDef, bool isStructSpecifier)
     : type(EbtStruct),
       precision(EbpUndefined),
       qualifier(EvqTemporary),
@@ -205,12 +212,12 @@ TType::TType(TStructure *userDef)
       mArraySizes(nullptr),
       mInterfaceBlock(nullptr),
       mStructure(userDef),
-      mIsStructSpecifier(false),
+      mIsStructSpecifier(isStructSpecifier),
       mMangledName(nullptr)
 {
 }
 
-TType::TType(TInterfaceBlock *interfaceBlockIn,
+TType::TType(const TInterfaceBlock *interfaceBlockIn,
              TQualifier qualifierIn,
              TLayoutQualifier layoutQualifierIn)
     : type(EbtInterfaceBlock),
@@ -395,33 +402,6 @@ const char *TType::getBuiltInTypeNameString() const
     return getBasicString();
 }
 
-TString TType::getCompleteString() const
-{
-    TStringStream stream;
-
-    if (invariant)
-        stream << "invariant ";
-    if (qualifier != EvqTemporary && qualifier != EvqGlobal)
-        stream << getQualifierString() << " ";
-    if (precision != EbpUndefined)
-        stream << getPrecisionString() << " ";
-    if (mArraySizes)
-    {
-        for (auto arraySizeIter = mArraySizes->rbegin(); arraySizeIter != mArraySizes->rend();
-             ++arraySizeIter)
-        {
-            stream << "array[" << (*arraySizeIter) << "] of ";
-        }
-    }
-    if (isMatrix())
-        stream << getCols() << "X" << getRows() << " matrix of ";
-    else if (isVector())
-        stream << getNominalSize() << "-component vector of ";
-
-    stream << getBasicString();
-    return stream.str();
-}
-
 int TType::getDeepestStructNesting() const
 {
     return mStructure ? mStructure->deepestNesting() : 0;
@@ -429,7 +409,7 @@ int TType::getDeepestStructNesting() const
 
 bool TType::isNamelessStruct() const
 {
-    return mStructure && mStructure->name() == "";
+    return mStructure && mStructure->symbolType() == SymbolType::Empty;
 }
 
 bool TType::isStructureContainingArrays() const
@@ -452,19 +432,36 @@ bool TType::isStructureContainingSamplers() const
     return mStructure ? mStructure->containsSamplers() : false;
 }
 
+bool TType::canReplaceWithConstantUnion() const
+{
+    if (isArray())
+    {
+        return false;
+    }
+    if (!mStructure)
+    {
+        return true;
+    }
+    if (isStructureContainingArrays())
+    {
+        return false;
+    }
+    if (getObjectSize() > 16)
+    {
+        return false;
+    }
+    return true;
+}
+
 //
 // Recursively generate mangled names.
 //
 const char *TType::buildMangledName() const
 {
-    TString mangledName;
-    if (isMatrix())
-        mangledName += 'm';
-    else if (isVector())
-        mangledName += 'v';
+    TString mangledName(1, GetSizeMangledName(primarySize, secondarySize));
 
-    const char *basicMangledName = GetBasicMangledName(type);
-    if (basicMangledName != nullptr)
+    char basicMangledName = GetBasicMangledName(type);
+    if (basicMangledName != '{')
     {
         mangledName += basicMangledName;
     }
@@ -474,30 +471,24 @@ const char *TType::buildMangledName() const
         switch (type)
         {
             case EbtStruct:
-                mangledName += "struct-";
-                mangledName += mStructure->name();
+                mangledName += "{s";
+                if (mStructure->symbolType() != SymbolType::Empty)
+                {
+                    mangledName += mStructure->name().data();
+                }
                 mangledName += mStructure->mangledFieldList();
+                mangledName += '}';
                 break;
             case EbtInterfaceBlock:
-                mangledName += "iblock-";
-                mangledName += mInterfaceBlock->name();
+                mangledName += "{i";
+                mangledName += mInterfaceBlock->name().data();
                 mangledName += mInterfaceBlock->mangledFieldList();
+                mangledName += '}';
                 break;
             default:
                 UNREACHABLE();
                 break;
         }
-    }
-
-    if (isMatrix())
-    {
-        mangledName += static_cast<char>('0' + getCols());
-        mangledName += static_cast<char>('x');
-        mangledName += static_cast<char>('0' + getRows());
-    }
-    else
-    {
-        mangledName += static_cast<char>('0' + getNominalSize());
     }
 
     if (mArraySizes)
@@ -512,13 +503,8 @@ const char *TType::buildMangledName() const
         }
     }
 
-    mangledName += ';';
-
     // Copy string contents into a pool-allocated buffer, so we never need to call delete.
-    size_t requiredSize = mangledName.size() + 1;
-    char *buffer = reinterpret_cast<char *>(GetGlobalPoolAllocator()->allocate(requiredSize));
-    memcpy(buffer, mangledName.c_str(), requiredSize);
-    return buffer;
+    return AllocatePoolCharArray(mangledName.c_str(), mangledName.size());
 }
 
 size_t TType::getObjectSize() const
@@ -733,20 +719,11 @@ void TType::toArrayElementType()
     }
 }
 
-void TType::setInterfaceBlock(TInterfaceBlock *interfaceBlockIn)
+void TType::setInterfaceBlock(const TInterfaceBlock *interfaceBlockIn)
 {
     if (mInterfaceBlock != interfaceBlockIn)
     {
         mInterfaceBlock = interfaceBlockIn;
-        invalidateMangledName();
-    }
-}
-
-void TType::setStruct(TStructure *s)
-{
-    if (mStructure != s)
-    {
-        mStructure = s;
         invalidateMangledName();
     }
 }
@@ -771,10 +748,10 @@ void TType::invalidateMangledName()
     mMangledName = nullptr;
 }
 
-void TType::createSamplerSymbols(const TString &namePrefix,
+void TType::createSamplerSymbols(const ImmutableString &namePrefix,
                                  const TString &apiNamePrefix,
-                                 TVector<TIntermSymbol *> *outputSymbols,
-                                 TMap<TIntermSymbol *, TString> *outputSymbolsToAPINames,
+                                 TVector<const TVariable *> *outputSymbols,
+                                 TMap<const TVariable *, TString> *outputSymbolsToAPINames,
                                  TSymbolTable *symbolTable) const
 {
     if (isStructureContainingSamplers())
@@ -785,29 +762,30 @@ void TType::createSamplerSymbols(const TString &namePrefix,
             elementType.toArrayElementType();
             for (unsigned int arrayIndex = 0u; arrayIndex < getOutermostArraySize(); ++arrayIndex)
             {
-                TStringStream elementName;
+                std::stringstream elementName;
                 elementName << namePrefix << "_" << arrayIndex;
                 TStringStream elementApiName;
                 elementApiName << apiNamePrefix << "[" << arrayIndex << "]";
-                elementType.createSamplerSymbols(elementName.str(), elementApiName.str(),
-                                                 outputSymbols, outputSymbolsToAPINames,
-                                                 symbolTable);
+                elementType.createSamplerSymbols(ImmutableString(elementName.str()),
+                                                 elementApiName.str(), outputSymbols,
+                                                 outputSymbolsToAPINames, symbolTable);
             }
         }
         else
         {
-            mStructure->createSamplerSymbols(namePrefix, apiNamePrefix, outputSymbols,
+            mStructure->createSamplerSymbols(namePrefix.data(), apiNamePrefix, outputSymbols,
                                              outputSymbolsToAPINames, symbolTable);
         }
         return;
     }
 
     ASSERT(IsSampler(type));
-    TIntermSymbol *symbol = new TIntermSymbol(symbolTable->nextUniqueId(), namePrefix, *this);
-    outputSymbols->push_back(symbol);
+    TVariable *variable =
+        new TVariable(symbolTable, namePrefix, new TType(*this), SymbolType::AngleInternal);
+    outputSymbols->push_back(variable);
     if (outputSymbolsToAPINames)
     {
-        (*outputSymbolsToAPINames)[symbol] = apiNamePrefix;
+        (*outputSymbolsToAPINames)[variable] = apiNamePrefix;
     }
 }
 
@@ -865,7 +843,6 @@ TString TFieldListCollection::buildMangledFieldList() const
     TString mangledName;
     for (const auto *field : *mFields)
     {
-        mangledName += '-';
         mangledName += field->type()->getMangledName();
     }
     return mangledName;

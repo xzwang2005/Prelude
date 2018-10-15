@@ -8,6 +8,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "base/allocator/partition_allocator/page_allocator.h"
 #include "base/logging.h"
 #include "base/memory/shared_memory_tracker.h"
 #include "base/metrics/histogram_functions.h"
@@ -16,6 +17,7 @@
 #include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/unguessable_token.h"
+#include "base/win/windows_version.h"
 
 namespace base {
 namespace {
@@ -217,17 +219,22 @@ bool SharedMemory::Create(const SharedMemoryCreateOptions& options) {
       return false;
     }
 
-    // Windows ignores DACLs on certain unnamed objects (like shared sections).
-    // So, we generate a random name when we need to enforce read-only.
-    uint64_t rand_values[4];
-    RandBytes(&rand_values, sizeof(rand_values));
-    name_ = StringPrintf(L"CrSharedMem_%016llx%016llx%016llx%016llx",
-                         rand_values[0], rand_values[1],
-                         rand_values[2], rand_values[3]);
+    if (base::win::GetVersion() < base::win::VERSION_WIN8_1) {
+      // Windows < 8.1 ignores DACLs on certain unnamed objects (like shared
+      // sections). So, we generate a random name when we need to enforce
+      // read-only.
+      uint64_t rand_values[4];
+      RandBytes(&rand_values, sizeof(rand_values));
+      name_ = StringPrintf(L"CrSharedMem_%016llx%016llx%016llx%016llx",
+                           rand_values[0], rand_values[1], rand_values[2],
+                           rand_values[3]);
+      DCHECK(!name_.empty());
+    }
   }
-  DCHECK(!name_.empty());
+
   shm_ = SharedMemoryHandle(
-      CreateFileMappingWithReducedPermissions(&sa, rounded_size, name_.c_str()),
+      CreateFileMappingWithReducedPermissions(
+          &sa, rounded_size, name_.empty() ? nullptr : name_.c_str()),
       rounded_size, UnguessableToken::Create());
   if (!shm_.IsValid()) {
     // The error is logged within CreateFileMappingWithReducedPermissions().
@@ -310,10 +317,17 @@ bool SharedMemory::MapAt(off_t offset, size_t bytes) {
     return false;
   }
 
-  memory_ = MapViewOfFile(
-      shm_.GetHandle(),
-      read_only_ ? FILE_MAP_READ : FILE_MAP_READ | FILE_MAP_WRITE,
-      static_cast<uint64_t>(offset) >> 32, static_cast<DWORD>(offset), bytes);
+  // Try to map the shared memory. On the first failure, release any reserved
+  // address space for a single retry.
+  for (int i = 0; i < 2; ++i) {
+    memory_ = MapViewOfFile(
+        shm_.GetHandle(),
+        read_only_ ? FILE_MAP_READ : FILE_MAP_READ | FILE_MAP_WRITE,
+        static_cast<uint64_t>(offset) >> 32, static_cast<DWORD>(offset), bytes);
+    if (memory_)
+      break;
+    ReleaseReservation();
+  }
   if (!memory_) {
     DPLOG(ERROR) << "Failed executing MapViewOfFile";
     return false;
@@ -365,9 +379,8 @@ SharedMemoryHandle SharedMemory::handle() const {
 SharedMemoryHandle SharedMemory::TakeHandle() {
   SharedMemoryHandle handle(shm_);
   handle.SetOwnershipPassesToIPC(true);
+  Unmap();
   shm_ = SharedMemoryHandle();
-  memory_ = nullptr;
-  mapped_size_ = 0;
   return handle;
 }
 

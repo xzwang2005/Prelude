@@ -96,6 +96,7 @@
 ../../third_party/jinja2/environment.py
 ../../third_party/jinja2/exceptions.py
 ../../third_party/jinja2/filters.py
+../../third_party/jinja2/idtracking.py
 ../../third_party/jinja2/lexer.py
 ../../third_party/jinja2/loaders.py
 ../../third_party/jinja2/nodes.py
@@ -194,6 +195,7 @@ pylib/utils/logging_utils.py
 pylib/utils/proguard.py
 pylib/utils/repo_utils.py
 pylib/utils/shared_preference_utils.py
+pylib/utils/test_filter.py
 pylib/utils/time_profile.py
 pylib/valgrind_tools.py
 test_runner.py

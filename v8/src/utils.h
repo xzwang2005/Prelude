@@ -9,6 +9,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <cmath>
+#include <string>
 #include <type_traits>
 
 #include "include/v8.h"
@@ -18,9 +19,9 @@
 #include "src/base/logging.h"
 #include "src/base/macros.h"
 #include "src/base/platform/platform.h"
+#include "src/base/v8-fallthrough.h"
 #include "src/globals.h"
 #include "src/vector.h"
-#include "src/zone/zone.h"
 
 #if defined(V8_OS_AIX)
 #include <fenv.h>  // NOLINT(build/c++11)
@@ -55,6 +56,20 @@ inline bool CStringEquals(const char* s1, const char* s2) {
   return (s1 == s2) || (s1 != nullptr && s2 != nullptr && strcmp(s1, s2) == 0);
 }
 
+// Checks if value is in range [lower_limit, higher_limit] using a single
+// branch.
+template <typename T, typename U>
+inline bool IsInRange(T value, U lower_limit, U higher_limit) {
+  DCHECK_LE(lower_limit, higher_limit);
+  STATIC_ASSERT(sizeof(U) <= sizeof(T));
+  typedef typename std::make_unsigned<T>::type unsigned_T;
+  // Use static_cast to support enum classes.
+  return static_cast<unsigned_T>(static_cast<unsigned_T>(value) -
+                                 static_cast<unsigned_T>(lower_limit)) <=
+         static_cast<unsigned_T>(static_cast<unsigned_T>(higher_limit) -
+                                 static_cast<unsigned_T>(lower_limit));
+}
+
 // X must be a power of 2.  Returns the number of trailing zeros.
 template <typename T,
           typename = typename std::enable_if<std::is_integral<T>::value>::type>
@@ -79,9 +94,15 @@ inline int WhichPowerOf2(T x) {
 #undef CHECK_BIGGER
   switch (x) {
     default: UNREACHABLE();
-    case 8: bits++;  // Fall through.
-    case 4: bits++;  // Fall through.
-    case 2: bits++;  // Fall through.
+    case 8:
+      bits++;
+      V8_FALLTHROUGH;
+    case 4:
+      bits++;
+      V8_FALLTHROUGH;
+    case 2:
+      bits++;
+      V8_FALLTHROUGH;
     case 1: break;
   }
   DCHECK_EQ(T{1} << bits, original_x);
@@ -145,13 +166,11 @@ inline bool IsAligned(T value, U alignment) {
   return (value & (alignment - 1)) == 0;
 }
 
-
-// Returns true if (addr + offset) is aligned.
+// Returns true if {addr + offset} is aligned.
 inline bool IsAddressAligned(Address addr,
                              intptr_t alignment,
                              int offset = 0) {
-  intptr_t offs = OffsetFrom(addr + offset);
-  return IsAligned(offs, alignment);
+  return IsAligned(addr + offset, alignment);
 }
 
 
@@ -384,9 +403,9 @@ class BitField64 : public BitFieldBase<T, shift, size, uint64_t> { };
 #define DEFINE_BIT_FIELD_RANGE_TYPE(Name, Type, Size, _) \
   k##Name##Start, k##Name##End = k##Name##Start + Size - 1,
 
-#define DEFINE_BIT_RANGES(LIST_MACRO)                    \
-  struct LIST_MACRO##_Ranges {                           \
-    enum { LIST_MACRO(DEFINE_BIT_FIELD_RANGE_TYPE, _) }; \
+#define DEFINE_BIT_RANGES(LIST_MACRO)                               \
+  struct LIST_MACRO##_Ranges {                                      \
+    enum { LIST_MACRO(DEFINE_BIT_FIELD_RANGE_TYPE, _) kBitsCount }; \
   };
 
 #define DEFINE_BIT_FIELD_TYPE(Name, Type, Size, RangesName) \
@@ -466,13 +485,12 @@ class BitSetComputer {
 // ----------------------------------------------------------------------------
 // Hash function.
 
-static const uint32_t kZeroHashSeed = 0;
+static const uint64_t kZeroHashSeed = 0;
 
 // Thomas Wang, Integer Hash Functions.
-// http://www.concentric.net/~Ttwang/tech/inthash.htm
-inline uint32_t ComputeIntegerHash(uint32_t key, uint32_t seed) {
+// http://www.concentric.net/~Ttwang/tech/inthash.htm`
+inline uint32_t ComputeUnseededHash(uint32_t key) {
   uint32_t hash = key;
-  hash = hash ^ seed;
   hash = ~hash + (hash << 15);  // hash = (hash << 15) - hash - 1;
   hash = hash ^ (hash >> 12);
   hash = hash + (hash << 2);
@@ -480,10 +498,6 @@ inline uint32_t ComputeIntegerHash(uint32_t key, uint32_t seed) {
   hash = hash * 2057;  // hash = (hash + (hash << 3)) + (hash << 11);
   hash = hash ^ (hash >> 16);
   return hash & 0x3fffffff;
-}
-
-inline uint32_t ComputeIntegerHash(uint32_t key) {
-  return ComputeIntegerHash(key, kZeroHashSeed);
 }
 
 inline uint32_t ComputeLongHash(uint64_t key) {
@@ -497,18 +511,24 @@ inline uint32_t ComputeLongHash(uint64_t key) {
   return static_cast<uint32_t>(hash);
 }
 
+inline uint32_t ComputeSeededHash(uint32_t key, uint64_t seed) {
+  return ComputeUnseededHash(key ^ static_cast<uint32_t>(seed));
+}
 
 inline uint32_t ComputePointerHash(void* ptr) {
-  return ComputeIntegerHash(
+  return ComputeUnseededHash(
       static_cast<uint32_t>(reinterpret_cast<intptr_t>(ptr)));
 }
 
+inline uint32_t ComputeAddressHash(Address address) {
+  return ComputeUnseededHash(static_cast<uint32_t>(address & 0xFFFFFFFFul));
+}
 
 // ----------------------------------------------------------------------------
 // Generated memcpy/memmove
 
 // Initializes the codegen support that depends on CPU features.
-void init_memcopy_functions(Isolate* isolate);
+void init_memcopy_functions();
 
 #if defined(V8_TARGET_ARCH_IA32)
 // Limit below which the extra overhead of the MemCopy function is likely
@@ -641,7 +661,7 @@ class Access {
 template<typename T>
 class SetOncePointer {
  public:
-  SetOncePointer() : pointer_(nullptr) {}
+  SetOncePointer() = default;
 
   bool is_set() const { return pointer_ != nullptr; }
 
@@ -655,8 +675,16 @@ class SetOncePointer {
     pointer_ = value;
   }
 
+  T* operator=(T* value) {
+    set(value);
+    return value;
+  }
+
+  bool operator==(std::nullptr_t) const { return pointer_ == nullptr; }
+  bool operator!=(std::nullptr_t) const { return pointer_ != nullptr; }
+
  private:
-  T* pointer_;
+  T* pointer_ = nullptr;
 };
 
 
@@ -1062,12 +1090,6 @@ inline void Flush() {
 char* ReadLine(const char* prompt);
 
 
-// Read and return the raw bytes in a file. the size of the buffer is returned
-// in size.
-// The returned buffer must be freed by the caller.
-byte* ReadBytes(const char* filename, int* size, bool verbose = true);
-
-
 // Append size chars from str to the file given by filename.
 // The file is overwritten. Returns the number of chars written.
 int AppendChars(const char* filename,
@@ -1211,40 +1233,37 @@ inline void MemsetPointer(T** dest, U* value, int counter) {
 #undef STOS
 }
 
-
-// Simple support to read a file into a 0-terminated C-string.
-// The returned buffer must be freed by the caller.
+// Simple support to read a file into std::string.
 // On return, *exits tells whether the file existed.
-V8_EXPORT_PRIVATE Vector<const char> ReadFile(const char* filename,
-                                              bool* exists,
-                                              bool verbose = true);
-Vector<const char> ReadFile(FILE* file,
-                            bool* exists,
-                            bool verbose = true);
-
+V8_EXPORT_PRIVATE std::string ReadFile(const char* filename, bool* exists,
+                                       bool verbose = true);
+std::string ReadFile(FILE* file, bool* exists, bool verbose = true);
 
 template <typename sourcechar, typename sinkchar>
-INLINE(static void CopyCharsUnsigned(sinkchar* dest, const sourcechar* src,
-                                     size_t chars));
+V8_INLINE static void CopyCharsUnsigned(sinkchar* dest, const sourcechar* src,
+                                        size_t chars);
 #if defined(V8_HOST_ARCH_ARM)
-INLINE(void CopyCharsUnsigned(uint8_t* dest, const uint8_t* src, size_t chars));
-INLINE(void CopyCharsUnsigned(uint16_t* dest, const uint8_t* src,
-                              size_t chars));
-INLINE(void CopyCharsUnsigned(uint16_t* dest, const uint16_t* src,
-                              size_t chars));
+V8_INLINE void CopyCharsUnsigned(uint8_t* dest, const uint8_t* src,
+                                 size_t chars);
+V8_INLINE void CopyCharsUnsigned(uint16_t* dest, const uint8_t* src,
+                                 size_t chars);
+V8_INLINE void CopyCharsUnsigned(uint16_t* dest, const uint16_t* src,
+                                 size_t chars);
 #elif defined(V8_HOST_ARCH_MIPS)
-INLINE(void CopyCharsUnsigned(uint8_t* dest, const uint8_t* src, size_t chars));
-INLINE(void CopyCharsUnsigned(uint16_t* dest, const uint16_t* src,
-                              size_t chars));
+V8_INLINE void CopyCharsUnsigned(uint8_t* dest, const uint8_t* src,
+                                 size_t chars);
+V8_INLINE void CopyCharsUnsigned(uint16_t* dest, const uint16_t* src,
+                                 size_t chars);
 #elif defined(V8_HOST_ARCH_PPC) || defined(V8_HOST_ARCH_S390)
-INLINE(void CopyCharsUnsigned(uint8_t* dest, const uint8_t* src, size_t chars));
-INLINE(void CopyCharsUnsigned(uint16_t* dest, const uint16_t* src,
-                              size_t chars));
+V8_INLINE void CopyCharsUnsigned(uint8_t* dest, const uint8_t* src,
+                                 size_t chars);
+V8_INLINE void CopyCharsUnsigned(uint16_t* dest, const uint16_t* src,
+                                 size_t chars);
 #endif
 
 // Copy from 8bit/16bit chars to 8bit/16bit chars.
 template <typename sourcechar, typename sinkchar>
-INLINE(void CopyChars(sinkchar* dest, const sourcechar* src, size_t chars));
+V8_INLINE void CopyChars(sinkchar* dest, const sourcechar* src, size_t chars);
 
 template <typename sourcechar, typename sinkchar>
 void CopyChars(sinkchar* dest, const sourcechar* src, size_t chars) {
@@ -1553,103 +1572,135 @@ bool DoubleToBoolean(double d);
 template <typename Stream>
 bool StringToArrayIndex(Stream* stream, uint32_t* index);
 
-// Returns current value of top of the stack. Works correctly with ASAN.
-DISABLE_ASAN
-inline uintptr_t GetCurrentStackPosition() {
-  // Takes the address of the limit variable in order to find out where
-  // the top of stack is right now.
-  uintptr_t limit = reinterpret_cast<uintptr_t>(&limit);
-  return limit;
-}
+// Returns the current stack top. Works correctly with ASAN and SafeStack.
+// GetCurrentStackPosition() should not be inlined, because it works on stack
+// frames if it were inlined into a function with a huge stack frame it would
+// return an address significantly above the actual current stack position.
+V8_NOINLINE uintptr_t GetCurrentStackPosition();
 
 template <typename V>
-static inline V ReadUnalignedValue(const void* p) {
-#if !(V8_TARGET_ARCH_MIPS || V8_TARGET_ARCH_MIPS64 || V8_TARGET_ARCH_ARM)
-  return *reinterpret_cast<const V*>(p);
-#else   // V8_TARGET_ARCH_MIPS || V8_TARGET_ARCH_MIPS64 || V8_TARGET_ARCH_ARM
-  V r;
-  memmove(&r, p, sizeof(V));
-  return r;
-#endif  // V8_TARGET_ARCH_MIPS || V8_TARGET_ARCH_MIPS64 || V8_TARGET_ARCH_ARM
-}
-
-template <typename V>
-static inline void WriteUnalignedValue(void* p, V value) {
-#if !(V8_TARGET_ARCH_MIPS || V8_TARGET_ARCH_MIPS64 || V8_TARGET_ARCH_ARM)
-  *(reinterpret_cast<V*>(p)) = value;
-#else   // V8_TARGET_ARCH_MIPS || V8_TARGET_ARCH_MIPS64 || V8_TARGET_ARCH_ARM
-  memmove(p, &value, sizeof(V));
-#endif  // V8_TARGET_ARCH_MIPS || V8_TARGET_ARCH_MIPS64 || V8_TARGET_ARCH_ARM
-}
-
-static inline double ReadFloatValue(const void* p) {
-  return ReadUnalignedValue<float>(p);
-}
-
-static inline double ReadDoubleValue(const void* p) {
-  return ReadUnalignedValue<double>(p);
-}
-
-static inline void WriteDoubleValue(void* p, double value) {
-  WriteUnalignedValue(p, value);
-}
-
-static inline uint16_t ReadUnalignedUInt16(const void* p) {
-  return ReadUnalignedValue<uint16_t>(p);
-}
-
-static inline void WriteUnalignedUInt16(void* p, uint16_t value) {
-  WriteUnalignedValue(p, value);
-}
-
-static inline uint32_t ReadUnalignedUInt32(const void* p) {
-  return ReadUnalignedValue<uint32_t>(p);
-}
-
-static inline void WriteUnalignedUInt32(void* p, uint32_t value) {
-  WriteUnalignedValue(p, value);
-}
-
-template <typename V>
-static inline V ReadLittleEndianValue(const void* p) {
-#if defined(V8_TARGET_LITTLE_ENDIAN)
-  return ReadUnalignedValue<V>(p);
-#elif defined(V8_TARGET_BIG_ENDIAN)
-  V ret = 0;
-  const byte* src = reinterpret_cast<const byte*>(p);
-  byte* dst = reinterpret_cast<byte*>(&ret);
-  for (size_t i = 0; i < sizeof(V); i++) {
-    dst[i] = src[sizeof(V) - i - 1];
+static inline V ByteReverse(V value) {
+  size_t size_of_v = sizeof(value);
+  switch (size_of_v) {
+    case 2:
+#if V8_HAS_BUILTIN_BSWAP16
+      return static_cast<V>(__builtin_bswap16(static_cast<uint16_t>(value)));
+#else
+      return value << 8 | (value >> 8 & 0x00FF);
+#endif
+    case 4:
+#if V8_HAS_BUILTIN_BSWAP32
+      return static_cast<V>(__builtin_bswap32(static_cast<uint32_t>(value)));
+#else
+    {
+      size_t bits_of_v = size_of_v * kBitsPerByte;
+      return value << (bits_of_v - 8) |
+             ((value << (bits_of_v - 24)) & 0x00FF0000) |
+             ((value >> (bits_of_v - 24)) & 0x0000FF00) |
+             ((value >> (bits_of_v - 8)) & 0x00000FF);
+    }
+#endif
+    case 8:
+#if V8_HAS_BUILTIN_BSWAP64
+      return static_cast<V>(__builtin_bswap64(static_cast<uint64_t>(value)));
+#else
+    {
+      size_t bits_of_v = size_of_v * kBitsPerByte;
+      return value << (bits_of_v - 8) |
+             ((value << (bits_of_v - 24)) & 0x00FF000000000000) |
+             ((value << (bits_of_v - 40)) & 0x0000FF0000000000) |
+             ((value << (bits_of_v - 56)) & 0x000000FF00000000) |
+             ((value >> (bits_of_v - 56)) & 0x00000000FF000000) |
+             ((value >> (bits_of_v - 40)) & 0x0000000000FF0000) |
+             ((value >> (bits_of_v - 24)) & 0x000000000000FF00) |
+             ((value >> (bits_of_v - 8)) & 0x00000000000000FF);
+    }
+#endif
+    default:
+      UNREACHABLE();
   }
-  return ret;
-#endif  // V8_TARGET_LITTLE_ENDIAN
 }
 
-template <typename V>
-static inline void WriteLittleEndianValue(void* p, V value) {
-#if defined(V8_TARGET_LITTLE_ENDIAN)
-  WriteUnalignedValue<V>(p, value);
-#elif defined(V8_TARGET_BIG_ENDIAN)
-  byte* src = reinterpret_cast<byte*>(&value);
-  byte* dst = reinterpret_cast<byte*>(p);
-  for (size_t i = 0; i < sizeof(V); i++) {
-    dst[i] = src[sizeof(V) - i - 1];
-  }
-#endif  // V8_TARGET_LITTLE_ENDIAN
-}
+template <typename T>
+struct ThreadedListTraits {
+  static T** next(T* t) { return t->next(); }
+};
 
 // Represents a linked list that threads through the nodes in the linked list.
-// Entries in the list are pointers to nodes. The nodes need to have a T**
-// next() method that returns the location where the next value is stored.
-template <typename T>
-class ThreadedList final {
+// Entries in the list are pointers to nodes. By default nodes need to have a
+// T** next() method that returns the location where the next value is stored.
+// The default can be overwritten by providing a ThreadedTraits class.
+template <typename T, typename BaseClass,
+          typename TLTraits = ThreadedListTraits<T>>
+class ThreadedListBase final : public BaseClass {
  public:
-  ThreadedList() : head_(nullptr), tail_(&head_) {}
+  ThreadedListBase() : head_(nullptr), tail_(&head_) {}
   void Add(T* v) {
     DCHECK_NULL(*tail_);
-    DCHECK_NULL(*v->next());
+    DCHECK_NULL(*TLTraits::next(v));
     *tail_ = v;
-    tail_ = v->next();
+    tail_ = TLTraits::next(v);
+  }
+
+  void AddFront(T* v) {
+    DCHECK_NULL(*TLTraits::next(v));
+    DCHECK_NOT_NULL(v);
+    T** const next = TLTraits::next(v);
+
+    *next = head_;
+    if (head_ == nullptr) tail_ = next;
+    head_ = v;
+  }
+
+  // Reinitializing the head to a new node, this costs O(n).
+  void ReinitializeHead(T* v) {
+    head_ = v;
+    T* current = v;
+    if (current != nullptr) {  // Find tail
+      T* tmp;
+      while ((tmp = *TLTraits::next(current))) {
+        current = tmp;
+      }
+      tail_ = TLTraits::next(current);
+    } else {
+      tail_ = &head_;
+    }
+
+    SLOW_DCHECK(Verify());
+  }
+
+  void DropHead() {
+    DCHECK_NOT_NULL(head_);
+    SLOW_DCHECK(Verify());
+
+    T* old_head = head_;
+    head_ = *TLTraits::next(head_);
+    if (head_ == nullptr) tail_ = &head_;
+    *TLTraits::next(old_head) = nullptr;
+  }
+
+  void Append(ThreadedListBase&& list) {
+    SLOW_DCHECK(Verify());
+    SLOW_DCHECK(list.Verify());
+
+    *tail_ = list.head_;
+    tail_ = list.tail_;
+    list.Clear();
+  }
+
+  void Prepend(ThreadedListBase&& list) {
+    SLOW_DCHECK(Verify());
+    SLOW_DCHECK(list.Verify());
+
+    if (list.head_ == nullptr) return;
+
+    T* new_head = list.head_;
+    *list.tail_ = head_;
+    if (head_ == nullptr) {
+      tail_ = list.tail_;
+    }
+    head_ = new_head;
+    list.Clear();
   }
 
   void Clear() {
@@ -1657,18 +1708,72 @@ class ThreadedList final {
     tail_ = &head_;
   }
 
+  ThreadedListBase& operator=(ThreadedListBase&& other) V8_NOEXCEPT {
+    head_ = other.head_;
+    tail_ = other.head_ ? other.tail_ : &head_;
+#ifdef DEBUG
+    other.Clear();
+#endif
+    return *this;
+  }
+
+  ThreadedListBase(ThreadedListBase&& other) V8_NOEXCEPT
+      : head_(other.head_),
+        tail_(other.head_ ? other.tail_ : &head_) {
+#ifdef DEBUG
+    other.Clear();
+#endif
+  }
+
+  bool Remove(T* v) {
+    SLOW_DCHECK(Verify());
+
+    T* current = first();
+    if (current == v) {
+      DropHead();
+      return true;
+    }
+
+    while (current != nullptr) {
+      T* next = *TLTraits::next(current);
+      if (next == v) {
+        *TLTraits::next(current) = *TLTraits::next(next);
+        *TLTraits::next(next) = nullptr;
+
+        if (TLTraits::next(next) == tail_) {
+          tail_ = TLTraits::next(current);
+        }
+        return true;
+      }
+      current = next;
+    }
+    return false;
+  }
+
   class Iterator final {
    public:
+    using iterator_category = std::forward_iterator_tag;
+    using difference_type = std::ptrdiff_t;
+    using value_type = T*;
+    using reference = value_type;
+    using pointer = value_type*;
+
+   public:
     Iterator& operator++() {
-      entry_ = (*entry_)->next();
+      entry_ = TLTraits::next(*entry_);
       return *this;
     }
-    bool operator!=(const Iterator& other) { return entry_ != other.entry_; }
+    bool operator==(const Iterator& other) const {
+      return entry_ == other.entry_;
+    }
+    bool operator!=(const Iterator& other) const {
+      return entry_ != other.entry_;
+    }
     T* operator*() { return *entry_; }
     T* operator->() { return *entry_; }
     Iterator& operator=(T* entry) {
-      T* next = *(*entry_)->next();
-      *entry->next() = next;
+      T* next = *TLTraits::next(*entry_);
+      *TLTraits::next(entry) = next;
       *entry_ = entry;
       return *this;
     }
@@ -1678,16 +1783,26 @@ class ThreadedList final {
 
     T** entry_;
 
-    friend class ThreadedList;
+    friend class ThreadedListBase;
   };
 
   class ConstIterator final {
    public:
+    using iterator_category = std::forward_iterator_tag;
+    using difference_type = std::ptrdiff_t;
+    using value_type = T*;
+    using reference = const value_type;
+    using pointer = const value_type*;
+
+   public:
     ConstIterator& operator++() {
-      entry_ = (*entry_)->next();
+      entry_ = TLTraits::next(*entry_);
       return *this;
     }
-    bool operator!=(const ConstIterator& other) {
+    bool operator==(const ConstIterator& other) const {
+      return entry_ == other.entry_;
+    }
+    bool operator!=(const ConstIterator& other) const {
       return entry_ != other.entry_;
     }
     const T* operator*() const { return *entry_; }
@@ -1697,7 +1812,7 @@ class ThreadedList final {
 
     T* const* entry_;
 
-    friend class ThreadedList;
+    friend class ThreadedListBase;
   };
 
   Iterator begin() { return Iterator(&head_); }
@@ -1706,21 +1821,34 @@ class ThreadedList final {
   ConstIterator begin() const { return ConstIterator(&head_); }
   ConstIterator end() const { return ConstIterator(tail_); }
 
+  // Rewinds the list's tail to the reset point, i.e., cutting of the rest of
+  // the list, including the reset_point.
   void Rewind(Iterator reset_point) {
+    SLOW_DCHECK(Verify());
+
     tail_ = reset_point.entry_;
     *tail_ = nullptr;
   }
 
-  void MoveTail(ThreadedList<T>* parent, Iterator location) {
-    if (parent->end() != location) {
+  // Moves the tail of the from_list, starting at the from_location, to the end
+  // of this list.
+  void MoveTail(ThreadedListBase* from_list, Iterator from_location) {
+    SLOW_DCHECK(Verify());
+
+    if (from_list->end() != from_location) {
       DCHECK_NULL(*tail_);
-      *tail_ = *location;
-      tail_ = parent->tail_;
-      parent->Rewind(location);
+      *tail_ = *from_location;
+      tail_ = from_list->tail_;
+      from_list->Rewind(from_location);
+
+      SLOW_DCHECK(Verify());
+      SLOW_DCHECK(from_list->Verify());
     }
   }
 
   bool is_empty() const { return head_ == nullptr; }
+
+  T* first() const { return head_; }
 
   // Slow. For testing purposes.
   int LengthForTest() {
@@ -1728,32 +1856,48 @@ class ThreadedList final {
     for (Iterator t = begin(); t != end(); ++t) ++result;
     return result;
   }
+
   T* AtForTest(int i) {
     Iterator t = begin();
     while (i-- > 0) ++t;
     return *t;
   }
 
+  bool Verify() {
+    T* last = this->first();
+    if (last == nullptr) {
+      CHECK_EQ(&head_, tail_);
+    } else {
+      while (*TLTraits::next(last) != nullptr) {
+        last = *TLTraits::next(last);
+      }
+      CHECK_EQ(TLTraits::next(last), tail_);
+    }
+    return true;
+  }
+
  private:
   T* head_;
   T** tail_;
-  DISALLOW_COPY_AND_ASSIGN(ThreadedList);
+  DISALLOW_COPY_AND_ASSIGN(ThreadedListBase);
 };
 
-// Can be used to create a threaded list of |T|.
-template <typename T>
-class ThreadedListZoneEntry final : public ZoneObject {
- public:
-  explicit ThreadedListZoneEntry(T value) : value_(value), next_(nullptr) {}
+struct EmptyBase {};
 
-  T value() { return value_; }
-  ThreadedListZoneEntry<T>** next() { return &next_; }
+template <typename T, typename TLTraits = ThreadedListTraits<T>>
+using ThreadedList = ThreadedListBase<T, EmptyBase, TLTraits>;
 
- private:
-  T value_;
-  ThreadedListZoneEntry<T>* next_;
-  DISALLOW_COPY_AND_ASSIGN(ThreadedListZoneEntry);
-};
+V8_EXPORT_PRIVATE bool PassesFilter(Vector<const char> name,
+                                    Vector<const char> filter);
+
+// Zap the specified area with a specific byte pattern. This currently defaults
+// to int3 on x64 and ia32. On other architectures this will produce unspecified
+// instruction sequences.
+// TODO(jgruber): Better support for other architectures.
+V8_INLINE void ZapCode(Address addr, size_t size_in_bytes) {
+  static constexpr int kZapByte = 0xCC;
+  std::memset(reinterpret_cast<void*>(addr), kZapByte, size_in_bytes);
+}
 
 }  // namespace internal
 }  // namespace v8

@@ -10,6 +10,7 @@
 #import "base/mac/scoped_objc_class_swizzler.h"
 #include "base/macros.h"
 #import "ui/views/cocoa/bridged_native_widget.h"
+#include "ui/views/cocoa/bridged_native_widget_host_impl.h"
 #include "ui/views/widget/native_widget_mac.h"
 #include "ui/views/widget/root_view.h"
 
@@ -48,6 +49,10 @@ bool WidgetTest::IsNativeWindowVisible(gfx::NativeWindow window) {
 
 // static
 bool WidgetTest::IsWindowStackedAbove(Widget* above, Widget* below) {
+  // Since 10.13, a trip to the runloop has been necessary to ensure [NSApp
+  // orderedWindows] has been updated.
+  base::RunLoop().RunUntilIdle();
+
   EXPECT_TRUE(above->IsVisible());
   EXPECT_TRUE(below->IsVisible());
 
@@ -77,12 +82,18 @@ ui::EventSink* WidgetTest::GetEventSink(Widget* widget) {
 // static
 ui::internal::InputMethodDelegate* WidgetTest::GetInputMethodDelegateForWidget(
     Widget* widget) {
-  return NativeWidgetMac::GetBridgeForNativeWindow(widget->GetNativeWindow());
+  return BridgedNativeWidgetHostImpl::GetFromNativeWindow(
+      widget->GetNativeWindow());
 }
 
 // static
 bool WidgetTest::IsNativeWindowTransparent(gfx::NativeWindow window) {
   return ![window isOpaque];
+}
+
+// static
+bool WidgetTest::WidgetHasInProcessShadow(Widget* widget) {
+  return false;
 }
 
 // static

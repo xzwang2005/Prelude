@@ -95,6 +95,10 @@ static bool ssl3_set_read_state(SSL *ssl, UniquePtr<SSLAEADContext> aead_ctx) {
 }
 
 static bool ssl3_set_write_state(SSL *ssl, UniquePtr<SSLAEADContext> aead_ctx) {
+  if (!tls_flush_pending_hs_data(ssl)) {
+    return false;
+  }
+
   OPENSSL_memset(ssl->s3->write_sequence, 0, sizeof(ssl->s3->write_sequence));
   ssl->s3->aead_write_ctx = std::move(aead_ctx);
   return true;
@@ -141,16 +145,18 @@ static int ssl_noop_x509_session_dup(SSL_SESSION *new_session,
 }
 static void ssl_noop_x509_session_clear(SSL_SESSION *session) {}
 static int ssl_noop_x509_session_verify_cert_chain(SSL_SESSION *session,
-                                                   SSL *ssl,
+                                                   SSL_HANDSHAKE *hs,
                                                    uint8_t *out_alert) {
   return 0;
 }
 
 static void ssl_noop_x509_hs_flush_cached_ca_names(SSL_HANDSHAKE *hs) {}
-static int ssl_noop_x509_ssl_new(SSL *ctx) { return 1; }
-static void ssl_noop_x509_ssl_free(SSL *ctx) { }
-static void ssl_noop_x509_ssl_flush_cached_client_CA(SSL *ssl) {}
-static int ssl_noop_x509_ssl_auto_chain_if_needed(SSL *ssl) { return 1; }
+static int ssl_noop_x509_ssl_new(SSL_HANDSHAKE *hs) { return 1; }
+static void ssl_noop_x509_ssl_config_free(SSL_CONFIG *cfg) {}
+static void ssl_noop_x509_ssl_flush_cached_client_CA(SSL_CONFIG *cfg) {}
+static int ssl_noop_x509_ssl_auto_chain_if_needed(SSL_HANDSHAKE *hs) {
+  return 1;
+}
 static int ssl_noop_x509_ssl_ctx_new(SSL_CTX *ctx) { return 1; }
 static void ssl_noop_x509_ssl_ctx_free(SSL_CTX *ctx) { }
 static void ssl_noop_x509_ssl_ctx_flush_cached_client_CA(SSL_CTX *ctx) {}
@@ -168,7 +174,7 @@ const SSL_X509_METHOD ssl_noop_x509_method = {
   ssl_noop_x509_session_verify_cert_chain,
   ssl_noop_x509_hs_flush_cached_ca_names,
   ssl_noop_x509_ssl_new,
-  ssl_noop_x509_ssl_free,
+  ssl_noop_x509_ssl_config_free,
   ssl_noop_x509_ssl_flush_cached_client_CA,
   ssl_noop_x509_ssl_auto_chain_if_needed,
   ssl_noop_x509_ssl_ctx_new,
@@ -231,15 +237,6 @@ const SSL_METHOD *TLSv1_method(void) {
   return &kMethod;
 }
 
-const SSL_METHOD *SSLv3_method(void) {
-  static const SSL_METHOD kMethod = {
-      SSL3_VERSION,
-      &kTLSProtocolMethod,
-      &ssl_crypto_x509_method,
-  };
-  return &kMethod;
-}
-
 // Legacy side-specific methods.
 
 const SSL_METHOD *TLSv1_2_server_method(void) {
@@ -254,10 +251,6 @@ const SSL_METHOD *TLSv1_server_method(void) {
   return TLSv1_method();
 }
 
-const SSL_METHOD *SSLv3_server_method(void) {
-  return SSLv3_method();
-}
-
 const SSL_METHOD *TLSv1_2_client_method(void) {
   return TLSv1_2_method();
 }
@@ -268,10 +261,6 @@ const SSL_METHOD *TLSv1_1_client_method(void) {
 
 const SSL_METHOD *TLSv1_client_method(void) {
   return TLSv1_method();
-}
-
-const SSL_METHOD *SSLv3_client_method(void) {
-  return SSLv3_method();
 }
 
 const SSL_METHOD *SSLv23_server_method(void) {

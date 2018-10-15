@@ -40,7 +40,7 @@ ImageFactory* GpuMemoryBufferFactoryAndroidHardwareBuffer::AsImageFactory() {
 
 scoped_refptr<gl::GLImage>
 GpuMemoryBufferFactoryAndroidHardwareBuffer::CreateImageForGpuMemoryBuffer(
-    const gfx::GpuMemoryBufferHandle& handle,
+    gfx::GpuMemoryBufferHandle handle,
     const gfx::Size& size,
     gfx::BufferFormat format,
     unsigned internalformat,
@@ -49,18 +49,15 @@ GpuMemoryBufferFactoryAndroidHardwareBuffer::CreateImageForGpuMemoryBuffer(
   // We should only end up in this code path if the memory buffer has a valid
   // AHardwareBuffer.
   DCHECK_EQ(handle.type, gfx::ANDROID_HARDWARE_BUFFER);
-  DCHECK_EQ(handle.handle.GetType(),
-            base::SharedMemoryHandle::Type::ANDROID_HARDWARE_BUFFER);
 
-  AHardwareBuffer* buffer = handle.handle.GetMemoryObject();
-  DCHECK(buffer);
+  base::android::ScopedHardwareBufferHandle& buffer =
+      handle.android_hardware_buffer;
+  DCHECK(buffer.is_valid());
 
-  EGLint attribs[] = {EGL_IMAGE_PRESERVED_KHR, EGL_FALSE, EGL_NONE};
-
-  scoped_refptr<gl::GLImageEGL> image(new gl::GLImageAHardwareBuffer(size));
-  EGLClientBuffer client_buffer = eglGetNativeClientBufferANDROID(buffer);
-  if (!image->Initialize(EGL_NO_CONTEXT, EGL_NATIVE_BUFFER_ANDROID,
-                         client_buffer, attribs)) {
+  scoped_refptr<gl::GLImageAHardwareBuffer> image(
+      new gl::GLImageAHardwareBuffer(size));
+  if (!image->Initialize(buffer.get(),
+                         /* preserved */ false)) {
     DLOG(ERROR) << "Failed to create GLImage " << size.ToString();
     image = nullptr;
   }
@@ -72,20 +69,9 @@ GpuMemoryBufferFactoryAndroidHardwareBuffer::CreateImageForGpuMemoryBuffer(
   // release here to avoid an excess reference. We want to pass ownership to
   // the image. Also release in the failure case to ensure we consistently
   // consume the GpuMemoryBufferHandle.
-  base::AndroidHardwareBufferCompat::GetInstance().Release(buffer);
+  buffer.reset();
 
   return image;
-}
-
-scoped_refptr<gl::GLImage>
-GpuMemoryBufferFactoryAndroidHardwareBuffer::CreateAnonymousImage(
-    const gfx::Size& size,
-    gfx::BufferFormat format,
-    gfx::BufferUsage usage,
-    unsigned internalformat,
-    bool* is_cleared) {
-  NOTIMPLEMENTED();
-  return nullptr;
 }
 
 unsigned GpuMemoryBufferFactoryAndroidHardwareBuffer::RequiredTextureType() {

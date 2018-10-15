@@ -28,7 +28,7 @@ public:
     }
 
 #if SK_SUPPORT_GPU
-    std::unique_ptr<GrFragmentProcessor> asFragmentProcessor(const AsFPArgs&) const override;
+    std::unique_ptr<GrFragmentProcessor> asFragmentProcessor(const GrFPArgs&) const override;
 #endif
 
     sk_sp<SkShader> makeAsALocalMatrixShader(SkMatrix* localMatrix) const override {
@@ -38,7 +38,6 @@ public:
         return fProxyShader;
     }
 
-    SK_TO_STRING_OVERRIDE()
     SK_DECLARE_PUBLIC_FLATTENABLE_DESERIALIZATION_PROCS(SkLocalMatrixShader)
 
 protected:
@@ -60,11 +59,6 @@ protected:
         return fProxyShader->isABitmap(bitmap, matrix, mode);
     }
 #endif
-
-    bool onIsRasterPipelineOnly(const SkMatrix& ctm) const override {
-        return as_SB(fProxyShader)->isRasterPipelineOnly(SkMatrix::Concat(ctm,
-                                                                          this->getLocalMatrix()));
-    }
 
 private:
     sk_sp<SkShader> fProxyShader;

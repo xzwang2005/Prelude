@@ -7,11 +7,12 @@
 
 #include "TestUtils.h"
 
-#if SK_SUPPORT_GPU
-
+#include "GrProxyProvider.h"
 #include "GrSurfaceContext.h"
+#include "GrSurfaceContextPriv.h"
 #include "GrSurfaceProxy.h"
 #include "GrTextureProxy.h"
+#include "ProxyUtils.h"
 
 void test_read_pixels(skiatest::Reporter* reporter,
                       GrSurfaceContext* srcContext, uint32_t expectedPixelValues[],
@@ -80,16 +81,17 @@ void test_copy_from_surface(skiatest::Reporter* reporter, GrContext* context,
         }
 
         copyDstDesc.fFlags = flags;
-        copyDstDesc.fOrigin = (kNone_GrSurfaceFlags == flags) ? kTopLeft_GrSurfaceOrigin
-                                                              : kBottomLeft_GrSurfaceOrigin;
+        auto origin = (kNone_GrSurfaceFlags == flags) ? kTopLeft_GrSurfaceOrigin
+                                                      : kBottomLeft_GrSurfaceOrigin;
 
-        sk_sp<GrSurfaceContext> dstContext(GrSurfaceProxy::TestCopy(context, copyDstDesc, proxy));
+        sk_sp<GrSurfaceContext> dstContext(
+                GrSurfaceProxy::TestCopy(context, copyDstDesc, origin, proxy));
 
         test_read_pixels(reporter, dstContext.get(), expectedPixelValues, testName);
     }
 }
 
-void test_copy_to_surface(skiatest::Reporter* reporter, GrResourceProvider* resourceProvider,
+void test_copy_to_surface(skiatest::Reporter* reporter, GrProxyProvider* proxyProvider,
                           GrSurfaceContext* dstContext, const char* testName) {
 
     int pixelCnt = dstContext->width() * dstContext->height();
@@ -101,23 +103,42 @@ void test_copy_to_surface(skiatest::Reporter* reporter, GrResourceProvider* reso
         }
     }
 
-    GrSurfaceDesc copySrcDesc;
-    copySrcDesc.fWidth = dstContext->width();
-    copySrcDesc.fHeight = dstContext->height();
-    copySrcDesc.fConfig = kRGBA_8888_GrPixelConfig;
-
-    for (auto flags : { kNone_GrSurfaceFlags, kRenderTarget_GrSurfaceFlag }) {
-        copySrcDesc.fFlags = flags;
-        copySrcDesc.fOrigin = (kNone_GrSurfaceFlags == flags) ? kTopLeft_GrSurfaceOrigin
-                                                              : kBottomLeft_GrSurfaceOrigin;
-
-        sk_sp<GrTextureProxy> src(GrSurfaceProxy::MakeDeferred(resourceProvider,
-                                                               copySrcDesc,
-                                                               SkBudgeted::kYes, pixels.get(), 0));
-        dstContext->copy(src.get());
-
-        test_read_pixels(reporter, dstContext, pixels.get(), testName);
+    for (auto isRT : {false, true}) {
+        for (auto origin : {kTopLeft_GrSurfaceOrigin, kBottomLeft_GrSurfaceOrigin}) {
+            auto src = sk_gpu_test::MakeTextureProxyFromData(
+                    dstContext->surfPriv().getContext(), isRT, dstContext->width(),
+                    dstContext->height(), GrColorType::kRGBA_8888, origin, pixels.get(), 0);
+            dstContext->copy(src.get());
+            test_read_pixels(reporter, dstContext, pixels.get(), testName);
+        }
     }
 }
 
-#endif
+void fill_pixel_data(int width, int height, GrColor* data) {
+    for (int j = 0; j < height; ++j) {
+        for (int i = 0; i < width; ++i) {
+            unsigned int red = (unsigned int)(256.f * (i / (float)width));
+            unsigned int green = (unsigned int)(256.f * (j / (float)height));
+            data[i + j * width] = GrColorPackRGBA(red - (red >> 8), green - (green >> 8),
+                                                  0xff, 0xff);
+        }
+    }
+}
+
+bool does_full_buffer_contain_correct_color(GrColor* srcBuffer,
+                                            GrColor* dstBuffer,
+                                            int width,
+                                            int height) {
+    GrColor* srcPtr = srcBuffer;
+    GrColor* dstPtr = dstBuffer;
+    for (int j = 0; j < height; ++j) {
+        for (int i = 0; i < width; ++i) {
+            if (srcPtr[i] != dstPtr[i]) {
+                return false;
+            }
+        }
+        srcPtr += width;
+        dstPtr += width;
+    }
+    return true;
+}

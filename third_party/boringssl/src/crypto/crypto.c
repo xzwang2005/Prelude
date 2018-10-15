@@ -19,6 +19,19 @@
 #include "internal.h"
 
 
+#if defined(OPENSSL_MSAN) && !defined(OPENSSL_NO_ASM)
+// MSan works by instrumenting memory accesses in the compiler. Accesses from
+// uninstrumented code, such as assembly, are invisible to it. MSan will
+// incorrectly report reads from assembly-initialized memory as uninitialized.
+// If building BoringSSL with MSan, exclude assembly files from the build and
+// define OPENSSL_NO_ASM.
+//
+// This is checked here rather than in a header because the consumer might not
+// define OPENSSL_NO_ASM. It is only necessary for BoringSSL source files to be
+// built with it.
+#error "BoringSSL must be built with assembly disabled to use MSan."
+#endif
+
 #if !defined(OPENSSL_NO_ASM) && !defined(OPENSSL_STATIC_ARMCAP) && \
     (defined(OPENSSL_X86) || defined(OPENSSL_X86_64) || \
      defined(OPENSSL_ARM) || defined(OPENSSL_AARCH64) || \
@@ -164,31 +177,36 @@ int CRYPTO_has_asm(void) {
 #endif
 }
 
-const char *SSLeay_version(int unused) {
-  return "BoringSSL";
+const char *SSLeay_version(int which) { return OpenSSL_version(which); }
+
+const char *OpenSSL_version(int which) {
+  switch (which) {
+    case OPENSSL_VERSION:
+      return "BoringSSL";
+    case OPENSSL_CFLAGS:
+      return "compiler: n/a";
+    case OPENSSL_BUILT_ON:
+      return "built on: n/a";
+    case OPENSSL_PLATFORM:
+      return "platform: n/a";
+    case OPENSSL_DIR:
+      return "OPENSSLDIR: n/a";
+    default:
+      return "not available";
+  }
 }
 
-const char *OpenSSL_version(int unused) {
-  return "BoringSSL";
-}
+unsigned long SSLeay(void) { return OPENSSL_VERSION_NUMBER; }
 
-unsigned long SSLeay(void) {
-  return OPENSSL_VERSION_NUMBER;
-}
+unsigned long OpenSSL_version_num(void) { return OPENSSL_VERSION_NUMBER; }
 
-unsigned long OpenSSL_version_num(void) {
-  return OPENSSL_VERSION_NUMBER;
-}
+int CRYPTO_malloc_init(void) { return 1; }
 
-int CRYPTO_malloc_init(void) {
-  return 1;
-}
+int OPENSSL_malloc_init(void) { return 1; }
 
 void ENGINE_load_builtin_engines(void) {}
 
-int ENGINE_register_all_complete(void) {
-  return 1;
-}
+int ENGINE_register_all_complete(void) { return 1; }
 
 void OPENSSL_load_builtin_modules(void) {}
 
@@ -196,3 +214,5 @@ int OPENSSL_init_crypto(uint64_t opts, const OPENSSL_INIT_SETTINGS *settings) {
   CRYPTO_library_init();
   return 1;
 }
+
+void OPENSSL_cleanup(void) {}

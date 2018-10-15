@@ -5,21 +5,24 @@
 #include "src/wasm/memory-tracing.h"
 
 #include "src/utils.h"
+#include "src/v8memory.h"
 
 namespace v8 {
 namespace internal {
-namespace tracing {
+namespace wasm {
 
-void TraceMemoryOperation(ExecutionEngine engine, bool is_store,
-                          MachineRepresentation rep, uint32_t addr,
+void TraceMemoryOperation(ExecutionTier tier, const MemoryTracingInfo* info,
                           int func_index, int position, uint8_t* mem_start) {
   EmbeddedVector<char, 64> value;
-  switch (rep) {
-#define TRACE_TYPE(rep, str, format, ctype1, ctype2)           \
-  case MachineRepresentation::rep:                             \
-    SNPrintF(value, str ":" format,                            \
-             ReadLittleEndianValue<ctype1>(mem_start + addr),  \
-             ReadLittleEndianValue<ctype2>(mem_start + addr)); \
+  auto mem_rep = static_cast<MachineRepresentation>(info->mem_rep);
+  switch (mem_rep) {
+#define TRACE_TYPE(rep, str, format, ctype1, ctype2)                     \
+  case MachineRepresentation::rep:                                       \
+    SNPrintF(value, str ":" format,                                      \
+             ReadLittleEndianValue<ctype1>(                              \
+                 reinterpret_cast<Address>(mem_start) + info->address),  \
+             ReadLittleEndianValue<ctype2>(                              \
+                 reinterpret_cast<Address>(mem_start) + info->address)); \
     break;
     TRACE_TYPE(kWord8, " i8", "%d / %02x", uint8_t, uint8_t)
     TRACE_TYPE(kWord16, "i16", "%d / %04x", uint16_t, uint16_t)
@@ -31,19 +34,23 @@ void TraceMemoryOperation(ExecutionEngine engine, bool is_store,
     default:
       SNPrintF(value, "???");
   }
-  char eng_c = '?';
-  switch (engine) {
-    case kWasmCompiled:
-      eng_c = 'C';
+  const char* eng = "?";
+  switch (tier) {
+    case ExecutionTier::kOptimized:
+      eng = "turbofan";
       break;
-    case kWasmInterpreted:
-      eng_c = 'I';
+    case ExecutionTier::kBaseline:
+      eng = "liftoff";
+      break;
+    case ExecutionTier::kInterpreter:
+      eng = "interpreter";
       break;
   }
-  printf("%c %8d+0x%-6x %s @%08x %s\n", eng_c, func_index, position,
-         is_store ? "store" : "read ", addr, value.start());
+  printf("%-11s func:%6d+0x%-6x%s %08x val: %s\n", eng, func_index, position,
+         info->is_store ? " store to" : "load from", info->address,
+         value.start());
 }
 
-}  // namespace tracing
+}  // namespace wasm
 }  // namespace internal
 }  // namespace v8

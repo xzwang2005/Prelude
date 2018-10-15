@@ -8,9 +8,7 @@
 #include "Request.h"
 
 #include "SkPictureRecorder.h"
-#include "SkPixelSerializer.h"
 #include "SkPM4fPriv.h"
-#include "picture_utils.h"
 #include "sk_tool_utils.h"
 
 using namespace sk_gpu_test;
@@ -28,50 +26,29 @@ Request::Request(SkString rootUrl)
     , fOverdraw(false)
     , fColorMode(0) {
     // create surface
-#if SK_SUPPORT_GPU
     GrContextOptions grContextOpts;
     fContextFactory = new GrContextFactory(grContextOpts);
-#else
-    fContextFactory = nullptr;
-#endif
 }
 
 Request::~Request() {
-#if SK_SUPPORT_GPU
     if (fContextFactory) {
         delete fContextFactory;
     }
-#endif
-}
-
-SkBitmap* Request::getBitmapFromCanvas(SkCanvas* canvas) {
-    SkBitmap* bmp = new SkBitmap();
-    if (!bmp->tryAllocPixels(canvas->imageInfo()) || !canvas->readPixels(*bmp, 0, 0)) {
-        fprintf(stderr, "Can't read pixels\n");
-        delete bmp;
-        return nullptr;
-    }
-    return bmp;
 }
 
 sk_sp<SkData> Request::writeCanvasToPng(SkCanvas* canvas) {
     // capture pixels
-    std::unique_ptr<SkBitmap> bmp(this->getBitmapFromCanvas(canvas));
-    SkASSERT(bmp);
-
-    // Convert to format suitable for PNG output
-    sk_sp<SkData> encodedBitmap = sk_tools::encode_bitmap_for_png(*bmp);
-    SkASSERT(encodedBitmap.get());
+    SkBitmap bmp;
+    bmp.allocPixels(canvas->imageInfo());
+    SkAssertResult(canvas->readPixels(bmp, 0, 0));
 
     // write to an opaque png (black background)
     SkDynamicMemoryWStream buffer;
-    SkDrawCommand::WritePNG(encodedBitmap->bytes(), bmp->width(), bmp->height(),
-                            buffer, true);
+    SkDrawCommand::WritePNG(bmp, buffer);
     return buffer.detachAsData();
 }
 
 SkCanvas* Request::getCanvas() {
-#if SK_SUPPORT_GPU
     GrContextFactory* factory = fContextFactory;
     GLTestContext* gl = factory->getContextInfo(GrContextFactory::kGL_ContextType,
             GrContextFactory::ContextOverrides::kNone).glContext();
@@ -82,7 +59,6 @@ SkCanvas* Request::getCanvas() {
     if (gl) {
         gl->makeCurrent();
     }
-#endif
     SkASSERT(fDebugCanvas);
 
     // create the appropriate surface if necessary
@@ -93,14 +69,9 @@ SkCanvas* Request::getCanvas() {
     return target;
 }
 
-void Request::drawToCanvas(int n, int m) {
-    SkCanvas* target = this->getCanvas();
-    fDebugCanvas->drawTo(target, n, m);
-}
-
 sk_sp<SkData> Request::drawToPng(int n, int m) {
     //fDebugCanvas->setOverdrawViz(true);
-    this->drawToCanvas(n, m);
+    fDebugCanvas->drawTo(this->getCanvas(), n, m);
     //fDebugCanvas->setOverdrawViz(false);
     return writeCanvasToPng(this->getCanvas());
 }
@@ -114,18 +85,10 @@ sk_sp<SkData> Request::writeOutSkp() {
 
     fDebugCanvas->draw(canvas);
 
-    sk_sp<SkPicture> picture(recorder.finishRecordingAsPicture());
-
-    SkDynamicMemoryWStream outStream;
-
-    sk_sp<SkPixelSerializer> serializer = sk_tool_utils::MakePixelSerializer();
-    picture->serialize(&outStream, serializer.get());
-
-    return outStream.detachAsData();
+    return recorder.finishRecordingAsPicture()->serialize();
 }
 
 GrContext* Request::getContext() {
-#if SK_SUPPORT_GPU
     GrContext* result = fContextFactory->get(GrContextFactory::kGL_ContextType,
                                              GrContextFactory::ContextOverrides::kNone);
     if (!result) {
@@ -133,9 +96,6 @@ GrContext* Request::getContext() {
                                       GrContextFactory::ContextOverrides::kNone);
     }
     return result;
-#else
-    return nullptr;
-#endif
 }
 
 SkIRect Request::getBounds() {
@@ -143,11 +103,9 @@ SkIRect Request::getBounds() {
     if (fPicture) {
         bounds = fPicture->cullRect().roundOut();
         if (fGPUEnabled) {
-#if SK_SUPPORT_GPU
-            int maxRTSize = this->getContext()->caps()->maxRenderTargetSize();
+            int maxRTSize = this->getContext()->maxRenderTargetSize();
             bounds = SkIRect::MakeWH(SkTMin(bounds.width(), maxRTSize),
                                      SkTMin(bounds.height(), maxRTSize));
-#endif
         }
     } else {
         bounds = SkIRect::MakeWH(kDefaultWidth, kDefaultHeight);
@@ -301,16 +259,8 @@ sk_sp<SkData> Request::getJsonInfo(int n) {
 }
 
 SkColor Request::getPixel(int x, int y) {
-    SkCanvas* canvas = this->getCanvas();
-    canvas->flush();
-    std::unique_ptr<SkBitmap> bitmap(this->getBitmapFromCanvas(canvas));
-    SkASSERT(bitmap);
-
-    // Convert to format suitable for inspection
-    sk_sp<SkData> encodedBitmap = sk_tools::encode_bitmap_for_png(*bitmap);
-    SkASSERT(encodedBitmap);
-
-    const uint8_t* start = encodedBitmap->bytes() + ((y * bitmap->width() + x) * 4);
-    SkColor result = SkColorSetARGB(start[3], start[0], start[1], start[2]);
-    return result;
+    SkBitmap bmp;
+    bmp.allocPixels(this->getCanvas()->imageInfo().makeWH(1, 1));
+    SkAssertResult(this->getCanvas()->readPixels(bmp, x, y));
+    return bmp.getColor(0, 0);
 }

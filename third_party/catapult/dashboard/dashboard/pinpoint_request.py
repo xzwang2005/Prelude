@@ -10,19 +10,16 @@ from google.appengine.api import users
 from google.appengine.ext import ndb
 
 from dashboard import start_try_job
-from dashboard.common import namespaced_stored_object
+from dashboard.common import descriptor
 from dashboard.common import request_handler
 from dashboard.common import utils
 from dashboard.services import crrev_service
 from dashboard.services import pinpoint_service
 
-_BOTS_TO_DIMENSIONS = 'bot_dimensions_map'
-_PINPOINT_REPOSITORIES = 'repositories'
 _ISOLATE_TARGETS = [
     'angle_perftests', 'cc_perftests', 'gpu_perftests',
     'load_library_perf_tests', 'media_perftests', 'net_perftests',
-    'performance_browser_tests', 'telemetry_perf_tests',
-    'telemetry_perf_webview_tests', 'tracing_perftests']
+    'performance_browser_tests', 'tracing_perftests']
 
 
 class InvalidParamsError(Exception):
@@ -46,7 +43,17 @@ class PinpointNewBisectRequestHandler(request_handler.RequestHandler):
       self.response.write(json.dumps({'error': e.message}))
       return
 
-    self.response.write(json.dumps(pinpoint_service.NewJob(pinpoint_params)))
+    results = pinpoint_service.NewJob(pinpoint_params)
+
+    alert_keys = job_params.get('alerts')
+    if 'jobId' in results and alert_keys:
+      alerts = json.loads(alert_keys)
+      for alert_urlsafe_key in alerts:
+        alert = ndb.Key(urlsafe=alert_urlsafe_key).get()
+        alert.pinpoint_bisects.append(results['jobId'])
+        alert.put()
+
+    self.response.write(json.dumps(results))
 
 
 class PinpointNewPerfTryRequestHandler(request_handler.RequestHandler):
@@ -81,12 +88,10 @@ def ParseMetricParts(test_path_parts):
   return '', metric_parts[0], ''
 
 
-def ResolveToGitHash(commit_position, repository):
+def ResolveToGitHash(commit_position):
+  # TODO: This function assumes Chromium.
   try:
     int(commit_position)
-    if repository != 'chromium':
-      raise InvalidParamsError(
-          'Repository %s commit positions not supported.' % repository)
     result = crrev_service.GetNumbering(
         number=commit_position,
         numbering_identifier='refs/heads/master',
@@ -104,6 +109,31 @@ def ResolveToGitHash(commit_position, repository):
   return commit_position
 
 
+def _GetIsolateTarget(bot_name, suite, start_commit,
+                      end_commit, only_telemetry=False):
+  if suite in _ISOLATE_TARGETS:
+    if only_telemetry:
+      raise InvalidParamsError('Only telemetry is supported at the moment.')
+    return suite
+
+  try:
+    # TODO: Remove this code path in 2019.
+    average_commit = (int(start_commit) + int(end_commit)) / 2
+    if 'android' in bot_name and average_commit < 572268:
+      if 'webview' in bot_name.lower():
+        return 'telemetry_perf_webview_tests'
+      return 'telemetry_perf_tests'
+
+    if 'win' in bot_name and average_commit < 571917:
+      return 'telemetry_perf_tests'
+  except ValueError:
+    pass
+
+  if 'webview' in bot_name.lower():
+    return 'performance_webview_test_suite'
+  return 'performance_test_suite'
+
+
 def ParseTIRLabelChartNameAndTraceName(test_path_parts):
   """Returns tir_label, chart_name, trace_name from a test path."""
   test = ndb.Key('TestMetadata', '/'.join(test_path_parts)).get()
@@ -114,23 +144,11 @@ def ParseTIRLabelChartNameAndTraceName(test_path_parts):
   return tir_label, chart_name, trace_name
 
 
-def _BotDimensionsFromBotName(bot_name):
-  bots_to_dimensions = namespaced_stored_object.Get(_BOTS_TO_DIMENSIONS)
-  dimensions = bots_to_dimensions.get(bot_name)
-  if not dimensions:
-    raise InvalidParamsError('No dimensions for bot %s defined.' % bot_name)
-  return dimensions
-
-
 def ParseStatisticNameFromChart(chart_name):
-  statistic_types = [
-      'avg', 'min', 'max', 'sum', 'std', 'count'
-  ]
-
   chart_name_parts = chart_name.split('_')
   statistic_name = ''
 
-  if chart_name_parts[-1] in statistic_types:
+  if chart_name_parts[-1] in descriptor.STATISTICS:
     chart_name = '_'.join(chart_name_parts[:-1])
     statistic_name = chart_name_parts[-1]
   return chart_name, statistic_name
@@ -146,8 +164,6 @@ def PinpointParamsFromPerfTryParams(params):
         'test_path': Test path for the metric being bisected.
         'start_commit': Git hash or commit position of earlier revision.
         'end_commit': Git hash or commit position of later revision.
-        'start_repository': Repository for earlier revision.
-        'end_repository': Repository for later revision.
         'extra_test_args': Extra args for the swarming job.
     }
 
@@ -159,69 +175,35 @@ def PinpointParamsFromPerfTryParams(params):
     user = users.get_current_user()
     raise InvalidParamsError('User "%s" not authorized.' % user)
 
-  # Pinpoint takes swarming dimensions, so we need to map bot name to those.
   test_path = params['test_path']
   test_path_parts = test_path.split('/')
   bot_name = test_path_parts[1]
   suite = test_path_parts[2]
 
-  dimensions = _BotDimensionsFromBotName(bot_name)
+  start_commit = params['start_commit']
+  end_commit = params['end_commit']
+  start_git_hash = ResolveToGitHash(start_commit)
+  end_git_hash = ResolveToGitHash(end_commit)
 
   # Pinpoint also requires you specify which isolate target to run the
   # test, so we derive that from the suite name. Eventually, this would
   # ideally be stored in a SparesDiagnostic but for now we can guess.
-  target = 'telemetry_perf_tests'
-  if suite in _ISOLATE_TARGETS:
-    raise InvalidParamsError('Only telemetry is supported at the moment.')
-  elif 'webview' in bot_name:
-    target = 'telemetry_perf_webview_tests'
-
-  start_repository = params['start_repository']
-  end_repository = params['end_repository']
-  start_commit = params['start_commit']
-  end_commit = params['end_commit']
-
-  start_git_hash = ResolveToGitHash(start_commit, start_repository)
-  end_git_hash = ResolveToGitHash(end_commit, end_repository)
-
-  supported_repositories = namespaced_stored_object.Get(_PINPOINT_REPOSITORIES)
-
-  # Bail if it's not a supported repository to bisect on
-  if not start_repository in supported_repositories:
-    raise InvalidParamsError('Invalid repository: %s' % start_repository)
-  if not end_repository in supported_repositories:
-    raise InvalidParamsError('Invalid repository: %s' % end_repository)
-
-  # Pinpoint only supports chromium at the moment, so just throw up a
-  # different error for now.
-  if start_repository != 'chromium' or end_repository != 'chromium':
-    raise InvalidParamsError('Only chromium perf try jobs supported currently.')
+  target = _GetIsolateTarget(bot_name, suite, start_commit,
+                             end_commit, only_telemetry=True)
 
   extra_test_args = params['extra_test_args']
 
   email = users.get_current_user().email()
-  job_name = 'Job on [%s/%s] for [%s]' % (bot_name, suite, email)
-
-  browser = start_try_job.GuessBrowserName(bot_name)
+  job_name = 'Try job on %s/%s' % (bot_name, suite)
 
   return {
       'configuration': bot_name,
-      'browser': browser,
       'benchmark': suite,
-      'trace': '',
-      'chart': '',
-      'tir_label': '',
-      'story': '',
-      'start_repository': start_repository,
-      'end_repository': end_repository,
       'start_git_hash': start_git_hash,
       'end_git_hash': end_git_hash,
       'extra_test_args': extra_test_args,
-      'bug_id': '',
-      'auto_explore': '0',
       'target': target,
-      'dimensions': json.dumps(dimensions),
-      'email': email,
+      'user': email,
       'name': job_name
   }
 
@@ -236,8 +218,6 @@ def PinpointParamsFromBisectParams(params):
         'test_path': Test path for the metric being bisected.
         'start_git_hash': Git hash of earlier revision.
         'end_git_hash': Git hash of later revision.
-        'start_repository': Repository for earlier revision.
-        'end_repository': Repository for later revision.
         'bug_id': Associated bug.
     }
 
@@ -249,12 +229,12 @@ def PinpointParamsFromBisectParams(params):
     user = users.get_current_user()
     raise InvalidParamsError('User "%s" not authorized.' % user)
 
-  # Pinpoint takes swarming dimensions, so we need to map bot name to those.
   test_path = params['test_path']
   test_path_parts = test_path.split('/')
   bot_name = test_path_parts[1]
   suite = test_path_parts[2]
   story_filter = params['story_filter']
+  pin = params.get('pin')
 
   # If functional bisects are speciied, Pinpoint expects these parameters to be
   # empty.
@@ -269,63 +249,61 @@ def PinpointParamsFromBisectParams(params):
     tir_label, chart_name, trace_name = ParseTIRLabelChartNameAndTraceName(
         test_path_parts)
 
-  dimensions = _BotDimensionsFromBotName(bot_name)
+  start_commit = params['start_commit']
+  end_commit = params['end_commit']
+  start_git_hash = ResolveToGitHash(start_commit)
+  end_git_hash = ResolveToGitHash(end_commit)
 
   # Pinpoint also requires you specify which isolate target to run the
   # test, so we derive that from the suite name. Eventually, this would
   # ideally be stored in a SparesDiagnostic but for now we can guess.
-  target = 'telemetry_perf_tests'
-  if suite in _ISOLATE_TARGETS:
-    target = suite
-  elif 'webview' in bot_name:
-    target = 'telemetry_perf_webview_tests'
-
-  start_repository = params['start_repository']
-  end_repository = params['end_repository']
-  start_commit = params['start_commit']
-  end_commit = params['end_commit']
-
-  start_git_hash = ResolveToGitHash(start_commit, start_repository)
-  end_git_hash = ResolveToGitHash(end_commit, end_repository)
-
-  supported_repositories = namespaced_stored_object.Get(_PINPOINT_REPOSITORIES)
-
-  # Bail if it's not a supported repository to bisect on
-  if not start_repository in supported_repositories:
-    raise InvalidParamsError('Invalid repository: %s' % start_repository)
-  if not end_repository in supported_repositories:
-    raise InvalidParamsError('Invalid repository: %s' % end_repository)
-
-  # Pinpoint only supports chromium at the moment, so just throw up a
-  # different error for now.
-  if start_repository != 'chromium' or end_repository != 'chromium':
-    raise InvalidParamsError('Only chromium bisects supported currently.')
+  target = _GetIsolateTarget(bot_name, suite, start_commit, end_commit)
 
   email = users.get_current_user().email()
-  job_name = 'Job on [%s/%s/%s] for [%s]' % (bot_name, suite, chart_name, email)
-
-  browser = start_try_job.GuessBrowserName(bot_name)
+  job_name = '%s bisect on %s/%s' % (bisect_mode.capitalize(), bot_name, suite)
 
   # Histogram names don't include the statistic, so split these
   chart_name, statistic_name = ParseStatisticNameFromChart(chart_name)
 
-  return {
+  alert_key = ''
+  if params.get('alerts'):
+    alert_keys = json.loads(params.get('alerts'))
+    if alert_keys:
+      alert_key = alert_keys[0]
+
+  alert_magnitude = None
+  if alert_key:
+    alert = ndb.Key(urlsafe=alert_key).get()
+    alert_magnitude = alert.median_after_anomaly - alert.median_before_anomaly
+
+  pinpoint_params = {
       'configuration': bot_name,
-      'browser': browser,
       'benchmark': suite,
-      'trace': trace_name,
       'chart': chart_name,
-      'statistic': statistic_name,
-      'tir_label': tir_label,
-      'story': story_filter,
-      'start_repository': start_repository,
-      'end_repository': end_repository,
       'start_git_hash': start_git_hash,
       'end_git_hash': end_git_hash,
       'bug_id': params['bug_id'],
-      'auto_explore': '1',
+      'comparison_mode': bisect_mode,
       'target': target,
-      'dimensions': json.dumps(dimensions),
-      'email': email,
-      'name': job_name
+      'user': email,
+      'name': job_name,
+      'tags': json.dumps({
+          'test_path': test_path,
+          'alert': alert_key
+      }),
   }
+
+  if alert_magnitude:
+    pinpoint_params['comparison_magnitude'] = alert_magnitude
+  if pin:
+    pinpoint_params['pin'] = pin
+  if statistic_name:
+    pinpoint_params['statistic'] = statistic_name
+  if story_filter:
+    pinpoint_params['story'] = story_filter
+  if tir_label:
+    pinpoint_params['tir_label'] = tir_label
+  if trace_name:
+    pinpoint_params['trace'] = trace_name
+
+  return pinpoint_params

@@ -10,29 +10,46 @@
 #include "SkAndroidCodec.h"
 #include "SkAutoMalloc.h"
 #include "SkBitmap.h"
+#include "SkCanvas.h"
 #include "SkCodec.h"
 #include "SkCodecImageGenerator.h"
-#include "SkColorSpace_XYZ.h"
+#include "SkColor.h"
+#include "SkColorSpace.h"
 #include "SkColorSpacePriv.h"
 #include "SkData.h"
+#include "SkEncodedImageFormat.h"
 #include "SkFrontBufferedStream.h"
-#include "SkImageEncoder.h"
-#include "SkImageEncoderPriv.h"
-#include "SkMakeUnique.h"
-#include "SkMD5.h"
-#include "SkOSPath.h"
+#include "SkImage.h"
+#include "SkImageGenerator.h"
+#include "SkImageInfo.h"
 #include "SkJpegEncoder.h"
+#include "SkMD5.h"
+#include "SkMakeUnique.h"
+#include "SkMalloc.h"
+#include "SkMatrix44.h"
+#include "SkPixmap.h"
 #include "SkPngChunkReader.h"
 #include "SkPngEncoder.h"
 #include "SkRandom.h"
+#include "SkRect.h"
+#include "SkRefCnt.h"
+#include "SkSize.h"
 #include "SkStream.h"
 #include "SkStreamPriv.h"
+#include "SkString.h"
+#include "SkTemplates.h"
+#include "SkTypes.h"
+#include "SkUnPreMultiply.h"
 #include "SkWebpEncoder.h"
 #include "Test.h"
-
 #include "png.h"
-
 #include "sk_tool_utils.h"
+
+#include <setjmp.h>
+#include <cstring>
+#include <memory>
+#include <utility>
+#include <vector>
 
 #if PNG_LIBPNG_VER_MAJOR == 1 && PNG_LIBPNG_VER_MINOR < 5
     // FIXME (scroggo): Google3 needs to be updated to use a newer version of libpng. In
@@ -264,6 +281,11 @@ static void check(skiatest::Reporter* r,
                   bool supportsSubsetDecoding,
                   bool supportsIncomplete,
                   bool supportsNewScanlineDecoding = false) {
+    // If we're testing incomplete decodes, let's run the same test on full decodes.
+    if (supportsIncomplete) {
+        check(r, path, size, supportsScanlineDecoding, supportsSubsetDecoding, false,
+              supportsNewScanlineDecoding);
+    }
 
     std::unique_ptr<SkStream> stream(GetResourceAsStream(path));
     if (!stream) {
@@ -271,8 +293,7 @@ static void check(skiatest::Reporter* r,
     }
 
     std::unique_ptr<SkCodec> codec(nullptr);
-    bool isIncomplete = supportsIncomplete;
-    if (isIncomplete) {
+    if (supportsIncomplete) {
         size_t size = stream->getLength();
         codec = SkCodec::MakeFromData(SkData::MakeFromStream(stream.get(), 2 * size / 3));
     } else {
@@ -287,12 +308,13 @@ static void check(skiatest::Reporter* r,
     SkMD5::Digest codecDigest;
     const SkImageInfo info = codec->getInfo().makeColorType(kN32_SkColorType);
     SkBitmap bm;
-    SkCodec::Result expectedResult = isIncomplete ? SkCodec::kIncompleteInput : SkCodec::kSuccess;
+    SkCodec::Result expectedResult =
+        supportsIncomplete ? SkCodec::kIncompleteInput : SkCodec::kSuccess;
     test_codec(r, codec.get(), bm, info, size, expectedResult, &codecDigest, nullptr);
 
     // Scanline decoding follows.
 
-    if (supportsNewScanlineDecoding && !isIncomplete) {
+    if (supportsNewScanlineDecoding && !supportsIncomplete) {
         test_incremental_decode(r, codec.get(), info, codecDigest);
         // This is only supported by codecs that use incremental decoding to
         // support subset decodes - png and jpeg (once SkJpegCodec is
@@ -313,7 +335,7 @@ static void check(skiatest::Reporter* r,
 
         for (int y = 0; y < info.height(); y++) {
             const int lines = codec->getScanlines(bm.getAddr(0, y), 1, 0);
-            if (!isIncomplete) {
+            if (!supportsIncomplete) {
                 REPORTER_ASSERT(r, 1 == lines);
             }
         }
@@ -330,7 +352,7 @@ static void check(skiatest::Reporter* r,
         // scratch
         REPORTER_ASSERT(r, codec->startScanlineDecode(info) == SkCodec::kSuccess);
         const int lines = codec->getScanlines(bm.getAddr(0, 0), 1, 0);
-        if (!isIncomplete) {
+        if (!supportsIncomplete) {
             REPORTER_ASSERT(r, lines == 1);
         }
         REPORTER_ASSERT(r, codec->getPixels(bm.info(), bm.getPixels(), bm.rowBytes())
@@ -353,7 +375,7 @@ static void check(skiatest::Reporter* r,
 
             for (int y = 0; y < height; y++) {
                 const int lines = codec->getScanlines(bm.getAddr(0, y), 1, 0);
-                if (!isIncomplete) {
+                if (!supportsIncomplete) {
                     REPORTER_ASSERT(r, 1 == lines);
                 }
             }
@@ -406,14 +428,7 @@ static void check(skiatest::Reporter* r,
             return;
         }
 
-        std::unique_ptr<SkAndroidCodec> androidCodec(nullptr);
-        if (isIncomplete) {
-            size_t size = stream->getLength();
-            sk_sp<SkData> data((SkData::MakeFromStream(stream.get(), 2 * size / 3)));
-            androidCodec = SkAndroidCodec::MakeFromData(data);
-        } else {
-            androidCodec = SkAndroidCodec::MakeFromStream(std::move(stream));
-        }
+        auto androidCodec = SkAndroidCodec::MakeFromCodec(std::move(codec));
         if (!androidCodec) {
             ERRORF(r, "Unable to decode '%s'", path);
             return;
@@ -425,7 +440,7 @@ static void check(skiatest::Reporter* r,
                    &codecDigest);
     }
 
-    if (!isIncomplete) {
+    if (!supportsIncomplete) {
         // Test SkCodecImageGenerator
         std::unique_ptr<SkStream> stream(GetResourceAsStream(path));
         sk_sp<SkData> fullData(SkData::MakeFromStream(stream.get(), stream->getLength()));
@@ -447,12 +462,6 @@ static void check(skiatest::Reporter* r,
             test_info(r, codec.get(), info, SkCodec::kSuccess, &codecDigest);
         }
 #endif
-    }
-
-    // If we've just tested incomplete decodes, let's run the same test again on full decodes.
-    if (isIncomplete) {
-        check(r, path, size, supportsScanlineDecoding, supportsSubsetDecoding, false,
-              supportsNewScanlineDecoding);
     }
 }
 
@@ -504,7 +513,8 @@ DEF_TEST(Codec_png, r) {
     // half-transparent-white-pixel.png is too small to test incomplete
     check(r, "images/half-transparent-white-pixel.png", SkISize::Make(1, 1), false, false, false, true);
     check(r, "images/mandrill_128.png", SkISize::Make(128, 128), false, false, true, true);
-    check(r, "images/mandrill_16.png", SkISize::Make(16, 16), false, false, true, true);
+    // mandrill_16.png is too small (relative to embedded sRGB profile) to test incomplete
+    check(r, "images/mandrill_16.png", SkISize::Make(16, 16), false, false, false, true);
     check(r, "images/mandrill_256.png", SkISize::Make(256, 256), false, false, true, true);
     check(r, "images/mandrill_32.png", SkISize::Make(32, 32), false, false, true, true);
     check(r, "images/mandrill_512.png", SkISize::Make(512, 512), false, false, true, true);
@@ -628,14 +638,20 @@ DEF_TEST(Codec_Dimensions, r) {
 }
 
 static void test_invalid(skiatest::Reporter* r, const char path[]) {
-    std::unique_ptr<SkStream> stream(GetResourceAsStream(path));
-    if (!stream) {
+    auto data = GetResourceAsData(path);
+    if (!data) {
+        ERRORF(r, "Failed to get resource %s", path);
         return;
     }
-    REPORTER_ASSERT(r, !SkCodec::MakeFromStream(std::move(stream)));
+
+    REPORTER_ASSERT(r, !SkCodec::MakeFromData(data));
 }
 
 DEF_TEST(Codec_Empty, r) {
+    if (GetResourcePath().isEmpty()) {
+        return;
+    }
+
     // Test images that should not be able to create a codec
     test_invalid(r, "empty_images/zero-dims.gif");
     test_invalid(r, "empty_images/zero-embedded.ico");
@@ -655,6 +671,9 @@ DEF_TEST(Codec_Empty, r) {
     test_invalid(r, "empty_images/zero_height.tiff");
 #endif
     test_invalid(r, "invalid_images/b37623797.ico");
+    test_invalid(r, "invalid_images/osfuzz6295.webp");
+    test_invalid(r, "invalid_images/osfuzz6288.bmp");
+    test_invalid(r, "invalid_images/ossfuzz6347");
 }
 
 #ifdef PNG_READ_UNKNOWN_CHUNKS_SUPPORTED
@@ -1001,8 +1020,7 @@ static void check_color_xform(skiatest::Reporter* r, const char* path) {
 
     const int dstWidth = subsetWidth / opts.fSampleSize;
     const int dstHeight = subsetHeight / opts.fSampleSize;
-    sk_sp<SkData> data = GetResourceAsData("icc_profiles/HP_ZR30w.icc");
-    sk_sp<SkColorSpace> colorSpace = SkColorSpace::MakeICC(data->data(), data->size());
+    auto colorSpace = SkColorSpace::MakeRGB(g2Dot2_TransferFn, SkColorSpace::kAdobeRGB_Gamut);
     SkImageInfo dstInfo = codec->getInfo().makeWH(dstWidth, dstHeight)
                                           .makeColorType(kN32_SkColorType)
                                           .makeColorSpace(colorSpace);
@@ -1125,27 +1143,25 @@ static void test_conversion_possible(skiatest::Reporter* r, const char* path,
     SkBitmap bm;
     bm.allocPixels(infoF16);
     SkCodec::Result result = codec->getPixels(infoF16, bm.getPixels(), bm.rowBytes());
-    REPORTER_ASSERT(r, SkCodec::kInvalidConversion == result);
+    REPORTER_ASSERT(r, SkCodec::kSuccess == result);
 
     result = codec->startScanlineDecode(infoF16);
     if (supportsScanlineDecoder) {
-        REPORTER_ASSERT(r, SkCodec::kInvalidConversion == result);
+        REPORTER_ASSERT(r, SkCodec::kSuccess == result);
     } else {
         REPORTER_ASSERT(r, SkCodec::kUnimplemented == result
-                        || SkCodec::kInvalidConversion == result);
+                        || SkCodec::kSuccess == result);
     }
 
     result = codec->startIncrementalDecode(infoF16, bm.getPixels(), bm.rowBytes());
     if (supportsIncrementalDecoder) {
-        REPORTER_ASSERT(r, SkCodec::kInvalidConversion == result);
+        REPORTER_ASSERT(r, SkCodec::kSuccess == result);
     } else {
         REPORTER_ASSERT(r, SkCodec::kUnimplemented == result
-                        || SkCodec::kInvalidConversion == result);
+                        || SkCodec::kSuccess == result);
     }
 
-    SkASSERT(SkColorSpace_Base::Type::kXYZ == as_CSB(infoF16.colorSpace())->type());
-    SkColorSpace_XYZ* csXYZ = static_cast<SkColorSpace_XYZ*>(infoF16.colorSpace());
-    infoF16 = infoF16.makeColorSpace(csXYZ->makeLinearGamma());
+    infoF16 = infoF16.makeColorSpace(infoF16.colorSpace()->makeLinearGamma());
     result = codec->getPixels(infoF16, bm.getPixels(), bm.rowBytes());
     REPORTER_ASSERT(r, SkCodec::kSuccess == result);
     result = codec->startScanlineDecode(infoF16);
@@ -1427,7 +1443,7 @@ DEF_TEST(Codec_InvalidAnimated, r) {
     for (int i = 0; static_cast<size_t>(i) < frameInfos.size(); i++) {
         opts.fFrameIndex = i;
         const auto reqFrame = frameInfos[i].fRequiredFrame;
-        opts.fPriorFrame = reqFrame == i - 1 ? reqFrame : SkCodec::kNone;
+        opts.fPriorFrame = reqFrame == i - 1 ? reqFrame : SkCodec::kNoFrame;
         auto result = codec->startIncrementalDecode(info, bm.getPixels(), bm.rowBytes(), &opts);
         if (result != SkCodec::kSuccess) {
             ERRORF(r, "Failed to start decoding frame %i (out of %i) with error %i\n", i,
@@ -1440,21 +1456,16 @@ DEF_TEST(Codec_InvalidAnimated, r) {
 }
 
 static void encode_format(SkDynamicMemoryWStream* stream, const SkPixmap& pixmap,
-                          SkTransferFunctionBehavior unpremulBehavior,
                           SkEncodedImageFormat format) {
-    SkPngEncoder::Options pngOptions;
-    SkWebpEncoder::Options webpOptions;
-    pngOptions.fUnpremulBehavior = unpremulBehavior;
-    webpOptions.fUnpremulBehavior = unpremulBehavior;
     switch (format) {
         case SkEncodedImageFormat::kPNG:
-            SkPngEncoder::Encode(stream, pixmap, pngOptions);
+            SkPngEncoder::Encode(stream, pixmap, SkPngEncoder::Options());
             break;
         case SkEncodedImageFormat::kJPEG:
             SkJpegEncoder::Encode(stream, pixmap, SkJpegEncoder::Options());
             break;
         case SkEncodedImageFormat::kWEBP:
-            SkWebpEncoder::Encode(stream, pixmap, webpOptions);
+            SkWebpEncoder::Encode(stream, pixmap, SkWebpEncoder::Options());
             break;
         default:
             SkASSERT(false);
@@ -1462,8 +1473,7 @@ static void encode_format(SkDynamicMemoryWStream* stream, const SkPixmap& pixmap
     }
 }
 
-static void test_encode_icc(skiatest::Reporter* r, SkEncodedImageFormat format,
-                            SkTransferFunctionBehavior unpremulBehavior) {
+static void test_encode_icc(skiatest::Reporter* r, SkEncodedImageFormat format) {
     // Test with sRGB color space.
     SkBitmap srgbBitmap;
     SkImageInfo srgbInfo = SkImageInfo::MakeS32(1, 1, kOpaque_SkAlphaType);
@@ -1472,17 +1482,17 @@ static void test_encode_icc(skiatest::Reporter* r, SkEncodedImageFormat format,
     SkPixmap pixmap;
     srgbBitmap.peekPixels(&pixmap);
     SkDynamicMemoryWStream srgbBuf;
-    encode_format(&srgbBuf, pixmap, unpremulBehavior, format);
+    encode_format(&srgbBuf, pixmap, format);
     sk_sp<SkData> srgbData = srgbBuf.detachAsData();
     std::unique_ptr<SkCodec> srgbCodec(SkCodec::MakeFromData(srgbData));
-    REPORTER_ASSERT(r, srgbCodec->getInfo().colorSpace() == SkColorSpace::MakeSRGB().get());
+    REPORTER_ASSERT(r, srgbCodec->getInfo().colorSpace() == sk_srgb_singleton());
 
     // Test with P3 color space.
     SkDynamicMemoryWStream p3Buf;
     sk_sp<SkColorSpace> p3 = SkColorSpace::MakeRGB(SkColorSpace::kSRGB_RenderTargetGamma,
                                                    SkColorSpace::kDCIP3_D65_Gamut);
     pixmap.setColorSpace(p3);
-    encode_format(&p3Buf, pixmap, unpremulBehavior, format);
+    encode_format(&p3Buf, pixmap, format);
     sk_sp<SkData> p3Data = p3Buf.detachAsData();
     std::unique_ptr<SkCodec> p3Codec(SkCodec::MakeFromData(p3Data));
     REPORTER_ASSERT(r, p3Codec->getInfo().colorSpace()->gammaCloseToSRGB());
@@ -1501,12 +1511,9 @@ static void test_encode_icc(skiatest::Reporter* r, SkEncodedImageFormat format,
 }
 
 DEF_TEST(Codec_EncodeICC, r) {
-    test_encode_icc(r, SkEncodedImageFormat::kPNG, SkTransferFunctionBehavior::kRespect);
-    test_encode_icc(r, SkEncodedImageFormat::kJPEG, SkTransferFunctionBehavior::kRespect);
-    test_encode_icc(r, SkEncodedImageFormat::kWEBP, SkTransferFunctionBehavior::kRespect);
-    test_encode_icc(r, SkEncodedImageFormat::kPNG, SkTransferFunctionBehavior::kIgnore);
-    test_encode_icc(r, SkEncodedImageFormat::kJPEG, SkTransferFunctionBehavior::kIgnore);
-    test_encode_icc(r, SkEncodedImageFormat::kWEBP, SkTransferFunctionBehavior::kIgnore);
+    test_encode_icc(r, SkEncodedImageFormat::kPNG);
+    test_encode_icc(r, SkEncodedImageFormat::kJPEG);
+    test_encode_icc(r, SkEncodedImageFormat::kWEBP);
 }
 
 DEF_TEST(Codec_webp_rowsDecoded, r) {
@@ -1528,4 +1535,129 @@ DEF_TEST(Codec_webp_rowsDecoded, r) {
     }
 
     test_info(r, codec.get(), codec->getInfo(), SkCodec::kInvalidInput, nullptr);
+}
+
+DEF_TEST(Codec_ossfuzz6274, r) {
+    if (GetResourcePath().isEmpty()) {
+        return;
+    }
+
+    const char* file = "invalid_images/ossfuzz6274.gif";
+    auto image = GetResourceAsImage(file);
+    if (!image) {
+        ERRORF(r, "Missing %s", file);
+        return;
+    }
+
+    REPORTER_ASSERT(r, image->width()  == 32);
+    REPORTER_ASSERT(r, image->height() == 32);
+
+    SkBitmap bm;
+    if (!bm.tryAllocPixels(SkImageInfo::MakeN32Premul(32, 32))) {
+        ERRORF(r, "Failed to allocate pixels");
+        return;
+    }
+
+    bm.eraseColor(SK_ColorTRANSPARENT);
+
+    SkCanvas canvas(bm);
+    canvas.drawImage(image, 0, 0, nullptr);
+
+    for (int i = 0; i < image->width();  ++i)
+    for (int j = 0; j < image->height(); ++j) {
+        SkColor actual = SkUnPreMultiply::PMColorToColor(*bm.getAddr32(i, j));
+        if (actual != SK_ColorTRANSPARENT) {
+            ERRORF(r, "did not initialize pixels! %i, %i is %x", i, j, actual);
+        }
+    }
+}
+
+DEF_TEST(Codec_78329453, r) {
+    if (GetResourcePath().isEmpty()) {
+        return;
+    }
+
+    const char* file = "images/b78329453.jpeg";
+    auto data = GetResourceAsData(file);
+    if (!data) {
+        ERRORF(r, "Missing %s", file);
+        return;
+    }
+
+    auto codec = SkAndroidCodec::MakeFromCodec(SkCodec::MakeFromData(data));
+    if (!codec) {
+        ERRORF(r, "failed to create codec from %s", file);
+        return;
+    }
+
+    // A bug in jpeg_skip_scanlines resulted in an infinite loop for this specific
+    // sample size on this image. Other sample sizes could have had the same result,
+    // but the ones tested by DM happen to not.
+    constexpr int kSampleSize = 19;
+    const auto size = codec->getSampledDimensions(kSampleSize);
+    auto info = codec->getInfo().makeWH(size.width(), size.height());
+    SkBitmap bm;
+    bm.allocPixels(info);
+    bm.eraseColor(SK_ColorTRANSPARENT);
+
+    SkAndroidCodec::AndroidOptions options;
+    options.fSampleSize = kSampleSize;
+    auto result = codec->getAndroidPixels(info, bm.getPixels(), bm.rowBytes(), &options);
+    if (result != SkCodec::kSuccess) {
+        ERRORF(r, "failed to decode with error %s", SkCodec::ResultToString(result));
+    }
+}
+
+DEF_TEST(Codec_A8, r) {
+    if (GetResourcePath().isEmpty()) {
+        return;
+    }
+
+    const char* file = "images/mandrill_cmyk.jpg";
+    auto data = GetResourceAsData(file);
+    if (!data) {
+        ERRORF(r, "missing %s", file);
+        return;
+    }
+
+    auto codec = SkCodec::MakeFromData(std::move(data));
+    auto info = codec->getInfo().makeColorType(kAlpha_8_SkColorType);
+    SkBitmap bm;
+    bm.allocPixels(info);
+    REPORTER_ASSERT(r, codec->getPixels(bm.pixmap()) == SkCodec::kInvalidConversion);
+}
+
+DEF_TEST(Codec_crbug807324, r) {
+    if (GetResourcePath().isEmpty()) {
+        return;
+    }
+
+    const char* file = "images/crbug807324.png";
+    auto image = GetResourceAsImage(file);
+    if (!image) {
+        ERRORF(r, "Missing %s", file);
+        return;
+    }
+
+    const int kWidth = image->width();
+    const int kHeight = image->height();
+
+    SkBitmap bm;
+    if (!bm.tryAllocPixels(SkImageInfo::MakeN32Premul(kWidth, kHeight))) {
+        ERRORF(r, "Could not allocate pixels (%i x %i)", kWidth, kHeight);
+        return;
+    }
+
+    bm.eraseColor(SK_ColorTRANSPARENT);
+
+    SkCanvas canvas(bm);
+    canvas.drawImage(image, 0, 0, nullptr);
+
+    for (int i = 0; i < kWidth;  ++i)
+    for (int j = 0; j < kHeight; ++j) {
+        if (*bm.getAddr32(i, j) == SK_ColorTRANSPARENT) {
+            ERRORF(r, "image should not be transparent! %i, %i is 0", i, j);
+            return;
+        }
+    }
 }

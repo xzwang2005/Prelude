@@ -5,9 +5,8 @@
 import logging
 import os
 import re
-import shutil
 import tempfile
-import zipfile
+import time
 
 from devil.utils import cmd_helper
 from pylib import constants
@@ -31,42 +30,20 @@ def _DeviceAbiToArch(device_abi):
 class Symbolizer(object):
   """A helper class to symbolize stack."""
 
-  def __init__(self, apk_under_test=None,
-               non_native_packed_relocations=None):
+  def __init__(self, apk_under_test=None):
     self._apk_under_test = apk_under_test
-    self._non_native_packed_relocations = non_native_packed_relocations
-    self._libs_dir = None
-    self._apk_libs = []
-    self._has_unzipped = False
+    self._time_spent_symbolizing = 0
 
 
   def __del__(self):
-    if self._libs_dir:
-      logging.warning('Please call stack_symbolizer\'s'
-                      ' CleanUp method before it goes out of scope.')
     self.CleanUp()
 
 
   def CleanUp(self):
     """Clean up the temporary directory of apk libs."""
-    if self._libs_dir:
-      shutil.rmtree(self._libs_dir)
-      self._libs_dir = None
-
-
-  def UnzipAPKIfNecessary(self):
-    """Unzip apk if packed relocation is enabled."""
-    if (self._has_unzipped
-        or not self._non_native_packed_relocations
-        or not self._apk_under_test):
-      return
-    self._libs_dir = tempfile.mkdtemp()
-    with zipfile.ZipFile(self._apk_under_test) as z:
-      for name in z.namelist():
-        if name.endswith('.so'):
-          self._apk_libs.append(z.extract(name, self._libs_dir))
-
-    self._has_unzipped = True
+    if self._time_spent_symbolizing > 0:
+      logging.info(
+          'Total time spent symbolizing: %.2fs', self._time_spent_symbolizing)
 
 
   def ExtractAndResolveNativeStackTraces(self, data_to_symbolize,
@@ -81,7 +58,6 @@ class Symbolizer(object):
     Yields:
       A string for each line of resolved stack output.
     """
-    self.UnzipAPKIfNecessary()
     arch = _DeviceAbiToArch(device_abi)
     if not arch:
       logging.warning('No device_abi can be found.')
@@ -89,15 +65,16 @@ class Symbolizer(object):
 
     cmd = [_STACK_TOOL, '--arch', arch, '--output-directory',
            constants.GetOutDirectory(), '--more-info']
-    if self._non_native_packed_relocations and self._apk_libs:
-      for apk_lib in self._apk_libs:
-        cmd.extend(['--packed-lib', apk_lib])
     env = dict(os.environ)
     env['PYTHONDONTWRITEBYTECODE'] = '1'
     with tempfile.NamedTemporaryFile() as f:
       f.write('\n'.join(data_to_symbolize))
       f.flush()
-      _, output = cmd_helper.GetCmdStatusAndOutput(cmd + [f.name], env=env)
+      start = time.time()
+      try:
+        _, output = cmd_helper.GetCmdStatusAndOutput(cmd + [f.name], env=env)
+      finally:
+        self._time_spent_symbolizing += time.time() - start
     for line in output.splitlines():
       if not include_stack and 'Stack Data:' in line:
         break

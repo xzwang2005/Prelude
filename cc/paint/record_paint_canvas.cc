@@ -4,7 +4,6 @@
 
 #include "cc/paint/record_paint_canvas.h"
 
-#include "base/memory/ptr_util.h"
 #include "cc/paint/display_item_list.h"
 #include "cc/paint/paint_image_builder.h"
 #include "cc/paint/paint_record.h"
@@ -264,20 +263,6 @@ void RecordPaintCanvas::drawImageRect(const PaintImage& image,
   list_->push<DrawImageRectOp>(image, src, dst, flags, constraint);
 }
 
-void RecordPaintCanvas::drawBitmap(const SkBitmap& bitmap,
-                                   SkScalar left,
-                                   SkScalar top,
-                                   const PaintFlags* flags) {
-  // TODO(enne): Move into base class?
-  if (bitmap.drawsNothing())
-    return;
-  drawImage(PaintImageBuilder::WithDefault()
-                .set_id(PaintImage::kNonLazyStableId)
-                .set_image(SkImage::MakeFromBitmap(bitmap))
-                .TakePaintImage(),
-            left, top, flags);
-}
-
 void RecordPaintCanvas::drawTextBlob(scoped_refptr<PaintTextBlob> blob,
                                      SkScalar x,
                                      SkScalar y,
@@ -308,6 +293,10 @@ void RecordPaintCanvas::Annotate(AnnotationType type,
                                  const SkRect& rect,
                                  sk_sp<SkData> data) {
   list_->push<AnnotateOp>(type, rect, data);
+}
+
+void RecordPaintCanvas::recordCustomData(uint32_t id) {
+  list_->push<CustomDataOp>(id);
 }
 
 const SkNoDrawCanvas* RecordPaintCanvas::GetCanvas() const {

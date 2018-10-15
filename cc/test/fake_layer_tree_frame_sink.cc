@@ -5,6 +5,7 @@
 #include "cc/test/fake_layer_tree_frame_sink.h"
 
 #include "base/bind.h"
+#include "base/stl_util.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "cc/trees/layer_tree_frame_sink_client.h"
 #include "components/viz/common/frame_sinks/begin_frame_source.h"
@@ -16,8 +17,8 @@
 namespace cc {
 
 FakeLayerTreeFrameSink::Builder::Builder()
-    : compositor_context_provider_(TestContextProvider::Create()),
-      worker_context_provider_(TestContextProvider::CreateWorker()) {}
+    : compositor_context_provider_(viz::TestContextProvider::Create()),
+      worker_context_provider_(viz::TestContextProvider::CreateWorker()) {}
 
 FakeLayerTreeFrameSink::Builder::~Builder() = default;
 
@@ -32,16 +33,14 @@ FakeLayerTreeFrameSink::Builder::Build() {
 
 FakeLayerTreeFrameSink::FakeLayerTreeFrameSink(
     scoped_refptr<viz::ContextProvider> context_provider,
-    scoped_refptr<viz::ContextProvider> worker_context_provider)
+    scoped_refptr<viz::RasterContextProvider> worker_context_provider)
     : LayerTreeFrameSink(std::move(context_provider),
                          std::move(worker_context_provider),
-                         nullptr,
+                         base::ThreadTaskRunnerHandle::Get(),
                          nullptr),
       weak_ptr_factory_(this) {
   gpu_memory_buffer_manager_ =
       context_provider_ ? &test_gpu_memory_buffer_manager_ : nullptr;
-  shared_bitmap_manager_ =
-      context_provider_ ? nullptr : &test_shared_bitmap_manager_;
 }
 
 FakeLayerTreeFrameSink::~FakeLayerTreeFrameSink() = default;
@@ -80,6 +79,19 @@ void FakeLayerTreeFrameSink::SubmitCompositorFrame(viz::CompositorFrame frame) {
 }
 
 void FakeLayerTreeFrameSink::DidNotProduceFrame(const viz::BeginFrameAck& ack) {
+}
+
+void FakeLayerTreeFrameSink::DidAllocateSharedBitmap(
+    mojo::ScopedSharedBufferHandle buffer,
+    const viz::SharedBitmapId& id) {
+  DCHECK(!base::ContainsValue(shared_bitmaps_, id));
+  shared_bitmaps_.push_back(id);
+}
+
+void FakeLayerTreeFrameSink::DidDeleteSharedBitmap(
+    const viz::SharedBitmapId& id) {
+  DCHECK(base::ContainsValue(shared_bitmaps_, id));
+  base::Erase(shared_bitmaps_, id);
 }
 
 void FakeLayerTreeFrameSink::DidReceiveCompositorFrameAck() {

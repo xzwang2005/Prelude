@@ -31,6 +31,11 @@ void VideoDecodeAccelerator::Client::NotifyInitializationComplete(
 
 VideoDecodeAccelerator::~VideoDecodeAccelerator() = default;
 
+void VideoDecodeAccelerator::Decode(scoped_refptr<DecoderBuffer> buffer,
+                                    int32_t bitstream_id) {
+  NOTREACHED() << "By default DecoderBuffer is not supported.";
+}
+
 bool VideoDecodeAccelerator::TryToSetupDecodeOnSeparateThread(
     const base::WeakPtr<Client>& decode_client,
     const scoped_refptr<base::SingleThreadTaskRunner>& decode_task_runner) {
@@ -41,6 +46,7 @@ bool VideoDecodeAccelerator::TryToSetupDecodeOnSeparateThread(
 
 void VideoDecodeAccelerator::ImportBufferForPicture(
     int32_t picture_buffer_id,
+    VideoPixelFormat pixel_format,
     const gfx::GpuMemoryBufferHandle& gpu_memory_buffer_handle) {
   NOTREACHED() << "Buffer import not supported.";
 }

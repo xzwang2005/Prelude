@@ -10,10 +10,10 @@
 #include "base/bind.h"
 #include "base/callback.h"
 #include "base/metrics/histogram_macros.h"
-#include "base/task_scheduler/post_task.h"
+#include "base/task/post_task.h"
 #include "base/time/time.h"
 #include "base/trace_event/trace_event.h"
-#include "media/base/scoped_callback_runner.h"
+#include "mojo/public/cpp/bindings/callback_helpers.h"
 
 namespace media {
 
@@ -86,7 +86,7 @@ void MojoCdmFileIO::Open(const char* file_name, uint32_t file_name_size) {
   state_ = State::kOpening;
   file_name_ = file_name_string;
 
-  auto callback = ScopedCallbackRunner(
+  auto callback = mojo::WrapCallbackWithDefaultInvokeIfNotRun(
       base::BindOnce(&MojoCdmFileIO::OnFileOpened, weak_factory_.GetWeakPtr()),
       StorageStatus::kFailure, base::File(), nullptr);
   cdm_storage_->Open(file_name_string, std::move(callback));

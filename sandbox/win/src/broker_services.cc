@@ -18,6 +18,7 @@
 #include "base/win/scoped_process_information.h"
 #include "base/win/startup_information.h"
 #include "base/win/windows_version.h"
+#include "sandbox/win/src/app_container_profile.h"
 #include "sandbox/win/src/process_mitigations.h"
 #include "sandbox/win/src/sandbox.h"
 #include "sandbox/win/src/sandbox_policy_base.h"
@@ -317,12 +318,16 @@ ResultCode BrokerServicesBase::SpawnTarget(const wchar_t* exe_path,
 
   // Initialize the startup information from the policy.
   base::win::StartupInformation startup_info;
+
+  // We don't want any child processes causing the IDC_APPSTARTING cursor.
+  startup_info.startup_info()->dwFlags |= STARTF_FORCEOFFFEEDBACK;
+
   // The liftime of |mitigations|, |inherit_handle_list| and
   // |child_process_creation| have to be at least as long as
   // |startup_info| because |UpdateProcThreadAttribute| requires that
   // its |lpValue| parameter persist until |DeleteProcThreadAttributeList| is
   // called; StartupInformation's destructor makes such a call.
-  DWORD64 mitigations;
+  DWORD64 mitigations[2];
   std::vector<HANDLE> inherited_handle_list;
   DWORD child_process_creation = PROCESS_CREATION_CHILD_PROCESS_RESTRICTED;
 
@@ -338,8 +343,8 @@ ResultCode BrokerServicesBase::SpawnTarget(const wchar_t* exe_path,
 
   size_t mitigations_size;
   ConvertProcessMitigationsToPolicy(policy_base->GetProcessMitigations(),
-                                    &mitigations, &mitigations_size);
-  if (mitigations)
+                                    &mitigations[0], &mitigations_size);
+  if (mitigations[0] || mitigations[1])
     ++attribute_count;
 
   bool restrict_child_process_creation = false;
@@ -367,12 +372,26 @@ ResultCode BrokerServicesBase::SpawnTarget(const wchar_t* exe_path,
   if (inherited_handle_list.size())
     ++attribute_count;
 
+  scoped_refptr<AppContainerProfileBase> profile =
+      policy_base->GetAppContainerProfileBase();
+  if (profile) {
+    if (base::win::GetVersion() < base::win::VERSION_WIN8)
+      return SBOX_ERROR_BAD_PARAMS;
+    ++attribute_count;
+    if (profile->GetEnableLowPrivilegeAppContainer()) {
+      // LPAC first supported in RS1.
+      if (base::win::GetVersion() < base::win::VERSION_WIN10_RS1)
+        return SBOX_ERROR_BAD_PARAMS;
+      ++attribute_count;
+    }
+  }
+
   if (!startup_info.InitializeProcThreadAttributeList(attribute_count))
     return SBOX_ERROR_PROC_THREAD_ATTRIBUTES;
 
-  if (mitigations) {
+  if (mitigations[0] || mitigations[1]) {
     if (!startup_info.UpdateProcThreadAttribute(
-            PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY, &mitigations,
+            PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY, &mitigations[0],
             mitigations_size)) {
       return SBOX_ERROR_PROC_THREAD_ATTRIBUTES;
     }
@@ -401,17 +420,40 @@ ResultCode BrokerServicesBase::SpawnTarget(const wchar_t* exe_path,
     inherit_handles = true;
   }
 
+  // Declared here to ensure they stay in scope until after process creation.
+  std::unique_ptr<SecurityCapabilities> security_capabilities;
+  DWORD all_applications_package_policy =
+      PROCESS_CREATION_ALL_APPLICATION_PACKAGES_OPT_OUT;
+
+  if (profile) {
+    security_capabilities = profile->GetSecurityCapabilities();
+    if (!startup_info.UpdateProcThreadAttribute(
+            PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES,
+            security_capabilities.get(), sizeof(SECURITY_CAPABILITIES))) {
+      return SBOX_ERROR_PROC_THREAD_ATTRIBUTES;
+    }
+    if (profile->GetEnableLowPrivilegeAppContainer()) {
+      if (!startup_info.UpdateProcThreadAttribute(
+              PROC_THREAD_ATTRIBUTE_ALL_APPLICATION_PACKAGES_POLICY,
+              &all_applications_package_policy,
+              sizeof(all_applications_package_policy))) {
+        return SBOX_ERROR_PROC_THREAD_ATTRIBUTES;
+      }
+    }
+  }
+
   // Construct the thread pool here in case it is expensive.
   // The thread pool is shared by all the targets
   if (!thread_pool_)
-    thread_pool_ = base::MakeUnique<Win2kThreadPool>();
+    thread_pool_ = std::make_unique<Win2kThreadPool>();
 
   // Create the TargetProcess object and spawn the target suspended. Note that
   // Brokerservices does not own the target object. It is owned by the Policy.
   base::win::ScopedProcessInformation process_info;
-  TargetProcess* target =
-      new TargetProcess(std::move(initial_token), std::move(lockdown_token),
-                        job.Get(), thread_pool_.get());
+  TargetProcess* target = new TargetProcess(
+      std::move(initial_token), std::move(lockdown_token), job.Get(),
+      thread_pool_.get(),
+      profile ? profile->GetImpersonationCapabilities() : std::vector<Sid>());
 
   result = target->Create(exe_path, command_line, inherit_handles, startup_info,
                           &process_info, last_error);
@@ -443,7 +485,7 @@ ResultCode BrokerServicesBase::SpawnTarget(const wchar_t* exe_path,
   // the job object generates notifications using the completion port.
   if (job.IsValid()) {
     std::unique_ptr<JobTracker> tracker =
-        base::MakeUnique<JobTracker>(std::move(job), policy_base);
+        std::make_unique<JobTracker>(std::move(job), policy_base);
 
     // There is no obvious recovery after failure here. Previous version with
     // SpawnCleanup() caused deletion of TargetProcess twice. crbug.com/480639

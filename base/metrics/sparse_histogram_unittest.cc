@@ -17,6 +17,7 @@
 #include "base/metrics/statistics_recorder.h"
 #include "base/pickle.h"
 #include "base/strings/stringprintf.h"
+#include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace base {
@@ -58,11 +59,6 @@ class SparseHistogramTest : public testing::TestWithParam<bool> {
   }
 
   void CreatePersistentMemoryAllocator() {
-    // By getting the results-histogram before any persistent allocator
-    // is attached, that histogram is guaranteed not to be stored in
-    // any persistent memory segment (which simplifies some tests).
-    GlobalHistogramAllocator::GetCreateHistogramResultHistogram();
-
     GlobalHistogramAllocator::CreateWithLocalMemory(
         kAllocatorMemorySize, 0, "SparseHistogramAllocatorTest");
     allocator_ = GlobalHistogramAllocator::Get()->memory_allocator();
@@ -176,11 +172,11 @@ TEST_P(SparseHistogramTest, MacroBasicTest) {
   UmaHistogramSparse("Sparse", 200);
   UmaHistogramSparse("Sparse", 100);
 
-  StatisticsRecorder::Histograms histograms;
-  StatisticsRecorder::GetHistograms(&histograms);
+  const StatisticsRecorder::Histograms histograms =
+      StatisticsRecorder::GetHistograms();
 
-  ASSERT_EQ(1U, histograms.size());
-  HistogramBase* sparse_histogram = histograms[0];
+  ASSERT_THAT(histograms, testing::SizeIs(1));
+  const HistogramBase* const sparse_histogram = histograms[0];
 
   EXPECT_EQ(SPARSE_HISTOGRAM, sparse_histogram->GetHistogramType());
   EXPECT_EQ("Sparse", StringPiece(sparse_histogram->histogram_name()));
@@ -201,18 +197,14 @@ TEST_P(SparseHistogramTest, MacroInLoopTest) {
   // Unlike the macros in histogram.h, SparseHistogram macros can have a
   // variable as histogram name.
   for (int i = 0; i < 2; i++) {
-    std::string name = StringPrintf("Sparse%d", i + 1);
-    UmaHistogramSparse(name, 100);
+    UmaHistogramSparse(StringPrintf("Sparse%d", i), 100);
   }
 
-  StatisticsRecorder::Histograms histograms;
-  StatisticsRecorder::GetHistograms(&histograms);
-  ASSERT_EQ(2U, histograms.size());
-
-  std::string name1 = histograms[0]->histogram_name();
-  std::string name2 = histograms[1]->histogram_name();
-  EXPECT_TRUE(("Sparse1" == name1 && "Sparse2" == name2) ||
-              ("Sparse2" == name1 && "Sparse1" == name2));
+  const StatisticsRecorder::Histograms histograms =
+      StatisticsRecorder::Sort(StatisticsRecorder::GetHistograms());
+  ASSERT_THAT(histograms, testing::SizeIs(2));
+  EXPECT_STREQ(histograms[0]->histogram_name(), "Sparse0");
+  EXPECT_STREQ(histograms[1]->histogram_name(), "Sparse1");
 }
 
 TEST_P(SparseHistogramTest, Serialize) {

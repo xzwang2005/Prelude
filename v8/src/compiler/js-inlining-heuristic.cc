@@ -4,11 +4,12 @@
 
 #include "src/compiler/js-inlining-heuristic.h"
 
-#include "src/compilation-info.h"
 #include "src/compiler/common-operator.h"
+#include "src/compiler/compiler-source-position-table.h"
 #include "src/compiler/node-matchers.h"
 #include "src/compiler/simplified-operator.h"
 #include "src/objects-inl.h"
+#include "src/optimized-compilation-info.h"
 
 namespace v8 {
 namespace internal {
@@ -49,7 +50,7 @@ int CollectFunctions(Node* node, Handle<JSFunction>* functions,
 }
 
 bool CanInlineFunction(Handle<SharedFunctionInfo> shared) {
-  // Built-in functions are handled by the JSBuiltinReducer.
+  // Built-in functions are handled by the JSCallReducer.
   if (shared->HasBuiltinFunctionId()) return false;
 
   // Only choose user code for inlining.
@@ -61,7 +62,7 @@ bool CanInlineFunction(Handle<SharedFunctionInfo> shared) {
   if (!shared->HasBytecodeArray()) return false;
 
   // Quick check on the size of the bytecode to avoid inlining large functions.
-  if (shared->bytecode_array()->length() > FLAG_max_inlined_bytecode_size) {
+  if (shared->GetBytecodeArray()->length() > FLAG_max_inlined_bytecode_size) {
     return false;
   }
 
@@ -71,7 +72,7 @@ bool CanInlineFunction(Handle<SharedFunctionInfo> shared) {
 bool IsSmallInlineFunction(Handle<SharedFunctionInfo> shared) {
   // Forcibly inline small functions.
   // Don't forcibly inline functions that weren't compiled yet.
-  if (shared->HasBytecodeArray() && shared->bytecode_array()->length() <=
+  if (shared->HasBytecodeArray() && shared->GetBytecodeArray()->length() <=
                                         FLAG_max_inlined_bytecode_size_small) {
     return true;
   }
@@ -106,13 +107,13 @@ Reduction JSInliningHeuristic::Reduce(Node* node) {
   bool can_inline = false, small_inline = true;
   candidate.total_size = 0;
   Node* frame_state = NodeProperties::GetFrameStateInput(node);
-  FrameStateInfo const& frame_info = OpParameter<FrameStateInfo>(frame_state);
+  FrameStateInfo const& frame_info = FrameStateInfoOf(frame_state->op());
   Handle<SharedFunctionInfo> frame_shared_info;
   for (int i = 0; i < candidate.num_functions; ++i) {
     Handle<SharedFunctionInfo> shared =
         candidate.functions[i].is_null()
             ? candidate.shared_info
-            : handle(candidate.functions[i]->shared());
+            : handle(candidate.functions[i]->shared(), isolate());
     candidate.can_inline_function[i] = CanInlineFunction(shared);
     // Do not allow direct recursion i.e. f() -> f(). We still allow indirect
     // recurion like f() -> g() -> f(). The indirect recursion is helpful in
@@ -131,7 +132,7 @@ Reduction JSInliningHeuristic::Reduce(Node* node) {
     }
     if (candidate.can_inline_function[i]) {
       can_inline = true;
-      candidate.total_size += shared->bytecode_array()->length();
+      candidate.total_size += shared->GetBytecodeArray()->length();
     }
     if (!IsSmallInlineFunction(shared)) {
       small_inline = false;
@@ -556,6 +557,8 @@ void JSInliningHeuristic::CreateOrReuseDispatch(Node* node, Node* callee,
                                                 Node** if_successes,
                                                 Node** calls, Node** inputs,
                                                 int input_count) {
+  SourcePositionTable::Scope position(
+      source_positions_, source_positions_->GetSourcePosition(node));
   if (TryReuseDispatch(node, callee, candidate, if_successes, calls, inputs,
                        input_count)) {
     return;
@@ -604,10 +607,10 @@ Reduction JSInliningHeuristic::InlineCandidate(Candidate const& candidate,
     Handle<SharedFunctionInfo> shared =
         candidate.functions[0].is_null()
             ? candidate.shared_info
-            : handle(candidate.functions[0]->shared());
+            : handle(candidate.functions[0]->shared(), isolate());
     Reduction const reduction = inliner_.ReduceJSCall(node);
     if (reduction.Changed()) {
-      cumulative_count_ += shared->bytecode_array()->length();
+      cumulative_count_ += shared->GetBytecodeArray()->length();
     }
     return reduction;
   }
@@ -676,7 +679,7 @@ Reduction JSInliningHeuristic::InlineCandidate(Candidate const& candidate,
         // Killing the call node is not strictly necessary, but it is safer to
         // make sure we do not resurrect the node.
         node->Kill();
-        cumulative_count_ += function->shared()->bytecode_array()->length();
+        cumulative_count_ += function->shared()->GetBytecodeArray()->length();
       }
     }
   }
@@ -706,7 +709,7 @@ bool JSInliningHeuristic::CandidateCompare::operator()(
 }
 
 void JSInliningHeuristic::PrintCandidates() {
-  OFStream os(stdout);
+  StdoutStream os;
   os << "Candidates for inlining (size=" << candidates_.size() << "):\n";
   for (const Candidate& candidate : candidates_) {
     os << "  #" << candidate.node->id() << ":"
@@ -716,8 +719,8 @@ void JSInliningHeuristic::PrintCandidates() {
       Handle<SharedFunctionInfo> shared =
           candidate.functions[i].is_null()
               ? candidate.shared_info
-              : handle(candidate.functions[i]->shared());
-      PrintF("  - size:%d, name: %s\n", shared->bytecode_array()->length(),
+              : handle(candidate.functions[i]->shared(), isolate());
+      PrintF("  - size:%d, name: %s\n", shared->GetBytecodeArray()->length(),
              shared->DebugName()->ToCString().get());
     }
   }

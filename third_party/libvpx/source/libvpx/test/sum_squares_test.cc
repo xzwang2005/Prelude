@@ -28,7 +28,7 @@ namespace {
 const int kNumIterations = 10000;
 
 typedef uint64_t (*SSI16Func)(const int16_t *src, int stride, int size);
-typedef std::tr1::tuple<SSI16Func, SSI16Func> SumSquaresParam;
+typedef ::testing::tuple<SSI16Func, SSI16Func> SumSquaresParam;
 
 class SumSquaresTest : public ::testing::TestWithParam<SumSquaresParam> {
  public:
@@ -102,7 +102,14 @@ TEST_P(SumSquaresTest, ExtremeValues) {
   }
 }
 
-using std::tr1::make_tuple;
+using ::testing::make_tuple;
+
+#if HAVE_NEON
+INSTANTIATE_TEST_CASE_P(
+    NEON, SumSquaresTest,
+    ::testing::Values(make_tuple(&vpx_sum_squares_2d_i16_c,
+                                 &vpx_sum_squares_2d_i16_neon)));
+#endif  // HAVE_NEON
 
 #if HAVE_SSE2
 INSTANTIATE_TEST_CASE_P(
@@ -112,8 +119,9 @@ INSTANTIATE_TEST_CASE_P(
 #endif  // HAVE_SSE2
 
 #if HAVE_MSA
-INSTANTIATE_TEST_CASE_P(MSA, SumSquaresTest, ::testing::Values(make_tuple(
-                                                 &vpx_sum_squares_2d_i16_c,
-                                                 &vpx_sum_squares_2d_i16_msa)));
+INSTANTIATE_TEST_CASE_P(
+    MSA, SumSquaresTest,
+    ::testing::Values(make_tuple(&vpx_sum_squares_2d_i16_c,
+                                 &vpx_sum_squares_2d_i16_msa)));
 #endif  // HAVE_MSA
 }  // namespace

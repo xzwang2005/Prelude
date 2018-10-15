@@ -69,12 +69,18 @@ class CC_EXPORT SchedulerStateMachine {
   };
   static const char* BeginImplFrameStateToString(BeginImplFrameState state);
 
+  // The scheduler uses a deadline to wait for main thread updates before
+  // submitting a compositor frame. BeginImplFrameDeadlineMode specifies when
+  // the deadline should run.
   enum class BeginImplFrameDeadlineMode {
-    NONE,
-    IMMEDIATE,
-    REGULAR,
-    LATE,
-    BLOCKED,
+    NONE,  // No deadline should be scheduled e.g. for synchronous compositor.
+    IMMEDIATE,  // Deadline should be scheduled to run immediately.
+    REGULAR,  // Deadline should be scheduled to run at the deadline provided by
+              // in the BeginFrameArgs.
+    LATE,  // Deadline should be scheduled run when the next frame is expected
+           // to arrive.
+    BLOCKED,  // Deadline should be blocked indefinitely until the next frame
+              // arrives.
   };
   static const char* BeginImplFrameDeadlineModeToString(
       BeginImplFrameDeadlineMode mode);
@@ -154,7 +160,9 @@ class CC_EXPORT SchedulerStateMachine {
   // Indicates that the system has entered and left a BeginImplFrame callback.
   // The scheduler will not draw more than once in a given BeginImplFrame
   // callback nor send more than one BeginMainFrame message.
-  void OnBeginImplFrame(uint64_t source_id, uint64_t sequence_number);
+  void OnBeginImplFrame(uint64_t source_id,
+                        uint64_t sequence_number,
+                        bool animate_only);
   // Indicates that the scheduler has entered the draw phase. The scheduler
   // will not draw more than once in a single draw phase.
   // TODO(sunnyps): Rename OnBeginImplFrameDeadline to OnDraw or similar.
@@ -166,6 +174,8 @@ class CC_EXPORT SchedulerStateMachine {
   BeginImplFrameState begin_impl_frame_state() const {
     return begin_impl_frame_state_;
   }
+
+  // Returns BeginImplFrameDeadlineMode computed based on current state.
   BeginImplFrameDeadlineMode CurrentBeginImplFrameDeadlineMode() const;
 
   // If the main thread didn't manage to produce a new frame in time for the
@@ -242,15 +252,20 @@ class CC_EXPORT SchedulerStateMachine {
   void BeginMainFrameAborted(CommitEarlyOutReason reason);
 
   // Indicates production should be skipped to recover latency.
-  void SetSkipNextBeginMainFrameToReduceLatency();
+  void SetSkipNextBeginMainFrameToReduceLatency(bool skip);
 
-  // Resourceless software draws are allowed even when invisible.
+  // For Android WebView, resourceless software draws are allowed even when
+  // invisible.
   void SetResourcelessSoftwareDraw(bool resourceless_draw);
 
   // Indicates whether drawing would, at this time, make sense.
   // CanDraw can be used to suppress flashes or checkerboarding
   // when such behavior would be undesirable.
   void SetCanDraw(bool can);
+
+  // For Android WebView, indicates that the draw should be skipped because the
+  // frame sink is not ready to receive frames.
+  void SetSkipDraw(bool skip);
 
   // Indicates that scheduled BeginMainFrame is started.
   void NotifyBeginMainFrameStarted();
@@ -297,17 +312,35 @@ class CC_EXPORT SchedulerStateMachine {
     return critical_begin_main_frame_to_activate_is_fast_;
   }
 
+  void set_should_defer_invalidation_for_fast_main_frame(bool defer) {
+    should_defer_invalidation_for_fast_main_frame_ = defer;
+  }
+  bool should_defer_invalidation_for_fast_main_frame() const {
+    return should_defer_invalidation_for_fast_main_frame_;
+  }
+
+  bool main_thread_failed_to_respond_last_deadline() const {
+    return main_thread_failed_to_respond_last_deadline_;
+  }
+
  protected:
   bool BeginFrameRequiredForAction() const;
   bool BeginFrameNeededForVideo() const;
   bool ProactiveBeginFrameWanted() const;
 
+  // Indicates if we should post the deadline to draw immediately. This is true
+  // when we aren't expecting a commit or activation, or we're prioritizing
+  // active tree draw (see ImplLatencyTakesPriority()).
+  bool ShouldTriggerBeginImplFrameDeadlineImmediately() const;
+
+  // Indicates if we shouldn't schedule a deadline. Used to defer drawing until
+  // the entire pipeline is flushed and active tree is ready to draw for
+  // headless.
+  bool ShouldBlockDeadlineIndefinitely() const;
+
   bool ShouldPerformImplSideInvalidation() const;
   bool CouldCreatePendingTree() const;
   bool ShouldDeferInvalidatingForMainFrame() const;
-
-  bool ShouldTriggerBeginImplFrameDeadlineImmediately() const;
-  bool ShouldBlockDeadlineIndefinitely() const;
 
   bool ShouldAbortCurrentFrame() const;
 
@@ -373,6 +406,7 @@ class CC_EXPORT SchedulerStateMachine {
   bool begin_frame_source_paused_ = false;
   bool resourceless_draw_ = false;
   bool can_draw_ = false;
+  bool skip_draw_ = false;
   bool has_pending_tree_ = false;
   bool pending_tree_is_ready_for_activation_ = false;
   bool active_tree_needs_first_draw_ = false;
@@ -391,6 +425,12 @@ class CC_EXPORT SchedulerStateMachine {
   bool did_submit_in_last_frame_ = false;
   bool needs_impl_side_invalidation_ = false;
   bool next_invalidation_needs_first_draw_on_activation_ = false;
+  bool should_defer_invalidation_for_fast_main_frame_ = true;
+  bool begin_frame_is_animate_only_ = false;
+
+  // Set to true if the main thread fails to respond with a commit or abort the
+  // main frame before the draw deadline on the previous impl frame.
+  bool main_thread_failed_to_respond_last_deadline_ = false;
 
   bool previous_pending_tree_was_impl_side_ = false;
   bool current_pending_tree_is_impl_side_ = false;

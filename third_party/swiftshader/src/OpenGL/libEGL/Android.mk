@@ -1,10 +1,16 @@
 LOCAL_PATH:= $(call my-dir)
 
+COMMON_SWIFTSHADER_RELATIVE_PATH := $(if $(BOARD_SWIFTSHADER_RELATIVE_PATH),$(BOARD_SWIFTSHADER_RELATIVE_PATH),egl)
+
 COMMON_CFLAGS := \
 	-DLOG_TAG=\"libEGL_swiftshader\" \
 	-std=c++11 \
 	-DEGLAPI= \
 	-DEGL_EGLEXT_PROTOTYPES \
+	-Wall \
+	-Werror \
+	-Wno-format \
+	-Wno-unused-function \
 	-Wno-unused-parameter \
 	-Wno-implicit-exception-spec-mismatch \
 	-Wno-overloaded-virtual \
@@ -39,8 +45,8 @@ COMMON_SHARED_LIBRARIES := \
 	libcutils \
 	libhardware
 
-# Project Treble is introduced from Oreo
-ifeq ($(shell test $(PLATFORM_SDK_VERSION) -ge 26 && echo Oreo),Oreo)
+# Project Treble is introduced from Oreo MR1
+ifeq ($(shell test $(PLATFORM_SDK_VERSION) -ge 27 && echo OreoMR1),OreoMR1)
 COMMON_SHARED_LIBRARIES += libnativewindow
 COMMON_STATIC_LIBRARIES += libarect
 COMMON_HEADER_LIBRARIES += libnativebase_headers
@@ -65,17 +71,18 @@ COMMON_LDFLAGS := \
 
 include $(CLEAR_VARS)
 LOCAL_MODULE := libEGL_swiftshader_debug
-ifdef TARGET_2ND_ARCH
+
 ifeq ($(TARGET_TRANSLATE_2ND_ARCH),true)
 LOCAL_MULTILIB := first
-LOCAL_MODULE_PATH := $(TARGET_OUT_VENDOR)/lib/egl
-else
-LOCAL_MODULE_PATH_32 := $(TARGET_OUT_VENDOR)/lib/egl
-LOCAL_MODULE_PATH_64 := $(TARGET_OUT_VENDOR)/lib64/egl
 endif
+
+ifeq (HasRelativePath,$(shell test $(PLATFORM_SDK_VERSION) -ge 21 && echo HasRelativePath))
+LOCAL_MODULE_RELATIVE_PATH := $(COMMON_SWIFTSHADER_RELATIVE_PATH)
 else
-LOCAL_MODULE_PATH := $(TARGET_OUT_VENDOR)/lib/egl
+LOCAL_MODULE_PATH := $(TARGET_OUT_SHARED_LIBRARIES)/$(COMMON_SWIFTSHADER_RELATIVE_PATH)
 endif
+
+LOCAL_VENDOR_MODULE := true
 LOCAL_MODULE_TAGS := optional
 LOCAL_CLANG := true
 LOCAL_SRC_FILES := $(COMMON_SRC_FILES)
@@ -89,17 +96,18 @@ include $(BUILD_SHARED_LIBRARY)
 
 include $(CLEAR_VARS)
 LOCAL_MODULE := libEGL_swiftshader
-ifdef TARGET_2ND_ARCH
+
 ifeq ($(TARGET_TRANSLATE_2ND_ARCH),true)
 LOCAL_MULTILIB := first
-LOCAL_MODULE_PATH := $(TARGET_OUT_VENDOR)/lib/egl
-else
-LOCAL_MODULE_PATH_32 := $(TARGET_OUT_VENDOR)/lib/egl
-LOCAL_MODULE_PATH_64 := $(TARGET_OUT_VENDOR)/lib64/egl
 endif
+
+ifeq (HasRelativePath,$(shell test $(PLATFORM_SDK_VERSION) -ge 21 && echo HasRelativePath))
+LOCAL_MODULE_RELATIVE_PATH := $(COMMON_SWIFTSHADER_RELATIVE_PATH)
 else
-LOCAL_MODULE_PATH := $(TARGET_OUT_VENDOR)/lib/egl
+LOCAL_MODULE_PATH := $(TARGET_OUT_SHARED_LIBRARIES)/$(COMMON_SWIFTSHADER_RELATIVE_PATH)
 endif
+
+LOCAL_VENDOR_MODULE := true
 LOCAL_MODULE_TAGS := optional
 LOCAL_CLANG := true
 LOCAL_SRC_FILES := $(COMMON_SRC_FILES)

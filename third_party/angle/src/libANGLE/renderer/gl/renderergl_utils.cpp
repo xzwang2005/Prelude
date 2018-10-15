@@ -14,9 +14,11 @@
 #include "common/mathutil.h"
 #include "libANGLE/Buffer.h"
 #include "libANGLE/Caps.h"
+#include "libANGLE/Context.h"
 #include "libANGLE/Workarounds.h"
 #include "libANGLE/formatutils.h"
 #include "libANGLE/queryconversions.h"
+#include "libANGLE/renderer/gl/ContextGL.h"
 #include "libANGLE/renderer/gl/FunctionsGL.h"
 #include "libANGLE/renderer/gl/QueryGL.h"
 #include "libANGLE/renderer/gl/WorkaroundsGL.h"
@@ -100,11 +102,12 @@ static gl::TextureCaps GenerateTextureFormatCaps(const FunctionsGL *functions,
     const nativegl::InternalFormat &formatInfo = nativegl::GetInternalFormatInfo(internalFormat, functions->standard);
     textureCaps.texturable = MeetsRequirements(functions, formatInfo.texture);
     textureCaps.filterable = textureCaps.texturable && MeetsRequirements(functions, formatInfo.filter);
-    textureCaps.renderable = MeetsRequirements(functions, formatInfo.framebufferAttachment);
+    textureCaps.textureAttachment = MeetsRequirements(functions, formatInfo.textureAttachment);
+    textureCaps.renderbuffer      = MeetsRequirements(functions, formatInfo.renderbuffer);
 
     // glGetInternalformativ is not available until version 4.2 but may be available through the 3.0
     // extension GL_ARB_internalformat_query
-    if (textureCaps.renderable && functions->getInternalformativ)
+    if (textureCaps.renderbuffer && functions->getInternalformativ)
     {
         GLenum queryInternalFormat = internalFormat;
 
@@ -349,12 +352,14 @@ void GenerateCaps(const FunctionsGL *functions,
     {
         // Desktop GL core profile deprecated the GL_ALIASED_POINT_SIZE_RANGE query.  Use
         // GL_POINT_SIZE_RANGE instead.
-        caps->minAliasedPointSize = QueryGLFloatRange(functions, GL_POINT_SIZE_RANGE, 0);
+        caps->minAliasedPointSize =
+            std::max(1.0f, QueryGLFloatRange(functions, GL_POINT_SIZE_RANGE, 0));
         caps->maxAliasedPointSize = QueryGLFloatRange(functions, GL_POINT_SIZE_RANGE, 1);
     }
     else
     {
-        caps->minAliasedPointSize = QueryGLFloatRange(functions, GL_ALIASED_POINT_SIZE_RANGE, 0);
+        caps->minAliasedPointSize =
+            std::max(1.0f, QueryGLFloatRange(functions, GL_ALIASED_POINT_SIZE_RANGE, 0));
         caps->maxAliasedPointSize = QueryGLFloatRange(functions, GL_ALIASED_POINT_SIZE_RANGE, 1);
     }
 
@@ -376,7 +381,7 @@ void GenerateCaps(const FunctionsGL *functions,
     if (functions->isAtLeastGL(gl::Version(4, 1)) ||
         functions->hasGLExtension("GL_ARB_get_program_binary") ||
         functions->isAtLeastGLES(gl::Version(3, 0)) ||
-        functions->hasGLExtension("GL_OES_get_program_binary"))
+        functions->hasGLESExtension("GL_OES_get_program_binary"))
     {
         // Able to support the GL_PROGRAM_BINARY_ANGLE format as long as another program binary
         // format is available.
@@ -440,8 +445,10 @@ void GenerateCaps(const FunctionsGL *functions,
         functions->isAtLeastGLES(gl::Version(2, 0)))
     {
         caps->maxVertexAttributes = QuerySingleGLInt(functions, GL_MAX_VERTEX_ATTRIBS);
-        caps->maxVertexUniformComponents = QuerySingleGLInt(functions, GL_MAX_VERTEX_UNIFORM_COMPONENTS);
-        caps->maxVertexTextureImageUnits = QuerySingleGLInt(functions, GL_MAX_VERTEX_TEXTURE_IMAGE_UNITS);
+        caps->maxShaderUniformComponents[gl::ShaderType::Vertex] =
+            QuerySingleGLInt(functions, GL_MAX_VERTEX_UNIFORM_COMPONENTS);
+        caps->maxShaderTextureImageUnits[gl::ShaderType::Vertex] =
+            QuerySingleGLInt(functions, GL_MAX_VERTEX_TEXTURE_IMAGE_UNITS);
     }
     else
     {
@@ -459,9 +466,11 @@ void GenerateCaps(const FunctionsGL *functions,
     else
     {
         // Doesn't limit ES version, GL_MAX_VERTEX_UNIFORM_COMPONENTS / 4 is acceptable.
-        caps->maxVertexUniformVectors = caps->maxVertexUniformComponents / 4;
+        caps->maxVertexUniformVectors =
+            caps->maxShaderUniformComponents[gl::ShaderType::Vertex] / 4;
         // Doesn't limit ES version, GL_MAX_FRAGMENT_UNIFORM_COMPONENTS / 4 is acceptable.
-        caps->maxFragmentUniformVectors = caps->maxFragmentUniformComponents / 4;
+        caps->maxFragmentUniformVectors =
+            caps->maxShaderUniformComponents[gl::ShaderType::Fragment] / 4;
     }
 
     if (functions->isAtLeastGL(gl::Version(3, 2)) ||
@@ -480,8 +489,10 @@ void GenerateCaps(const FunctionsGL *functions,
     if (functions->isAtLeastGL(gl::Version(2, 0)) ||
         functions->isAtLeastGLES(gl::Version(2, 0)))
     {
-        caps->maxFragmentUniformComponents = QuerySingleGLInt(functions, GL_MAX_FRAGMENT_UNIFORM_COMPONENTS);
-        caps->maxTextureImageUnits = QuerySingleGLInt(functions, GL_MAX_TEXTURE_IMAGE_UNITS);
+        caps->maxShaderUniformComponents[gl::ShaderType::Fragment] =
+            QuerySingleGLInt(functions, GL_MAX_FRAGMENT_UNIFORM_COMPONENTS);
+        caps->maxShaderTextureImageUnits[gl::ShaderType::Fragment] =
+            QuerySingleGLInt(functions, GL_MAX_TEXTURE_IMAGE_UNITS);
     }
     else
     {
@@ -517,8 +528,9 @@ void GenerateCaps(const FunctionsGL *functions,
     if (functions->isAtLeastGL(gl::Version(3, 1)) || functions->hasGLExtension("GL_ARB_uniform_buffer_object") ||
         functions->isAtLeastGLES(gl::Version(3, 0)))
     {
-        caps->maxVertexUniformBlocks = QuerySingleGLInt(functions, GL_MAX_VERTEX_UNIFORM_BLOCKS);
-        caps->maxFragmentUniformBlocks =
+        caps->maxShaderUniformBlocks[gl::ShaderType::Vertex] =
+            QuerySingleGLInt(functions, GL_MAX_VERTEX_UNIFORM_BLOCKS);
+        caps->maxShaderUniformBlocks[gl::ShaderType::Fragment] =
             QuerySingleGLInt(functions, GL_MAX_FRAGMENT_UNIFORM_BLOCKS);
         caps->maxUniformBufferBindings = QuerySingleGLInt(functions, GL_MAX_UNIFORM_BUFFER_BINDINGS);
         caps->maxUniformBlockSize = QuerySingleGLInt64(functions, GL_MAX_UNIFORM_BLOCK_SIZE);
@@ -528,12 +540,14 @@ void GenerateCaps(const FunctionsGL *functions,
             QuerySingleGLInt(functions, GL_MAX_COMBINED_UNIFORM_BLOCKS);
         // The real cap contains the limits for shader types that are not available to ES, so limit
         // the cap to the sum of vertex+fragment shader caps.
-        caps->maxCombinedUniformBlocks =
-            std::min(maxCombinedUniformBlocks,
-                     caps->maxVertexUniformBlocks + caps->maxFragmentUniformBlocks);
+        caps->maxCombinedUniformBlocks = std::min(
+            maxCombinedUniformBlocks, caps->maxShaderUniformBlocks[gl::ShaderType::Vertex] +
+                                          caps->maxShaderUniformBlocks[gl::ShaderType::Fragment]);
 
-        caps->maxCombinedVertexUniformComponents = QuerySingleGLInt64(functions, GL_MAX_COMBINED_VERTEX_UNIFORM_COMPONENTS);
-        caps->maxCombinedFragmentUniformComponents = QuerySingleGLInt64(functions, GL_MAX_COMBINED_FRAGMENT_UNIFORM_COMPONENTS);
+        caps->maxCombinedShaderUniformComponents[gl::ShaderType::Vertex] =
+            QuerySingleGLInt64(functions, GL_MAX_COMBINED_VERTEX_UNIFORM_COMPONENTS);
+        caps->maxCombinedShaderUniformComponents[gl::ShaderType::Fragment] =
+            QuerySingleGLInt64(functions, GL_MAX_COMBINED_FRAGMENT_UNIFORM_COMPONENTS);
     }
     else
     {
@@ -575,7 +589,8 @@ void GenerateCaps(const FunctionsGL *functions,
 
     // Determine the max combined texture image units by adding the vertex and fragment limits.  If
     // the real cap is queried, it would contain the limits for shader types that are not available to ES.
-    caps->maxCombinedTextureImageUnits = caps->maxVertexTextureImageUnits + caps->maxTextureImageUnits;
+    caps->maxCombinedTextureImageUnits = caps->maxShaderTextureImageUnits[gl::ShaderType::Vertex] +
+                                         caps->maxShaderTextureImageUnits[gl::ShaderType::Fragment];
 
     // Table 6.34, implementation dependent transform feedback limits
     if (functions->isAtLeastGL(gl::Version(4, 0)) ||
@@ -708,9 +723,9 @@ void GenerateCaps(const FunctionsGL *functions,
     {
         caps->maxCombinedShaderOutputResources =
             QuerySingleGLInt(functions, GL_MAX_COMBINED_SHADER_OUTPUT_RESOURCES);
-        caps->maxFragmentShaderStorageBlocks =
+        caps->maxShaderStorageBlocks[gl::ShaderType::Fragment] =
             QuerySingleGLInt(functions, GL_MAX_FRAGMENT_SHADER_STORAGE_BLOCKS);
-        caps->maxVertexShaderStorageBlocks =
+        caps->maxShaderStorageBlocks[gl::ShaderType::Vertex] =
             QuerySingleGLInt(functions, GL_MAX_VERTEX_SHADER_STORAGE_BLOCKS);
         caps->maxShaderStorageBufferBindings =
             QuerySingleGLInt(functions, GL_MAX_SHADER_STORAGE_BUFFER_BINDINGS);
@@ -744,21 +759,23 @@ void GenerateCaps(const FunctionsGL *functions,
         }
         caps->maxComputeWorkGroupInvocations =
             QuerySingleGLInt(functions, GL_MAX_COMPUTE_WORK_GROUP_INVOCATIONS);
-        caps->maxComputeUniformBlocks = QuerySingleGLInt(functions, GL_MAX_COMPUTE_UNIFORM_BLOCKS);
-        caps->maxComputeTextureImageUnits =
+        caps->maxShaderUniformBlocks[gl::ShaderType::Compute] =
+            QuerySingleGLInt(functions, GL_MAX_COMPUTE_UNIFORM_BLOCKS);
+        caps->maxShaderTextureImageUnits[gl::ShaderType::Compute] =
             QuerySingleGLInt(functions, GL_MAX_COMPUTE_TEXTURE_IMAGE_UNITS);
         caps->maxComputeSharedMemorySize =
             QuerySingleGLInt(functions, GL_MAX_COMPUTE_SHARED_MEMORY_SIZE);
-        caps->maxComputeUniformComponents =
+        caps->maxShaderUniformComponents[gl::ShaderType::Compute] =
             QuerySingleGLInt(functions, GL_MAX_COMPUTE_UNIFORM_COMPONENTS);
-        caps->maxComputeAtomicCounterBuffers =
+        caps->maxShaderAtomicCounterBuffers[gl::ShaderType::Compute] =
             QuerySingleGLInt(functions, GL_MAX_COMPUTE_ATOMIC_COUNTER_BUFFERS);
-        caps->maxComputeAtomicCounters =
+        caps->maxShaderAtomicCounters[gl::ShaderType::Compute] =
             QuerySingleGLInt(functions, GL_MAX_COMPUTE_ATOMIC_COUNTERS);
-        caps->maxComputeImageUniforms = QuerySingleGLInt(functions, GL_MAX_COMPUTE_IMAGE_UNIFORMS);
-        caps->maxCombinedComputeUniformComponents =
+        caps->maxShaderImageUniforms[gl::ShaderType::Compute] =
+            QuerySingleGLInt(functions, GL_MAX_COMPUTE_IMAGE_UNIFORMS);
+        caps->maxCombinedShaderUniformComponents[gl::ShaderType::Compute] =
             QuerySingleGLInt(functions, GL_MAX_COMBINED_COMPUTE_UNIFORM_COMPONENTS);
-        caps->maxComputeShaderStorageBlocks =
+        caps->maxShaderStorageBlocks[gl::ShaderType::Compute] =
             QuerySingleGLInt(functions, GL_MAX_COMPUTE_SHADER_STORAGE_BLOCKS);
     }
     else
@@ -792,8 +809,9 @@ void GenerateCaps(const FunctionsGL *functions,
     if (functions->isAtLeastGL(gl::Version(4, 2)) || functions->isAtLeastGLES(gl::Version(3, 1)) ||
         functions->hasGLExtension("GL_ARB_shader_image_load_store"))
     {
-        caps->maxVertexImageUniforms = QuerySingleGLInt(functions, GL_MAX_VERTEX_IMAGE_UNIFORMS);
-        caps->maxFragmentImageUniforms =
+        caps->maxShaderImageUniforms[gl::ShaderType::Vertex] =
+            QuerySingleGLInt(functions, GL_MAX_VERTEX_IMAGE_UNIFORMS);
+        caps->maxShaderImageUniforms[gl::ShaderType::Fragment] =
             QuerySingleGLInt(functions, GL_MAX_FRAGMENT_IMAGE_UNIFORMS);
         caps->maxImageUnits = QuerySingleGLInt(functions, GL_MAX_IMAGE_UNITS);
         caps->maxCombinedImageUniforms =
@@ -807,12 +825,13 @@ void GenerateCaps(const FunctionsGL *functions,
     if (functions->isAtLeastGL(gl::Version(4, 2)) || functions->isAtLeastGLES(gl::Version(3, 1)) ||
         functions->hasGLExtension("GL_ARB_shader_atomic_counters"))
     {
-        caps->maxVertexAtomicCounterBuffers =
+        caps->maxShaderAtomicCounterBuffers[gl::ShaderType::Vertex] =
             QuerySingleGLInt(functions, GL_MAX_VERTEX_ATOMIC_COUNTER_BUFFERS);
-        caps->maxVertexAtomicCounters = QuerySingleGLInt(functions, GL_MAX_VERTEX_ATOMIC_COUNTERS);
-        caps->maxFragmentAtomicCounterBuffers =
+        caps->maxShaderAtomicCounters[gl::ShaderType::Vertex] =
+            QuerySingleGLInt(functions, GL_MAX_VERTEX_ATOMIC_COUNTERS);
+        caps->maxShaderAtomicCounterBuffers[gl::ShaderType::Fragment] =
             QuerySingleGLInt(functions, GL_MAX_FRAGMENT_ATOMIC_COUNTER_BUFFERS);
-        caps->maxFragmentAtomicCounters =
+        caps->maxShaderAtomicCounters[gl::ShaderType::Fragment] =
             QuerySingleGLInt(functions, GL_MAX_FRAGMENT_ATOMIC_COUNTERS);
         caps->maxAtomicCounterBufferBindings =
             QuerySingleGLInt(functions, GL_MAX_ATOMIC_COUNTER_BUFFER_BINDINGS);
@@ -832,11 +851,13 @@ void GenerateCaps(const FunctionsGL *functions,
     // if the max uniform vectors is too large.  Artificially limit the maximum until the test is
     // updated.
     caps->maxVertexUniformVectors = std::min(1024u, caps->maxVertexUniformVectors);
-    caps->maxVertexUniformComponents =
-        std::min(caps->maxVertexUniformVectors * 4, caps->maxVertexUniformComponents);
+    caps->maxShaderUniformComponents[gl::ShaderType::Vertex] =
+        std::min(caps->maxVertexUniformVectors * 4,
+                 caps->maxShaderUniformComponents[gl::ShaderType::Vertex]);
     caps->maxFragmentUniformVectors = std::min(1024u, caps->maxFragmentUniformVectors);
-    caps->maxFragmentUniformComponents =
-        std::min(caps->maxFragmentUniformVectors * 4, caps->maxFragmentUniformComponents);
+    caps->maxShaderUniformComponents[gl::ShaderType::Fragment] =
+        std::min(caps->maxFragmentUniformVectors * 4,
+                 caps->maxShaderUniformComponents[gl::ShaderType::Fragment]);
 
     // If it is not possible to support reading buffer data back, a shadow copy of the buffers must
     // be held. This disallows writing to buffers indirectly through transform feedback, thus
@@ -920,6 +941,12 @@ void GenerateCaps(const FunctionsGL *functions,
                               functions->isAtLeastGLES(gl::Version(3, 2)) ||
                               functions->hasGLESExtension("GL_KHR_debug") ||
                               functions->hasGLESExtension("GL_EXT_debug_marker");
+    extensions->eglImage = functions->hasGLESExtension("GL_OES_EGL_image");
+    // TODO(geofflang): Support external texture targets in TextureGL. http://anglebug.com/2507
+    // extensions->eglImageExternal = functions->hasGLESExtension("GL_OES_EGL_image_external");
+    // extensions->eglImageExternalEssl3 =
+    //    functions->hasGLESExtension("GL_OES_EGL_image_external_essl3");
+
     if (functions->isAtLeastGL(gl::Version(3, 3)) ||
         functions->hasGLExtension("GL_ARB_timer_query") ||
         functions->hasGLESExtension("GL_EXT_disjoint_timer_query"))
@@ -955,6 +982,14 @@ void GenerateCaps(const FunctionsGL *functions,
 
     extensions->copyTexture = true;
     extensions->syncQuery   = SyncQueryGL::IsSupported(functions);
+
+    // Note that OES_texture_storage_multisample_2d_array support could be extended down to GL 3.2
+    // if we emulated texStorage* API on top of texImage*.
+    extensions->textureStorageMultisample2DArray =
+        functions->isAtLeastGL(gl::Version(4, 2)) || functions->isAtLeastGLES(gl::Version(3, 2));
+
+    extensions->multiviewMultisample =
+        extensions->textureStorageMultisample2DArray && extensions->multiview;
 
     // NV_path_rendering
     // We also need interface query which is available in
@@ -1054,11 +1089,11 @@ void GenerateCaps(const FunctionsGL *functions,
             caps->layerProvokingVertex = GL_LAST_VERTEX_CONVENTION_EXT;
         }
 
-        caps->maxGeometryUniformComponents =
+        caps->maxShaderUniformComponents[gl::ShaderType::Geometry] =
             QuerySingleGLInt(functions, GL_MAX_GEOMETRY_UNIFORM_COMPONENTS_EXT);
-        caps->maxGeometryUniformBlocks =
+        caps->maxShaderUniformBlocks[gl::ShaderType::Geometry] =
             QuerySingleGLInt(functions, GL_MAX_GEOMETRY_UNIFORM_BLOCKS_EXT);
-        caps->maxCombinedGeometryUniformComponents =
+        caps->maxCombinedShaderUniformComponents[gl::ShaderType::Geometry] =
             QuerySingleGLInt(functions, GL_MAX_COMBINED_GEOMETRY_UNIFORM_COMPONENTS_EXT);
         caps->maxGeometryInputComponents =
             QuerySingleGLInt(functions, GL_MAX_GEOMETRY_INPUT_COMPONENTS_EXT);
@@ -1070,16 +1105,30 @@ void GenerateCaps(const FunctionsGL *functions,
             QuerySingleGLInt(functions, GL_MAX_GEOMETRY_TOTAL_OUTPUT_COMPONENTS_EXT);
         caps->maxGeometryShaderInvocations =
             QuerySingleGLInt(functions, GL_MAX_GEOMETRY_SHADER_INVOCATIONS_EXT);
-        caps->maxGeometryTextureImageUnits =
+        caps->maxShaderTextureImageUnits[gl::ShaderType::Geometry] =
             QuerySingleGLInt(functions, GL_MAX_GEOMETRY_TEXTURE_IMAGE_UNITS_EXT);
-        caps->maxGeometryAtomicCounterBuffers =
+        caps->maxShaderAtomicCounterBuffers[gl::ShaderType::Geometry] =
             QuerySingleGLInt(functions, GL_MAX_GEOMETRY_ATOMIC_COUNTER_BUFFERS_EXT);
-        caps->maxGeometryAtomicCounters =
+        caps->maxShaderAtomicCounters[gl::ShaderType::Geometry] =
             QuerySingleGLInt(functions, GL_MAX_GEOMETRY_ATOMIC_COUNTERS_EXT);
-        caps->maxGeometryImageUniforms =
+        caps->maxShaderImageUniforms[gl::ShaderType::Geometry] =
             QuerySingleGLInt(functions, GL_MAX_GEOMETRY_IMAGE_UNIFORMS_EXT);
-        caps->maxGeometryShaderStorageBlocks =
+        caps->maxShaderStorageBlocks[gl::ShaderType::Geometry] =
             QuerySingleGLInt(functions, GL_MAX_GEOMETRY_SHADER_STORAGE_BLOCKS_EXT);
+    }
+
+    // EXT_blend_func_extended.
+    // Note that this could be implemented also on top of native EXT_blend_func_extended, but it's
+    // currently not fully implemented.
+    extensions->blendFuncExtended = !workarounds.disableBlendFuncExtended &&
+                                    functions->standard == STANDARD_GL_DESKTOP &&
+                                    functions->hasGLExtension("GL_ARB_blend_func_extended");
+    if (extensions->blendFuncExtended)
+    {
+        // TODO(http://anglebug.com/1085): Support greater values of
+        // MAX_DUAL_SOURCE_DRAW_BUFFERS_EXT queried from the driver. See comments in ProgramGL.cpp
+        // for more information about this limitation.
+        extensions->maxDualSourceDrawBuffers = 1;
     }
 }
 
@@ -1092,7 +1141,7 @@ void GenerateWorkarounds(const FunctionsGL *functions, WorkaroundsGL *workaround
 
     // Don't use 1-bit alpha formats on desktop GL with AMD or Intel drivers.
     workarounds->avoid1BitAlphaTextureFormats =
-        functions->standard == STANDARD_GL_DESKTOP && (IsAMD(vendor) || IsIntel(vendor));
+        functions->standard == STANDARD_GL_DESKTOP && (IsAMD(vendor));
 
     workarounds->rgba4IsNotSupportedForColorRendering =
         functions->standard == STANDARD_GL_DESKTOP && IsIntel(vendor);
@@ -1157,6 +1206,14 @@ void GenerateWorkarounds(const FunctionsGL *functions, WorkaroundsGL *workaround
 
     workarounds->rewriteVectorScalarArithmetic = IsNvidia(vendor);
 
+    // TODO(oetuaho): Make this specific to the affected driver versions. Versions at least up to
+    // 390 are known to be affected. Versions after that are expected not to be affected.
+    workarounds->clampFragDepth = IsNvidia(vendor);
+
+    // TODO(oetuaho): Make this specific to the affected driver versions. Versions since 397.31 are
+    // not affected.
+    workarounds->rewriteRepeatedAssignToSwizzled = IsNvidia(vendor);
+
 #if defined(ANGLE_PLATFORM_ANDROID)
     // TODO(jmadill): Narrow workaround range for specific devices.
     workarounds->reapplyUBOBindingsAfterUsingBinaryProgram = true;
@@ -1165,6 +1222,8 @@ void GenerateWorkarounds(const FunctionsGL *functions, WorkaroundsGL *workaround
 
     workarounds->dontUseLoopsToInitializeVariables = !IsNvidia(vendor);
 #endif
+
+    workarounds->disableBlendFuncExtended = IsAMD(vendor) || IsIntel(vendor);
 }
 
 void ApplyWorkarounds(const FunctionsGL *functions, gl::Workarounds *workarounds)
@@ -1197,25 +1256,72 @@ bool SupportsOcclusionQueries(const FunctionsGL *functions)
            functions->hasGLESExtension("GL_EXT_occlusion_query_boolean");
 }
 
-bool SupportsNativeRendering(const FunctionsGL *functions, GLenum target, GLenum internalFormat)
+bool SupportsNativeRendering(const FunctionsGL *functions,
+                             gl::TextureType type,
+                             GLenum internalFormat)
 {
     // Some desktop drivers allow rendering to formats that are not required by the spec, this is
     // exposed through the GL_FRAMEBUFFER_RENDERABLE query.
-    if (functions->isAtLeastGL(gl::Version(4, 3)) ||
-        functions->hasGLExtension("GL_ARB_internalformat_query2"))
+    bool hasInternalFormatQuery = functions->isAtLeastGL(gl::Version(4, 3)) ||
+                                  functions->hasGLExtension("GL_ARB_internalformat_query2");
+
+    // Some Intel drivers have a bug that returns GL_FULL_SUPPORT when asked if they support
+    // rendering to compressed texture formats yet return framebuffer incomplete when attempting to
+    // render to the format.  Skip any native queries for compressed formats.
+    const gl::InternalFormat &internalFormatInfo = gl::GetSizedInternalFormatInfo(internalFormat);
+
+    if (hasInternalFormatQuery && !internalFormatInfo.compressed)
     {
-        GLint framebufferRenderable = GL_FALSE;
-        functions->getInternalformativ(target, internalFormat, GL_FRAMEBUFFER_RENDERABLE, 1,
+        GLint framebufferRenderable = GL_NONE;
+        functions->getInternalformativ(ToGLenum(type), internalFormat, GL_FRAMEBUFFER_RENDERABLE, 1,
                                        &framebufferRenderable);
-        return gl::ConvertToBool(framebufferRenderable);
+        return framebufferRenderable != GL_NONE;
     }
     else
     {
         const nativegl::InternalFormat &nativeInfo =
             nativegl::GetInternalFormatInfo(internalFormat, functions->standard);
-        return nativegl_gl::MeetsRequirements(functions, nativeInfo.framebufferAttachment);
+        return nativegl_gl::MeetsRequirements(functions, nativeInfo.textureAttachment);
     }
 }
+
+bool UseTexImage2D(gl::TextureType textureType)
+{
+    return textureType == gl::TextureType::_2D || textureType == gl::TextureType::CubeMap ||
+           textureType == gl::TextureType::Rectangle ||
+           textureType == gl::TextureType::_2DMultisample;
+}
+
+bool UseTexImage3D(gl::TextureType textureType)
+{
+    return textureType == gl::TextureType::_2DArray || textureType == gl::TextureType::_3D ||
+           textureType == gl::TextureType::_2DMultisampleArray;
+}
+}
+
+const FunctionsGL *GetFunctionsGL(const gl::Context *context)
+{
+    return GetImplAs<ContextGL>(context)->getFunctions();
+}
+
+StateManagerGL *GetStateManagerGL(const gl::Context *context)
+{
+    return GetImplAs<ContextGL>(context)->getStateManager();
+}
+
+BlitGL *GetBlitGL(const gl::Context *context)
+{
+    return GetImplAs<ContextGL>(context)->getBlitter();
+}
+
+ClearMultiviewGL *GetMultiviewClearer(const gl::Context *context)
+{
+    return GetImplAs<ContextGL>(context)->getMultiviewClearer();
+}
+
+const WorkaroundsGL &GetWorkaroundsGL(const gl::Context *context)
+{
+    return GetImplAs<ContextGL>(context)->getWorkaroundsGL();
 }
 
 bool CanMapBufferForRead(const FunctionsGL *functions)
@@ -1232,8 +1338,7 @@ uint8_t *MapBufferRangeWithFallback(const FunctionsGL *functions,
 {
     if (functions->mapBufferRange != nullptr)
     {
-        return reinterpret_cast<uint8_t *>(
-            functions->mapBufferRange(target, offset, length, access));
+        return static_cast<uint8_t *>(functions->mapBufferRange(target, offset, length, access));
     }
     else if (functions->mapBuffer != nullptr &&
              (functions->standard == STANDARD_GL_DESKTOP || access == GL_MAP_WRITE_BIT))
@@ -1260,7 +1365,7 @@ uint8_t *MapBufferRangeWithFallback(const FunctionsGL *functions,
             return nullptr;
         }
 
-        return reinterpret_cast<uint8_t *>(functions->mapBuffer(target, accessEnum)) + offset;
+        return static_cast<uint8_t *>(functions->mapBuffer(target, accessEnum)) + offset;
     }
     else
     {
@@ -1286,27 +1391,27 @@ gl::ErrorOrResult<bool> ShouldApplyLastRowPaddingWorkaround(const gl::Extents &s
     // We are using an pack or unpack buffer, compute what the driver thinks is going to be the
     // last byte read or written. If it is past the end of the buffer, we will need to use the
     // workaround otherwise the driver will generate INVALID_OPERATION and not do the operation.
-    CheckedNumeric<size_t> checkedEndByte;
-    CheckedNumeric<size_t> pixelBytes;
-    size_t rowPitch;
 
     const gl::InternalFormat &glFormat = gl::GetInternalFormatInfo(format, type);
-    ANGLE_TRY_RESULT(glFormat.computePackUnpackEndByte(type, size, state, is3D), checkedEndByte);
-    ANGLE_TRY_RESULT(glFormat.computeRowPitch(type, size.width, state.alignment, state.rowLength),
-                     rowPitch);
-    pixelBytes = glFormat.computePixelBytes(type);
+    GLuint endByte                     = 0;
+    ANGLE_TRY_CHECKED_MATH(glFormat.computePackUnpackEndByte(type, size, state, is3D, &endByte));
+    GLuint rowPitch = 0;
+    ANGLE_TRY_CHECKED_MATH(
+        glFormat.computeRowPitch(type, size.width, state.alignment, state.rowLength, &rowPitch));
 
-    checkedEndByte += reinterpret_cast<intptr_t>(pixels);
+    CheckedNumeric<size_t> checkedPixelBytes = glFormat.computePixelBytes(type);
+    CheckedNumeric<size_t> checkedEndByte =
+        angle::CheckedNumeric<size_t>(endByte) + reinterpret_cast<intptr_t>(pixels);
 
     // At this point checkedEndByte is the actual last byte read.
     // The driver adds an extra row padding (if any), mimic it.
-    ANGLE_TRY_CHECKED_MATH(pixelBytes);
-    if (pixelBytes.ValueOrDie() * size.width < rowPitch)
+    ANGLE_TRY_CHECKED_MATH(checkedPixelBytes.IsValid());
+    if (checkedPixelBytes.ValueOrDie() * size.width < rowPitch)
     {
-        checkedEndByte += rowPitch - pixelBytes * size.width;
+        checkedEndByte += rowPitch - checkedPixelBytes * size.width;
     }
 
-    ANGLE_TRY_CHECKED_MATH(checkedEndByte);
+    ANGLE_TRY_CHECKED_MATH(checkedEndByte.IsValid());
 
     return checkedEndByte.ValueOrDie() > static_cast<size_t>(pixelBuffer->getSize());
 }

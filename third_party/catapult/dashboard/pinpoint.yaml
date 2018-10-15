@@ -3,13 +3,13 @@ service: pinpoint
 runtime: python27
 api_version: 1
 threadsafe: true
-instance_class: F1
+instance_class: F4_1G
 
 libraries:
 - name: pycrypto
   version: "2.6"
 - name: webapp2
-  version: "2.5.1"
+  version: "2.5.2"
 
 handlers:
 
@@ -18,6 +18,11 @@ handlers:
   login: admin
   secure: always
   auth_fail_action: unauthorized
+
+- url: /api/generate-results2/.*
+  script: dashboard.pinpoint.dispatcher.APP
+  login: admin
+  secure: always
 
 - url: /api/run/.*
   script: dashboard.pinpoint.dispatcher.APP
@@ -42,7 +47,7 @@ handlers:
   static_dir: dashboard/pinpoint/static
   secure: always
 
-- url: /dashboard/pinpoint/elements/(.*\.html)$
+- url: /elements/(.*\.html)$
   static_files: dashboard/pinpoint/elements/\1
   upload: dashboard/pinpoint/elements/.*\.html$
   secure: always
@@ -51,21 +56,6 @@ handlers:
   static_dir: vulcanized_histograms_viewer/
   secure: always
   application_readable: true
-
-- url: /results2/.*
-  script: dashboard.pinpoint.dispatcher.APP
-  login: admin
-  secure: always
-
-- url: /flot/(.*\.js)$
-  static_files: flot/\1
-  upload: flot/.*\.js$
-  secure: always
-
-- url: /jquery/(.*\.js)$
-  static_files: jquery/\1
-  upload: jquery/.*\.js$
-  secure: always
 
 - url: /.*
   static_files: dashboard/pinpoint/index/index.html

@@ -10,9 +10,6 @@
 #include <string>
 
 #include "base/auto_reset.h"
-#include "base/debug/alias.h"
-#include "base/debug/dump_without_crashing.h"
-#include "base/memory/ptr_util.h"
 #include "base/trace_event/trace_event.h"
 #include "base/trace_event/trace_event_argument.h"
 #include "cc/base/devtools_instrumentation.h"
@@ -24,11 +21,13 @@
 #include "cc/trees/layer_tree_impl.h"
 #include "cc/trees/mutator_host.h"
 #include "cc/trees/proxy_main.h"
+#include "cc/trees/render_frame_metadata_observer.h"
 #include "cc/trees/task_runner_provider.h"
 #include "components/viz/common/frame_sinks/delay_based_time_source.h"
 #include "components/viz/common/gpu/context_provider.h"
 #include "gpu/command_buffer/client/gles2_interface.h"
 #include "services/metrics/public/cpp/ukm_recorder.h"
+#include "ui/gfx/presentation_feedback.h"
 
 namespace cc {
 
@@ -101,8 +100,12 @@ ProxyImpl::~ProxyImpl() {
   // Take away the LayerTreeFrameSink before destroying things so it doesn't
   // try to call into its client mid-shutdown.
   host_impl_->ReleaseLayerTreeFrameSink();
-  scheduler_ = nullptr;
+
+  // It is important to destroy LTHI before the Scheduler since it can make
+  // callbacks that access it during destruction cleanup.
   host_impl_ = nullptr;
+  scheduler_ = nullptr;
+
   // We need to explicitly shutdown the notifier to destroy any weakptrs it is
   // holding while still on the compositor thread. This also ensures any
   // callbacks holding a ProxyImpl pointer are cancelled.
@@ -134,17 +137,12 @@ void ProxyImpl::InitializeLayerTreeFrameSinkOnImpl(
   proxy_main_frame_sink_bound_weak_ptr_ = proxy_main_frame_sink_bound_weak_ptr;
 
   LayerTreeHostImpl* host_impl = host_impl_.get();
-  bool success = host_impl->InitializeRenderer(layer_tree_frame_sink);
+  bool success = host_impl->InitializeFrameSink(layer_tree_frame_sink);
   MainThreadTaskRunner()->PostTask(
       FROM_HERE, base::BindOnce(&ProxyMain::DidInitializeLayerTreeFrameSink,
                                 proxy_main_weak_ptr_, success));
   if (success)
     scheduler_->DidCreateAndInitializeLayerTreeFrameSink();
-}
-
-void ProxyImpl::MainThreadHasStoppedFlingingOnImpl() {
-  DCHECK(IsImplThread());
-  host_impl_->MainThreadHasStoppedFlinging();
 }
 
 void ProxyImpl::SetInputThrottledUntilCommitOnImpl(bool is_throttled) {
@@ -235,34 +233,6 @@ void ProxyImpl::RequestBeginMainFrameNotExpected(bool new_state) {
   TRACE_EVENT1("cc", "ProxyImpl::RequestBeginMainFrameNotExpected", "new_state",
                new_state);
   scheduler_->SetMainThreadWantsBeginMainFrameNotExpected(new_state);
-}
-
-// TODO(sunnyps): Remove this code once crbug.com/668892 is fixed.
-NOINLINE void ProxyImpl::DumpForBeginMainFrameHang() {
-  DCHECK(IsImplThread());
-  DCHECK(scheduler_);
-
-  auto state = std::make_unique<base::trace_event::TracedValue>();
-
-  state->SetBoolean("commit_completion_waits_for_activation",
-                    commit_completion_waits_for_activation_);
-  state->SetBoolean("commit_completion_event", !!commit_completion_event_);
-  state->SetBoolean("activation_completion_event",
-                    !!activation_completion_event_);
-
-  state->BeginDictionary("scheduler_state");
-  scheduler_->AsValueInto(state.get());
-  state->EndDictionary();
-
-  state->BeginDictionary("tile_manager_state");
-  host_impl_->tile_manager()->ActivationStateAsValueInto(state.get());
-  state->EndDictionary();
-
-  char stack_string[50000] = "";
-  base::debug::Alias(&stack_string);
-  strncpy(stack_string, state->ToString().c_str(), arraysize(stack_string) - 1);
-
-  base::debug::DumpWithoutCrashing();
 }
 
 void ProxyImpl::NotifyReadyToCommitOnImpl(
@@ -393,8 +363,12 @@ size_t ProxyImpl::MainThreadAnimationsCount() const {
   return host_impl_->mutator_host()->MainThreadAnimationsCount();
 }
 
-size_t ProxyImpl::MainThreadCompositableAnimationsCount() const {
-  return host_impl_->mutator_host()->MainThreadCompositableAnimationsCount();
+bool ProxyImpl::CurrentFrameHadRAF() const {
+  return host_impl_->mutator_host()->CurrentFrameHadRAF();
+}
+
+bool ProxyImpl::NextFrameHasPendingRAF() const {
+  return host_impl_->mutator_host()->NextFrameHasPendingRAF();
 }
 
 bool ProxyImpl::IsInsideDraw() {
@@ -424,9 +398,8 @@ void ProxyImpl::RenewTreePriority() {
   if (smoothness_priority_expiration_notifier_.HasPendingNotification())
     tree_priority = SMOOTHNESS_TAKES_PRIORITY;
 
-  // New content always takes priority when there is an invalid viewport size or
-  // ui resources have been evicted.
-  if (host_impl_->active_tree()->ViewportSizeInvalid() ||
+  // New content always takes priority when ui resources have been evicted.
+  if (host_impl_->active_tree()->GetDeviceViewport().size().IsEmpty() ||
       host_impl_->EvictedUIResourcesExist() || input_throttled_until_commit_) {
     // Once we enter NEW_CONTENTS_TAKES_PRIORITY mode, visible tiles on active
     // tree might be freed. We need to set RequiresHighResToDraw to ensure that
@@ -485,9 +458,11 @@ void ProxyImpl::DidCompletePageScaleAnimationOnImplThread() {
                                 proxy_main_weak_ptr_));
 }
 
-void ProxyImpl::OnDrawForLayerTreeFrameSink(bool resourceless_software_draw) {
+void ProxyImpl::OnDrawForLayerTreeFrameSink(bool resourceless_software_draw,
+                                            bool skip_draw) {
   DCHECK(IsImplThread());
-  scheduler_->OnDrawForLayerTreeFrameSink(resourceless_software_draw);
+  scheduler_->OnDrawForLayerTreeFrameSink(resourceless_software_draw,
+                                          skip_draw);
 }
 
 void ProxyImpl::NeedsImplSideInvalidation(bool needs_first_draw_on_activation) {
@@ -501,19 +476,18 @@ void ProxyImpl::NotifyImageDecodeRequestFinished() {
 }
 
 void ProxyImpl::DidPresentCompositorFrameOnImplThread(
-    const std::vector<int>& source_frames,
-    base::TimeTicks time,
-    base::TimeDelta refresh,
-    uint32_t flags) {
+    uint32_t frame_token,
+    std::vector<LayerTreeHost::PresentationTimeCallback> callbacks,
+    const gfx::PresentationFeedback& feedback) {
   MainThreadTaskRunner()->PostTask(
       FROM_HERE, base::BindOnce(&ProxyMain::DidPresentCompositorFrame,
-                                proxy_main_weak_ptr_, source_frames, time,
-                                refresh, flags));
+                                proxy_main_weak_ptr_, frame_token,
+                                std::move(callbacks), feedback));
 }
 
-void ProxyImpl::WillBeginImplFrame(const viz::BeginFrameArgs& args) {
+bool ProxyImpl::WillBeginImplFrame(const viz::BeginFrameArgs& args) {
   DCHECK(IsImplThread());
-  host_impl_->WillBeginImplFrame(args);
+  return host_impl_->WillBeginImplFrame(args);
 }
 
 void ProxyImpl::DidFinishImplFrame() {
@@ -633,11 +607,10 @@ void ProxyImpl::ScheduledActionPrepareTiles() {
   host_impl_->PrepareTiles();
 }
 
-void ProxyImpl::ScheduledActionInvalidateLayerTreeFrameSink() {
+void ProxyImpl::ScheduledActionInvalidateLayerTreeFrameSink(bool needs_redraw) {
   TRACE_EVENT0("cc", "ProxyImpl::ScheduledActionInvalidateLayerTreeFrameSink");
   DCHECK(IsImplThread());
-  DCHECK(host_impl_->layer_tree_frame_sink());
-  host_impl_->layer_tree_frame_sink()->Invalidate();
+  host_impl_->InvalidateLayerTreeFrameSink(needs_redraw);
 }
 
 void ProxyImpl::ScheduledActionPerformImplSideInvalidation() {
@@ -738,16 +711,18 @@ base::SingleThreadTaskRunner* ProxyImpl::MainThreadTaskRunner() {
 
 void ProxyImpl::SetURLForUkm(const GURL& url) {
   DCHECK(IsImplThread());
-  if (!host_impl_->ukm_manager())
-    return;
+  host_impl_->SetActiveURL(url);
+}
 
-  // The active tree might still be from content for the previous page when the
-  // recorder is updated here, since new content will be pushed with the next
-  // main frame. But we should only get a few impl frames wrong here in that
-  // case. Also, since checkerboard stats are only recorded with user
-  // interaction, it must be in progress when the navigation commits for this
-  // case to occur.
-  host_impl_->ukm_manager()->SetSourceURL(url);
+void ProxyImpl::ClearHistory() {
+  DCHECK(IsImplThread());
+  DCHECK(IsMainThreadBlocked());
+  scheduler_->ClearHistory();
+}
+
+void ProxyImpl::SetRenderFrameObserver(
+    std::unique_ptr<RenderFrameMetadataObserver> observer) {
+  host_impl_->SetRenderFrameObserver(std::move(observer));
 }
 
 }  // namespace cc

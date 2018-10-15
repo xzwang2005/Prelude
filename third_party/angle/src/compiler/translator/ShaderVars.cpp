@@ -32,17 +32,17 @@ bool InterpolationTypesMatch(InterpolationType a, InterpolationType b)
 }
 
 ShaderVariable::ShaderVariable()
-    : type(0), precision(0), flattenedOffsetInParentArrays(0), staticUse(false)
+    : type(0), precision(0), flattenedOffsetInParentArrays(0), staticUse(false), active(false)
 {
 }
 
 ShaderVariable::ShaderVariable(GLenum typeIn)
-    : type(typeIn), precision(0), flattenedOffsetInParentArrays(0), staticUse(false)
+    : type(typeIn), precision(0), flattenedOffsetInParentArrays(0), staticUse(false), active(false)
 {
 }
 
 ShaderVariable::ShaderVariable(GLenum typeIn, unsigned int arraySizeIn)
-    : type(typeIn), precision(0), flattenedOffsetInParentArrays(0), staticUse(false)
+    : type(typeIn), precision(0), flattenedOffsetInParentArrays(0), staticUse(false), active(false)
 {
     ASSERT(arraySizeIn != 0);
     arraySizes.push_back(arraySizeIn);
@@ -60,6 +60,7 @@ ShaderVariable::ShaderVariable(const ShaderVariable &other)
       arraySizes(other.arraySizes),
       flattenedOffsetInParentArrays(other.flattenedOffsetInParentArrays),
       staticUse(other.staticUse),
+      active(other.active),
       fields(other.fields),
       structName(other.structName)
 {
@@ -73,6 +74,7 @@ ShaderVariable &ShaderVariable::operator=(const ShaderVariable &other)
     mappedName = other.mappedName;
     arraySizes                    = other.arraySizes;
     staticUse  = other.staticUse;
+    active                        = other.active;
     flattenedOffsetInParentArrays = other.flattenedOffsetInParentArrays;
     fields     = other.fields;
     structName = other.structName;
@@ -83,8 +85,8 @@ bool ShaderVariable::operator==(const ShaderVariable &other) const
 {
     if (type != other.type || precision != other.precision || name != other.name ||
         mappedName != other.mappedName || arraySizes != other.arraySizes ||
-        staticUse != other.staticUse || fields.size() != other.fields.size() ||
-        structName != other.structName)
+        staticUse != other.staticUse || active != other.active ||
+        fields.size() != other.fields.size() || structName != other.structName)
     {
         return false;
     }
@@ -245,7 +247,8 @@ bool ShaderVariable::isSameVariableAtLinkTime(const ShaderVariable &other,
     return true;
 }
 
-Uniform::Uniform() : binding(-1), offset(-1)
+Uniform::Uniform() : binding(-1), offset(-1), readonly(false), writeonly(false)
+
 {
 }
 
@@ -254,7 +257,11 @@ Uniform::~Uniform()
 }
 
 Uniform::Uniform(const Uniform &other)
-    : VariableWithLocation(other), binding(other.binding), offset(other.offset)
+    : VariableWithLocation(other),
+      binding(other.binding),
+      offset(other.offset),
+      readonly(other.readonly),
+      writeonly(other.writeonly)
 {
 }
 
@@ -263,13 +270,15 @@ Uniform &Uniform::operator=(const Uniform &other)
     VariableWithLocation::operator=(other);
     binding                 = other.binding;
     offset                        = other.offset;
+    readonly                      = other.readonly;
+    writeonly                     = other.writeonly;
     return *this;
 }
 
 bool Uniform::operator==(const Uniform &other) const
 {
     return VariableWithLocation::operator==(other) && binding == other.binding &&
-           offset == other.offset;
+           offset == other.offset && readonly == other.readonly && writeonly == other.writeonly;
 }
 
 bool Uniform::isSameUniformAtLinkTime(const Uniform &other) const
@@ -285,6 +294,10 @@ bool Uniform::isSameUniformAtLinkTime(const Uniform &other) const
         return false;
     }
     if (offset != other.offset)
+    {
+        return false;
+    }
+    if (readonly != other.readonly || writeonly != other.writeonly)
     {
         return false;
     }
@@ -443,6 +456,7 @@ InterfaceBlock::InterfaceBlock()
       isRowMajorLayout(false),
       binding(-1),
       staticUse(false),
+      active(false),
       blockType(BlockType::BLOCK_UNIFORM)
 {
 }
@@ -460,6 +474,7 @@ InterfaceBlock::InterfaceBlock(const InterfaceBlock &other)
       isRowMajorLayout(other.isRowMajorLayout),
       binding(other.binding),
       staticUse(other.staticUse),
+      active(other.active),
       blockType(other.blockType),
       fields(other.fields)
 {
@@ -475,6 +490,7 @@ InterfaceBlock &InterfaceBlock::operator=(const InterfaceBlock &other)
     isRowMajorLayout = other.isRowMajorLayout;
     binding          = other.binding;
     staticUse        = other.staticUse;
+    active           = other.active;
     blockType        = other.blockType;
     fields           = other.fields;
     return *this;

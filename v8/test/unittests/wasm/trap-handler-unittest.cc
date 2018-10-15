@@ -13,7 +13,7 @@
 
 namespace {
 
-#if V8_OS_POSIX
+#if V8_TRAP_HANDLER_SUPPORTED
 
 void CrashOnPurpose() { *reinterpret_cast<volatile int*>(42); }
 
@@ -23,7 +23,7 @@ void CrashOnPurpose() { *reinterpret_cast<volatile int*>(42); }
 // on failures.
 class SignalHandlerFallbackTest : public ::testing::Test {
  protected:
-  virtual void SetUp() {
+  void SetUp() override {
     struct sigaction action;
     action.sa_sigaction = SignalHandler;
     sigemptyset(&action.sa_mask);
@@ -32,7 +32,7 @@ class SignalHandlerFallbackTest : public ::testing::Test {
     sigaction(SIGBUS, &action, &old_bus_action_);
   }
 
-  virtual void TearDown() {
+  void TearDown() override {
     // be a good citizen and restore the old signal handler.
     sigaction(SIGSEGV, &old_segv_action_, nullptr);
     sigaction(SIGBUS, &old_bus_action_, nullptr);
@@ -52,7 +52,8 @@ sigjmp_buf SignalHandlerFallbackTest::continuation_;
 TEST_F(SignalHandlerFallbackTest, DoTest) {
   const int save_sigs = 1;
   if (!sigsetjmp(continuation_, save_sigs)) {
-    v8::V8::RegisterDefaultSignalHandler();
+    constexpr bool use_default_signal_handler = true;
+    CHECK(v8::V8::EnableWebAssemblyTrapHandler(use_default_signal_handler));
     CrashOnPurpose();
     FAIL();
   } else {

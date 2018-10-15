@@ -4,15 +4,20 @@
 
 from telemetry import decorators
 from telemetry.page import page as page_module
-from telemetry.testing import browser_test_case
 from telemetry.testing import options_for_unittests
 from telemetry.testing import page_test_test_case
 from telemetry.timeline import chrome_trace_category_filter
 from telemetry.util import wpr_modes
 from telemetry.web_perf import timeline_based_measurement as tbm_module
-from telemetry.web_perf.metrics import smoothness
 from tracing.value import histogram
+from tracing.value import histogram_set
+from tracing.value.diagnostics import generic_set
 from tracing.value.diagnostics import reserved_infos
+
+
+# TODO(crbug.com/851948): These tests should be moved to
+# timeline_based_measurement_unittest.py
+
 
 class TestTimelinebasedMeasurementPage(page_module.Page):
 
@@ -55,57 +60,15 @@ class FailedTimelinebasedMeasurementPage(page_module.Page):
     action_runner.TapElement('#does-not-exist')
 
 
-class TimelineBasedPageTestTest(page_test_test_case.PageTestTestCase):
+class TimelineBasedMeasurementTest(page_test_test_case.PageTestTestCase):
 
   def setUp(self):
-    browser_test_case.teardown_browser()
     self._options = self.createDefaultRunnerOptions()
 
   def createDefaultRunnerOptions(self):
     runner_options = options_for_unittests.GetCopy()
     runner_options.browser_options.wpr_mode = wpr_modes.WPR_OFF
     return runner_options
-
-  # This test is flaky when run in parallel on the mac: crbug.com/426676
-  # Also, fails on android: crbug.com/437057, and chromeos: crbug.com/483212
-  @decorators.Disabled('android', 'mac', 'chromeos')
-  @decorators.Disabled('win')  # catapult/issues/2282
-  @decorators.Isolated  # Needed because of py_trace_event
-  def testSmoothnessTimelineBasedMeasurementForSmoke(self):
-    ps = self.CreateEmptyPageSet()
-    ps.AddStory(TestTimelinebasedMeasurementPage(
-        ps, ps.base_dir, trigger_animation=True))
-
-    options = tbm_module.Options()
-    options.SetLegacyTimelineBasedMetrics([smoothness.SmoothnessMetric()])
-    tbm = tbm_module.TimelineBasedMeasurement(options)
-    results = self.RunMeasurement(tbm, ps, options=self._options)
-
-    self.assertEquals(0, len(results.failures))
-    v = results.FindAllPageSpecificValuesFromIRNamed(
-        'CenterAnimation', 'frame_time_discrepancy')
-    self.assertEquals(len(v), 1)
-    v = results.FindAllPageSpecificValuesFromIRNamed(
-        'DrawerAnimation', 'frame_time_discrepancy')
-    self.assertEquals(len(v), 1)
-
-  # win: crbug.com/520781, chromeos: crbug.com/483212.
-  @decorators.Disabled('win', 'chromeos')
-  @decorators.Isolated  # Needed because of py_trace_event
-  def testTimelineBasedMeasurementGestureAdjustmentSmoke(self):
-    ps = self.CreateEmptyPageSet()
-    ps.AddStory(TestTimelinebasedMeasurementPage(
-        ps, ps.base_dir, trigger_scroll_gesture=True))
-
-    options = tbm_module.Options()
-    options.SetLegacyTimelineBasedMetrics([smoothness.SmoothnessMetric()])
-    tbm = tbm_module.TimelineBasedMeasurement(options)
-    results = self.RunMeasurement(tbm, ps, options=self._options)
-
-    self.assertEquals(0, len(results.failures))
-    v = results.FindAllPageSpecificValuesFromIRNamed(
-        'Gesture_Scroll', 'frame_time_discrepancy')
-    self.assertEquals(len(v), 1)
 
   @decorators.Disabled('chromeos')
   @decorators.Isolated
@@ -120,7 +83,7 @@ class TimelineBasedPageTestTest(page_test_test_case.PageTestTestCase):
     tbm = tbm_module.TimelineBasedMeasurement(options)
     results = self.RunMeasurement(tbm, ps, self._options)
 
-    self.assertEquals(1, len(results.failures))
+    self.assertTrue(results.had_failures)
     self.assertEquals(1, len(results.FindAllTraceValues()))
 
   # Fails on chromeos: crbug.com/483212
@@ -137,25 +100,26 @@ class TimelineBasedPageTestTest(page_test_test_case.PageTestTestCase):
     tbm = tbm_module.TimelineBasedMeasurement(options)
     results = self.RunMeasurement(tbm, ps, self._options)
 
-    self.assertEquals(0, len(results.failures))
+    self.assertFalse(results.had_failures)
 
-    self.assertEquals(1, len(results.histograms))
-    foos = results.histograms.GetHistogramsNamed('foo')
-    self.assertEquals(1, len(foos))
-    hist = foos[0]
+    histogram_dicts = results.AsHistogramDicts()
+    hs = histogram_set.HistogramSet()
+    hs.ImportDicts(histogram_dicts)
+    self.assertEquals(4, len(hs))
+    hist = hs.GetFirstHistogram()
     benchmarks = hist.diagnostics.get(reserved_infos.BENCHMARKS.name)
-    self.assertIsInstance(benchmarks, histogram.GenericSet)
+    self.assertIsInstance(benchmarks, generic_set.GenericSet)
     self.assertEquals(1, len(benchmarks))
     self.assertEquals('', list(benchmarks)[0])
     stories = hist.diagnostics.get(reserved_infos.STORIES.name)
-    self.assertIsInstance(stories, histogram.GenericSet)
+    self.assertIsInstance(stories, generic_set.GenericSet)
     self.assertEquals(1, len(stories))
     self.assertEquals('interaction_enabled_page.html', list(stories)[0])
     repeats = hist.diagnostics.get(reserved_infos.STORYSET_REPEATS.name)
-    self.assertIsInstance(repeats, histogram.GenericSet)
+    self.assertIsInstance(repeats, generic_set.GenericSet)
     self.assertEquals(1, len(repeats))
     self.assertEquals(0, list(repeats)[0])
-    hist = list(results.histograms)[0]
+    hist = hs.GetFirstHistogram()
     trace_start = hist.diagnostics.get(reserved_infos.TRACE_START.name)
     self.assertIsInstance(trace_start, histogram.DateRange)
 
@@ -181,11 +145,11 @@ class TimelineBasedPageTestTest(page_test_test_case.PageTestTestCase):
 
     runner_options = self.createDefaultRunnerOptions()
     runner_options.browser_options.AppendExtraBrowserArgs(
-        ['--enable-heap-profiling'])
+        ['--memlog=all', '--memlog-sampling', '--memlog-stack-mode=pseudo'])
     tbm = tbm_module.TimelineBasedMeasurement(options)
     results = self.RunMeasurement(tbm, ps, runner_options)
 
-    self.assertEquals(0, len(results.failures))
+    self.assertFalse(results.had_failures)
 
     DUMP_COUNT_METRIC = 'memory:chrome:all_processes:dump_count'
     dumps_detailed = results.FindAllPageSpecificValuesNamed(
@@ -216,7 +180,7 @@ class TimelineBasedPageTestTest(page_test_test_case.PageTestTestCase):
     tbm = tbm_module.TimelineBasedMeasurement(options)
     results = self.RunMeasurement(tbm, ps, self._options)
 
-    self.assertEquals(0, len(results.failures), results.failures)
+    self.assertFalse(results.had_failures)
     v_ttfcp_max = results.FindAllPageSpecificValuesNamed(
         'timeToFirstContentfulPaint_max')
     self.assertEquals(len(v_ttfcp_max), 1)

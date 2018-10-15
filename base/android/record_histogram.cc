@@ -42,6 +42,7 @@ class HistogramCache {
         break;
       }
       case SPARSE_HISTOGRAM:
+      case DUMMY_HISTOGRAM:
         break;
     }
     return params_str;
@@ -302,10 +303,6 @@ jlong JNI_RecordHistogram_RecordCustomTimesHistogramMilliseconds(
   histogram->AddTime(
       TimeDelta::FromMilliseconds(static_cast<int64_t>(j_duration)));
   return reinterpret_cast<jlong>(histogram);
-}
-
-void JNI_RecordHistogram_Initialize(JNIEnv* env, const JavaParamRef<jclass>&) {
-  StatisticsRecorder::Initialize();
 }
 
 // This backs a Java test util for testing histograms -

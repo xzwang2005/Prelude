@@ -36,7 +36,7 @@ class InterpreterCallable {
  public:
   InterpreterCallable(Isolate* isolate, Handle<JSFunction> function)
       : isolate_(isolate), function_(function) {}
-  virtual ~InterpreterCallable() {}
+  virtual ~InterpreterCallable() = default;
 
   MaybeHandle<Object> operator()(A... args) {
     return CallInterpreter(isolate_, function_, args...);
@@ -83,6 +83,11 @@ class InterpreterTester {
 
   static const char kFunctionName[];
 
+  // Expose raw RegisterList construction to tests.
+  static RegisterList NewRegisterList(int first_reg_index, int register_count) {
+    return RegisterList(first_reg_index, register_count);
+  }
+
  private:
   Isolate* isolate_;
   const char* source_;
@@ -117,10 +122,12 @@ class InterpreterTester {
       function->shared()->set_function_data(*bytecode_.ToHandleChecked());
     }
     if (!feedback_metadata_.is_null()) {
-      function->set_feedback_vector_cell(isolate_->heap()->undefined_cell());
-      function->shared()->set_feedback_metadata(
+      function->set_feedback_cell(isolate_->heap()->many_closures_cell());
+      // Set the raw feedback metadata to circumvent checks that we are not
+      // overwriting existing metadata.
+      function->shared()->set_raw_outer_scope_info_or_feedback_metadata(
           *feedback_metadata_.ToHandleChecked());
-      JSFunction::EnsureLiterals(function);
+      JSFunction::EnsureFeedbackVector(function);
     }
     return function;
   }

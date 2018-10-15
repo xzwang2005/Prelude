@@ -6,6 +6,5 @@ group("excerpt01_gn") {
   deps = [
     "hello_puppy",
     "hello_window",
-    "hello_wtl",
   ]
 }

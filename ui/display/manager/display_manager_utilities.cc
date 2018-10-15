@@ -5,8 +5,10 @@
 #include "ui/display/manager/display_manager_utilities.h"
 
 #include <algorithm>
+#include <set>
 
 #include "base/command_line.h"
+#include "base/strings/string_number_conversions.h"
 #include "base/sys_info.h"
 #include "ui/display/display_switches.h"
 #include "ui/display/manager/managed_display_info.h"
@@ -19,105 +21,12 @@
 
 namespace display {
 
-namespace {
-
-// List of value UI Scale values. Scales for 2x are equivalent to 640,
-// 800, 1024, 1280, 1440, 1600 and 1920 pixel width respectively on
-// 2560 pixel width 2x density display. Please see crbug.com/233375
-// for the full list of resolutions.
-constexpr float kUIScalesFor2x[] = {0.5f,   0.625f, 0.8f, 1.0f,
-                                    1.125f, 1.25f,  1.5f, 2.0f};
-constexpr float kUIScalesFor1_25x[] = {0.5f, 0.625f, 0.8f, 1.0f, 1.25f};
-constexpr float kUIScalesFor1_6x[] = {0.5f, 0.8f, 1.0f, 1.2f, 1.6f};
-
-constexpr float kUIScalesFor1280[] = {0.5f, 0.625f, 0.8f, 1.0f, 1.125f};
-constexpr float kUIScalesFor1366[] = {0.5f, 0.6f, 0.75f, 1.0f, 1.125f};
-constexpr float kUIScalesForFHD[] = {0.5f, 0.625f, 0.8f, 1.0f, 1.25f};
-
-// The default UI scales for the above display densities.
-constexpr float kDefaultUIScaleFor2x = 1.0f;
-constexpr float kDefaultUIScaleFor1_25x = 0.8f;
-constexpr float kDefaultUIScaleFor1_6x = 1.0f;
-constexpr float kDefaultUIScaleFor1280 = 1.0f;
-constexpr float kDefaultUIScaleFor1366 = 1.0f;
-constexpr float kDefaultUIScaleForFHD = 1.0f;
-
-// Encapsulates the list of UI scales and the default one.
-struct DisplayUIScales {
-  std::vector<float> scales;
-  float default_scale;
-};
-
-DisplayUIScales GetScalesForDisplay(const ManagedDisplayMode& native_mode) {
-#define ASSIGN_ARRAY(v, a) v.assign(a, a + arraysize(a))
-
-  DisplayUIScales ret;
-  if (native_mode.device_scale_factor() == 2.0f) {
-    ASSIGN_ARRAY(ret.scales, kUIScalesFor2x);
-    ret.default_scale = kDefaultUIScaleFor2x;
-    return ret;
-  } else if (native_mode.device_scale_factor() == 1.25f) {
-    ASSIGN_ARRAY(ret.scales, kUIScalesFor1_25x);
-    ret.default_scale = kDefaultUIScaleFor1_25x;
-    return ret;
-  } else if (native_mode.device_scale_factor() == 1.6f) {
-    ASSIGN_ARRAY(ret.scales, kUIScalesFor1_6x);
-    ret.default_scale = kDefaultUIScaleFor1_6x;
-    return ret;
-  }
-  switch (native_mode.size().width()) {
-    case 1280:
-      ASSIGN_ARRAY(ret.scales, kUIScalesFor1280);
-      ret.default_scale = kDefaultUIScaleFor1280;
-      break;
-    case 1366:
-      ASSIGN_ARRAY(ret.scales, kUIScalesFor1366);
-      ret.default_scale = kDefaultUIScaleFor1366;
-      break;
-    case 1980:
-      ASSIGN_ARRAY(ret.scales, kUIScalesForFHD);
-      ret.default_scale = kDefaultUIScaleForFHD;
-      break;
-    default:
-      ASSIGN_ARRAY(ret.scales, kUIScalesFor1280);
-      ret.default_scale = kDefaultUIScaleFor1280;
-#if defined(OS_CHROMEOS)
-      if (base::SysInfo::IsRunningOnChromeOS())
-        NOTREACHED() << "Unknown resolution:" << native_mode.size().ToString();
-#endif
-  }
-  return ret;
-}
-
-struct ScaleComparator {
-  explicit ScaleComparator(float s) : scale(s) {}
-
-  bool operator()(const ManagedDisplayMode& mode) const {
-    const float kEpsilon = 0.0001f;
-    return std::abs(scale - mode.ui_scale()) < kEpsilon;
-  }
-  float scale;
-};
-
-}  // namespace
-
 ManagedDisplayInfo::ManagedDisplayModeList CreateInternalManagedDisplayModeList(
     const ManagedDisplayMode& native_mode) {
-  ManagedDisplayInfo::ManagedDisplayModeList display_mode_list;
-
-  float native_ui_scale = (native_mode.device_scale_factor() == 1.25f)
-                              ? 1.0f
-                              : native_mode.device_scale_factor();
-  const DisplayUIScales display_ui_scales = GetScalesForDisplay(native_mode);
-  for (float ui_scale : display_ui_scales.scales) {
-    ManagedDisplayMode mode(native_mode.size(), native_mode.refresh_rate(),
-                            native_mode.is_interlaced(),
-                            ui_scale == native_ui_scale, ui_scale,
-                            native_mode.device_scale_factor());
-    mode.set_is_default(ui_scale == display_ui_scales.default_scale);
-    display_mode_list.push_back(mode);
-  }
-  return display_mode_list;
+  ManagedDisplayMode mode(native_mode.size(), native_mode.refresh_rate(),
+                          native_mode.is_interlaced(), true,
+                          native_mode.device_scale_factor());
+  return ManagedDisplayInfo::ManagedDisplayModeList{mode};
 }
 
 UnifiedDisplayModeParam::UnifiedDisplayModeParam(float dsf,
@@ -140,7 +49,7 @@ ManagedDisplayInfo::ManagedDisplayModeList CreateUnifiedManagedDisplayModeList(
         gfx::ToFlooredSize(scaled_size), native_mode.refresh_rate(),
         native_mode.is_interlaced(),
         param.is_default_mode ? true : false /* native */,
-        native_mode.ui_scale(), param.device_scale_factor);
+        param.device_scale_factor);
   }
   // Sort the mode by the size in DIP.
   std::sort(display_mode_list.begin(), display_mode_list.end(),
@@ -149,13 +58,6 @@ ManagedDisplayInfo::ManagedDisplayModeList CreateUnifiedManagedDisplayModeList(
                      b.GetSizeInDIP(false).GetArea();
             });
   return display_mode_list;
-}
-
-bool HasDisplayModeForUIScale(const ManagedDisplayInfo& info, float ui_scale) {
-  ScaleComparator comparator(ui_scale);
-  const ManagedDisplayInfo::ManagedDisplayModeList& modes =
-      info.display_modes();
-  return std::find_if(modes.begin(), modes.end(), comparator) != modes.end();
 }
 
 bool ForceFirstDisplayInternal() {
@@ -266,6 +168,55 @@ std::string DisplayIdListToString(const DisplayIdList& list) {
     sep = ",";
   }
   return s.str();
+}
+
+display::ManagedDisplayInfo CreateDisplayInfo(int64_t id,
+                                              const gfx::Rect& bounds) {
+  display::ManagedDisplayInfo info(id, "x-" + base::Int64ToString(id), false);
+  info.SetBounds(bounds);
+  return info;
+}
+
+int64_t GetDisplayIdWithoutOutputIndex(int64_t id) {
+  constexpr uint64_t kMask = ~static_cast<uint64_t>(0xFF);
+  return static_cast<int64_t>(kMask & id);
+}
+
+MixedMirrorModeParams::MixedMirrorModeParams(int64_t src_id,
+                                             const DisplayIdList& dst_ids)
+    : source_id(src_id), destination_ids(dst_ids) {}
+
+MixedMirrorModeParams::MixedMirrorModeParams(
+    const MixedMirrorModeParams& mixed_params) = default;
+
+MixedMirrorModeParams::~MixedMirrorModeParams() = default;
+
+MixedMirrorModeParamsErrors ValidateParamsForMixedMirrorMode(
+    const DisplayIdList& connected_display_ids,
+    const MixedMirrorModeParams& mixed_params) {
+  if (connected_display_ids.size() <= 1)
+    return MixedMirrorModeParamsErrors::kErrorSingleDisplay;
+
+  std::set<int64_t> all_display_ids;
+  for (auto& id : connected_display_ids)
+    all_display_ids.insert(id);
+  if (!all_display_ids.count(mixed_params.source_id))
+    return MixedMirrorModeParamsErrors::kErrorSourceIdNotFound;
+
+  // This set is used to check duplicate id.
+  std::set<int64_t> specified_display_ids;
+  specified_display_ids.insert(mixed_params.source_id);
+
+  if (mixed_params.destination_ids.empty())
+    return MixedMirrorModeParamsErrors::kErrorDestinationIdsEmpty;
+
+  for (auto& id : mixed_params.destination_ids) {
+    if (!all_display_ids.count(id))
+      return MixedMirrorModeParamsErrors::kErrorDestinationIdNotFound;
+    if (!specified_display_ids.insert(id).second)
+      return MixedMirrorModeParamsErrors::kErrorDuplicateId;
+  }
+  return MixedMirrorModeParamsErrors::kSuccess;
 }
 
 }  // namespace display

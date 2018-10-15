@@ -38,9 +38,9 @@ def ResultsAsDict(page_test_results, artifacts=None):
   }
   status_counter = collections.Counter()
   for run in page_test_results.all_page_runs:
-    expected = 'PASS'
+    expected = run.expected
     if run.skipped:
-      status = expected = 'SKIP'
+      status = 'SKIP'
     elif run.failed:
       status = 'FAIL'
     else:
@@ -65,6 +65,12 @@ def ResultsAsDict(page_test_results, artifacts=None):
       test['is_unexpected'] = status != expected
     else:
       test['is_unexpected'] = test['is_unexpected'] or status != expected
+
+    if 'time' not in test:
+      test['time'] = run.duration
+      test['times'] = [run.duration]
+    else:
+      test['times'].append(run.duration)
 
     story_artifacts = artifacts and artifacts.GetTestArtifacts(run.story.name)
     if story_artifacts:

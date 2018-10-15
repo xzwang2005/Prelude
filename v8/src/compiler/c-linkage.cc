@@ -165,8 +165,7 @@ CallDescriptor* Linkage::GetSimplifiedCDescriptor(
 
 #ifdef UNSUPPORTED_C_LINKAGE
   // This method should not be called on unknown architectures.
-  V8_Fatal(__FILE__, __LINE__,
-           "requested C call descriptor on unsupported architecture");
+  FATAL("requested C call descriptor on unsupported architecture");
   return nullptr;
 #endif
 
@@ -224,7 +223,7 @@ CallDescriptor* Linkage::GetSimplifiedCDescriptor(
   // The target for C calls is always an address (i.e. machine pointer).
   MachineType target_type = MachineType::Pointer();
   LinkageLocation target_loc = LinkageLocation::ForAnyRegister(target_type);
-  CallDescriptor::Flags flags = CallDescriptor::kUseNativeStack;
+  CallDescriptor::Flags flags = CallDescriptor::kNoFlags;
   if (set_initialize_root_flag) {
     flags |= CallDescriptor::kInitializeRootRegister;
   }

@@ -240,6 +240,8 @@ static int magy_decode_slice10(AVCodecContext *avctx, void *tdata,
 
         dst = (uint16_t *)p->data[i] + j * sheight * stride;
         if (flags & 1) {
+            if (get_bits_left(&gb) < bps * width * height)
+                return AVERROR_INVALIDDATA;
             for (k = 0; k < height; k++) {
                 for (x = 0; x < width; x++)
                     dst[x] = get_bits(&gb, bps);
@@ -345,7 +347,7 @@ static int magy_decode_slice(AVCodecContext *avctx, void *tdata,
     MagicYUVContext *s = avctx->priv_data;
     int interlaced = s->interlaced;
     AVFrame *p = s->p;
-    int i, k, x;
+    int i, k, x, min_width;
     GetBitContext gb;
     uint8_t *dst;
 
@@ -368,6 +370,8 @@ static int magy_decode_slice(AVCodecContext *avctx, void *tdata,
 
         dst = p->data[i] + j * sheight * stride;
         if (flags & 1) {
+            if (get_bits_left(&gb) < 8* width * height)
+                return AVERROR_INVALIDDATA;
             for (k = 0; k < height; k++) {
                 for (x = 0; x < width; x++)
                     dst[x] = get_bits(&gb, 8);
@@ -413,16 +417,19 @@ static int magy_decode_slice(AVCodecContext *avctx, void *tdata,
                 s->llviddsp.add_left_pred(dst, dst, width, 0);
                 dst += stride;
             }
+            min_width = FFMIN(width, 32);
             for (k = 1 + interlaced; k < height; k++) {
                 top = dst[-fake_stride];
                 left = top + dst[0];
                 dst[0] = left;
-                for (x = 1; x < width; x++) {
+                for (x = 1; x < min_width; x++) { /* dsp need aligned 32 */
                     top = dst[x - fake_stride];
                     lefttop = dst[x - (fake_stride + 1)];
                     left += top - lefttop + dst[x];
                     dst[x] = left;
                 }
+                if (width > 32)
+                    s->llviddsp.add_gradient_pred(dst + 32, fake_stride, width - 32);
                 dst += stride;
             }
             break;

@@ -84,10 +84,6 @@ class CC_PAINT_EXPORT RecordPaintCanvas final : public PaintCanvas {
                      const SkRect& dst,
                      const PaintFlags* flags,
                      SrcRectConstraint constraint) override;
-  void drawBitmap(const SkBitmap& bitmap,
-                  SkScalar left,
-                  SkScalar top,
-                  const PaintFlags* flags) override;
 
   void drawTextBlob(scoped_refptr<PaintTextBlob> blob,
                     SkScalar x,
@@ -103,12 +99,12 @@ class CC_PAINT_EXPORT RecordPaintCanvas final : public PaintCanvas {
   void Annotate(AnnotationType type,
                 const SkRect& rect,
                 sk_sp<SkData> data) override;
+  void recordCustomData(uint32_t id) override;
 
   // Don't shadow non-virtual helper functions.
   using PaintCanvas::clipRect;
   using PaintCanvas::clipRRect;
   using PaintCanvas::clipPath;
-  using PaintCanvas::drawBitmap;
   using PaintCanvas::drawColor;
   using PaintCanvas::drawImage;
   using PaintCanvas::drawPicture;

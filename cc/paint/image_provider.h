@@ -21,7 +21,7 @@ class CC_PAINT_EXPORT ImageProvider {
  public:
   class CC_PAINT_EXPORT ScopedDecodedDrawImage {
    public:
-    using DestructionCallback = base::OnceCallback<void(DecodedDrawImage)>;
+    using DestructionCallback = base::OnceClosure;
 
     ScopedDecodedDrawImage();
     explicit ScopedDecodedDrawImage(DecodedDrawImage image);
@@ -32,8 +32,11 @@ class CC_PAINT_EXPORT ImageProvider {
     ScopedDecodedDrawImage(ScopedDecodedDrawImage&& other);
     ScopedDecodedDrawImage& operator=(ScopedDecodedDrawImage&& other);
 
-    operator bool() const { return image_.image(); }
+    operator bool() const {
+      return image_.image() || image_.transfer_cache_entry_id();
+    }
     const DecodedDrawImage& decoded_image() const { return image_; }
+    bool needs_unlock() const { return !destruction_callback_.is_null(); }
 
    private:
     void DestroyDecode();
@@ -45,9 +48,6 @@ class CC_PAINT_EXPORT ImageProvider {
   };
 
   virtual ~ImageProvider() {}
-
-  virtual void BeginRaster() {}
-  virtual void EndRaster() {}
 
   // Returns the DecodedDrawImage to use for this PaintImage. If no image is
   // provided, the draw for this image will be skipped during raster.

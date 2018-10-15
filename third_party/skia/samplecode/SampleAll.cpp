@@ -4,117 +4,37 @@
  * Use of this source code is governed by a BSD-style license that can be
  * found in the LICENSE file.
  */
-#include "SampleCode.h"
-#include "SkBlurMask.h"
-#include "SkCanvas.h"
-#include "SkView.h"
+
+#include "Sample.h"
+
+#include "DecodeFile.h"
 #include "Sk1DPathEffect.h"
 #include "Sk2DPathEffect.h"
+#include "SkBlurMask.h"
 #include "SkBlurMaskFilter.h"
+#include "SkCanvas.h"
 #include "SkColorMatrixFilter.h"
 #include "SkColorPriv.h"
 #include "SkCornerPathEffect.h"
 #include "SkDashPathEffect.h"
 #include "SkDiscretePathEffect.h"
 #include "SkEmbossMaskFilter.h"
-#include "SkReadBuffer.h"
-#include "SkWriteBuffer.h"
 #include "SkGradientShader.h"
-#include "SkLayerRasterizer.h"
 #include "SkMath.h"
 #include "SkPath.h"
-#include "SkPictureRecorder.h"
-#include "SkRegion.h"
-#include "SkShader.h"
-#include "SkCornerPathEffect.h"
 #include "SkPathMeasure.h"
 #include "SkPicture.h"
+#include "SkPictureRecorder.h"
 #include "SkRandom.h"
+#include "SkReadBuffer.h"
+#include "SkRegion.h"
+#include "SkShader.h"
+#include "SkTextOnPath.h"
 #include "SkTypeface.h"
-#include "SkUtils.h"
+#include "SkUTF.h"
+#include "SkWriteBuffer.h"
 
 #include <math.h>
-#include "DecodeFile.h"
-
-static void r0(SkLayerRasterizer::Builder* rastBuilder, SkPaint& p) {
-    p.setMaskFilter(SkBlurMaskFilter::Make(kNormal_SkBlurStyle,
-                                           SkBlurMask::ConvertRadiusToSigma(SkIntToScalar(3)),
-                                           SkBlurMaskFilter::kNone_BlurFlag));
-    rastBuilder->addLayer(p, SkIntToScalar(3), SkIntToScalar(3));
-
-    p.setMaskFilter(nullptr);
-    p.setStyle(SkPaint::kStroke_Style);
-    p.setStrokeWidth(SK_Scalar1);
-    rastBuilder->addLayer(p);
-
-    p.setAlpha(0x11);
-    p.setStyle(SkPaint::kFill_Style);
-    p.setBlendMode(SkBlendMode::kSrc);
-    rastBuilder->addLayer(p);
-}
-
-static void r1(SkLayerRasterizer::Builder* rastBuilder, SkPaint& p) {
-    rastBuilder->addLayer(p);
-
-    p.setAlpha(0x40);
-    p.setBlendMode(SkBlendMode::kSrc);
-    p.setStyle(SkPaint::kStroke_Style);
-    p.setStrokeWidth(SK_Scalar1*2);
-    rastBuilder->addLayer(p);
-}
-
-static void r2(SkLayerRasterizer::Builder* rastBuilder, SkPaint& p) {
-    p.setStyle(SkPaint::kStrokeAndFill_Style);
-    p.setStrokeWidth(SK_Scalar1*4);
-    rastBuilder->addLayer(p);
-
-    p.setStyle(SkPaint::kStroke_Style);
-    p.setStrokeWidth(SK_Scalar1*3/2);
-    p.setBlendMode(SkBlendMode::kClear);
-    rastBuilder->addLayer(p);
-}
-
-static void r3(SkLayerRasterizer::Builder* rastBuilder, SkPaint& p) {
-    p.setStyle(SkPaint::kStroke_Style);
-    p.setStrokeWidth(SK_Scalar1*3);
-    rastBuilder->addLayer(p);
-
-    p.setAlpha(0x20);
-    p.setStyle(SkPaint::kFill_Style);
-    p.setBlendMode(SkBlendMode::kSrc);
-    rastBuilder->addLayer(p);
-}
-
-static void r4(SkLayerRasterizer::Builder* rastBuilder, SkPaint& p) {
-    p.setAlpha(0x60);
-    rastBuilder->addLayer(p, SkIntToScalar(3), SkIntToScalar(3));
-
-    p.setAlpha(0xFF);
-    p.setBlendMode(SkBlendMode::kClear);
-    rastBuilder->addLayer(p, SK_Scalar1*3/2, SK_Scalar1*3/2);
-
-    p.setBlendMode(SkBlendMode::kSrcOver);
-    rastBuilder->addLayer(p);
-}
-
-static void r5(SkLayerRasterizer::Builder* rastBuilder, SkPaint& p) {
-    rastBuilder->addLayer(p);
-
-    p.setPathEffect(SkDiscretePathEffect::Make(SK_Scalar1*4, SK_Scalar1*3));
-    p.setBlendMode(SkBlendMode::kSrcOut);
-    rastBuilder->addLayer(p);
-}
-
-static void r6(SkLayerRasterizer::Builder* rastBuilder, SkPaint& p) {
-    rastBuilder->addLayer(p);
-
-    p.setAntiAlias(false);
-    SkLayerRasterizer::Builder rastBuilder2;
-    r5(&rastBuilder2, p);
-    p.setRasterizer(rastBuilder2.detach());
-    p.setBlendMode(SkBlendMode::kClear);
-    rastBuilder->addLayer(p);
-}
 
 class Dot2DPathEffect : public Sk2DPathEffect {
 public:
@@ -139,90 +59,14 @@ private:
     typedef Sk2DPathEffect INHERITED;
 };
 
-static void r7(SkLayerRasterizer::Builder* rastBuilder, SkPaint& p) {
-    SkMatrix    lattice;
-    lattice.setScale(SK_Scalar1*6, SK_Scalar1*6, 0, 0);
-    lattice.postSkew(SK_Scalar1/3, 0, 0, 0);
-    p.setPathEffect(sk_make_sp<Dot2DPathEffect>(SK_Scalar1*4, lattice));
-    rastBuilder->addLayer(p);
-}
-
-static void r8(SkLayerRasterizer::Builder* rastBuilder, SkPaint& p) {
-    rastBuilder->addLayer(p);
-
-    SkMatrix    lattice;
-    lattice.setScale(SK_Scalar1*6, SK_Scalar1*6, 0, 0);
-    lattice.postSkew(SK_Scalar1/3, 0, 0, 0);
-    p.setPathEffect(sk_make_sp<Dot2DPathEffect>(SK_Scalar1*2, lattice));
-    p.setBlendMode(SkBlendMode::kClear);
-    rastBuilder->addLayer(p);
-
-    p.setPathEffect(nullptr);
-    p.setBlendMode(SkBlendMode::kSrcOver);
-    p.setStyle(SkPaint::kStroke_Style);
-    p.setStrokeWidth(SK_Scalar1);
-    rastBuilder->addLayer(p);
-}
-
-static void r9(SkLayerRasterizer::Builder* rastBuilder, SkPaint& p) {
-    rastBuilder->addLayer(p);
-
-    SkMatrix    lattice;
-    lattice.setScale(SK_Scalar1, SK_Scalar1*6, 0, 0);
-    lattice.postRotate(SkIntToScalar(30), 0, 0);
-    p.setPathEffect(SkLine2DPathEffect::Make(SK_Scalar1*2, lattice));
-    p.setBlendMode(SkBlendMode::kClear);
-    rastBuilder->addLayer(p);
-
-    p.setPathEffect(nullptr);
-    p.setBlendMode(SkBlendMode::kSrcOver);
-    p.setStyle(SkPaint::kStroke_Style);
-    p.setStrokeWidth(SK_Scalar1);
-    rastBuilder->addLayer(p);
-}
-
-typedef void (*raster_proc)(SkLayerRasterizer::Builder*, SkPaint&);
-
-static const raster_proc gRastProcs[] = {
-    r0, r1, r2, r3, r4, r5, r6, r7, r8, r9
-};
-
-static const struct {
-    SkColor fMul, fAdd;
-} gLightingColors[] = {
-    { 0x808080, 0x800000 }, // general case
-    { 0x707070, 0x707070 }, // no-pin case
-    { 0xFFFFFF, 0x800000 }, // just-add case
-    { 0x808080, 0x000000 }, // just-mul case
-    { 0xFFFFFF, 0x000000 }  // identity case
-};
-
-static void apply_shader(SkPaint* paint, int index) {
-    raster_proc proc = gRastProcs[index];
-    if (proc) {
-        SkPaint p;
-        SkLayerRasterizer::Builder rastBuilder;
-
-        p.setAntiAlias(true);
-        proc(&rastBuilder, p);
-        paint->setRasterizer(rastBuilder.detach());
-    }
-
-    paint->setMaskFilter(SkEmbossMaskFilter::Make(
-                SkBlurMask::ConvertRadiusToSigma(SkIntToScalar(3)),
-                { { SK_Scalar1, SK_Scalar1, SK_Scalar1 }, 0, 128, 16*2 }));
-    paint->setColor(SK_ColorBLUE);
-}
-
-class DemoView : public SampleView {
+class DemoView : public Sample {
 public:
     DemoView() {}
 
 protected:
-    // overrides from SkEventSink
-    virtual bool onQuery(SkEvent* evt) {
-        if (SampleCode::TitleQ(*evt)) {
-            SampleCode::TitleR(evt, "Demo");
+    virtual bool onQuery(Sample::Event* evt) {
+        if (Sample::TitleQ(*evt)) {
+            Sample::TitleR(evt, "Demo");
             return true;
         }
         return this->INHERITED::onQuery(evt);
@@ -419,9 +263,9 @@ protected:
         paint.setColor(SK_ColorMAGENTA);
         paint.setTextEncoding(SkPaint::kUTF16_TextEncoding);
         matrix.setTranslate(SkIntToScalar(10), SkIntToScalar(10));
-        canvas->drawTextOnPath((void*) utf16, sizeof(utf16), path, &matrix, paint);
+        SkDrawTextOnPath((void*)utf16, sizeof(utf16), paint, path, &matrix, canvas);
         canvas->translate(0, SkIntToScalar(20));
-        canvas->drawTextOnPath((void*) utf16simple, sizeof(utf16simple), path, &matrix, paint);
+        SkDrawTextOnPath((void*) utf16simple, sizeof(utf16simple), paint, path, &matrix, canvas);
         canvas->restore();
 
         canvas->translate(0, SkIntToScalar(60));
@@ -429,7 +273,7 @@ protected:
         canvas->restore();
     }
 
-    virtual SkView::Click* onFindClickHandler(SkScalar x, SkScalar y, unsigned modi) {
+    virtual Sample::Click* onFindClickHandler(SkScalar x, SkScalar y, unsigned modi) {
         fClickPt.set(x, y);
         return this->INHERITED::onFindClickHandler(x, y, modi);
     }
@@ -469,56 +313,12 @@ protected:
         decode_file("/Users/caryclark/Desktop/05psp04.gif", &fTx);
     }
 
-    void drawRaster(SkCanvas* canvas)  {
-        for (size_t index = 0; index < SK_ARRAY_COUNT(gRastProcs); index++)
-            drawOneRaster(canvas);
-    }
-
-    void drawOneRaster(SkCanvas* canvas) {
-        canvas->save();
-
-        SkScalar    x = SkIntToScalar(20);
-        SkScalar    y = SkIntToScalar(40);
-        SkPaint     paint;
-
-        paint.setAntiAlias(true);
-        paint.setTextSize(SkIntToScalar(48));
-        paint.setTypeface(SkTypeface::MakeFromName("sans-serif", SkFontStyle::Bold()));
-
-        SkString str("GOOGLE");
-
-        for (size_t i = 0; i < SK_ARRAY_COUNT(gRastProcs); i++) {
-            apply_shader(&paint, (int)i);
-
-          //  paint.setMaskFilter(nullptr);
-          //  paint.setColor(SK_ColorBLACK);
-
-#if 01
-            int index = i % SK_ARRAY_COUNT(gLightingColors);
-            paint.setColorFilter(SkColorMatrixFilter::MakeLightingFilter(
-                                    gLightingColors[index].fMul,
-                                    gLightingColors[index].fAdd));
-#endif
-
-            canvas->drawString(str, x, y, paint);
-            SkRect  oval = { x, y - SkIntToScalar(40), x + SkIntToScalar(40), y };
-            paint.setStyle(SkPaint::kStroke_Style);
-            canvas->drawOval(oval, paint);
-            paint.setStyle(SkPaint::kFill_Style);
-
-            y += paint.getFontSpacing();
-        }
-
-        canvas->restore();
-    }
-
 private:
     SkPoint fClickPt;
     SkBitmap fBug, fTb, fTx;
-    typedef SampleView INHERITED;
+    typedef Sample INHERITED;
 };
 
 //////////////////////////////////////////////////////////////////////////////
 
-static SkView* MyFactory() { return new DemoView; }
-static SkViewRegister reg(MyFactory);
+DEF_SAMPLE( return new DemoView(); )

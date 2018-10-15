@@ -10,15 +10,15 @@
 #include "SkClipStack.h"
 #include "SkRRect.h"
 
-#if SK_SUPPORT_GPU
-#  include "GrAppliedClip.h"
-#  include "GrStencilClip.h"
-#  include "GrReducedClip.h"
-#  include "GrRenderTargetContext.h"
-#  include "GrRenderTargetContextPriv.h"
-#  include "GrResourceProvider.h"
-#  include "effects/GrTextureDomain.h"
-#endif
+#include "GrAppliedClip.h"
+#include "GrCaps.h"
+#include "GrContextPriv.h"
+#include "GrReducedClip.h"
+#include "GrRenderTargetContext.h"
+#include "GrRenderTargetContextPriv.h"
+#include "GrResourceProvider.h"
+#include "GrStencilClip.h"
+#include "effects/GrTextureDomain.h"
 
 constexpr static SkIRect kDeviceRect = {0, 0, 600, 600};
 constexpr static SkIRect kCoverRect = {50, 50, 550, 550};
@@ -102,8 +102,6 @@ DEF_GM( return new WindowRectanglesGM(); )
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-#if SK_SUPPORT_GPU
-
 constexpr static int kNumWindows = 8;
 
 /**
@@ -181,8 +179,7 @@ void WindowRectanglesMaskGM::onCoverClipStack(const SkClipStack& stack, SkCanvas
         return;
     }
 
-    const GrReducedClip reducedClip(stack, SkRect::Make(kCoverRect), rtc->caps()->shaderCaps(),
-                                    kNumWindows);
+    const GrReducedClip reducedClip(stack, SkRect::Make(kCoverRect), rtc->caps(), kNumWindows);
 
     GrPaint paint;
     if (GrFSAAType::kNone == rtc->fsaaType()) {
@@ -199,7 +196,8 @@ void WindowRectanglesMaskGM::visualizeAlphaMask(GrContext* ctx, GrRenderTargetCo
     const int padRight = (kDeviceRect.right() - kCoverRect.right()) / 2;
     const int padBottom = (kDeviceRect.bottom() - kCoverRect.bottom()) / 2;
     sk_sp<GrRenderTargetContext> maskRTC(
-        ctx->makeDeferredRenderTargetContextWithFallback(SkBackingFit::kExact,
+        ctx->contextPriv().makeDeferredRenderTargetContextWithFallback(
+                                                         SkBackingFit::kExact,
                                                          kCoverRect.width() + padRight,
                                                          kCoverRect.height() + padBottom,
                                                          kAlpha_8_GrPixelConfig, nullptr));
@@ -210,7 +208,7 @@ void WindowRectanglesMaskGM::visualizeAlphaMask(GrContext* ctx, GrRenderTargetCo
     // Draw a checker pattern into the alpha mask so we can visualize the regions left untouched by
     // the clip mask generation.
     this->stencilCheckerboard(maskRTC.get(), true);
-    maskRTC->clear(nullptr, GrColorPackA4(0xff), true);
+    maskRTC->clear(nullptr, GrColorPackA4(0xff), GrRenderTargetContext::CanClearFullscreen::kYes);
     maskRTC->priv().drawAndStencilRect(make_stencil_only_clip(), &GrUserStencilSettings::kUnused,
                                        SkRegion::kDifference_Op, false, GrAA::kNo, SkMatrix::I(),
                                        SkRect::MakeIWH(maskRTC->width(), maskRTC->height()));
@@ -276,12 +274,11 @@ void WindowRectanglesMaskGM::fail(SkCanvas* canvas) {
 
     canvas->clipRect(SkRect::Make(kCoverRect));
     canvas->clear(SK_ColorWHITE);
-    canvas->drawString(errorMsg, SkIntToScalar(kCoverRect.centerX()),
-                     SkIntToScalar(kCoverRect.centerY() - 10), paint);
+
+    canvas->drawString(errorMsg, SkIntToScalar((kCoverRect.left() + kCoverRect.right())/2),
+                     SkIntToScalar((kCoverRect.top() + kCoverRect.bottom())/2 - 10), paint);
 }
 
 DEF_GM( return new WindowRectanglesMaskGM(); )
-
-#endif
 
 }

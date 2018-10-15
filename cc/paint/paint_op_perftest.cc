@@ -9,8 +9,9 @@
 #include "cc/base/lap_timer.h"
 #include "cc/paint/paint_op_buffer.h"
 #include "cc/paint/paint_op_buffer_serializer.h"
+#include "cc/test/test_options_provider.h"
 #include "testing/perf/perf_test.h"
-#include "third_party/skia/include/effects/SkBlurMaskFilter.h"
+#include "third_party/skia/include/core/SkMaskFilter.h"
 #include "third_party/skia/include/effects/SkColorMatrixFilter.h"
 #include "third_party/skia/include/effects/SkDashPathEffect.h"
 #include "third_party/skia/include/effects/SkLayerDrawLooper.h"
@@ -39,17 +40,23 @@ class PaintOpPerfTest : public testing::Test {
                                PaintOpBuffer::PaintOpAlign))) {}
 
   void RunTest(const std::string& name, const PaintOpBuffer& buffer) {
-    PaintOp::SerializeOptions serialize_options;
-    PaintOp::DeserializeOptions deserialize_options;
+    TestOptionsProvider test_options_provider;
 
     size_t bytes_written = 0u;
     PaintOpBufferSerializer::Preamble preamble;
 
     timer_.Reset();
     do {
-      SimpleBufferSerializer serializer(serialized_data_.get(),
-                                        kMaxSerializedBufferBytes,
-                                        serialize_options.image_provider);
+      SimpleBufferSerializer serializer(
+          serialized_data_.get(), kMaxSerializedBufferBytes,
+          test_options_provider.image_provider(),
+          test_options_provider.transfer_cache_helper(),
+          test_options_provider.strike_server(),
+          test_options_provider.color_space(),
+          test_options_provider.can_use_lcd_text(),
+          test_options_provider.context_supports_distance_field_text(),
+          test_options_provider.max_texture_size(),
+          test_options_provider.max_texture_bytes());
       serializer.Serialize(&buffer, nullptr, preamble);
       bytes_written = serializer.written();
       timer_.NextLap();
@@ -62,6 +69,7 @@ class PaintOpPerfTest : public testing::Test {
 
     size_t bytes_read = 0;
     timer_.Reset();
+    test_options_provider.PushFonts();
 
     do {
       size_t remaining_read_bytes = bytes_written;
@@ -70,7 +78,8 @@ class PaintOpPerfTest : public testing::Test {
       while (true) {
         PaintOp* deserialized_op = PaintOp::Deserialize(
             to_read, remaining_read_bytes, deserialized_data_.get(),
-            sizeof(LargestPaintOp), &bytes_read, deserialize_options);
+            sizeof(LargestPaintOp), &bytes_read,
+            test_options_provider.deserialize_options());
         deserialized_op->DestroyThis();
 
         DCHECK_GE(remaining_read_bytes, bytes_read);
@@ -119,9 +128,8 @@ TEST_F(PaintOpPerfTest, ManyFlagsOps) {
   PaintFlags flags;
   SkScalar intervals[] = {1.f, 1.f};
   flags.setPathEffect(SkDashPathEffect::Make(intervals, 2, 0));
-  flags.setMaskFilter(SkBlurMaskFilter::Make(SkBlurStyle::kOuter_SkBlurStyle,
-                                             4.3f, SkRect::MakeXYWH(1, 1, 1, 1),
-                                             kHigh_SkBlurQuality));
+  flags.setMaskFilter(SkMaskFilter::MakeBlur(
+      SkBlurStyle::kOuter_SkBlurStyle, 4.3));
   flags.setColorFilter(
       SkColorMatrixFilter::MakeLightingFilter(SK_ColorYELLOW, SK_ColorGREEN));
 

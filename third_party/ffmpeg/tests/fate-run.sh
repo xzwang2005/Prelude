@@ -25,6 +25,7 @@ cmp_unit=${15:-2}
 gen=${16:-no}
 hwaccel=${17:-none}
 report_type=${18:-standard}
+keep=${19:-0}
 
 outdir="tests/data/fate"
 outfile="${outdir}/${test}"
@@ -88,6 +89,10 @@ probefmt(){
     run ffprobe${PROGSUF} -show_entries format=format_name -print_format default=nw=1:nk=1 -v 0 "$@"
 }
 
+probetags(){
+    run ffprobe${PROGSUF} -show_entries format_tags -v 0 "$@"
+}
+
 runlocal(){
     test "${V:-0}" -gt 0 && echo ${base}/"$@" ${base} >&3
     ${base}/"$@" ${base}
@@ -127,15 +132,15 @@ ffmpeg(){
 }
 
 framecrc(){
-    ffmpeg "$@" -flags +bitexact -fflags +bitexact -f framecrc -
+    ffmpeg "$@" -bitexact -f framecrc -
 }
 
 ffmetadata(){
-    ffmpeg "$@" -flags +bitexact -fflags +bitexact -f ffmetadata -
+    ffmpeg "$@" -bitexact -f ffmetadata -
 }
 
 framemd5(){
-    ffmpeg "$@" -flags +bitexact -fflags +bitexact -f framemd5 -
+    ffmpeg "$@" -bitexact -f framemd5 -
 }
 
 crc(){
@@ -160,7 +165,7 @@ pcm(){
 fmtstdout(){
     fmt=$1
     shift 1
-    ffmpeg -flags +bitexact -fflags +bitexact "$@" -f $fmt -
+    ffmpeg -bitexact "$@" -f $fmt -
 }
 
 enc_dec_pcm(){
@@ -173,7 +178,7 @@ enc_dec_pcm(){
     cleanfiles=$encfile
     encfile=$(target_path ${encfile})
     ffmpeg -i $src_file "$@" -f $out_fmt -y ${encfile} || return
-    ffmpeg -flags +bitexact -fflags +bitexact -i ${encfile} -c:a pcm_${pcm_fmt} -fflags +bitexact -f ${dec_fmt} -
+    ffmpeg -bitexact -i ${encfile} -c:a pcm_${pcm_fmt} -fflags +bitexact -f ${dec_fmt} -
 }
 
 FLAGS="-flags +bitexact -sws_flags +accurate_rnd+bitexact -fflags +bitexact"
@@ -218,6 +223,22 @@ transcode(){
         -f $enc_fmt -y $tencfile || return
     do_md5sum $encfile
     echo $(wc -c $encfile)
+    ffmpeg $DEC_OPTS -i $encfile $ENC_OPTS $FLAGS $final_decode \
+        -f framecrc - || return
+}
+
+stream_remux(){
+    src_fmt=$1
+    srcfile=$2
+    enc_fmt=$3
+    stream_maps=$4
+    final_decode=$5
+    encfile="${outdir}/${test}.${enc_fmt}"
+    test "$7" = -keep || cleanfiles="$cleanfiles $encfile"
+    tsrcfile=$(target_path $srcfile)
+    tencfile=$(target_path $encfile)
+    ffmpeg -f $src_fmt -i $tsrcfile $stream_maps -codec copy $FLAGS \
+        -f $enc_fmt -y $tencfile || return
     ffmpeg $DEC_OPTS -i $encfile $ENC_OPTS $FLAGS $final_decode \
         -f framecrc - || return
 }
@@ -294,16 +315,16 @@ gapless(){
     cleanfiles="$cleanfiles $decfile1 $decfile2 $decfile3"
 
     # test packet data
-    ffmpeg $extra_args -i "$sample" -flags +bitexact -fflags +bitexact -c:a copy -f framecrc -y $decfile1
+    ffmpeg $extra_args -i "$sample" -bitexact -c:a copy -f framecrc -y $decfile1
     do_md5sum $decfile1
     # test decoded (and cut) data
-    ffmpeg $extra_args -i "$sample" -flags +bitexact -fflags +bitexact -f wav md5:
+    ffmpeg $extra_args -i "$sample" -bitexact -f wav md5:
     # the same as above again, with seeking to the start
-    ffmpeg $extra_args -ss 0 -seek_timestamp 1 -i "$sample" -flags +bitexact -fflags +bitexact -c:a copy -f framecrc -y $decfile2
+    ffmpeg $extra_args -ss 0 -seek_timestamp 1 -i "$sample" -bitexact -c:a copy -f framecrc -y $decfile2
     do_md5sum $decfile2
-    ffmpeg $extra_args -ss 0 -seek_timestamp 1 -i "$sample" -flags +bitexact -fflags +bitexact -f wav md5:
+    ffmpeg $extra_args -ss 0 -seek_timestamp 1 -i "$sample" -bitexact -f wav md5:
     # test packet data, with seeking to a specific position
-    ffmpeg $extra_args -ss 5 -seek_timestamp 1 -i "$sample" -flags +bitexact -fflags +bitexact -c:a copy -f framecrc -y $decfile3
+    ffmpeg $extra_args -ss 5 -seek_timestamp 1 -i "$sample" -bitexact -c:a copy -f framecrc -y $decfile3
     do_md5sum $decfile3
 }
 
@@ -316,7 +337,7 @@ gaplessenc(){
     cleanfiles="$cleanfiles $file1"
 
     # test data after reencoding
-    ffmpeg -i "$sample" -flags +bitexact -fflags +bitexact -map 0:a -c:a $codec -f $format -y "$file1"
+    ffmpeg -i "$sample" -bitexact -map 0:a -c:a $codec -f $format -y "$file1"
     probegaplessinfo "$file1"
 }
 
@@ -328,7 +349,7 @@ audio_match(){
     decfile="${outdir}/${test}.wav"
     cleanfiles="$cleanfiles $decfile"
 
-    ffmpeg -i "$sample" -flags +bitexact -fflags +bitexact $extra_args -y $decfile
+    ffmpeg -i "$sample" -bitexact $extra_args -y $decfile
     tests/audiomatch $decfile $trefile
 }
 
@@ -408,7 +429,9 @@ if test $err != 0 && test $gen != "no" ; then
 fi
 
 if test $err = 0; then
-    rm -f $outfile $errfile $cmpfile $cleanfiles
+    if test $keep = 0; then
+        rm -f $outfile $errfile $cmpfile $cleanfiles
+    fi
 elif test $gen = "no"; then
     echo "Test $test failed. Look at $errfile for details."
     test "${V:-0}" -gt 0 && cat $errfile

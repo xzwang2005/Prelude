@@ -12,6 +12,7 @@
 #include "media/base/android/media_drm_bridge.h"
 #include "media/base/provision_fetcher.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/widevine/cdm/widevine_cdm_common.h"
 
 #include "widevine_cdm_version.h"  // In SHARED_INTERMEDIATE_DIR.
 
@@ -69,7 +70,8 @@ TEST(MediaDrmBridgeTest, IsKeySystemSupported_Widevine) {
   EXPECT_TRUE_IF_WIDEVINE_AVAILABLE(
       IsKeySystemSupportedWithType(kWidevineKeySystem, kVideoMp4));
 
-  if (base::android::BuildInfo::GetInstance()->sdk_int() <= 19) {
+  if (base::android::BuildInfo::GetInstance()->sdk_int() <=
+      base::android::SDK_VERSION_KITKAT) {
     EXPECT_FALSE(IsKeySystemSupportedWithType(kWidevineKeySystem, kAudioWebM));
     EXPECT_FALSE(IsKeySystemSupportedWithType(kWidevineKeySystem, kVideoWebM));
   } else {

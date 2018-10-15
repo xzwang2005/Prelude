@@ -63,7 +63,7 @@ class NET_EXPORT_PRIVATE ThroughputAnalyzer {
       const NetworkQualityEstimatorParams* params,
       scoped_refptr<base::SingleThreadTaskRunner> task_runner,
       ThroughputObservationCallback throughput_observation_callback,
-      base::TickClock* tick_clock,
+      const base::TickClock* tick_clock,
       const NetLogWithSource& net_log);
   virtual ~ThroughputAnalyzer();
 
@@ -89,7 +89,7 @@ class NET_EXPORT_PRIVATE ThroughputAnalyzer {
   bool IsCurrentlyTrackingThroughput() const;
 
   // Overrides the tick clock used by |this| for testing.
-  void SetTickClockForTesting(base::TickClock* tick_clock);
+  void SetTickClockForTesting(const base::TickClock* tick_clock);
 
  protected:
   // Exposed for testing.
@@ -112,6 +112,12 @@ class NET_EXPORT_PRIVATE ThroughputAnalyzer {
   // detected to be in-flight, the observation window is ended. Protected for
   // testing.
   void EraseHangingRequests(const URLRequest& request);
+
+  // Returns true if the current throughput observation window is heuristically
+  // determined to contain hanging requests.
+  bool IsHangingWindow(int64_t bits_received,
+                       base::TimeDelta duration,
+                       double downstream_kbps_double) const;
 
  private:
   friend class TestThroughputAnalyzer;
@@ -167,7 +173,7 @@ class NET_EXPORT_PRIVATE ThroughputAnalyzer {
   ThroughputObservationCallback throughput_observation_callback_;
 
   // Guaranteed to be non-null during the lifetime of |this|.
-  base::TickClock* tick_clock_;
+  const base::TickClock* tick_clock_;
 
   // Time when last connection change was observed.
   base::TimeTicks last_connection_change_;

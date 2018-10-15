@@ -5,6 +5,8 @@
 import unittest
 import urllib2
 
+import mock
+
 import py_utils
 
 from telemetry import decorators
@@ -21,6 +23,7 @@ class WebPageReplayGoServerTest(unittest.TestCase):
         py_utils.GetHostOsName())
 
   @decorators.Disabled('chromeos')  # crbug.com/750323
+  @decorators.Disabled('win')  # crbug.com/864294
   def testSmokeStartingWebPageReplayGoServer(self):
     with webpagereplay_go_server.ReplayServer(
         self.archive_path, replay_host='127.0.0.1', http_port=0, https_port=0,
@@ -39,3 +42,17 @@ class WebPageReplayGoServerTest(unittest.TestCase):
           'https://www.example.com/', origin_req_host='127.0.0.1')
       r = urllib2.urlopen(req)
       self.assertEquals(r.getcode(), 200)
+
+  @decorators.Disabled('chromeos')  # crbug.com/801641
+  @mock.patch('py_utils.atexit_with_log.Register')
+  def testKillingWebPageReplayProcessUponStartupFailure(
+      self, atexit_with_log_register_patch):
+    atexit_with_log_register_patch.side_effect = KeyError('Bang!')
+    with self.assertRaises(webpagereplay_go_server.ReplayNotStartedError):
+      server = webpagereplay_go_server.ReplayServer(
+          self.archive_path, replay_host='127.0.0.1', http_port=0, https_port=0,
+          replay_options=[])
+      server.StartServer()
+
+    # Ensure replay process is probably cleaned up after StartServer crashed.
+    self.assertIsNone(server.replay_process)

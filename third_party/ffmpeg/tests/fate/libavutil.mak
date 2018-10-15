@@ -23,11 +23,6 @@ fate-cast5: libavutil/tests/cast5$(EXESUF)
 fate-cast5: CMD = run libavutil/tests/cast5
 fate-cast5: CMP = null
 
-FATE_LIBAVUTIL += fate-atomic
-fate-atomic: libavutil/tests/atomic$(EXESUF)
-fate-atomic: CMD = run libavutil/tests/atomic
-fate-atomic: CMP = null
-
 FATE_LIBAVUTIL += fate-audio_fifo
 fate-audio_fifo: libavutil/tests/audio_fifo$(EXESUF)
 fate-audio_fifo: CMD = run libavutil/tests/audio_fifo
@@ -75,6 +70,10 @@ FATE_LIBAVUTIL += fate-dict
 fate-dict: libavutil/tests/dict$(EXESUF)
 fate-dict: CMD = run libavutil/tests/dict
 
+FATE_LIBAVUTIL += fate-encryption-info
+fate-encryption-info: libavutil/tests/encryption_info$(EXESUF)
+fate-encryption-info: CMD = run libavutil/tests/encryption_info
+
 FATE_LIBAVUTIL += fate-eval
 fate-eval: libavutil/tests/eval$(EXESUF)
 fate-eval: CMD = run libavutil/tests/eval
@@ -94,6 +93,11 @@ fate-hmac: CMD = run libavutil/tests/hmac
 FATE_LIBAVUTIL += fate-imgutils
 fate-imgutils: libavutil/tests/imgutils$(EXESUF)
 fate-imgutils: CMD = run libavutil/tests/imgutils
+
+FATE_LIBAVUTIL += fate-integer
+fate-integer: libavutil/tests/integer$(EXESUF)
+fate-integer: CMD = run libavutil/tests/integer
+fate-integer: CMP = null
 
 FATE_LIBAVUTIL += fate-lfg
 fate-lfg: libavutil/tests/lfg$(EXESUF)

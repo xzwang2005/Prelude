@@ -5,7 +5,7 @@
 #ifndef BASE_WIN_SCOPED_HANDLE_H_
 #define BASE_WIN_SCOPED_HANDLE_H_
 
-#include <windows.h>
+#include "base/win/windows_types.h"
 
 #include "base/base_export.h"
 #include "base/gtest_prod_util.h"
@@ -177,11 +177,6 @@ BASE_EXPORT void DisableHandleVerifier();
 // tracked by the handle verifier and ScopedHandle is not the one closing it,
 // a CHECK is generated.
 BASE_EXPORT void OnHandleBeingClosed(HANDLE handle);
-
-// This testing function returns the module that the ActiveVerifier concrete
-// implementation was instantiated in.
-BASE_EXPORT HMODULE GetHandleVerifierModuleForTesting();
-
 }  // namespace win
 }  // namespace base
 

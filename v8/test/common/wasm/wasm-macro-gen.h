@@ -20,6 +20,7 @@
 #define IMPORT_SIG_INDEX(v) U32V_1(v)
 #define FUNC_INDEX(v) U32V_1(v)
 #define TABLE_INDEX(v) U32V_1(v)
+#define EXCEPTION_INDEX(v) U32V_1(v)
 #define NO_NAME U32V_1(0)
 #define NAME_LENGTH(v) U32V_1(v)
 #define ENTRY_COUNT(v) U32V_1(v)
@@ -75,9 +76,9 @@
 #define WASM_BLOCK_F(...) kExprBlock, kLocalF32, __VA_ARGS__, kExprEnd
 #define WASM_BLOCK_D(...) kExprBlock, kLocalF64, __VA_ARGS__, kExprEnd
 
-#define WASM_BLOCK_T(t, ...)                                       \
-  kExprBlock, static_cast<byte>(WasmOpcodes::ValueTypeCodeFor(t)), \
-      __VA_ARGS__, kExprEnd
+#define WASM_BLOCK_T(t, ...)                                                   \
+  kExprBlock, static_cast<byte>(ValueTypes::ValueTypeCodeFor(t)), __VA_ARGS__, \
+      kExprEnd
 
 #define WASM_BLOCK_X(index, ...)                                  \
   kExprBlock, static_cast<byte>(index), __VA_ARGS__, kExprEnd
@@ -90,17 +91,17 @@
 #define WASM_LOOP_F(...) kExprLoop, kLocalF32, __VA_ARGS__, kExprEnd
 #define WASM_LOOP_D(...) kExprLoop, kLocalF64, __VA_ARGS__, kExprEnd
 
-#define WASM_LOOP_T(t, ...)                                       \
-  kExprLoop, static_cast<byte>(WasmOpcodes::ValueTypeCodeFor(t)), \
-      __VA_ARGS__, kExprEnd
+#define WASM_LOOP_T(t, ...)                                                   \
+  kExprLoop, static_cast<byte>(ValueTypes::ValueTypeCodeFor(t)), __VA_ARGS__, \
+      kExprEnd
 
 #define WASM_LOOP_X(index, ...)                                   \
   kExprLoop, static_cast<byte>(index), __VA_ARGS__, kExprEnd
 
 #define WASM_IF(cond, ...) cond, kExprIf, kLocalVoid, __VA_ARGS__, kExprEnd
 
-#define WASM_IF_T(t, cond, ...)                                       \
-  cond, kExprIf, static_cast<byte>(WasmOpcodes::ValueTypeCodeFor(t)), \
+#define WASM_IF_T(t, cond, ...)                                      \
+  cond, kExprIf, static_cast<byte>(ValueTypes::ValueTypeCodeFor(t)), \
       __VA_ARGS__, kExprEnd
 
 #define WASM_IF_X(index, cond, ...)                                   \
@@ -118,8 +119,8 @@
 #define WASM_IF_ELSE_D(cond, tstmt, fstmt) \
   cond, kExprIf, kLocalF64, tstmt, kExprElse, fstmt, kExprEnd
 
-#define WASM_IF_ELSE_T(t, cond, tstmt, fstmt)                                \
-  cond, kExprIf, static_cast<byte>(WasmOpcodes::ValueTypeCodeFor(t)), tstmt, \
+#define WASM_IF_ELSE_T(t, cond, tstmt, fstmt)                               \
+  cond, kExprIf, static_cast<byte>(ValueTypes::ValueTypeCodeFor(t)), tstmt, \
       kExprElse, fstmt, kExprEnd
 
 #define WASM_IF_ELSE_X(index, cond, tstmt, fstmt)                            \
@@ -328,6 +329,9 @@ inline WasmOpcode LoadStoreOpcodeOf(MachineType type, bool store) {
       static_cast<byte>(bit_cast<uint64_t>(static_cast<double>(val)) >> 40), \
       static_cast<byte>(bit_cast<uint64_t>(static_cast<double>(val)) >> 48), \
       static_cast<byte>(bit_cast<uint64_t>(static_cast<double>(val)) >> 56)
+
+#define WASM_REF_NULL kExprRefNull
+
 #define WASM_GET_LOCAL(index) kExprGetLocal, static_cast<byte>(index)
 #define WASM_SET_LOCAL(index, val) val, kExprSetLocal, static_cast<byte>(index)
 #define WASM_TEE_LOCAL(index, val) val, kExprTeeLocal, static_cast<byte>(index)
@@ -557,28 +561,43 @@ inline WasmOpcode LoadStoreOpcodeOf(MachineType type, bool store) {
 #define WASM_I64_REINTERPRET_F64(x) x, kExprI64ReinterpretF64
 
 //------------------------------------------------------------------------------
+// Numeric operations
+//------------------------------------------------------------------------------
+#define WASM_NUMERIC_OP(op) kNumericPrefix, static_cast<byte>(op)
+#define WASM_I32_SCONVERT_SAT_F32(x) x, WASM_NUMERIC_OP(kExprI32SConvertSatF32)
+#define WASM_I32_UCONVERT_SAT_F32(x) x, WASM_NUMERIC_OP(kExprI32UConvertSatF32)
+#define WASM_I32_SCONVERT_SAT_F64(x) x, WASM_NUMERIC_OP(kExprI32SConvertSatF64)
+#define WASM_I32_UCONVERT_SAT_F64(x) x, WASM_NUMERIC_OP(kExprI32UConvertSatF64)
+#define WASM_I64_SCONVERT_SAT_F32(x) x, WASM_NUMERIC_OP(kExprI64SConvertSatF32)
+#define WASM_I64_UCONVERT_SAT_F32(x) x, WASM_NUMERIC_OP(kExprI64UConvertSatF32)
+#define WASM_I64_SCONVERT_SAT_F64(x) x, WASM_NUMERIC_OP(kExprI64SConvertSatF64)
+#define WASM_I64_UCONVERT_SAT_F64(x) x, WASM_NUMERIC_OP(kExprI64UConvertSatF64)
+
+//------------------------------------------------------------------------------
 // Memory Operations.
 //------------------------------------------------------------------------------
 #define WASM_GROW_MEMORY(x) x, kExprGrowMemory, 0
 #define WASM_MEMORY_SIZE kExprMemorySize, 0
 
-#define SIG_ENTRY_v_v kWasmFunctionTypeForm, 0, 0
+#define SIG_ENTRY_v_v kWasmFunctionTypeCode, 0, 0
 #define SIZEOF_SIG_ENTRY_v_v 3
 
-#define SIG_ENTRY_v_x(a) kWasmFunctionTypeForm, 1, a, 0
-#define SIG_ENTRY_v_xx(a, b) kWasmFunctionTypeForm, 2, a, b, 0
-#define SIG_ENTRY_v_xxx(a, b, c) kWasmFunctionTypeForm, 3, a, b, c, 0
+#define SIG_ENTRY_v_x(a) kWasmFunctionTypeCode, 1, a, 0
+#define SIG_ENTRY_v_xx(a, b) kWasmFunctionTypeCode, 2, a, b, 0
+#define SIG_ENTRY_v_xxx(a, b, c) kWasmFunctionTypeCode, 3, a, b, c, 0
 #define SIZEOF_SIG_ENTRY_v_x 4
 #define SIZEOF_SIG_ENTRY_v_xx 5
 #define SIZEOF_SIG_ENTRY_v_xxx 6
 
-#define SIG_ENTRY_x(r) kWasmFunctionTypeForm, 0, 1, r
-#define SIG_ENTRY_x_x(r, a) kWasmFunctionTypeForm, 1, a, 1, r
-#define SIG_ENTRY_x_xx(r, a, b) kWasmFunctionTypeForm, 2, a, b, 1, r
-#define SIG_ENTRY_x_xxx(r, a, b, c) kWasmFunctionTypeForm, 3, a, b, c, 1, r
+#define SIG_ENTRY_x(r) kWasmFunctionTypeCode, 0, 1, r
+#define SIG_ENTRY_x_x(r, a) kWasmFunctionTypeCode, 1, a, 1, r
+#define SIG_ENTRY_x_xx(r, a, b) kWasmFunctionTypeCode, 2, a, b, 1, r
+#define SIG_ENTRY_xx_xx(r, s, a, b) kWasmFunctionTypeCode, 2, a, b, 2, r, s
+#define SIG_ENTRY_x_xxx(r, a, b, c) kWasmFunctionTypeCode, 3, a, b, c, 1, r
 #define SIZEOF_SIG_ENTRY_x 4
 #define SIZEOF_SIG_ENTRY_x_x 5
 #define SIZEOF_SIG_ENTRY_x_xx 6
+#define SIZEOF_SIG_ENTRY_xx_xx 7
 #define SIZEOF_SIG_ENTRY_x_xxx 7
 
 #define WASM_BRV(depth, ...) __VA_ARGS__, kExprBr, static_cast<byte>(depth)
@@ -606,5 +625,14 @@ inline WasmOpcode LoadStoreOpcodeOf(MachineType type, bool store) {
 #define WASM_ATOMICS_STORE_OP(op, x, y, representation) \
   x, y, WASM_ATOMICS_OP(op),                            \
       static_cast<byte>(ElementSizeLog2Of(representation)), ZERO_OFFSET
+
+//------------------------------------------------------------------------------
+// Sign Externsion Operations.
+//------------------------------------------------------------------------------
+#define WASM_I32_SIGN_EXT_I8(x) x, kExprI32SExtendI8
+#define WASM_I32_SIGN_EXT_I16(x) x, kExprI32SExtendI16
+#define WASM_I64_SIGN_EXT_I8(x) x, kExprI64SExtendI8
+#define WASM_I64_SIGN_EXT_I16(x) x, kExprI64SExtendI16
+#define WASM_I64_SIGN_EXT_I32(x) x, kExprI64SExtendI32
 
 #endif  // V8_WASM_MACRO_GEN_H_

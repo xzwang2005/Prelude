@@ -6,6 +6,7 @@
 #define UI_VIEWS_EVENT_MONITOR_MAC_H_
 
 #include "base/macros.h"
+#include "ui/base/cocoa/weak_ptr_nsobject.h"
 #include "ui/gfx/native_widget_types.h"
 #include "ui/views/event_monitor.h"
 
@@ -17,8 +18,12 @@ class EventMonitorMac : public EventMonitor {
                   gfx::NativeWindow target_window);
   ~EventMonitorMac() override;
 
+  // EventMonitor:
+  gfx::Point GetLastMouseLocation() override;
+
  private:
   id monitor_;
+  ui::WeakPtrNSObjectFactory<EventMonitorMac> factory_;
 
   DISALLOW_COPY_AND_ASSIGN(EventMonitorMac);
 };

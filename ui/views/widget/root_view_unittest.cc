@@ -6,7 +6,9 @@
 
 #include "base/macros.h"
 #include "base/memory/ptr_util.h"
+#include "build/build_config.h"
 #include "ui/events/event_utils.h"
+#include "ui/events/keycodes/dom/dom_code.h"
 #include "ui/views/context_menu_controller.h"
 #include "ui/views/test/views_test_base.h"
 #include "ui/views/view_targeter.h"
@@ -111,6 +113,10 @@ class TestContextMenuController : public ContextMenuController {
 // Tests that context menus are shown for certain key events (Shift+F10
 // and VKEY_APPS) by the pre-target handler installed on RootView.
 TEST_F(RootViewTest, ContextMenuFromKeyEvent) {
+#if defined(OS_MACOSX)
+  // This behavior is intentionally unsupported on macOS.
+  return;
+#endif
   Widget widget;
   Widget::InitParams init_params =
       CreateParams(Widget::InitParams::TYPE_POPUP);
@@ -128,7 +134,8 @@ TEST_F(RootViewTest, ContextMenuFromKeyEvent) {
   focused_view->RequestFocus();
 
   // No context menu should be shown for a keypress of 'A'.
-  ui::KeyEvent nomenu_key_event('a', ui::VKEY_A, ui::EF_NONE);
+  ui::KeyEvent nomenu_key_event('a', ui::VKEY_A, ui::DomCode::NONE,
+                                ui::EF_NONE);
   ui::EventDispatchDetails details =
       root_view->OnEventFromSource(&nomenu_key_event);
   EXPECT_FALSE(details.target_destroyed);

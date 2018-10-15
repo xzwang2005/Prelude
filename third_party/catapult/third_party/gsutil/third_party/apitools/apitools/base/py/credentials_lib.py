@@ -1,25 +1,74 @@
 #!/usr/bin/env python
+#
+# Copyright 2015 Google Inc.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """Common credentials classes and constructors."""
 from __future__ import print_function
 
+import contextlib
 import datetime
 import json
 import os
 import threading
+import warnings
 
 import httplib2
 import oauth2client
 import oauth2client.client
-import oauth2client.gce
-import oauth2client.locked_file
-import oauth2client.multistore_file
-import oauth2client.service_account
+from oauth2client import service_account
 from oauth2client import tools  # for gflags declarations
+import six
 from six.moves import http_client
 from six.moves import urllib
 
 from apitools.base.py import exceptions
 from apitools.base.py import util
+
+# App Engine does not support ctypes which are required for the
+# monotonic time used in fasteners. Conversely, App Engine does
+# not support colocated concurrent processes, so process locks
+# are not needed.
+try:
+    import fasteners
+    _FASTENERS_AVAILABLE = True
+except ImportError as import_error:
+    server_env = os.environ.get('SERVER_SOFTWARE', '')
+    if not (server_env.startswith('Development') or
+            server_env.startswith('Google App Engine')):
+        raise import_error
+    _FASTENERS_AVAILABLE = False
+
+# Note: we try the oauth2client imports two ways, to accomodate layout
+# changes in oauth2client 2.0+. We can remove these once we no longer
+# support oauth2client < 2.0.
+#
+# pylint: disable=wrong-import-order,ungrouped-imports
+try:
+    from oauth2client.contrib import gce
+except ImportError:
+    from oauth2client import gce
+
+try:
+    from oauth2client.contrib import multiprocess_file_storage
+    _NEW_FILESTORE = True
+except ImportError:
+    _NEW_FILESTORE = False
+    try:
+        from oauth2client.contrib import multistore_file
+    except ImportError:
+        from oauth2client import multistore_file
 
 try:
     import gflags
@@ -34,7 +83,6 @@ __all__ = [
     'GceAssertionCredentials',
     'GetCredentials',
     'GetUserinfo',
-    'ServiceAccountCredentials',
     'ServiceAccountCredentialsFromFile',
 ]
 
@@ -108,43 +156,67 @@ def GetCredentials(package_name, scopes, client_id, client_secret, user_agent,
     raise exceptions.CredentialsError('Could not create valid credentials')
 
 
-def ServiceAccountCredentialsFromFile(
-        service_account_name, private_key_filename, scopes,
-        service_account_kwargs=None):
-    with open(private_key_filename) as key_file:
-        return ServiceAccountCredentials(
-            service_account_name, key_file.read(), scopes,
-            service_account_kwargs=service_account_kwargs)
+def ServiceAccountCredentialsFromFile(filename, scopes, user_agent=None):
+    """Use the credentials in filename to create a token for scopes."""
+    filename = os.path.expanduser(filename)
+    # We have two options, based on our version of oauth2client.
+    if oauth2client.__version__ > '1.5.2':
+        # oauth2client >= 2.0.0
+        credentials = (
+            service_account.ServiceAccountCredentials.from_json_keyfile_name(
+                filename, scopes=scopes))
+        if credentials is not None:
+            if user_agent is not None:
+                credentials.user_agent = user_agent
+        return credentials
+    else:
+        # oauth2client < 2.0.0
+        with open(filename) as keyfile:
+            service_account_info = json.load(keyfile)
+        account_type = service_account_info.get('type')
+        if account_type != oauth2client.client.SERVICE_ACCOUNT:
+            raise exceptions.CredentialsError(
+                'Invalid service account credentials: %s' % (filename,))
+        # pylint: disable=protected-access
+        credentials = service_account._ServiceAccountCredentials(
+            service_account_id=service_account_info['client_id'],
+            service_account_email=service_account_info['client_email'],
+            private_key_id=service_account_info['private_key_id'],
+            private_key_pkcs8_text=service_account_info['private_key'],
+            scopes=scopes, user_agent=user_agent)
+        # pylint: enable=protected-access
+        return credentials
 
 
-def ServiceAccountCredentials(service_account_name, private_key, scopes,
-                              service_account_kwargs=None):
-    service_account_kwargs = service_account_kwargs or {}
+def ServiceAccountCredentialsFromP12File(
+        service_account_name, private_key_filename, scopes, user_agent):
+    """Create a new credential from the named .p12 keyfile."""
+    private_key_filename = os.path.expanduser(private_key_filename)
     scopes = util.NormalizeScopes(scopes)
-    return oauth2client.client.SignedJwtAssertionCredentials(
-        service_account_name, private_key, scopes, **service_account_kwargs)
-
-
-def _EnsureFileExists(filename):
-    """Touches a file; returns False on error, True on success."""
-    if not os.path.exists(filename):
-        old_umask = os.umask(0o177)
-        try:
-            open(filename, 'a+b').close()
-        except OSError:
-            return False
-        finally:
-            os.umask(old_umask)
-    return True
+    if oauth2client.__version__ > '1.5.2':
+        # oauth2client >= 2.0.0
+        credentials = (
+            service_account.ServiceAccountCredentials.from_p12_keyfile(
+                service_account_name, private_key_filename, scopes=scopes))
+        if credentials is not None:
+            credentials.user_agent = user_agent
+        return credentials
+    else:
+        # oauth2client < 2.0.0
+        with open(private_key_filename) as key_file:
+            return oauth2client.client.SignedJwtAssertionCredentials(
+                service_account_name, key_file.read(), scopes,
+                user_agent=user_agent)
 
 
 def _GceMetadataRequest(relative_url, use_metadata_ip=False):
     """Request the given url from the GCE metadata service."""
     if use_metadata_ip:
-        base_url = 'http://169.254.169.254/'
+        base_url = os.environ.get('GCE_METADATA_IP', '169.254.169.254')
     else:
-        base_url = 'http://metadata.google.internal/'
-    url = base_url + 'computeMetadata/v1/' + relative_url
+        base_url = os.environ.get(
+            'GCE_METADATA_ROOT', 'metadata.google.internal')
+    url = 'http://' + base_url + '/computeMetadata/v1/' + relative_url
     # Extra header requirement can be found here:
     # https://developers.google.com/compute/docs/metadata
     headers = {'Metadata-Flavor': 'Google'}
@@ -158,7 +230,7 @@ def _GceMetadataRequest(relative_url, use_metadata_ip=False):
     return response
 
 
-class GceAssertionCredentials(oauth2client.gce.AppAssertionCredentials):
+class GceAssertionCredentials(gce.AppAssertionCredentials):
 
     """Assertion credentials for GCE instances."""
 
@@ -190,7 +262,13 @@ class GceAssertionCredentials(oauth2client.gce.AppAssertionCredentials):
         if cache_filename and not cached_scopes:
             self._WriteCacheFile(cache_filename, scopes)
 
-        super(GceAssertionCredentials, self).__init__(scopes, **kwds)
+        # We check the scopes above, but don't need them again after
+        # this point. Newer versions of oauth2client let us drop them
+        # here, but since we support older versions as well, we just
+        # catch and squelch the warning.
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            super(GceAssertionCredentials, self).__init__(scope=scopes, **kwds)
 
     @classmethod
     def Get(cls, *args, **kwds):
@@ -213,24 +291,20 @@ class GceAssertionCredentials(oauth2client.gce.AppAssertionCredentials):
             'scopes': sorted(list(scopes)) if scopes else None,
             'svc_acct_name': self.__service_account_name,
         }
-        with cache_file_lock:
-            if _EnsureFileExists(cache_filename):
-                locked_file = oauth2client.locked_file.LockedFile(
-                    cache_filename, 'r+b', 'rb')
-                try:
-                    locked_file.open_and_lock()
-                    cached_creds_str = locked_file.file_handle().read()
-                    if cached_creds_str:
-                        # Cached credentials metadata dict.
-                        cached_creds = json.loads(cached_creds_str)
-                        if (creds['svc_acct_name'] ==
-                                cached_creds['svc_acct_name']):
-                            if (creds['scopes'] in
-                                    (None, cached_creds['scopes'])):
-                                scopes = cached_creds['scopes']
-                finally:
-                    locked_file.unlock_and_close()
-        return scopes
+        cache_file = _MultiProcessCacheFile(cache_filename)
+        try:
+            cached_creds_str = cache_file.LockedRead()
+            if not cached_creds_str:
+                return None
+            cached_creds = json.loads(cached_creds_str)
+            if creds['svc_acct_name'] == cached_creds['svc_acct_name']:
+                if creds['scopes'] in (None, cached_creds['scopes']):
+                    return cached_creds['scopes']
+        except KeyboardInterrupt:
+            raise
+        except:  # pylint: disable=bare-except
+            # Treat exceptions as a cache miss.
+            pass
 
     def _WriteCacheFile(self, cache_filename, scopes):
         """Writes the credential metadata to the cache file.
@@ -242,25 +316,21 @@ class GceAssertionCredentials(oauth2client.gce.AppAssertionCredentials):
           cache_filename: Cache filename to check.
           scopes: Scopes for the desired credentials.
         """
-        with cache_file_lock:
-            if _EnsureFileExists(cache_filename):
-                locked_file = oauth2client.locked_file.LockedFile(
-                    cache_filename, 'r+b', 'rb')
-                try:
-                    locked_file.open_and_lock()
-                    if locked_file.is_locked():
-                        creds = {  # Credentials metadata dict.
-                            'scopes': sorted(list(scopes)),
-                            'svc_acct_name': self.__service_account_name}
-                        locked_file.file_handle().write(
-                            json.dumps(creds, encoding='ascii'))
-                        # If it's not locked, the locking process will
-                        # write the same data to the file, so just
-                        # continue.
-                finally:
-                    locked_file.unlock_and_close()
+        # Credentials metadata dict.
+        creds = {'scopes': sorted(list(scopes)),
+                 'svc_acct_name': self.__service_account_name}
+        creds_str = json.dumps(creds)
+        cache_file = _MultiProcessCacheFile(cache_filename)
+        try:
+            cache_file.LockedWrite(creds_str)
+        except KeyboardInterrupt:
+            raise
+        except:  # pylint: disable=bare-except
+            # Treat exceptions as a cache miss.
+            pass
 
     def _ScopesFromMetadataServer(self, scopes):
+        """Returns instance scopes based on GCE metadata server."""
         if not util.DetectGce():
             raise exceptions.ResourceUnavailableError(
                 'GCE credentials requested outside a GCE instance')
@@ -293,6 +363,7 @@ class GceAssertionCredentials(oauth2client.gce.AppAssertionCredentials):
         return util.NormalizeScopes(scope.strip()
                                     for scope in response.readlines())
 
+    # pylint: disable=arguments-differ
     def _refresh(self, do_request):
         """Refresh self.access_token.
 
@@ -341,14 +412,26 @@ class GceAssertionCredentials(oauth2client.gce.AppAssertionCredentials):
         if self.store:
             self.store.locked_put(self)
 
+    def to_json(self):
+        # OAuth2Client made gce.AppAssertionCredentials unserializable as of
+        # v3.0, but we need those credentials to be serializable for use with
+        # this library, so we use AppAssertionCredentials' parent's to_json
+        # method.
+        # pylint: disable=bad-super-call
+        return super(gce.AppAssertionCredentials, self).to_json()
+
     @classmethod
     def from_json(cls, json_data):
         data = json.loads(json_data)
         kwargs = {}
         if 'cache_filename' in data.get('kwargs', []):
             kwargs['cache_filename'] = data['kwargs']['cache_filename']
-        credentials = GceAssertionCredentials(scopes=[data['scope']],
-                                              **kwargs)
+        # Newer versions of GceAssertionCredentials don't have a "scope"
+        # attribute.
+        scope_list = None
+        if 'scope' in data:
+            scope_list = [data['scope']]
+        credentials = GceAssertionCredentials(scopes=scope_list, **kwargs)
         if 'access_token' in data:
             credentials.access_token = data['access_token']
         if 'token_expiry' in data:
@@ -397,6 +480,7 @@ class GaeAssertionCredentials(oauth2client.client.AssertionCredentials):
         Args:
           _: (ignored) A function matching httplib2.Http.request's signature.
         """
+        # pylint: disable=import-error
         from google.appengine.api import app_identity
         try:
             token, _ = app_identity.get_access_token(self._scopes)
@@ -404,8 +488,25 @@ class GaeAssertionCredentials(oauth2client.client.AssertionCredentials):
             raise exceptions.CredentialsError(str(e))
         self.access_token = token
 
+    def sign_blob(self, blob):
+        """Cryptographically sign a blob (of bytes).
+
+        This method is provided to support a common interface, but
+        the actual key used for a Google Compute Engine service account
+        is not available, so it can't be used to sign content.
+
+        Args:
+            blob: bytes, Message to be signed.
+
+        Raises:
+            NotImplementedError, always.
+        """
+        raise NotImplementedError(
+            'Compute Engine service accounts cannot sign blobs')
+
 
 def _GetRunFlowFlags(args=None):
+    """Retrieves command line flags based on gflags module."""
     # There's one rare situation where gsutil will not have argparse
     # available, but doesn't need anything depending on argparse anyway,
     # since they're bringing their own credentials. So we just allow this
@@ -432,11 +533,18 @@ def _GetRunFlowFlags(args=None):
 # TODO(craigcitro): Switch this from taking a path to taking a stream.
 def CredentialsFromFile(path, client_info, oauth2client_args=None):
     """Read credentials from a file."""
-    credential_store = oauth2client.multistore_file.get_credential_storage(
-        path,
-        client_info['client_id'],
-        client_info['user_agent'],
-        client_info['scope'])
+    user_agent = client_info['user_agent']
+    scope_key = client_info['scope']
+    if not isinstance(scope_key, six.string_types):
+        scope_key = ':'.join(scope_key)
+    storage_key = client_info['client_id'] + user_agent + scope_key
+
+    if _NEW_FILESTORE:
+        credential_store = multiprocess_file_storage.MultiprocessFileStorage(
+            path, storage_key)
+    else:
+        credential_store = multistore_file.get_credential_storage_custom_string_key(  # noqa
+            path, storage_key)
     if hasattr(FLAGS, 'auth_local_webserver'):
         FLAGS.auth_local_webserver = False
     credentials = credential_store.get()
@@ -463,6 +571,115 @@ def CredentialsFromFile(path, client_info, oauth2client_args=None):
     return credentials
 
 
+class _MultiProcessCacheFile(object):
+    """Simple multithreading and multiprocessing safe cache file.
+
+    Notes on behavior:
+    * the fasteners.InterProcessLock object cannot reliably prevent threads
+      from double-acquiring a lock. A threading lock is used in addition to
+      the InterProcessLock. The threading lock is always acquired first and
+      released last.
+    * The interprocess lock will not deadlock. If a process can not acquire
+      the interprocess lock within `_lock_timeout` the call will return as
+      a cache miss or unsuccessful cache write.
+    * App Engine environments cannot be process locked because (1) the runtime
+      does not provide monotonic time and (2) different processes may or may
+      not share the same machine. Because of this, process locks are disabled
+      and locking is only guaranteed to protect against multithreaded access.
+    """
+
+    _lock_timeout = 1
+    _encoding = 'utf-8'
+    _thread_lock = threading.Lock()
+
+    def __init__(self, filename):
+        self._file = None
+        self._filename = filename
+        if _FASTENERS_AVAILABLE:
+            self._process_lock_getter = self._ProcessLockAcquired
+            self._process_lock = fasteners.InterProcessLock(
+                '{0}.lock'.format(filename))
+        else:
+            self._process_lock_getter = self._DummyLockAcquired
+            self._process_lock = None
+
+    @contextlib.contextmanager
+    def _ProcessLockAcquired(self):
+        """Context manager for process locks with timeout."""
+        try:
+            is_locked = self._process_lock.acquire(timeout=self._lock_timeout)
+            yield is_locked
+        finally:
+            if is_locked:
+                self._process_lock.release()
+
+    @contextlib.contextmanager
+    def _DummyLockAcquired(self):
+        """Lock context manager for environments without process locks."""
+        yield True
+
+    def LockedRead(self):
+        """Acquire an interprocess lock and dump cache contents.
+
+        This method safely acquires the locks then reads a string
+        from the cache file. If the file does not exist and cannot
+        be created, it will return None. If the locks cannot be
+        acquired, this will also return None.
+
+        Returns:
+          cache data - string if present, None on failure.
+        """
+        file_contents = None
+        with self._thread_lock:
+            if not self._EnsureFileExists():
+                return None
+            with self._process_lock_getter() as acquired_plock:
+                if not acquired_plock:
+                    return None
+                with open(self._filename, 'rb') as f:
+                    file_contents = f.read().decode(encoding=self._encoding)
+        return file_contents
+
+    def LockedWrite(self, cache_data):
+        """Acquire an interprocess lock and write a string.
+
+        This method safely acquires the locks then writes a string
+        to the cache file. If the string is written successfully
+        the function will return True, if the write fails for any
+        reason it will return False.
+
+        Args:
+          cache_data: string or bytes to write.
+
+        Returns:
+          bool: success
+        """
+        if isinstance(cache_data, six.text_type):
+            cache_data = cache_data.encode(encoding=self._encoding)
+
+        with self._thread_lock:
+            if not self._EnsureFileExists():
+                return False
+            with self._process_lock_getter() as acquired_plock:
+                if not acquired_plock:
+                    return False
+                with open(self._filename, 'wb') as f:
+                    f.write(cache_data)
+                return True
+
+    def _EnsureFileExists(self):
+        """Touches a file; returns False on error, True on success."""
+        if not os.path.exists(self._filename):
+            old_umask = os.umask(0o177)
+            try:
+                open(self._filename, 'a+b').close()
+            except OSError:
+                return False
+            finally:
+                os.umask(old_umask)
+        return True
+
+
 # TODO(craigcitro): Push this into oauth2client.
 def GetUserinfo(credentials, http=None):  # pylint: disable=invalid-name
     """Get the userinfo associated with the given credentials.
@@ -479,67 +696,62 @@ def GetUserinfo(credentials, http=None):  # pylint: disable=invalid-name
       aren't available.
     """
     http = http or httplib2.Http()
-    url_root = 'https://www.googleapis.com/oauth2/v2/tokeninfo'
-    query_args = {'access_token': credentials.access_token}
-    url = '?'.join((url_root, urllib.parse.urlencode(query_args)))
+    url = _GetUserinfoUrl(credentials)
     # We ignore communication woes here (i.e. SSL errors, socket
     # timeout), as handling these should be done in a common location.
     response, content = http.request(url)
     if response.status == http_client.BAD_REQUEST:
         credentials.refresh(http)
+        url = _GetUserinfoUrl(credentials)
         response, content = http.request(url)
     return json.loads(content or '{}')  # Save ourselves from an empty reply.
+
+
+def _GetUserinfoUrl(credentials):
+    url_root = 'https://www.googleapis.com/oauth2/v2/tokeninfo'
+    query_args = {'access_token': credentials.access_token}
+    return '?'.join((url_root, urllib.parse.urlencode(query_args)))
 
 
 @_RegisterCredentialsMethod
 def _GetServiceAccountCredentials(
         client_info, service_account_name=None, service_account_keyfile=None,
         service_account_json_keyfile=None, **unused_kwds):
+    """Returns ServiceAccountCredentials from give file."""
     if ((service_account_name and not service_account_keyfile) or
             (service_account_keyfile and not service_account_name)):
         raise exceptions.CredentialsError(
             'Service account name or keyfile provided without the other')
     scopes = client_info['scope'].split()
     user_agent = client_info['user_agent']
+    # Use the .json credentials, if provided.
     if service_account_json_keyfile:
-        with open(service_account_json_keyfile) as keyfile:
-            service_account_info = json.load(keyfile)
-        account_type = service_account_info.get('type')
-        if account_type != oauth2client.client.SERVICE_ACCOUNT:
-            raise exceptions.CredentialsError(
-                'Invalid service account credentials: %s' % (
-                    service_account_json_keyfile,))
-        # pylint: disable=protected-access
-        credentials = oauth2client.service_account._ServiceAccountCredentials(
-            service_account_id=service_account_info['client_id'],
-            service_account_email=service_account_info['client_email'],
-            private_key_id=service_account_info['private_key_id'],
-            private_key_pkcs8_text=service_account_info['private_key'],
-            scopes=scopes, user_agent=user_agent)
-        # pylint: enable=protected-access
-        return credentials
+        return ServiceAccountCredentialsFromFile(
+            service_account_json_keyfile, scopes, user_agent=user_agent)
+    # Fall back to .p12 if there's no .json credentials.
     if service_account_name is not None:
-        credentials = ServiceAccountCredentialsFromFile(
-            service_account_name, service_account_keyfile, scopes,
-            service_account_kwargs={'user_agent': user_agent})
-        if credentials is not None:
-            return credentials
+        return ServiceAccountCredentialsFromP12File(
+            service_account_name, service_account_keyfile, scopes, user_agent)
 
 
 @_RegisterCredentialsMethod
-def _GetGaeServiceAccount(unused_client_info, scopes, **unused_kwds):
+def _GetGaeServiceAccount(client_info, **unused_kwds):
+    scopes = client_info['scope'].split(' ')
     return GaeAssertionCredentials.Get(scopes=scopes)
 
 
 @_RegisterCredentialsMethod
-def _GetGceServiceAccount(unused_client_info, scopes, **unused_kwds):
+def _GetGceServiceAccount(client_info, **unused_kwds):
+    scopes = client_info['scope'].split(' ')
     return GceAssertionCredentials.Get(scopes=scopes)
 
 
 @_RegisterCredentialsMethod
 def _GetApplicationDefaultCredentials(
-        unused_client_info, scopes, skip_application_default_credentials=False,
+        client_info, skip_application_default_credentials=False,
         **unused_kwds):
+    """Returns ADC with right scopes."""
+    scopes = client_info['scope'].split()
     if skip_application_default_credentials:
         return None
     gc = oauth2client.client.GoogleCredentials
@@ -557,6 +769,8 @@ def _GetApplicationDefaultCredentials(
     # cloud-platform, our scopes are a subset of cloud scopes, and the
     # ADC will work.
     cp = 'https://www.googleapis.com/auth/cloud-platform'
+    if credentials is None:
+        return None
     if not isinstance(credentials, gc) or cp in scopes:
-        return credentials
+        return credentials.create_scoped(scopes)
     return None

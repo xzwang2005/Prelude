@@ -10,11 +10,13 @@
 #include "Resources.h"
 #include "SkAutoPixmapStorage.h"
 #include "SkData.h"
+#include "SkFloatToDecimal.h"
 #include "SkGradientShader.h"
 #include "SkImage.h"
 #include "SkPixmap.h"
 #include "SkRandom.h"
 #include "SkStream.h"
+#include "SkTo.h"
 
 namespace {
 struct WStreamWriteTextBenchmark : public Benchmark {
@@ -36,10 +38,43 @@ struct WStreamWriteTextBenchmark : public Benchmark {
 
 DEF_BENCH(return new WStreamWriteTextBenchmark;)
 
+// Test speed of SkFloatToDecimal for typical floats that
+// might be found in a PDF document.
+struct PDFScalarBench : public Benchmark {
+    PDFScalarBench(const char* n, float (*f)(SkRandom*)) : fName(n), fNextFloat(f) {}
+    const char* fName;
+    float (*fNextFloat)(SkRandom*);
+    bool isSuitableFor(Backend b) override {
+        return b == kNonRendering_Backend;
+    }
+    const char* onGetName() override { return fName; }
+    void onDraw(int loops, SkCanvas*) override {
+        SkRandom random;
+        char dst[kMaximumSkFloatToDecimalLength];
+        while (loops-- > 0) {
+            auto f = fNextFloat(&random);
+            (void)SkFloatToDecimal(f, dst);
+        }
+    }
+};
+
+float next_common(SkRandom* random) {
+    return random->nextRangeF(-500.0f, 1500.0f);
+}
+float next_any(SkRandom* random) {
+    union { uint32_t u; float f; };
+    u = random->nextU();
+    static_assert(sizeof(float) == sizeof(uint32_t), "");
+    return f;
+}
+
+DEF_BENCH(return new PDFScalarBench("PDFScalar_common", next_common);)
+DEF_BENCH(return new PDFScalarBench("PDFScalar_random", next_any);)
+
 #ifdef SK_SUPPORT_PDF
 
 #include "SkPDFBitmap.h"
-#include "SkPDFDocument.h"
+#include "SkPDFDocumentPriv.h"
 #include "SkPDFShader.h"
 #include "SkPDFUtils.h"
 
@@ -49,7 +84,7 @@ static void test_pdf_object_serialization(const sk_sp<SkPDFObject> object) {
     SkNullWStream wStream;
     SkPDFObjNumMap objNumMap;
     objNumMap.addObjectRecursively(object.get());
-    for (int i = 0; i < objNumMap.objects().count(); ++i) {
+    for (size_t i = 0; i < objNumMap.objects().size(); ++i) {
         SkPDFObject* object = objNumMap.objects()[i].get();
         wStream.writeDecAsText(i + 1);
         wStream.writeText(" 0 obj\n");
@@ -84,7 +119,7 @@ protected:
             return;
         }
         while (loops-- > 0) {
-            auto object = SkPDFCreateBitmapObject(fImage, nullptr);
+            auto object = SkPDFCreateBitmapObject(fImage);
             SkASSERT(object);
             if (!object) {
                 return;
@@ -121,7 +156,7 @@ protected:
             return;
         }
         while (loops-- > 0) {
-            auto object = SkPDFCreateBitmapObject(fImage, nullptr);
+            auto object = SkPDFCreateBitmapObject(fImage);
             SkASSERT(object);
             if (!object) {
                 return;
@@ -164,23 +199,6 @@ private:
     std::unique_ptr<SkStreamAsset> fAsset;
 };
 
-// Test speed of SkPDFUtils::FloatToDecimal for typical floats that
-// might be found in a PDF document.
-struct PDFScalarBench : public Benchmark {
-    bool isSuitableFor(Backend b) override {
-        return b == kNonRendering_Backend;
-    }
-    const char* onGetName() override { return "PDFScalar"; }
-    void onDraw(int loops, SkCanvas*) override {
-        SkRandom random;
-        char dst[SkPDFUtils::kMaximumFloatDecimalLength];
-        while (loops-- > 0) {
-            auto f = random.nextRangeF(-500.0f, 1500.0f);
-            (void)SkPDFUtils::FloatToDecimal(f, dst);
-        }
-    }
-};
-
 struct PDFColorComponentBench : public Benchmark {
     bool isSuitableFor(Backend b) override {
         return b == kNonRendering_Backend;
@@ -214,8 +232,7 @@ struct PDFShaderBench : public Benchmark {
         SkASSERT(fShader);
         while (loops-- > 0) {
             SkNullWStream nullStream;
-            SkPDFDocument doc(&nullStream, nullptr, 72,
-                              SkDocument::PDFMetadata(), nullptr, false);
+            SkPDFDocument doc(&nullStream, SkPDF::Metadata());
             sk_sp<SkPDFObject> shader = SkPDFMakeShader(&doc, fShader.get(), SkMatrix::I(),
                                                         {0, 0, 400, 400}, SK_ColorBLACK);
         }
@@ -234,8 +251,8 @@ struct WritePDFTextBenchmark : public Benchmark {
         static const char kBinary[] = "\001\002\003\004\005\006";
         while (loops-- > 0) {
             for (int i = 1000; i-- > 0;) {
-                SkPDFUtils::WriteString(fWStream.get(), kHello, strlen(kHello));
-                SkPDFUtils::WriteString(fWStream.get(), kBinary, strlen(kBinary));
+                SkPDFWriteString(fWStream.get(), kHello, strlen(kHello));
+                SkPDFWriteString(fWStream.get(), kBinary, strlen(kBinary));
             }
         }
     }
@@ -245,7 +262,6 @@ struct WritePDFTextBenchmark : public Benchmark {
 DEF_BENCH(return new PDFImageBench;)
 DEF_BENCH(return new PDFJpegImageBench;)
 DEF_BENCH(return new PDFCompressionBench;)
-DEF_BENCH(return new PDFScalarBench;)
 DEF_BENCH(return new PDFColorComponentBench;)
 DEF_BENCH(return new PDFShaderBench;)
 DEF_BENCH(return new WritePDFTextBenchmark;)

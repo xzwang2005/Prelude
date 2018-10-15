@@ -15,9 +15,7 @@ namespace internal {
 
 #define __ ACCESS_MASM(masm)
 
-UnaryMathFunctionWithIsolate CreateSqrtFunction(Isolate* isolate) {
-  return nullptr;
-}
+UnaryMathFunction CreateSqrtFunction() { return nullptr; }
 
 #undef __
 

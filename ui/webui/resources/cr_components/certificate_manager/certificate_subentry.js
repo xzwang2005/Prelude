@@ -139,12 +139,18 @@ Polymer({
 
   /** @private */
   closePopupMenu_: function() {
-    this.$$('dialog[is=cr-action-menu]').close();
+    this.$$('cr-action-menu').close();
   },
 
   /** @private */
   onDotsTap_: function() {
     var actionMenu = /** @type {!CrActionMenuElement} */ (this.$.menu.get());
     actionMenu.showAt(this.$.dots);
+  },
+
+  /** @private */
+  getPolicyIndicatorType_: function(model) {
+    return model.policy ? CrPolicyIndicatorType.USER_POLICY :
+                          CrPolicyIndicatorType.NONE;
   },
 });

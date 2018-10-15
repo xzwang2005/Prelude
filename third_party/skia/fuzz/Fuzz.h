@@ -8,21 +8,28 @@
 #ifndef Fuzz_DEFINED
 #define Fuzz_DEFINED
 
-#include "SkData.h"
 #include "../tools/Registry.h"
+#include "SkData.h"
+#include "SkImageFilter.h"
 #include "SkMalloc.h"
+#include "SkRegion.h"
 #include "SkTypes.h"
 
+#include <limits>
 #include <cmath>
+#include <signal.h>
+#include <limits>
 
 class Fuzz : SkNoncopyable {
 public:
-    explicit Fuzz(sk_sp<SkData>);
+    explicit Fuzz(sk_sp<SkData> bytes) : fBytes(bytes), fNextByte(0) {}
 
     // Returns the total number of "random" bytes available.
-    size_t size();
+    size_t size() { return fBytes->size(); }
     // Returns if there are no bytes remaining for fuzzing.
-    bool exhausted();
+    bool exhausted(){
+        return fBytes->size() == fNextByte;
+    }
 
     // next() loads fuzzed bytes into the variable passed in by pointer.
     // We use this approach instead of T next() because different compilers
@@ -31,7 +38,7 @@ public:
     // foo(5, 7) when compiled on GCC and foo(7, 5) when compiled on Clang.
     // By requiring params to be passed in, we avoid the temptation to call
     // next() in a way that does not consume fuzzed bytes in a single
-    // uplatform-independent order.
+    // platform-independent order.
     template <typename T>
     void next(T* t);
 
@@ -43,11 +50,27 @@ public:
     template <typename T, typename Min, typename Max>
     void nextRange(T*, Min, Max);
 
+    // Explicit version of nextRange for enums.
+    // Again, values are in [min, max].
+    template <typename T, typename Min, typename Max>
+    void nextEnum(T*, Min, Max);
+
     // nextN loads n * sizeof(T) bytes into ptr
     template <typename T>
     void nextN(T* ptr, int n);
 
-    void signalBug();  // Tell afl-fuzz these inputs found a bug.
+    void signalBug(){
+        // Tell the fuzzer that these inputs found a bug.
+        SkDebugf("Signal bug\n");
+        raise(SIGSEGV);
+    }
+
+    // Specialized versions for when true random doesn't quite make sense
+    void next(bool* b);
+    void next(SkImageFilter::CropRect* cropRect);
+    void next(SkRegion* region);
+
+    void nextRange(float* f, float min, float max);
 
 private:
     template <typename T>
@@ -55,15 +78,8 @@ private:
 
     sk_sp<SkData> fBytes;
     size_t fNextByte;
+    friend void fuzz__MakeEncoderCorpus(Fuzz*);
 };
-
-// UBSAN reminds us that bool can only legally hold 0 or 1.
-template <>
-inline void Fuzz::next(bool* b) {
-  uint8_t n;
-  this->next(&n);
-  *b = (n & 1) == 1;
-}
 
 template <typename T>
 inline void Fuzz::next(T* n) {
@@ -83,16 +99,6 @@ inline void Fuzz::next(Arg* first, Args... rest) {
    this->next(rest...);
 }
 
-template <>
-inline void Fuzz::nextRange(float* f, float min, float max) {
-    this->next(f);
-    if (!std::isnormal(*f) && *f != 0.0f) {
-        // Don't deal with infinity or other strange floats.
-        *f = max;
-    }
-    *f = min + std::fmod(std::abs(*f), (max - min + 1));
-}
-
 template <typename T, typename Min, typename Max>
 inline void Fuzz::nextRange(T* n, Min min, Max max) {
     this->next<T>(n);
@@ -102,6 +108,7 @@ inline void Fuzz::nextRange(T* n, Min min, Max max) {
     }
     if (min > max) {
         // Avoid misuse of nextRange
+        SkDebugf("min > max (%d > %d) \n", min, max);
         this->signalBug();
     }
     if (*n < 0) { // Handle negatives
@@ -113,6 +120,12 @@ inline void Fuzz::nextRange(T* n, Min min, Max max) {
         }
     }
     *n = min + (*n % ((size_t)max - min + 1));
+}
+
+template <typename T, typename Min, typename Max>
+inline void Fuzz::nextEnum(T* value, Min rmin, Max rmax) {
+    using U = skstd::underlying_type_t<T>;
+    this->nextRange((U*)value, (U)rmin, (U)rmax);
 }
 
 template <typename T>
@@ -127,9 +140,10 @@ struct Fuzzable {
     void (*fn)(Fuzz*);
 };
 
+// Not static so that we can link these into oss-fuzz harnesses if we like.
 #define DEF_FUZZ(name, f)                                               \
-    static void fuzz_##name(Fuzz*);                                     \
+    void fuzz_##name(Fuzz*);                                            \
     sk_tools::Registry<Fuzzable> register_##name({#name, fuzz_##name}); \
-    static void fuzz_##name(Fuzz* f)
+    void fuzz_##name(Fuzz* f)
 
 #endif//Fuzz_DEFINED

@@ -12,8 +12,8 @@
 // Original source:
 //  https://chromium.googlesource.com/webm/libwebp
 
-#ifndef VPX_THREAD_H_
-#define VPX_THREAD_H_
+#ifndef VPX_VPX_UTIL_VPX_THREAD_H_
+#define VPX_VPX_UTIL_VPX_THREAD_H_
 
 #include "./vpx_config.h"
 
@@ -157,6 +157,23 @@ static INLINE int pthread_cond_init(pthread_cond_t *const condition,
   }
 #endif
   return 0;
+}
+
+static INLINE int pthread_cond_broadcast(pthread_cond_t *const condition) {
+  int ok = 1;
+#ifdef USE_WINDOWS_CONDITION_VARIABLE
+  WakeAllConditionVariable(condition);
+#else
+  while (WaitForSingleObject(condition->waiting_sem_, 0) == WAIT_OBJECT_0) {
+    // a thread is waiting in pthread_cond_wait: allow it to be notified
+    ok &= SetEvent(condition->signal_event_);
+    // wait until the event is consumed so the signaler cannot consume
+    // the event via its own pthread_cond_wait.
+    ok &= (WaitForSingleObject(condition->received_sem_, INFINITE) !=
+           WAIT_OBJECT_0);
+  }
+#endif
+  return !ok;
 }
 
 static INLINE int pthread_cond_signal(pthread_cond_t *const condition) {
@@ -412,4 +429,4 @@ const VPxWorkerInterface *vpx_get_worker_interface(void);
 }  // extern "C"
 #endif
 
-#endif  // VPX_THREAD_H_
+#endif  // VPX_VPX_UTIL_VPX_THREAD_H_

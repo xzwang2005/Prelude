@@ -9,7 +9,7 @@
 #include "base/command_line.h"
 #include "base/macros.h"
 #include "base/run_loop.h"
-#include "services/ui/public/interfaces/window_manager_constants.mojom.h"
+#include "services/ws/public/mojom/window_tree_constants.mojom.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/aura/client/aura_constants.h"
 #include "ui/aura/env.h"
@@ -310,9 +310,9 @@ class PropertyTestLayoutManager : public TestLayoutManagerBase {
  private:
   // aura::LayoutManager:
   void OnWindowAddedToLayout(aura::Window* child) override {
-    EXPECT_EQ(ui::mojom::kResizeBehaviorCanResize |
-                  ui::mojom::kResizeBehaviorCanMaximize |
-                  ui::mojom::kResizeBehaviorCanMinimize,
+    EXPECT_EQ(ws::mojom::kResizeBehaviorCanResize |
+                  ws::mojom::kResizeBehaviorCanMaximize |
+                  ws::mojom::kResizeBehaviorCanMinimize,
               child->GetProperty(aura::client::kResizeBehaviorKey));
     added_ = true;
   }
@@ -416,7 +416,7 @@ TEST_F(NativeWidgetAuraTest, DontCaptureOnGesture) {
   GestureTrackingView* view = new GestureTrackingView();
   GestureTrackingView* child = new GestureTrackingView();
   child->set_consume_gesture_event(false);
-  view->SetLayoutManager(new FillLayout);
+  view->SetLayoutManager(std::make_unique<FillLayout>());
   view->AddChildView(child);
   std::unique_ptr<TestWidget> widget(new TestWidget());
   Widget::InitParams params(Widget::InitParams::TYPE_WINDOW_FRAMELESS);

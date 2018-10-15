@@ -4,13 +4,13 @@
 
 #include "ui/aura/window_port_for_shutdown.h"
 
-#include "base/memory/ptr_util.h"
 #include "cc/trees/layer_tree_frame_sink.h"
 #include "ui/aura/window.h"
 
 namespace aura {
 
-WindowPortForShutdown::WindowPortForShutdown() {}
+WindowPortForShutdown::WindowPortForShutdown()
+    : WindowPort(WindowPort::Type::kShutdown) {}
 
 WindowPortForShutdown::~WindowPortForShutdown() {}
 
@@ -57,23 +57,22 @@ WindowPortForShutdown::CreateLayerTreeFrameSink() {
   return nullptr;
 }
 
-viz::SurfaceId WindowPortForShutdown::GetSurfaceId() const {
-  return viz::SurfaceId();
+void WindowPortForShutdown::AllocateLocalSurfaceId() {}
+void WindowPortForShutdown::UpdateLocalSurfaceIdFromEmbeddedClient(
+    const viz::LocalSurfaceId& embedded_client_local_surface_id) {}
+
+bool WindowPortForShutdown::IsLocalSurfaceIdAllocationSuppressed() const {
+  return false;
 }
 
-void WindowPortForShutdown::AllocateLocalSurfaceId() {}
+viz::ScopedSurfaceIdAllocator WindowPortForShutdown::GetSurfaceIdAllocator(
+    base::OnceCallback<void()> allocation_task) {
+  return viz::ScopedSurfaceIdAllocator(std::move(allocation_task));
+}
 
 const viz::LocalSurfaceId& WindowPortForShutdown::GetLocalSurfaceId() {
   return local_surface_id_;
 }
-
-viz::FrameSinkId WindowPortForShutdown::GetFrameSinkId() const {
-  return frame_sink_id_;
-}
-
-void WindowPortForShutdown::OnWindowAddedToRootWindow() {}
-
-void WindowPortForShutdown::OnWillRemoveWindowFromRootWindow() {}
 
 void WindowPortForShutdown::OnEventTargetingPolicyChanged() {}
 

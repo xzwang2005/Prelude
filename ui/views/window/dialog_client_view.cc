@@ -17,6 +17,7 @@
 #include "ui/views/controls/button/image_button.h"
 #include "ui/views/controls/button/label_button.h"
 #include "ui/views/controls/button/md_text_button.h"
+#include "ui/views/event_utils.h"
 #include "ui/views/layout/grid_layout.h"
 #include "ui/views/layout/layout_provider.h"
 #include "ui/views/style/platform_style.h"
@@ -32,12 +33,6 @@ namespace {
 // The group used by the buttons.  This name is chosen voluntarily big not to
 // conflict with other groups that could be in the dialog content.
 const int kButtonGroup = 6666;
-
-#if defined(OS_WIN) || defined(OS_CHROMEOS)
-const bool kIsOkButtonOnLeftSide = true;
-#else
-const bool kIsOkButtonOnLeftSide = false;
-#endif
 
 // Returns true if the given view should be shown (i.e. exists and is
 // visible).
@@ -170,6 +165,13 @@ gfx::Size DialogClientView::GetMaximumSize() const {
   return max_size;
 }
 
+void DialogClientView::VisibilityChanged(View* starting_from, bool is_visible) {
+  ClientView::VisibilityChanged(starting_from, is_visible);
+
+  if (is_visible)
+    view_shown_time_stamp_ = base::TimeTicks::Now();
+}
+
 void DialogClientView::Layout() {
   button_row_container_->SetSize(
       gfx::Size(width(), button_row_container_->GetHeightForWidth(width())));
@@ -240,12 +242,19 @@ void DialogClientView::ButtonPressed(Button* sender, const ui::Event& event) {
   if (!GetDialogDelegate())
     return;
 
+  if (IsPossiblyUnintendedInteraction(view_shown_time_stamp_, event))
+    return;
+
   if (sender == ok_button_)
     AcceptWindow();
   else if (sender == cancel_button_)
     CancelWindow();
   else
     NOTREACHED();
+}
+
+void DialogClientView::ResetViewShownTimeStampForTesting() {
+  view_shown_time_stamp_ = base::TimeTicks();
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -330,7 +339,7 @@ DialogClientView::GetButtonRowViews() {
   View* first = ShouldShow(extra_view_) ? extra_view_ : nullptr;
   View* second = cancel_button_;
   View* third = ok_button_;
-  if (kIsOkButtonOnLeftSide)
+  if (PlatformStyle::kIsOkButtonLeading)
     std::swap(second, third);
   return {{first, second, third}};
 }
@@ -342,7 +351,8 @@ void DialogClientView::SetupLayout() {
 
   // Clobber any existing LayoutManager since it has weak references to child
   // Views which may be removed by SetupViews().
-  GridLayout* layout = GridLayout::CreateAndInstall(button_row_container_);
+  GridLayout* layout = button_row_container_->SetLayoutManager(
+      std::make_unique<views::GridLayout>(button_row_container_));
   layout->set_minimum_size(minimum_size_);
 
   SetupViews();

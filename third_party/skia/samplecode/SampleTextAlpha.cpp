@@ -4,37 +4,36 @@
  * Use of this source code is governed by a BSD-style license that can be
  * found in the LICENSE file.
  */
-#include "SampleCode.h"
+
+#include "Sample.h"
 #include "SkBlurMask.h"
-#include "SkBlurMaskFilter.h"
 #include "SkCanvas.h"
 #include "SkGradientShader.h"
 #include "SkGraphics.h"
+#include "SkMaskFilter.h"
 #include "SkPath.h"
 #include "SkRandom.h"
 #include "SkRegion.h"
 #include "SkShader.h"
-#include "SkUtils.h"
+#include "SkUTF.h"
 #include "SkColorPriv.h"
 #include "SkColorFilter.h"
 #include "SkTime.h"
 #include "SkTypeface.h"
-#include "SkView.h"
 
 #include "SkOSFile.h"
 #include "SkStream.h"
 
-class TextAlphaView : public SampleView {
+class TextAlphaView : public Sample {
 public:
     TextAlphaView() {
         fByte = 0xFF;
     }
 
 protected:
-    // overrides from SkEventSink
-    bool onQuery(SkEvent* evt) override {
-        if (SampleCode::TitleQ(*evt)) {
-            SampleCode::TitleR(evt, "TextAlpha");
+    bool onQuery(Sample::Event* evt) override {
+        if (Sample::TitleQ(*evt)) {
+            Sample::TitleR(evt, "TextAlpha");
             return true;
         }
         return this->INHERITED::onQuery(evt);
@@ -50,7 +49,7 @@ protected:
 
         paint.setARGB(fByte, 0xFF, 0xFF, 0xFF);
 
-        paint.setMaskFilter(SkBlurMaskFilter::Make(kNormal_SkBlurStyle,
+        paint.setMaskFilter(SkMaskFilter::MakeBlur(kNormal_SkBlurStyle,
                                                    SkBlurMask::ConvertRadiusToSigma(3)));
 
         SkRandom rand;
@@ -64,7 +63,7 @@ protected:
         }
     }
 
-    SkView::Click* onFindClickHandler(SkScalar x, SkScalar y, unsigned) override {
+    Sample::Click* onFindClickHandler(SkScalar x, SkScalar y, unsigned) override {
         return new Click(this);
     }
 
@@ -82,10 +81,9 @@ protected:
 private:
     int fByte;
 
-    typedef SampleView INHERITED;
+    typedef Sample INHERITED;
 };
 
 //////////////////////////////////////////////////////////////////////////////
 
-static SkView* MyFactory() { return new TextAlphaView; }
-static SkViewRegister reg(MyFactory);
+DEF_SAMPLE( return new TextAlphaView(); )

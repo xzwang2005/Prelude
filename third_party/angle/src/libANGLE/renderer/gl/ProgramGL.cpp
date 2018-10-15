@@ -125,15 +125,24 @@ void ProgramGL::setSeparable(bool separable)
     mFunctions->programParameteri(mProgramID, GL_PROGRAM_SEPARABLE, separable ? GL_TRUE : GL_FALSE);
 }
 
-gl::LinkResult ProgramGL::link(const gl::Context *context,
-                               const gl::ProgramLinkedResources &resources,
-                               gl::InfoLog &infoLog)
+std::unique_ptr<LinkEvent> ProgramGL::link(const gl::Context *context,
+                                           const gl::ProgramLinkedResources &resources,
+                                           gl::InfoLog &infoLog)
+{
+    // TODO(jie.a.chen@intel.com): Parallelize linking.
+    return std::make_unique<LinkEventDone>(linkImpl(context, resources, infoLog));
+}
+
+gl::LinkResult ProgramGL::linkImpl(const gl::Context *context,
+                                   const gl::ProgramLinkedResources &resources,
+                                   gl::InfoLog &infoLog)
 {
     preLink();
 
-    if (mState.getAttachedComputeShader())
+    if (mState.getAttachedShader(gl::ShaderType::Compute))
     {
-        const ShaderGL *computeShaderGL = GetImplAs<ShaderGL>(mState.getAttachedComputeShader());
+        const ShaderGL *computeShaderGL =
+            GetImplAs<ShaderGL>(mState.getAttachedShader(gl::ShaderType::Compute));
 
         mFunctions->attachShader(mProgramID, computeShaderGL->getShaderID());
 
@@ -150,8 +159,8 @@ gl::LinkResult ProgramGL::link(const gl::Context *context,
         for (const auto &tfVarying : mState.getTransformFeedbackVaryingNames())
         {
             std::string tfVaryingMappedName =
-                mState.getAttachedVertexShader()->getTransformFeedbackVaryingMappedName(tfVarying,
-                                                                                        context);
+                mState.getAttachedShader(gl::ShaderType::Vertex)
+                    ->getTransformFeedbackVaryingMappedName(tfVarying);
             transformFeedbackVaryingMappedNames.push_back(tfVaryingMappedName);
         }
 
@@ -176,17 +185,25 @@ gl::LinkResult ProgramGL::link(const gl::Context *context,
                 &transformFeedbackVaryings[0], mState.getTransformFeedbackBufferMode());
         }
 
-        const ShaderGL *vertexShaderGL   = GetImplAs<ShaderGL>(mState.getAttachedVertexShader());
-        const ShaderGL *fragmentShaderGL = GetImplAs<ShaderGL>(mState.getAttachedFragmentShader());
+        const ShaderGL *vertexShaderGL =
+            GetImplAs<ShaderGL>(mState.getAttachedShader(gl::ShaderType::Vertex));
+        const ShaderGL *fragmentShaderGL =
+            GetImplAs<ShaderGL>(mState.getAttachedShader(gl::ShaderType::Fragment));
+        const ShaderGL *geometryShaderGL = rx::SafeGetImplAs<ShaderGL, gl::Shader>(
+            mState.getAttachedShader(gl::ShaderType::Geometry));
 
         // Attach the shaders
         mFunctions->attachShader(mProgramID, vertexShaderGL->getShaderID());
         mFunctions->attachShader(mProgramID, fragmentShaderGL->getShaderID());
+        if (geometryShaderGL)
+        {
+            mFunctions->attachShader(mProgramID, geometryShaderGL->getShaderID());
+        }
 
         // Bind attribute locations to match the GL layer.
         for (const sh::Attribute &attribute : mState.getAttributes())
         {
-            if (!attribute.staticUse || attribute.isBuiltIn())
+            if (!attribute.active || attribute.isBuiltIn())
             {
                 continue;
             }
@@ -195,12 +212,61 @@ gl::LinkResult ProgramGL::link(const gl::Context *context,
                                            attribute.mappedName.c_str());
         }
 
+        // EXT_blend_func_extended.
+        // Bind the (transformed) secondary fragment color outputs.
+        //
+        // TODO(http://anglebug.com/2833): The bind done below is only valid in case the compiler
+        // transforms the shader outputs to the angle/webgl prefixed ones. If we added support
+        // for running EXT_blend_func_extended on top of GLES, some changes would be required:
+        //  - If we're backed by GLES 2.0, we shouldn't do the bind because it's not needed.
+        //  - If we're backed by GLES 3.0+, it's a bit unclear what should happen. Currently
+        //    the compiler doesn't support transforming GLSL ES 1.00 shaders to GLSL ES 3.00
+        //    shaders in general, but support for that might be required. Or we might be able
+        //    to skip the bind in case the compiler outputs GLSL ES 1.00.
+        //
+        const auto &shaderOutputs =
+            mState.getAttachedShader(gl::ShaderType::Fragment)->getActiveOutputVariables();
+        for (const auto &output : shaderOutputs)
+        {
+            if (output.name == "gl_SecondaryFragColorEXT")
+            {
+                mFunctions->bindFragDataLocationIndexed(mProgramID, 0, 0, "webgl_FragColor");
+                mFunctions->bindFragDataLocationIndexed(mProgramID, 0, 1,
+                                                        "angle_SecondaryFragColor");
+            }
+            else if (output.name == "gl_SecondaryFragDataEXT")
+            {
+                // Basically we should have a loop here going over the output
+                // array binding "webgl_FragData[i]" and "angle_SecondaryFragData[i]" array
+                // indices to the correct color buffers and color indices.
+                // However I'm not sure if this construct is legal or not, neither ARB or EXT
+                // version of the spec mention this.
+                //
+                // In practice it seems that binding array members works on some drivers and
+                // fails on others. One option could be to modify the shader translator to
+                // expand the arrays into individual output variables instead of using an array.
+                //
+                // For now we're going to have a limitation of assuming that
+                // GL_MAX_DUAL_SOURCE_DRAW_BUFFERS is *always* 1 and then only bind the basename
+                // of the variable ignoring any indices. This appears to work uniformly.
+                ASSERT(output.isArray() && output.getOutermostArraySize() == 1);
+
+                mFunctions->bindFragDataLocationIndexed(mProgramID, 0, 0, "webgl_FragData");
+                mFunctions->bindFragDataLocationIndexed(mProgramID, 0, 1,
+                                                        "angle_SecondaryFragData");
+            }
+        }
+
         // Link and verify
         mFunctions->linkProgram(mProgramID);
 
         // Detach the shaders
         mFunctions->detachShader(mProgramID, vertexShaderGL->getShaderID());
         mFunctions->detachShader(mProgramID, fragmentShaderGL->getShaderID());
+        if (geometryShaderGL)
+        {
+            mFunctions->detachShader(mProgramID, geometryShaderGL->getShaderID());
+        }
     }
 
     // Verify the link
@@ -697,7 +763,7 @@ bool ProgramGL::checkLinkStatus(gl::InfoLog &infoLog)
     mFunctions->getProgramiv(mProgramID, GL_LINK_STATUS, &linkStatus);
     if (linkStatus == GL_FALSE)
     {
-        // Linking failed, put the error into the info log
+        // Linking or program binary loading failed, put the error into the info log.
         GLint infoLogLength = 0;
         mFunctions->getProgramiv(mProgramID, GL_INFO_LOG_LENGTH, &infoLogLength);
 
@@ -708,19 +774,18 @@ bool ProgramGL::checkLinkStatus(gl::InfoLog &infoLog)
             std::vector<char> buf(infoLogLength);
             mFunctions->getProgramInfoLog(mProgramID, infoLogLength, nullptr, &buf[0]);
 
-            mFunctions->deleteProgram(mProgramID);
-            mProgramID = 0;
-
             infoLog << buf.data();
 
-            WARN() << "Program link failed unexpectedly: " << buf.data();
+            WARN() << "Program link or binary loading failed: " << buf.data();
         }
         else
         {
-            WARN() << "Program link failed unexpectedly with no info log.";
+            WARN() << "Program link or binary loading failed with no info log.";
         }
 
-        // TODO, return GL_OUT_OF_MEMORY or just fail the link? This is an unexpected case
+        // This may happen under normal circumstances if we're loading program binaries and the
+        // driver or hardware has changed.
+        ASSERT(mProgramID != 0);
         return false;
     }
 
@@ -870,7 +935,8 @@ void ProgramGL::getUniformuiv(const gl::Context *context, GLint location, GLuint
 }
 
 void ProgramGL::markUnusedUniformLocations(std::vector<gl::VariableLocation> *uniformLocations,
-                                           std::vector<gl::SamplerBinding> *samplerBindings)
+                                           std::vector<gl::SamplerBinding> *samplerBindings,
+                                           std::vector<gl::ImageBinding> *imageBindings)
 {
     GLint maxLocation = static_cast<GLint>(uniformLocations->size());
     for (GLint location = 0; location < maxLocation; ++location)
@@ -882,6 +948,11 @@ void ProgramGL::markUnusedUniformLocations(std::vector<gl::VariableLocation> *un
             {
                 GLuint samplerIndex = mState.getSamplerIndexFromUniformIndex(locationRef.index);
                 (*samplerBindings)[samplerIndex].unreferenced = true;
+            }
+            else if (mState.isImageUniformIndex(locationRef.index))
+            {
+                GLuint imageIndex = mState.getImageIndexFromUniformIndex(locationRef.index);
+                (*imageBindings)[imageIndex].unreferenced = true;
             }
             locationRef.markUnused();
         }
@@ -922,4 +993,14 @@ void ProgramGL::linkResources(const gl::ProgramLinkedResources &resources)
     resources.atomicCounterBufferLinker.link(sizeMap);
 }
 
+gl::Error ProgramGL::syncState(const gl::Context *context, const gl::Program::DirtyBits &dirtyBits)
+{
+    for (size_t dirtyBit : dirtyBits)
+    {
+        ASSERT(dirtyBit <= gl::Program::DIRTY_BIT_UNIFORM_BLOCK_BINDING_MAX);
+        GLuint binding = static_cast<GLuint>(dirtyBit);
+        setUniformBlockBinding(binding, mState.getUniformBlockBinding(binding));
+    }
+    return gl::NoError();
+}
 }  // namespace rx

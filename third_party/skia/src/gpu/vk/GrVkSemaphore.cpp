@@ -16,7 +16,7 @@
 #undef CreateSemaphore
 #endif
 
-sk_sp<GrVkSemaphore> GrVkSemaphore::Make(const GrVkGpu* gpu, bool isOwned) {
+sk_sp<GrVkSemaphore> GrVkSemaphore::Make(GrVkGpu* gpu, bool isOwned) {
     VkSemaphoreCreateInfo createInfo;
     memset(&createInfo, 0, sizeof(VkSemaphoreCreateInfo));
     createInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
@@ -26,30 +26,43 @@ sk_sp<GrVkSemaphore> GrVkSemaphore::Make(const GrVkGpu* gpu, bool isOwned) {
     GR_VK_CALL_ERRCHECK(gpu->vkInterface(),
                         CreateSemaphore(gpu->device(), &createInfo, nullptr, &semaphore));
 
-    return sk_sp<GrVkSemaphore>(new GrVkSemaphore(gpu, semaphore, isOwned));
+    return sk_sp<GrVkSemaphore>(new GrVkSemaphore(gpu, semaphore, false, false, isOwned));
 }
 
-sk_sp<GrVkSemaphore> GrVkSemaphore::MakeWrapped(const GrVkGpu* gpu,
+sk_sp<GrVkSemaphore> GrVkSemaphore::MakeWrapped(GrVkGpu* gpu,
                                                 VkSemaphore semaphore,
+                                                WrapType wrapType,
                                                 GrWrapOwnership ownership) {
     if (VK_NULL_HANDLE == semaphore) {
         return nullptr;
     }
-    return sk_sp<GrVkSemaphore>(new GrVkSemaphore(gpu, semaphore,
+    bool prohibitSignal = WrapType::kWillWait == wrapType;
+    bool prohibitWait = WrapType::kWillSignal == wrapType;
+    return sk_sp<GrVkSemaphore>(new GrVkSemaphore(gpu, semaphore, prohibitSignal, prohibitWait,
                                                   kBorrow_GrWrapOwnership != ownership));
 }
 
-GrVkSemaphore::GrVkSemaphore(const GrVkGpu* gpu, VkSemaphore semaphore, bool isOwned)
+GrVkSemaphore::GrVkSemaphore(GrVkGpu* gpu, VkSemaphore semaphore, bool prohibitSignal,
+                             bool prohibitWait, bool isOwned)
         : INHERITED(gpu) {
-    fResource = new Resource(semaphore, isOwned);
+    fResource = new Resource(semaphore, prohibitSignal, prohibitWait, isOwned);
+    isOwned ? this->registerWithCache(SkBudgeted::kNo) : this->registerWithCacheWrapped();
 }
 
-GrVkSemaphore::~GrVkSemaphore() {
-    if (fGpu) {
-        fResource->unref(static_cast<const GrVkGpu*>(fGpu));
-    } else {
-        fResource->unrefAndAbandon();
+void GrVkSemaphore::onRelease() {
+    if (fResource) {
+        fResource->unref(static_cast<const GrVkGpu*>(this->getGpu()));
+        fResource = nullptr;
     }
+    INHERITED::onRelease();
+}
+
+void GrVkSemaphore::onAbandon() {
+    if (fResource) {
+        fResource->unrefAndAbandon();
+        fResource = nullptr;
+    }
+    INHERITED::onAbandon();
 }
 
 void GrVkSemaphore::Resource::freeGPUData(const GrVkGpu* gpu) const {
@@ -59,7 +72,8 @@ void GrVkSemaphore::Resource::freeGPUData(const GrVkGpu* gpu) const {
     }
 }
 
-void GrVkSemaphore::setBackendSemaphore(GrBackendSemaphore* backendSemaphore) const {
-    backendSemaphore->initVulkan(fResource->semaphore());
+GrBackendSemaphore GrVkSemaphore::backendSemaphore() const {
+    GrBackendSemaphore backendSemaphore;
+    backendSemaphore.initVulkan(fResource->semaphore());
+    return backendSemaphore;
 }
-

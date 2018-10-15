@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#define MAJOR_VERSION 3
-#define MINOR_VERSION 3
+#define MAJOR_VERSION 4
+#define MINOR_VERSION 1
 #define BUILD_VERSION 0
 #define BUILD_REVISION 2
 

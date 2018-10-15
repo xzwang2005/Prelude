@@ -4,10 +4,14 @@
 
 #include "ui/aura/local/window_port_local.h"
 
-#include "components/viz/service/frame_sinks/frame_sink_manager_impl.h"
+#include "cc/mojo_embedder/async_layer_tree_frame_sink.h"
+#include "components/viz/client/hit_test_data_provider_draw_quad.h"
+#include "components/viz/client/local_surface_id_provider.h"
+#include "components/viz/common/features.h"
+#include "components/viz/host/host_frame_sink_manager.h"
 #include "ui/aura/client/cursor_client.h"
 #include "ui/aura/env.h"
-#include "ui/aura/local/layer_tree_frame_sink_local.h"
+#include "ui/aura/hit_test_data_provider_aura.h"
 #include "ui/aura/window.h"
 #include "ui/aura/window_delegate.h"
 #include "ui/base/layout.h"
@@ -24,7 +28,7 @@ class ScopedCursorHider {
     if (!window_->IsRootWindow())
       return;
     const bool cursor_is_in_bounds = window_->GetBoundsInScreen().Contains(
-        Env::GetInstance()->last_mouse_location());
+        window->env()->last_mouse_location());
     client::CursorClient* cursor_client = client::GetCursorClient(window_);
     if (cursor_is_in_bounds && cursor_client &&
         cursor_client->IsCursorVisible()) {
@@ -59,21 +63,31 @@ class ScopedCursorHider {
 }  // namespace
 
 WindowPortLocal::WindowPortLocal(Window* window)
-    : window_(window), weak_factory_(this) {}
+    : WindowPort(WindowPort::Type::kLocal),
+      window_(window),
+      weak_factory_(this) {}
 
-WindowPortLocal::~WindowPortLocal() {}
+WindowPortLocal::~WindowPortLocal() {
+  if (frame_sink_id_.is_valid()) {
+    auto* context_factory_private = window_->env()->context_factory_private();
+    auto* host_frame_sink_manager =
+        context_factory_private->GetHostFrameSinkManager();
+    host_frame_sink_manager->InvalidateFrameSinkId(frame_sink_id_);
+  }
+}
 
 void WindowPortLocal::OnPreInit(Window* window) {}
 
 void WindowPortLocal::OnDeviceScaleFactorChanged(
     float old_device_scale_factor,
     float new_device_scale_factor) {
-  if (last_device_scale_factor_ != new_device_scale_factor &&
-      local_surface_id_.is_valid()) {
+  if (!window_->IsRootWindow() &&
+      last_device_scale_factor_ != new_device_scale_factor &&
+      IsEmbeddingExternalContent()) {
     last_device_scale_factor_ = new_device_scale_factor;
-    local_surface_id_ = parent_local_surface_id_allocator_.GenerateId();
+    parent_local_surface_id_allocator_->GenerateId();
     if (frame_sink_)
-      frame_sink_->SetLocalSurfaceId(local_surface_id_);
+      frame_sink_->SetLocalSurfaceId(GetCurrentLocalSurfaceId());
   }
 
   ScopedCursorHider hider(window_);
@@ -94,11 +108,12 @@ void WindowPortLocal::OnVisibilityChanged(bool visible) {}
 
 void WindowPortLocal::OnDidChangeBounds(const gfx::Rect& old_bounds,
                                         const gfx::Rect& new_bounds) {
-  if (last_size_ != new_bounds.size() && local_surface_id_.is_valid()) {
+  if (!window_->IsRootWindow() && last_size_ != new_bounds.size() &&
+      IsEmbeddingExternalContent()) {
     last_size_ = new_bounds.size();
-    local_surface_id_ = parent_local_surface_id_allocator_.GenerateId();
+    parent_local_surface_id_allocator_->GenerateId();
     if (frame_sink_)
-      frame_sink_->SetLocalSurfaceId(local_surface_id_);
+      frame_sink_->SetLocalSurfaceId(GetCurrentLocalSurfaceId());
   }
 }
 
@@ -119,71 +134,110 @@ void WindowPortLocal::OnPropertyChanged(
 std::unique_ptr<cc::LayerTreeFrameSink>
 WindowPortLocal::CreateLayerTreeFrameSink() {
   DCHECK(!frame_sink_id_.is_valid());
-  auto* context_factory_private =
-      aura::Env::GetInstance()->context_factory_private();
+  auto* context_factory_private = window_->env()->context_factory_private();
+  auto* host_frame_sink_manager =
+      context_factory_private->GetHostFrameSinkManager();
   frame_sink_id_ = context_factory_private->AllocateFrameSinkId();
-  auto frame_sink = std::make_unique<LayerTreeFrameSinkLocal>(
-      frame_sink_id_, context_factory_private->GetHostFrameSinkManager(),
-      window_->GetName());
-  frame_sink->SetSurfaceChangedCallback(base::Bind(
-      &WindowPortLocal::OnSurfaceChanged, weak_factory_.GetWeakPtr()));
+
+  // For creating a async frame sink which connects to the viz display
+  // compositor.
+  viz::mojom::CompositorFrameSinkPtrInfo sink_info;
+  viz::mojom::CompositorFrameSinkRequest sink_request =
+      mojo::MakeRequest(&sink_info);
+  viz::mojom::CompositorFrameSinkClientPtr client;
+  viz::mojom::CompositorFrameSinkClientRequest client_request =
+      mojo::MakeRequest(&client);
+  host_frame_sink_manager->RegisterFrameSinkId(frame_sink_id_, this);
+  window_->SetEmbedFrameSinkId(frame_sink_id_);
+  host_frame_sink_manager->CreateCompositorFrameSink(
+      frame_sink_id_, std::move(sink_request), std::move(client));
+
+  cc::mojo_embedder::AsyncLayerTreeFrameSink::InitParams params;
+  params.gpu_memory_buffer_manager =
+      window_->env()->context_factory()->GetGpuMemoryBufferManager();
+  params.pipes.compositor_frame_sink_info = std::move(sink_info);
+  params.pipes.client_request = std::move(client_request);
+  params.enable_surface_synchronization = true;
+  if (features::IsVizHitTestingDrawQuadEnabled()) {
+    params.hit_test_data_provider =
+        std::make_unique<viz::HitTestDataProviderDrawQuad>(
+            true /* should_ask_for_child_region */);
+  } else {
+    params.hit_test_data_provider =
+        std::make_unique<HitTestDataProviderAura>(window_);
+  }
+  auto frame_sink =
+      std::make_unique<cc::mojo_embedder::AsyncLayerTreeFrameSink>(
+          nullptr /* context_provider */, nullptr /* worker_context_provider */,
+          &params);
   frame_sink_ = frame_sink->GetWeakPtr();
   AllocateLocalSurfaceId();
-  if (window_->GetRootWindow())
-    window_->layer()->GetCompositor()->AddFrameSink(frame_sink_id_);
   return std::move(frame_sink);
 }
 
-viz::SurfaceId WindowPortLocal::GetSurfaceId() const {
-  return viz::SurfaceId(frame_sink_id_, local_surface_id_);
+void WindowPortLocal::AllocateLocalSurfaceId() {
+  if (!parent_local_surface_id_allocator_)
+    parent_local_surface_id_allocator_.emplace();
+  else
+    parent_local_surface_id_allocator_->GenerateId();
+  UpdateLocalSurfaceId();
 }
 
-void WindowPortLocal::AllocateLocalSurfaceId() {
-  last_device_scale_factor_ = ui::GetScaleFactorForNativeView(window_);
-  last_size_ = window_->bounds().size();
-  local_surface_id_ = parent_local_surface_id_allocator_.GenerateId();
-  if (frame_sink_)
-    frame_sink_->SetLocalSurfaceId(local_surface_id_);
+bool WindowPortLocal::IsLocalSurfaceIdAllocationSuppressed() const {
+  return parent_local_surface_id_allocator_ &&
+         parent_local_surface_id_allocator_->is_allocation_suppressed();
+}
+
+viz::ScopedSurfaceIdAllocator WindowPortLocal::GetSurfaceIdAllocator(
+    base::OnceCallback<void()> allocation_task) {
+  return viz::ScopedSurfaceIdAllocator(
+      &parent_local_surface_id_allocator_.value(), std::move(allocation_task));
+}
+
+void WindowPortLocal::UpdateLocalSurfaceIdFromEmbeddedClient(
+    const viz::LocalSurfaceId& embedded_client_local_surface_id) {
+  parent_local_surface_id_allocator_->UpdateFromChild(
+      embedded_client_local_surface_id);
+  UpdateLocalSurfaceId();
 }
 
 const viz::LocalSurfaceId& WindowPortLocal::GetLocalSurfaceId() {
-  if (!local_surface_id_.is_valid())
+  if (!parent_local_surface_id_allocator_)
     AllocateLocalSurfaceId();
-  return local_surface_id_;
-}
-
-viz::FrameSinkId WindowPortLocal::GetFrameSinkId() const {
-  return frame_sink_id_;
-}
-
-void WindowPortLocal::OnWindowAddedToRootWindow() {
-  if (frame_sink_id_.is_valid())
-    window_->layer()->GetCompositor()->AddFrameSink(frame_sink_id_);
-}
-
-void WindowPortLocal::OnWillRemoveWindowFromRootWindow() {
-  if (frame_sink_id_.is_valid())
-    window_->layer()->GetCompositor()->RemoveFrameSink(frame_sink_id_);
+  return GetCurrentLocalSurfaceId();
 }
 
 void WindowPortLocal::OnEventTargetingPolicyChanged() {}
 
-void WindowPortLocal::OnSurfaceChanged(const viz::SurfaceInfo& surface_info) {
-  DCHECK_EQ(surface_info.id().frame_sink_id(), frame_sink_id_);
-  DCHECK_EQ(surface_info.id().local_surface_id(), local_surface_id_);
-  scoped_refptr<viz::SurfaceReferenceFactory> reference_factory =
-      aura::Env::GetInstance()
-          ->context_factory_private()
-          ->GetFrameSinkManager()
-          ->surface_manager()
-          ->reference_factory();
+bool WindowPortLocal::ShouldRestackTransientChildren() {
+  return true;
+}
+
+void WindowPortLocal::OnFirstSurfaceActivation(
+    const viz::SurfaceInfo& surface_info) {
+  DCHECK_EQ(surface_info.id().frame_sink_id(), window_->GetFrameSinkId());
   window_->layer()->SetShowPrimarySurface(
-      surface_info.id(), window_->bounds().size(), reference_factory);
+      surface_info.id(), window_->bounds().size(), SK_ColorWHITE,
+      cc::DeadlinePolicy::UseDefaultDeadline(),
+      false /* stretch_content_to_fill_bounds */);
   window_->layer()->SetFallbackSurfaceId(surface_info.id());
 }
 
-bool WindowPortLocal::ShouldRestackTransientChildren() {
-  return true;
+void WindowPortLocal::OnFrameTokenChanged(uint32_t frame_token) {}
+
+void WindowPortLocal::UpdateLocalSurfaceId() {
+  last_device_scale_factor_ = ui::GetScaleFactorForNativeView(window_);
+  last_size_ = window_->bounds().size();
+  if (frame_sink_)
+    frame_sink_->SetLocalSurfaceId(GetCurrentLocalSurfaceId());
+}
+
+const viz::LocalSurfaceId& WindowPortLocal::GetCurrentLocalSurfaceId() const {
+  return parent_local_surface_id_allocator_->GetCurrentLocalSurfaceId();
+}
+
+bool WindowPortLocal::IsEmbeddingExternalContent() const {
+  return parent_local_surface_id_allocator_.has_value();
 }
 
 }  // namespace aura

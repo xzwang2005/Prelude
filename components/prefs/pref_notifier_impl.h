@@ -43,23 +43,25 @@ class COMPONENTS_PREFS_EXPORT PrefNotifierImpl : public PrefNotifier {
   // We run the callback once, when initialization completes. The bool
   // parameter will be set to true for successful initialization,
   // false for unsuccessful.
-  void AddInitObserver(base::Callback<void(bool)> observer);
+  void AddInitObserver(base::OnceCallback<void(bool)> observer);
 
   void SetPrefService(PrefService* pref_service);
 
- protected:
   // PrefNotifier overrides.
   void OnPreferenceChanged(const std::string& pref_name) override;
+
+ protected:
+  // PrefNotifier overrides.
   void OnInitializationCompleted(bool succeeded) override;
 
   // A map from pref names to a list of observers. Observers get fired in the
   // order they are added. These should only be accessed externally for unit
   // testing.
-  typedef base::ObserverList<PrefObserver> PrefObserverList;
+  typedef base::ObserverList<PrefObserver>::Unchecked PrefObserverList;
   typedef base::hash_map<std::string, std::unique_ptr<PrefObserverList>>
       PrefObserverMap;
 
-  typedef std::list<base::Callback<void(bool)>> PrefInitObserverList;
+  typedef std::list<base::OnceCallback<void(bool)>> PrefInitObserverList;
 
   const PrefObserverMap* pref_observers() const { return &pref_observers_; }
 

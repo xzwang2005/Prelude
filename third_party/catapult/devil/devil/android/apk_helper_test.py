@@ -3,15 +3,16 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
+import collections
+import os
 import unittest
 
+import mock
+
 from devil import base_error
-from devil import devil_env
 from devil.android import apk_helper
 from devil.utils import mock_calls
 
-with devil_env.SysPath(devil_env.PYMOCK_PATH):
-  import mock  # pylint: disable=import-error
 
 
 _MANIFEST_DUMP = """N: android=http://schemas.android.com/apk/res/android
@@ -111,11 +112,24 @@ _SINGLE_J4_INSTRUMENTATION_MANIFEST_DUMP = """N: android=http://schemas.android.
       A: junit4=(type 0x12)0xffffffff (Raw: "true")
 """
 
+_NO_NAMESPACE_MANIFEST_DUMP = """E: manifest (line=1)
+  A: package="org.chromium.xyz" (Raw: "org.chromium.xyz")
+  E: instrumentation (line=8)
+    A: http://schemas.android.com/apk/res/android:label(0x01010001)="xyz" (Raw: "xyz")
+    A: http://schemas.android.com/apk/res/android:name(0x01010003)="org.chromium.RandomTestRunner" (Raw: "org.chromium.RandomTestRunner")
+    A: http://schemas.android.com/apk/res/android:targetPackage(0x01010021)="org.chromium.random_package" (Raw:"org.chromium.random_pacakge")
+"""
+
 
 def _MockAaptDump(manifest_dump):
   return mock.patch(
       'devil.android.sdk.aapt.Dump',
       mock.Mock(side_effect=None, return_value=manifest_dump.split('\n')))
+
+def _MockListApkPaths(files):
+  return mock.patch(
+      'devil.android.apk_helper.ApkHelper._ListApkPaths',
+      mock.Mock(side_effect=None, return_value=files))
 
 class ApkHelperTest(mock_calls.TestCase):
 
@@ -205,6 +219,31 @@ class ApkHelperTest(mock_calls.TestCase):
       helper = apk_helper.ApkHelper('')
       self.assertEquals([('name1', 'value1'), ('name2', 'value2')],
                         helper.GetAllMetadata())
+
+  def testGetSingleInstrumentationName_strippedNamespaces(self):
+    with _MockAaptDump(_NO_NAMESPACE_MANIFEST_DUMP):
+      helper = apk_helper.ApkHelper('')
+      self.assertEquals('org.chromium.RandomTestRunner',
+                        helper.GetInstrumentationName())
+
+  def testGetArchitectures(self):
+    AbiPair = collections.namedtuple('AbiPair', ['abi32bit', 'abi64bit'])
+    for abi_pair in [AbiPair('lib/armeabi-v7a', 'lib/arm64-v8a'),
+                     AbiPair('lib/x86', 'lib/x64')]:
+      with _MockListApkPaths([abi_pair.abi32bit]):
+        helper = apk_helper.ApkHelper('')
+        self.assertEquals(set([os.path.basename(abi_pair.abi32bit),
+                               os.path.basename(abi_pair.abi64bit)]),
+                          set(helper.GetAbis()))
+      with _MockListApkPaths([abi_pair.abi32bit, abi_pair.abi64bit]):
+        helper = apk_helper.ApkHelper('')
+        self.assertEquals(set([os.path.basename(abi_pair.abi32bit),
+                               os.path.basename(abi_pair.abi64bit)]),
+                          set(helper.GetAbis()))
+      with _MockListApkPaths([abi_pair.abi64bit]):
+        helper = apk_helper.ApkHelper('')
+        self.assertEquals(set([os.path.basename(abi_pair.abi64bit)]),
+                          set(helper.GetAbis()))
 
 
 if __name__ == '__main__':

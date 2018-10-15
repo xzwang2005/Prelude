@@ -4,8 +4,13 @@
 // found in the LICENSE file.
 //
 
+#include <tuple>
+
 #include "PreprocessorTest.h"
 #include "compiler/preprocessor/Token.h"
+
+namespace angle
+{
 
 #define CLOSED_RANGE(x, y) testing::Range(x, static_cast<char>((y) + 1))
 
@@ -31,15 +36,15 @@ INSTANTIATE_TEST_CASE_P(InvalidIntegers, InvalidNumberTest,
 INSTANTIATE_TEST_CASE_P(InvalidFloats, InvalidNumberTest,
                         testing::Values("1eg", "0.a", "0.1.2", ".0a", ".0.1"));
 
-typedef std::tr1::tuple<const char*, char> IntegerParams;
+typedef std::tuple<const char*, char> IntegerParams;
 class IntegerTest : public SimplePreprocessorTest, public testing::WithParamInterface<IntegerParams>
 {
 };
 
 TEST_P(IntegerTest, Identified)
 {
-    std::string str(std::tr1::get<0>(GetParam()));  // prefix.
-    str.push_back(std::tr1::get<1>(GetParam()));  // digit.
+    std::string str(std::get<0>(GetParam()));  // prefix.
+    str.push_back(std::get<1>(GetParam()));  // digit.
     const char* cstr = str.c_str();
 
     pp::Token token;
@@ -87,7 +92,7 @@ class FloatTest : public SimplePreprocessorTest
     }
 };
 
-typedef std::tr1::tuple<char, char, const char*, char> FloatScientificParams;
+typedef std::tuple<char, char, const char*, char> FloatScientificParams;
 class FloatScientificTest :
     public FloatTest,
     public testing::WithParamInterface<FloatScientificParams>
@@ -98,10 +103,10 @@ class FloatScientificTest :
 TEST_P(FloatScientificTest, FloatIdentified)
 {
     std::string str;
-    str.push_back(std::tr1::get<0>(GetParam()));  // significand [0-9].
-    str.push_back(std::tr1::get<1>(GetParam()));  // separator [eE].
-    str.append(std::tr1::get<2>(GetParam()));  // sign [" " "+" "-"].
-    str.push_back(std::tr1::get<3>(GetParam()));  // exponent [0-9].
+    str.push_back(std::get<0>(GetParam()));  // significand [0-9].
+    str.push_back(std::get<1>(GetParam()));  // separator [eE].
+    str.append(std::get<2>(GetParam()));  // sign [" " "+" "-"].
+    str.push_back(std::get<3>(GetParam()));  // exponent [0-9].
 
     SCOPED_TRACE("FloatScientificTest");
     expectFloat(str);
@@ -114,7 +119,7 @@ INSTANTIATE_TEST_CASE_P(FloatScientific,
                                          testing::Values("", "+", "-"),
                                          CLOSED_RANGE('0', '9')));
 
-typedef std::tr1::tuple<char, char> FloatFractionParams;
+typedef std::tuple<char, char> FloatFractionParams;
 class FloatFractionTest :
     public FloatTest,
     public testing::WithParamInterface<FloatFractionParams>
@@ -126,13 +131,13 @@ TEST_P(FloatFractionTest, FloatIdentified)
 {
     std::string str;
 
-    char significand = std::tr1::get<0>(GetParam());
+    char significand = std::get<0>(GetParam());
     if (significand != '\0')
         str.push_back(significand);
 
     str.push_back('.');
 
-    char fraction = std::tr1::get<1>(GetParam());
+    char fraction = std::get<1>(GetParam());
     if (fraction != '\0')
         str.push_back(fraction);
 
@@ -162,3 +167,5 @@ TEST_F(FloatTest, FractionScientific)
     SCOPED_TRACE("FractionScientific");
     expectFloat("0.1e+2");
 }
+
+}  // namespace angle

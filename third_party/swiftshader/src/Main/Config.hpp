@@ -20,12 +20,6 @@
 #define PERF_HUD 0       // Display time spent on vertex, setup and pixel processing for each thread
 #define PERF_PROFILE 0   // Profile various pipeline stages and display the timing in SwiftConfig
 
-#if defined(_WIN32)
-#define S3TC_SUPPORT 1
-#else
-#define S3TC_SUPPORT 0
-#endif
-
 #define ASTC_SUPPORT 0
 
 // Worker thread count when not set by SwiftConfig
@@ -86,7 +80,7 @@ namespace sw
 		TEXTURE_IMAGE_UNITS = 16,
 		VERTEX_TEXTURE_IMAGE_UNITS = 16,
 		TOTAL_IMAGE_UNITS = TEXTURE_IMAGE_UNITS + VERTEX_TEXTURE_IMAGE_UNITS,
-		FRAGMENT_UNIFORM_VECTORS = 227,
+		FRAGMENT_UNIFORM_VECTORS = 264,
 		VERTEX_UNIFORM_VECTORS = 259,
 		MAX_VERTEX_INPUTS = 32,
 		MAX_VERTEX_OUTPUTS = 34,
@@ -102,6 +96,7 @@ namespace sw
 		MAX_PROGRAM_TEXEL_OFFSET = 7,
 		MAX_TEXTURE_LOD = MIPMAP_LEVELS - 2,   // Trilinear accesses lod+1
 		RENDERTARGETS = 8,
+		NUM_TEMPORARY_REGISTERS = 4096,
 	};
 }
 

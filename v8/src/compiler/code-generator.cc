@@ -7,14 +7,16 @@
 #include "src/address-map.h"
 #include "src/assembler-inl.h"
 #include "src/base/adapters.h"
-#include "src/compilation-info.h"
 #include "src/compiler/code-generator-impl.h"
 #include "src/compiler/linkage.h"
 #include "src/compiler/pipeline.h"
+#include "src/compiler/wasm-compiler.h"
 #include "src/eh-frame.h"
 #include "src/frames.h"
+#include "src/lsan.h"
 #include "src/macro-assembler-inl.h"
-#include "src/trap-handler/trap-handler.h"
+#include "src/optimized-compilation-info.h"
+#include "src/string-constants.h"
 
 namespace v8 {
 namespace internal {
@@ -39,10 +41,10 @@ class CodeGenerator::JumpTable final : public ZoneObject {
 
 CodeGenerator::CodeGenerator(
     Zone* codegen_zone, Frame* frame, Linkage* linkage,
-    InstructionSequence* code, CompilationInfo* info, Isolate* isolate,
+    InstructionSequence* code, OptimizedCompilationInfo* info, Isolate* isolate,
     base::Optional<OsrHelper> osr_helper, int start_source_position,
-    JumpOptimizationInfo* jump_opt,
-    std::vector<trap_handler::ProtectedInstructionData>* protected_instructions)
+    JumpOptimizationInfo* jump_opt, PoisoningMitigationLevel poisoning_level,
+    const AssemblerOptions& options, int32_t builtin_index)
     : zone_(codegen_zone),
       isolate_(isolate),
       frame_access_state_(nullptr),
@@ -54,7 +56,7 @@ CodeGenerator::CodeGenerator(
       current_block_(RpoNumber::Invalid()),
       start_source_position_(start_source_position),
       current_source_position_(SourcePosition::Unknown()),
-      tasm_(isolate, nullptr, 0, CodeObjectRequired::kNo),
+      tasm_(isolate, options, nullptr, 0, CodeObjectRequired::kNo),
       resolver_(this),
       safepoints_(zone()),
       handlers_(zone()),
@@ -63,36 +65,46 @@ CodeGenerator::CodeGenerator(
       deoptimization_literals_(zone()),
       inlined_function_count_(0),
       translations_(zone()),
+      handler_table_offset_(0),
       last_lazy_deopt_pc_(0),
       caller_registers_saved_(false),
       jump_tables_(nullptr),
       ools_(nullptr),
-      osr_helper_(osr_helper),
+      osr_helper_(std::move(osr_helper)),
       osr_pc_offset_(-1),
       optimized_out_literal_id_(-1),
-      source_position_table_builder_(info->SourcePositionRecordingMode()),
-      protected_instructions_(protected_instructions),
-      result_(kSuccess) {
+      source_position_table_builder_(
+          SourcePositionTableBuilder::RECORD_SOURCE_POSITIONS),
+      protected_instructions_(zone()),
+      result_(kSuccess),
+      poisoning_level_(poisoning_level),
+      block_starts_(zone()),
+      instr_starts_(zone()) {
   for (int i = 0; i < code->InstructionBlockCount(); ++i) {
     new (&labels_[i]) Label;
   }
   CreateFrameAccessState(frame);
   CHECK_EQ(info->is_osr(), osr_helper_.has_value());
   tasm_.set_jump_optimization_info(jump_opt);
-  Code::Kind code_kind = info_->code_kind();
-  if (code_kind == Code::JS_TO_WASM_FUNCTION ||
-      code_kind == Code::WASM_FUNCTION) {
-    tasm_.enable_serializer();
+  Code::Kind code_kind = info->code_kind();
+  if (code_kind == Code::WASM_FUNCTION ||
+      code_kind == Code::WASM_TO_JS_FUNCTION ||
+      code_kind == Code::WASM_INTERPRETER_ENTRY ||
+      (Builtins::IsBuiltinId(builtin_index) &&
+       Builtins::IsWasmRuntimeStub(builtin_index))) {
+    tasm_.set_abort_hard(true);
   }
+  tasm_.set_builtin_index(builtin_index);
+}
+
+bool CodeGenerator::wasm_runtime_exception_support() const {
+  DCHECK_NOT_NULL(info_);
+  return info_->wasm_runtime_exception_support();
 }
 
 void CodeGenerator::AddProtectedInstructionLanding(uint32_t instr_offset,
                                                    uint32_t landing_offset) {
-  if (protected_instructions_ != nullptr) {
-    trap_handler::ProtectedInstructionData data = {instr_offset,
-                                                   landing_offset};
-    protected_instructions_->emplace_back(data);
-  }
+  protected_instructions_.push_back({instr_offset, landing_offset});
 }
 
 void CodeGenerator::CreateFrameAccessState(Frame* frame) {
@@ -103,36 +115,21 @@ void CodeGenerator::CreateFrameAccessState(Frame* frame) {
 CodeGenerator::CodeGenResult CodeGenerator::AssembleDeoptimizerCall(
     int deoptimization_id, SourcePosition pos) {
   DeoptimizeKind deopt_kind = GetDeoptimizationKind(deoptimization_id);
-  Deoptimizer::BailoutType bailout_type;
-  switch (deopt_kind) {
-    case DeoptimizeKind::kSoft: {
-      bailout_type = Deoptimizer::SOFT;
-      break;
-    }
-    case DeoptimizeKind::kEager: {
-      bailout_type = Deoptimizer::EAGER;
-      break;
-    }
-    case DeoptimizeKind::kLazy: {
-      bailout_type = Deoptimizer::LAZY;
-      break;
-    }
-    default: { UNREACHABLE(); }
-  }
   DeoptimizeReason deoptimization_reason =
       GetDeoptimizationReason(deoptimization_id);
   Address deopt_entry = Deoptimizer::GetDeoptimizationEntry(
-      tasm()->isolate(), deoptimization_id, bailout_type);
-  if (deopt_entry == nullptr) return kTooManyDeoptimizationBailouts;
+      tasm()->isolate(), deoptimization_id, deopt_kind);
+  if (deopt_entry == kNullAddress) return kTooManyDeoptimizationBailouts;
   if (info()->is_source_positions_enabled()) {
     tasm()->RecordDeoptReason(deoptimization_reason, pos, deoptimization_id);
   }
-  tasm()->CallForDeoptimization(deopt_entry, RelocInfo::RUNTIME_ENTRY);
+  tasm()->CallForDeoptimization(deopt_entry, deoptimization_id,
+                                RelocInfo::RUNTIME_ENTRY);
   return kSuccess;
 }
 
 void CodeGenerator::AssembleCode() {
-  CompilationInfo* info = this->info();
+  OptimizedCompilationInfo* info = this->info();
 
   // Open a frame scope to indicate that there is a frame on the stack.  The
   // MANUAL indicates that the scope shouldn't actually generate code to set up
@@ -148,19 +145,28 @@ void CodeGenerator::AssembleCode() {
     ProfileEntryHookStub::MaybeCallEntryHookDelayed(tasm(), zone());
   }
 
-  // TODO(jupvfranco): This should be the first thing in the code,
-  // or otherwise MaybeCallEntryHookDelayed may happen twice (for
-  // optimized and deoptimized code).
-  // We want to bailout only from JS functions, which are the only ones
+  // Check that {kJavaScriptCallCodeStartRegister} has been set correctly.
+  if (FLAG_debug_code & (info->code_kind() == Code::OPTIMIZED_FUNCTION ||
+                         info->code_kind() == Code::BYTECODE_HANDLER)) {
+    tasm()->RecordComment("-- Prologue: check code start register --");
+    AssembleCodeStartRegisterCheck();
+  }
+
+  // TODO(jupvfranco): This should be the first thing in the code, otherwise
+  // MaybeCallEntryHookDelayed may happen twice (for optimized and deoptimized
+  // code). We want to bailout only from JS functions, which are the only ones
   // that are optimized.
   if (info->IsOptimizing()) {
     DCHECK(linkage()->GetIncomingDescriptor()->IsJSFunctionCall());
+    tasm()->RecordComment("-- Prologue: check for deoptimization --");
     BailoutIfDeoptimized();
   }
 
+  InitializeSpeculationPoison();
+
   // Define deoptimization literals for all inlined functions.
   DCHECK_EQ(0u, deoptimization_literals_.size());
-  for (CompilationInfo::InlinedFunctionHolder& inlined :
+  for (OptimizedCompilationInfo::InlinedFunctionHolder& inlined :
        info->inlined_functions()) {
     if (!inlined.shared_info.equals(info->shared_info())) {
       int index = DefineDeoptimizationLiteral(
@@ -173,6 +179,10 @@ void CodeGenerator::AssembleCode() {
   unwinding_info_writer_.SetNumberOfInstructionBlocks(
       code()->InstructionBlockCount());
 
+  if (info->trace_turbo_json_enabled()) {
+    block_starts_.assign(code()->instruction_blocks().size(), -1);
+    instr_starts_.assign(code()->instructions().size(), -1);
+  }
   // Assemble all non-deferred blocks, followed by deferred ones.
   for (int deferred = 0; deferred < 2; ++deferred) {
     for (const InstructionBlock* block : code()->instruction_blocks()) {
@@ -184,13 +194,16 @@ void CodeGenerator::AssembleCode() {
       if (block->IsLoopHeader() && !tasm()->jump_optimization_info()) {
         tasm()->Align(16);
       }
+      if (info->trace_turbo_json_enabled()) {
+        block_starts_[block->rpo_number().ToInt()] = tasm()->pc_offset();
+      }
       // Bind a label for a block.
       current_block_ = block->rpo_number();
       unwinding_info_writer_.BeginInstructionBlock(tasm()->pc_offset(), block);
       if (FLAG_code_comments) {
-        // TODO(titzer): these code comments are a giant memory leak.
         Vector<char> buffer = Vector<char>::New(200);
         char* buffer_start = buffer.start();
+        LSAN_IGNORE_OBJECT(buffer_start);
 
         int next = SNPrintF(
             buffer, "-- B%d start%s%s%s%s", block->rpo_number().ToInt(),
@@ -218,6 +231,9 @@ void CodeGenerator::AssembleCode() {
       frame_access_state()->MarkHasFrame(block->needs_frame());
 
       tasm()->bind(GetLabel(current_block_));
+
+      TryInsertBranchPoisoning(block);
+
       if (block->must_construct_frame()) {
         AssembleConstructFrame();
         // We need to setup the root register after we assemble the prologue, to
@@ -267,7 +283,8 @@ void CodeGenerator::AssembleCode() {
       last_updated = safepoints()->UpdateDeoptimizationInfo(
           ds->pc_offset(), trampoline_pc, last_updated);
     }
-    AssembleDeoptimizerCall(deoptimization_id, exit->pos());
+    result_ = AssembleDeoptimizerCall(deoptimization_id, exit->pos());
+    if (result_ != kSuccess) return;
   }
 
   FinishCode();
@@ -287,41 +304,85 @@ void CodeGenerator::AssembleCode() {
   unwinding_info_writer_.Finish(tasm()->pc_offset());
 
   safepoints()->Emit(tasm(), frame()->GetTotalFrameSlotCount());
+
+  // Emit the exception handler table.
+  if (!handlers_.empty()) {
+    handler_table_offset_ = HandlerTable::EmitReturnTableStart(
+        tasm(), static_cast<int>(handlers_.size()));
+    for (size_t i = 0; i < handlers_.size(); ++i) {
+      HandlerTable::EmitReturnEntry(tasm(), handlers_[i].pc_offset,
+                                    handlers_[i].handler->pos());
+    }
+  }
+
   result_ = kSuccess;
 }
 
-Handle<ByteArray> CodeGenerator::GetSourcePositionTable() {
-  return source_position_table_builder_.ToSourcePositionTable(isolate());
-}
-
-MaybeHandle<HandlerTable> CodeGenerator::GetHandlerTable() const {
-  if (!handlers_.empty()) {
-    Handle<HandlerTable> table =
-        Handle<HandlerTable>::cast(isolate()->factory()->NewFixedArray(
-            HandlerTable::LengthForReturn(static_cast<int>(handlers_.size())),
-            TENURED));
-    for (size_t i = 0; i < handlers_.size(); ++i) {
-      table->SetReturnOffset(static_cast<int>(i), handlers_[i].pc_offset);
-      table->SetReturnHandler(static_cast<int>(i), handlers_[i].handler->pos());
+void CodeGenerator::TryInsertBranchPoisoning(const InstructionBlock* block) {
+  // See if our predecessor was a basic block terminated by a branch_and_poison
+  // instruction. If yes, then perform the masking based on the flags.
+  if (block->PredecessorCount() != 1) return;
+  RpoNumber pred_rpo = (block->predecessors())[0];
+  const InstructionBlock* pred = code()->InstructionBlockAt(pred_rpo);
+  if (pred->code_start() == pred->code_end()) return;
+  Instruction* instr = code()->InstructionAt(pred->code_end() - 1);
+  FlagsMode mode = FlagsModeField::decode(instr->opcode());
+  switch (mode) {
+    case kFlags_branch_and_poison: {
+      BranchInfo branch;
+      RpoNumber target = ComputeBranchInfo(&branch, instr);
+      if (!target.IsValid()) {
+        // Non-trivial branch, add the masking code.
+        FlagsCondition condition = branch.condition;
+        if (branch.false_label == GetLabel(block->rpo_number())) {
+          condition = NegateFlagsCondition(condition);
+        }
+        AssembleBranchPoisoning(condition, instr);
+      }
+      break;
     }
-    return table;
+    case kFlags_deoptimize_and_poison: {
+      UNREACHABLE();
+      break;
+    }
+    default:
+      break;
   }
-  return {};
 }
 
-Handle<Code> CodeGenerator::FinalizeCode() {
-  if (result_ != kSuccess) return Handle<Code>();
-
-  // Allocate exception handler table.
-  Handle<HandlerTable> table = HandlerTable::Empty(isolate());
-  if (!handlers_.empty()) {
-    table = Handle<HandlerTable>::cast(isolate()->factory()->NewFixedArray(
-        HandlerTable::LengthForReturn(static_cast<int>(handlers_.size())),
-        TENURED));
-    for (size_t i = 0; i < handlers_.size(); ++i) {
-      table->SetReturnOffset(static_cast<int>(i), handlers_[i].pc_offset);
-      table->SetReturnHandler(static_cast<int>(i), handlers_[i].handler->pos());
+void CodeGenerator::AssembleArchBinarySearchSwitchRange(
+    Register input, RpoNumber def_block, std::pair<int32_t, Label*>* begin,
+    std::pair<int32_t, Label*>* end) {
+  if (end - begin < kBinarySearchSwitchMinimalCases) {
+    while (begin != end) {
+      tasm()->JumpIfEqual(input, begin->first, begin->second);
+      ++begin;
     }
+    AssembleArchJump(def_block);
+    return;
+  }
+  auto middle = begin + (end - begin) / 2;
+  Label less_label;
+  tasm()->JumpIfLessThan(input, middle->first, &less_label);
+  AssembleArchBinarySearchSwitchRange(input, def_block, middle, end);
+  tasm()->bind(&less_label);
+  AssembleArchBinarySearchSwitchRange(input, def_block, begin, middle);
+}
+
+OwnedVector<byte> CodeGenerator::GetSourcePositionTable() {
+  return source_position_table_builder_.ToSourcePositionTableVector();
+}
+
+OwnedVector<trap_handler::ProtectedInstructionData>
+CodeGenerator::GetProtectedInstructions() {
+  return OwnedVector<trap_handler::ProtectedInstructionData>::Of(
+      protected_instructions_);
+}
+
+MaybeHandle<Code> CodeGenerator::FinalizeCode() {
+  if (result_ != kSuccess) {
+    tasm()->AbortedCodeGeneration();
+    return MaybeHandle<Code>();
   }
 
   // Allocate the source position table.
@@ -338,18 +399,25 @@ Handle<Code> CodeGenerator::FinalizeCode() {
     unwinding_info_writer_.eh_frame_writer()->GetEhFrame(&desc);
   }
 
-  Handle<Code> result = isolate()->factory()->NewCode(
+  MaybeHandle<Code> maybe_code = isolate()->factory()->TryNewCode(
       desc, info()->code_kind(), Handle<Object>(), info()->builtin_index(),
-      table, source_positions, deopt_data, kMovable, info()->stub_key(), true,
-      frame()->GetTotalFrameSlotCount(), safepoints()->GetCodeOffset());
+      source_positions, deopt_data, kMovable, info()->stub_key(), true,
+      frame()->GetTotalFrameSlotCount(), safepoints()->GetCodeOffset(),
+      handler_table_offset_);
+
+  Handle<Code> code;
+  if (!maybe_code.ToHandle(&code)) {
+    tasm()->AbortedCodeGeneration();
+    return MaybeHandle<Code>();
+  }
   isolate()->counters()->total_compiled_code_size()->Increment(
-      result->instruction_size());
+      code->raw_instruction_size());
 
   LOG_CODE_EVENT(isolate(),
-                 CodeLinePosInfoRecordEvent(result->instruction_start(),
+                 CodeLinePosInfoRecordEvent(code->raw_instruction_start(),
                                             *source_positions));
 
-  return result;
+  return code;
 }
 
 
@@ -378,16 +446,16 @@ void CodeGenerator::RecordSafepoint(ReferenceMap* references,
       // we also don't need to worry about them, since the GC has special
       // knowledge about those fields anyway.
       if (index < stackSlotToSpillSlotDelta) continue;
-      safepoint.DefinePointerSlot(index, zone());
+      safepoint.DefinePointerSlot(index);
     } else if (operand.IsRegister() && (kind & Safepoint::kWithRegisters)) {
       Register reg = LocationOperand::cast(operand).GetRegister();
-      safepoint.DefinePointerRegister(reg, zone());
+      safepoint.DefinePointerRegister(reg);
     }
   }
 }
 
-bool CodeGenerator::IsMaterializableFromRoot(
-    Handle<HeapObject> object, Heap::RootListIndex* index_return) {
+bool CodeGenerator::IsMaterializableFromRoot(Handle<HeapObject> object,
+                                             RootIndex* index_return) {
   const CallDescriptor* incoming_descriptor =
       linkage()->GetIncomingDescriptor();
   if (incoming_descriptor->flags() & CallDescriptor::kCanUseRoots) {
@@ -401,6 +469,9 @@ bool CodeGenerator::IsMaterializableFromRoot(
 CodeGenerator::CodeGenResult CodeGenerator::AssembleBlock(
     const InstructionBlock* block) {
   for (int i = block->code_start(); i < block->code_end(); ++i) {
+    if (info()->trace_turbo_json_enabled()) {
+      instr_starts_[i] = tasm()->pc_offset();
+    }
     Instruction* instr = code()->InstructionAt(i);
     CodeGenResult result = AssembleInstruction(instr, block);
     if (result != kSuccess) return result;
@@ -485,6 +556,77 @@ void CodeGenerator::GetPushCompatibleMoves(Instruction* instr,
   pushes->resize(push_count);
 }
 
+CodeGenerator::MoveType::Type CodeGenerator::MoveType::InferMove(
+    InstructionOperand* source, InstructionOperand* destination) {
+  if (source->IsConstant()) {
+    if (destination->IsAnyRegister()) {
+      return MoveType::kConstantToRegister;
+    } else {
+      DCHECK(destination->IsAnyStackSlot());
+      return MoveType::kConstantToStack;
+    }
+  }
+  DCHECK(LocationOperand::cast(source)->IsCompatible(
+      LocationOperand::cast(destination)));
+  if (source->IsAnyRegister()) {
+    if (destination->IsAnyRegister()) {
+      return MoveType::kRegisterToRegister;
+    } else {
+      DCHECK(destination->IsAnyStackSlot());
+      return MoveType::kRegisterToStack;
+    }
+  } else {
+    DCHECK(source->IsAnyStackSlot());
+    if (destination->IsAnyRegister()) {
+      return MoveType::kStackToRegister;
+    } else {
+      DCHECK(destination->IsAnyStackSlot());
+      return MoveType::kStackToStack;
+    }
+  }
+}
+
+CodeGenerator::MoveType::Type CodeGenerator::MoveType::InferSwap(
+    InstructionOperand* source, InstructionOperand* destination) {
+  DCHECK(LocationOperand::cast(source)->IsCompatible(
+      LocationOperand::cast(destination)));
+  if (source->IsAnyRegister()) {
+    if (destination->IsAnyRegister()) {
+      return MoveType::kRegisterToRegister;
+    } else {
+      DCHECK(destination->IsAnyStackSlot());
+      return MoveType::kRegisterToStack;
+    }
+  } else {
+    DCHECK(source->IsAnyStackSlot());
+    DCHECK(destination->IsAnyStackSlot());
+    return MoveType::kStackToStack;
+  }
+}
+
+RpoNumber CodeGenerator::ComputeBranchInfo(BranchInfo* branch,
+                                           Instruction* instr) {
+  // Assemble a branch after this instruction.
+  InstructionOperandConverter i(this, instr);
+  RpoNumber true_rpo = i.InputRpo(instr->InputCount() - 2);
+  RpoNumber false_rpo = i.InputRpo(instr->InputCount() - 1);
+
+  if (true_rpo == false_rpo) {
+    return true_rpo;
+  }
+  FlagsCondition condition = FlagsConditionField::decode(instr->opcode());
+  if (IsNextInAssemblyOrder(true_rpo)) {
+    // true block is next, can fall through if condition negated.
+    std::swap(true_rpo, false_rpo);
+    condition = NegateFlagsCondition(condition);
+  }
+  branch->condition = condition;
+  branch->true_label = GetLabel(true_rpo);
+  branch->false_label = GetLabel(false_rpo);
+  branch->fallthru = IsNextInAssemblyOrder(false_rpo);
+  return RpoNumber::Invalid();
+}
+
 CodeGenerator::CodeGenResult CodeGenerator::AssembleInstruction(
     Instruction* instr, const InstructionBlock* block) {
   int first_unused_stack_slot;
@@ -510,34 +652,23 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleInstruction(
 
   FlagsCondition condition = FlagsConditionField::decode(instr->opcode());
   switch (mode) {
-    case kFlags_branch: {
-      // Assemble a branch after this instruction.
-      InstructionOperandConverter i(this, instr);
-      RpoNumber true_rpo = i.InputRpo(instr->InputCount() - 2);
-      RpoNumber false_rpo = i.InputRpo(instr->InputCount() - 1);
-
-      if (true_rpo == false_rpo) {
+    case kFlags_branch:
+    case kFlags_branch_and_poison: {
+      BranchInfo branch;
+      RpoNumber target = ComputeBranchInfo(&branch, instr);
+      if (target.IsValid()) {
         // redundant branch.
-        if (!IsNextInAssemblyOrder(true_rpo)) {
-          AssembleArchJump(true_rpo);
+        if (!IsNextInAssemblyOrder(target)) {
+          AssembleArchJump(target);
         }
         return kSuccess;
       }
-      if (IsNextInAssemblyOrder(true_rpo)) {
-        // true block is next, can fall through if condition negated.
-        std::swap(true_rpo, false_rpo);
-        condition = NegateFlagsCondition(condition);
-      }
-      BranchInfo branch;
-      branch.condition = condition;
-      branch.true_label = GetLabel(true_rpo);
-      branch.false_label = GetLabel(false_rpo);
-      branch.fallthru = IsNextInAssemblyOrder(false_rpo);
       // Assemble architecture-specific branch.
       AssembleArchBranch(instr, &branch);
       break;
     }
-    case kFlags_deoptimize: {
+    case kFlags_deoptimize:
+    case kFlags_deoptimize_and_poison: {
       // Assemble a conditional eager deoptimization after this instruction.
       InstructionOperandConverter i(this, instr);
       size_t frame_state_offset = MiscField::decode(instr->opcode());
@@ -552,6 +683,9 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleInstruction(
       // Assemble architecture-specific branch.
       AssembleArchDeoptBranch(instr, &branch);
       tasm()->bind(&continue_label);
+      if (mode == kFlags_deoptimize_and_poison) {
+        AssembleBranchPoisoning(NegateFlagsCondition(branch.condition), instr);
+      }
       break;
     }
     case kFlags_set: {
@@ -567,6 +701,12 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleInstruction(
       break;
     }
   }
+
+  // TODO(jarin) We should thread the flag through rather than set it.
+  if (instr->IsCall()) {
+    ResetSpeculationPoison();
+  }
+
   return kSuccess;
 }
 
@@ -584,11 +724,13 @@ void CodeGenerator::AssembleSourcePosition(SourcePosition source_position) {
   source_position_table_builder_.AddPosition(tasm()->pc_offset(),
                                              source_position, false);
   if (FLAG_code_comments) {
-    CompilationInfo* info = this->info();
+    OptimizedCompilationInfo* info = this->info();
     if (info->IsStub()) return;
     std::ostringstream buffer;
     buffer << "-- ";
-    if (FLAG_trace_turbo || FLAG_trace_turbo_graph ||
+    // Turbolizer only needs the source position, as it can reconstruct
+    // the inlining stack from other information.
+    if (info->trace_turbo_json_enabled() || !tasm()->isolate() ||
         tasm()->isolate()->concurrent_recompilation_enabled()) {
       buffer << source_position;
     } else {
@@ -598,7 +740,9 @@ void CodeGenerator::AssembleSourcePosition(SourcePosition source_position) {
       buffer << source_position.InliningStack(info);
     }
     buffer << " --";
-    tasm()->RecordComment(StrDup(buffer.str().c_str()));
+    char* str = StrDup(buffer.str().c_str());
+    LSAN_IGNORE_OBJECT(str);
+    tasm()->RecordComment(str);
   }
 }
 
@@ -611,6 +755,14 @@ bool CodeGenerator::GetSlotAboveSPBeforeTailCall(Instruction* instr,
   } else {
     return false;
   }
+}
+
+StubCallMode CodeGenerator::DetermineStubCallMode() const {
+  Code::Kind code_kind = info()->code_kind();
+  return (code_kind == Code::WASM_FUNCTION ||
+          code_kind == Code::WASM_TO_JS_FUNCTION)
+             ? StubCallMode::kCallWasmRuntimeStub
+             : StubCallMode::kCallOnHeapBuiltin;
 }
 
 void CodeGenerator::AssembleGaps(Instruction* instr) {
@@ -626,8 +778,8 @@ void CodeGenerator::AssembleGaps(Instruction* instr) {
 namespace {
 
 Handle<PodArray<InliningPosition>> CreateInliningPositions(
-    CompilationInfo* info, Isolate* isolate) {
-  const CompilationInfo::InlinedFunctionList& inlined_functions =
+    OptimizedCompilationInfo* info, Isolate* isolate) {
+  const OptimizedCompilationInfo::InlinedFunctionList& inlined_functions =
       info->inlined_functions();
   if (inlined_functions.size() == 0) {
     return Handle<PodArray<InliningPosition>>::cast(
@@ -645,7 +797,7 @@ Handle<PodArray<InliningPosition>> CreateInliningPositions(
 }  // namespace
 
 Handle<DeoptimizationData> CodeGenerator::GenerateDeoptimizationData() {
-  CompilationInfo* info = this->info();
+  OptimizedCompilationInfo* info = this->info();
   int deopt_count = static_cast<int>(deoptimization_states_.size());
   if (deopt_count == 0 && !info->is_osr()) {
     return DeoptimizationData::Empty(isolate());
@@ -726,9 +878,9 @@ void CodeGenerator::RecordCallPosition(Instruction* instr) {
 
   if (needs_frame_state) {
     MarkLazyDeoptSite();
-    // If the frame state is present, it starts at argument 1 (just after the
-    // code address).
-    size_t frame_state_offset = 1;
+    // If the frame state is present, it starts at argument 2 - after
+    // the code address and the poison-alias index.
+    size_t frame_state_offset = 2;
     FrameStateDescriptor* descriptor =
         GetDeoptimizationEntry(instr, frame_state_offset).descriptor();
     int pc_offset = tasm()->pc_offset();
@@ -900,6 +1052,14 @@ void CodeGenerator::BuildTranslationForFrameStateDescriptor(
           bailout_id, shared_info_id, parameter_count);
       break;
     }
+    case FrameStateType::kJavaScriptBuiltinContinuationWithCatch: {
+      BailoutId bailout_id = descriptor->bailout_id();
+      int parameter_count =
+          static_cast<unsigned int>(descriptor->parameters_count());
+      translation->BeginJavaScriptBuiltinContinuationWithCatchFrame(
+          bailout_id, shared_info_id, parameter_count);
+      break;
+    }
   }
 
   TranslateFrameStateDescriptorOperands(descriptor, iter, state_combine,
@@ -915,9 +1075,17 @@ int CodeGenerator::BuildTranslation(Instruction* instr, int pc_offset,
   FrameStateDescriptor* const descriptor = entry.descriptor();
   frame_state_offset++;
 
-  Translation translation(
-      &translations_, static_cast<int>(descriptor->GetFrameCount()),
-      static_cast<int>(descriptor->GetJSFrameCount()), zone());
+  int update_feedback_count = entry.feedback().IsValid() ? 1 : 0;
+  Translation translation(&translations_,
+                          static_cast<int>(descriptor->GetFrameCount()),
+                          static_cast<int>(descriptor->GetJSFrameCount()),
+                          update_feedback_count, zone());
+  if (entry.feedback().IsValid()) {
+    DeoptimizationLiteral literal =
+        DeoptimizationLiteral(entry.feedback().vector());
+    int literal_id = DefineDeoptimizationLiteral(literal);
+    translation.AddUpdateFeedback(literal_id, entry.feedback().slot().ToInt());
+  }
   InstructionOperandIterator iter(instr, frame_state_offset);
   BuildTranslationForFrameStateDescriptor(descriptor, &iter, &translation,
                                           state_combine);
@@ -944,6 +1112,8 @@ void CodeGenerator::AddTranslationForOperand(Translation* translation,
     } else if (type == MachineType::Uint8() || type == MachineType::Uint16() ||
                type == MachineType::Uint32()) {
       translation->StoreUint32StackSlot(LocationOperand::cast(op)->index());
+    } else if (type == MachineType::Int64()) {
+      translation->StoreInt64StackSlot(LocationOperand::cast(op)->index());
     } else {
       CHECK_EQ(MachineRepresentation::kTagged, type.representation());
       translation->StoreStackSlot(LocationOperand::cast(op)->index());
@@ -965,6 +1135,8 @@ void CodeGenerator::AddTranslationForOperand(Translation* translation,
     } else if (type == MachineType::Uint8() || type == MachineType::Uint16() ||
                type == MachineType::Uint32()) {
       translation->StoreUint32Register(converter.ToRegister(op));
+    } else if (type == MachineType::Int64()) {
+      translation->StoreInt64Register(converter.ToRegister(op));
     } else {
       CHECK_EQ(MachineRepresentation::kTagged, type.representation());
       translation->StoreRegister(converter.ToRegister(op));
@@ -1015,12 +1187,14 @@ void CodeGenerator::AddTranslationForOperand(Translation* translation,
         }
         break;
       case Constant::kInt64:
-        // When pointers are 8 bytes, we can use int64 constants to represent
-        // Smis.
-        DCHECK(type.representation() == MachineRepresentation::kWord64 ||
-               type.representation() == MachineRepresentation::kTagged);
         DCHECK_EQ(8, kPointerSize);
-        {
+        if (type.representation() == MachineRepresentation::kWord64) {
+          literal =
+              DeoptimizationLiteral(static_cast<double>(constant.ToInt64()));
+        } else {
+          // When pointers are 8 bytes, we can use int64 constants to represent
+          // Smis.
+          DCHECK_EQ(MachineRepresentation::kTagged, type.representation());
           Smi* smi = reinterpret_cast<Smi*>(constant.ToInt64());
           DCHECK(smi->IsSmi());
           literal = DeoptimizationLiteral(smi->value());
@@ -1039,6 +1213,10 @@ void CodeGenerator::AddTranslationForOperand(Translation* translation,
       case Constant::kHeapObject:
         DCHECK_EQ(MachineRepresentation::kTagged, type.representation());
         literal = DeoptimizationLiteral(constant.ToHeapObject());
+        break;
+      case Constant::kDelayedStringConstant:
+        DCHECK_EQ(MachineRepresentation::kTagged, type.representation());
+        literal = DeoptimizationLiteral(constant.ToDelayedStringConstant());
         break;
       default:
         UNREACHABLE();
@@ -1067,15 +1245,49 @@ DeoptimizationExit* CodeGenerator::AddDeoptimizationExit(
   return exit;
 }
 
+void CodeGenerator::InitializeSpeculationPoison() {
+  if (poisoning_level_ == PoisoningMitigationLevel::kDontPoison) return;
+
+  // Initialize {kSpeculationPoisonRegister} either by comparing the expected
+  // with the actual call target, or by unconditionally using {-1} initially.
+  // Masking register arguments with it only makes sense in the first case.
+  if (info()->called_with_code_start_register()) {
+    tasm()->RecordComment("-- Prologue: generate speculation poison --");
+    GenerateSpeculationPoisonFromCodeStartRegister();
+    if (info()->is_poisoning_register_arguments()) {
+      AssembleRegisterArgumentPoisoning();
+    }
+  } else {
+    ResetSpeculationPoison();
+  }
+}
+
+void CodeGenerator::ResetSpeculationPoison() {
+  if (poisoning_level_ != PoisoningMitigationLevel::kDontPoison) {
+    tasm()->ResetSpeculationPoisonRegister();
+  }
+}
+
 OutOfLineCode::OutOfLineCode(CodeGenerator* gen)
     : frame_(gen->frame()), tasm_(gen->tasm()), next_(gen->ools_) {
   gen->ools_ = this;
 }
 
-OutOfLineCode::~OutOfLineCode() {}
+OutOfLineCode::~OutOfLineCode() = default;
 
 Handle<Object> DeoptimizationLiteral::Reify(Isolate* isolate) const {
-  return object_.is_null() ? isolate->factory()->NewNumber(number_) : object_;
+  switch (kind_) {
+    case DeoptimizationLiteralKind::kObject: {
+      return object_;
+    }
+    case DeoptimizationLiteralKind::kNumber: {
+      return isolate->factory()->NewNumber(number_);
+    }
+    case DeoptimizationLiteralKind::kString: {
+      return string_->AllocateStringConstant(isolate);
+    }
+  }
+  UNREACHABLE();
 }
 
 }  // namespace compiler

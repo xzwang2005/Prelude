@@ -8,7 +8,7 @@
 #include "src/arguments.h"
 #include "src/base/logging.h"
 #include "src/builtins/builtins.h"
-#include "src/factory.h"
+#include "src/heap/factory.h"
 #include "src/isolate.h"
 
 namespace v8 {
@@ -34,30 +34,18 @@ class BuiltinArguments : public Arguments {
     return Arguments::at<S>(index);
   }
 
-  Handle<Object> atOrUndefined(Isolate* isolate, int index) {
-    if (index >= length()) {
-      return isolate->factory()->undefined_value();
-    }
-    return at<Object>(index);
-  }
+  static constexpr int kNewTargetOffset = 0;
+  static constexpr int kTargetOffset = 1;
+  static constexpr int kArgcOffset = 2;
+  static constexpr int kPaddingOffset = 3;
 
-  Handle<Object> receiver() { return Arguments::at<Object>(0); }
+  static constexpr int kNumExtraArgs = 4;
+  static constexpr int kNumExtraArgsWithReceiver = 5;
 
-  static const int kNewTargetOffset = 0;
-  static const int kTargetOffset = 1;
-  static const int kArgcOffset = 2;
-  static const int kPaddingOffset = 3;
-
-  static const int kNumExtraArgs = 4;
-  static const int kNumExtraArgsWithReceiver = 5;
-
-  Handle<JSFunction> target() {
-    return Arguments::at<JSFunction>(Arguments::length() - 1 - kTargetOffset);
-  }
-  Handle<HeapObject> new_target() {
-    return Arguments::at<HeapObject>(Arguments::length() - 1 -
-                                     kNewTargetOffset);
-  }
+  inline Handle<Object> atOrUndefined(Isolate* isolate, int index);
+  inline Handle<Object> receiver();
+  inline Handle<JSFunction> target();
+  inline Handle<HeapObject> new_target();
 
   // Gets the total number of arguments including the receiver (but
   // excluding extra arguments).
@@ -79,8 +67,8 @@ class BuiltinArguments : public Arguments {
 // TODO(cbruni): add global flag to check whether any tracing events have been
 // enabled.
 #define BUILTIN(name)                                                         \
-  MUST_USE_RESULT static Object* Builtin_Impl_##name(BuiltinArguments args,   \
-                                                     Isolate* isolate);       \
+  V8_WARN_UNUSED_RESULT static Object* Builtin_Impl_##name(                   \
+      BuiltinArguments args, Isolate* isolate);                               \
                                                                               \
   V8_NOINLINE static Object* Builtin_Impl_Stats_##name(                       \
       int args_length, Object** args_object, Isolate* isolate) {              \
@@ -92,7 +80,7 @@ class BuiltinArguments : public Arguments {
     return Builtin_Impl_##name(args, isolate);                                \
   }                                                                           \
                                                                               \
-  MUST_USE_RESULT Object* Builtin_##name(                                     \
+  V8_WARN_UNUSED_RESULT Object* Builtin_##name(                               \
       int args_length, Object** args_object, Isolate* isolate) {              \
     DCHECK(isolate->context() == nullptr || isolate->context()->IsContext()); \
     if (V8_UNLIKELY(FLAG_runtime_stats)) {                                    \
@@ -102,8 +90,8 @@ class BuiltinArguments : public Arguments {
     return Builtin_Impl_##name(args, isolate);                                \
   }                                                                           \
                                                                               \
-  MUST_USE_RESULT static Object* Builtin_Impl_##name(BuiltinArguments args,   \
-                                                     Isolate* isolate)
+  V8_WARN_UNUSED_RESULT static Object* Builtin_Impl_##name(                   \
+      BuiltinArguments args, Isolate* isolate)
 
 // ----------------------------------------------------------------------------
 

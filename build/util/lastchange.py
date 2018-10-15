@@ -8,15 +8,17 @@ lastchange.py -- Chromium revision fetching utility.
 """
 
 import re
+import logging
 import optparse
 import os
 import subprocess
 import sys
 
 class VersionInfo(object):
-  def __init__(self, revision_id, full_revision_string):
+  def __init__(self, revision_id, full_revision_string, timestamp):
     self.revision_id = revision_id
     self.revision = full_revision_string
+    self.timestamp = timestamp
 
 
 def RunGitCommand(directory, command):
@@ -42,11 +44,12 @@ def RunGitCommand(directory, command):
                             cwd=directory,
                             shell=(sys.platform=='win32'))
     return proc
-  except OSError:
+  except OSError as e:
+    logging.error('Command %r failed: %s' % (' '.join(command), e))
     return None
 
 
-def FetchGitRevision(directory):
+def FetchGitRevision(directory, filter):
   """
   Fetch the Git hash (and Cr-Commit-Position if any) for a given directory.
 
@@ -56,12 +59,17 @@ def FetchGitRevision(directory):
     A VersionInfo object or None on error.
   """
   hsh = ''
-  git_args = ['log', '-1', '--format=%H']
+  git_args = ['log', '-1', '--format=%H %ct']
+  if filter is not None:
+    git_args.append('--grep=' + filter)
   proc = RunGitCommand(directory, git_args)
   if proc:
     output = proc.communicate()[0].strip()
     if proc.returncode == 0 and output:
-      hsh = output
+      hsh, ct = output.split()
+    else:
+      logging.error('Git error: rc=%d, output=%r' %
+                    (proc.returncode, output))
   if not hsh:
     return None
   pos = ''
@@ -73,17 +81,17 @@ def FetchGitRevision(directory):
         if line.startswith('Cr-Commit-Position:'):
           pos = line.rsplit()[-1].strip()
           break
-  return VersionInfo(hsh, '%s-%s' % (hsh, pos))
+  return VersionInfo(hsh, '%s-%s' % (hsh, pos), int(ct))
 
 
-def FetchVersionInfo(directory=None):
+def FetchVersionInfo(directory=None, filter=None):
   """
   Returns the last change (as a VersionInfo object)
   from some appropriate revision control system.
   """
-  version_info = FetchGitRevision(directory)
+  version_info = FetchGitRevision(directory, filter)
   if not version_info:
-    version_info = VersionInfo('0', '0')
+    version_info = VersionInfo('0', '0', 0)
   return version_info
 
 
@@ -129,6 +137,7 @@ def WriteIfChanged(file_name, contents):
   """
   Writes the specified contents to the specified file_name
   iff the contents are different than the current contents.
+  Returns if new data was written.
   """
   try:
     old_contents = open(file_name, 'r').read()
@@ -136,9 +145,10 @@ def WriteIfChanged(file_name, contents):
     pass
   else:
     if contents == old_contents:
-      return
+      return False
     os.unlink(file_name)
   open(file_name, 'w').write(contents)
+  return True
 
 
 def main(argv=None):
@@ -165,10 +175,18 @@ def main(argv=None):
                     "file-output-related options.")
   parser.add_option("-s", "--source-dir", metavar="DIR",
                     help="Use repository in the given directory.")
+  parser.add_option("", "--filter", metavar="REGEX",
+                    help="Only use log entries where the commit message " +
+                    "matches the supplied filter regex. Defaults to " +
+                    "'^Change-Id:' to suppress local commits.",
+                    default='^Change-Id:')
   opts, args = parser.parse_args(argv[1:])
+
+  logging.basicConfig(level=logging.WARNING)
 
   out_file = opts.output
   header = opts.header
+  filter=opts.filter
 
   while len(args) and out_file is None:
     if out_file is None:
@@ -183,7 +201,7 @@ def main(argv=None):
   else:
     src_dir = os.path.dirname(os.path.abspath(__file__))
 
-  version_info = FetchVersionInfo(directory=src_dir)
+  version_info = FetchVersionInfo(directory=src_dir, filter=filter)
   revision_string = version_info.revision
   if opts.revision_id_only:
     revision_string = version_info.revision_id
@@ -196,7 +214,11 @@ def main(argv=None):
       sys.stdout.write(contents)
     else:
       if out_file:
-        WriteIfChanged(out_file, contents)
+        committime_file = out_file + '.committime'
+        out_changed = WriteIfChanged(out_file, contents)
+        if out_changed or not os.path.exists(committime_file):
+          with open(committime_file, 'w') as timefile:
+            timefile.write(str(version_info.timestamp))
       if header:
         WriteIfChanged(header,
                        GetHeaderContents(header, opts.version_macro,

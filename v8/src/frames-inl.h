@@ -21,7 +21,7 @@ inline Address StackHandler::address() const {
 
 inline StackHandler* StackHandler::next() const {
   const int offset = StackHandlerConstants::kNextOffset;
-  return FromAddress(Memory::Address_at(address() + offset));
+  return FromAddress(Memory<Address>(address() + offset));
 }
 
 
@@ -50,18 +50,22 @@ inline Address* StackFrame::ResolveReturnAddressLocation(Address* pc_address) {
   }
 }
 
+inline NativeFrame::NativeFrame(StackFrameIteratorBase* iterator)
+    : StackFrame(iterator) {}
+
+inline Address NativeFrame::GetCallerStackPointer() const {
+  return fp() + CommonFrameConstants::kCallerSPOffset;
+}
 
 inline EntryFrame::EntryFrame(StackFrameIteratorBase* iterator)
-    : StackFrame(iterator) {
-}
+    : StackFrame(iterator) {}
 
 inline ConstructEntryFrame::ConstructEntryFrame(
     StackFrameIteratorBase* iterator)
     : EntryFrame(iterator) {}
 
 inline ExitFrame::ExitFrame(StackFrameIteratorBase* iterator)
-    : StackFrame(iterator) {
-}
+    : StackFrame(iterator) {}
 
 inline BuiltinExitFrame::BuiltinExitFrame(StackFrameIteratorBase* iterator)
     : ExitFrame(iterator) {}
@@ -78,19 +82,19 @@ inline Object* BuiltinExitFrame::receiver_slot_object() const {
 
   const int receiverOffset =
       BuiltinExitFrameConstants::kNewTargetOffset + (argc - 1) * kPointerSize;
-  return Memory::Object_at(fp() + receiverOffset);
+  return Memory<Object*>(fp() + receiverOffset);
 }
 
 inline Object* BuiltinExitFrame::argc_slot_object() const {
-  return Memory::Object_at(fp() + BuiltinExitFrameConstants::kArgcOffset);
+  return Memory<Object*>(fp() + BuiltinExitFrameConstants::kArgcOffset);
 }
 
 inline Object* BuiltinExitFrame::target_slot_object() const {
-  return Memory::Object_at(fp() + BuiltinExitFrameConstants::kTargetOffset);
+  return Memory<Object*>(fp() + BuiltinExitFrameConstants::kTargetOffset);
 }
 
 inline Object* BuiltinExitFrame::new_target_slot_object() const {
-  return Memory::Object_at(fp() + BuiltinExitFrameConstants::kNewTargetOffset);
+  return Memory<Object*>(fp() + BuiltinExitFrameConstants::kNewTargetOffset);
 }
 
 inline StandardFrame::StandardFrame(StackFrameIteratorBase* iterator)
@@ -99,22 +103,22 @@ inline StandardFrame::StandardFrame(StackFrameIteratorBase* iterator)
 
 
 inline Object* StandardFrame::GetExpression(int index) const {
-  return Memory::Object_at(GetExpressionAddress(index));
+  return Memory<Object*>(GetExpressionAddress(index));
 }
 
 
 inline void StandardFrame::SetExpression(int index, Object* value) {
-  Memory::Object_at(GetExpressionAddress(index)) = value;
+  Memory<Object*>(GetExpressionAddress(index)) = value;
 }
 
 
 inline Address StandardFrame::caller_fp() const {
-  return Memory::Address_at(fp() + StandardFrameConstants::kCallerFPOffset);
+  return Memory<Address>(fp() + StandardFrameConstants::kCallerFPOffset);
 }
 
 
 inline Address StandardFrame::caller_pc() const {
-  return Memory::Address_at(ComputePCAddress(fp()));
+  return Memory<Address>(ComputePCAddress(fp()));
 }
 
 
@@ -130,14 +134,14 @@ inline Address StandardFrame::ComputeConstantPoolAddress(Address fp) {
 
 inline bool StandardFrame::IsArgumentsAdaptorFrame(Address fp) {
   intptr_t frame_type =
-      Memory::intptr_at(fp + TypedFrameConstants::kFrameTypeOffset);
+      Memory<intptr_t>(fp + TypedFrameConstants::kFrameTypeOffset);
   return frame_type == StackFrame::TypeToMarker(StackFrame::ARGUMENTS_ADAPTOR);
 }
 
 
 inline bool StandardFrame::IsConstructFrame(Address fp) {
   intptr_t frame_type =
-      Memory::intptr_at(fp + TypedFrameConstants::kFrameTypeOffset);
+      Memory<intptr_t>(fp + TypedFrameConstants::kFrameTypeOffset);
   return frame_type == StackFrame::TypeToMarker(StackFrame::CONSTRUCT);
 }
 
@@ -154,7 +158,7 @@ Address JavaScriptFrame::GetParameterSlot(int index) const {
 }
 
 inline void JavaScriptFrame::set_receiver(Object* value) {
-  Memory::Object_at(GetParameterSlot(-1)) = value;
+  Memory<Object*>(GetParameterSlot(-1)) = value;
 }
 
 
@@ -165,7 +169,7 @@ inline bool JavaScriptFrame::has_adapted_arguments() const {
 
 inline Object* JavaScriptFrame::function_slot_object() const {
   const int offset = JavaScriptFrameConstants::kFunctionOffset;
-  return Memory::Object_at(fp() + offset);
+  return Memory<Object*>(fp() + offset);
 }
 
 inline StubFrame::StubFrame(StackFrameIteratorBase* iterator)
@@ -202,11 +206,12 @@ inline WasmToJsFrame::WasmToJsFrame(StackFrameIteratorBase* iterator)
 inline JsToWasmFrame::JsToWasmFrame(StackFrameIteratorBase* iterator)
     : StubFrame(iterator) {}
 
-inline WasmToWasmFrame::WasmToWasmFrame(StackFrameIteratorBase* iterator)
-    : StubFrame(iterator) {}
-
 inline CWasmEntryFrame::CWasmEntryFrame(StackFrameIteratorBase* iterator)
     : StubFrame(iterator) {}
+
+inline WasmCompileLazyFrame::WasmCompileLazyFrame(
+    StackFrameIteratorBase* iterator)
+    : StandardFrame(iterator) {}
 
 inline InternalFrame::InternalFrame(StackFrameIteratorBase* iterator)
     : StandardFrame(iterator) {
@@ -223,6 +228,11 @@ inline BuiltinContinuationFrame::BuiltinContinuationFrame(
 inline JavaScriptBuiltinContinuationFrame::JavaScriptBuiltinContinuationFrame(
     StackFrameIteratorBase* iterator)
     : JavaScriptFrame(iterator) {}
+
+inline JavaScriptBuiltinContinuationWithCatchFrame::
+    JavaScriptBuiltinContinuationWithCatchFrame(
+        StackFrameIteratorBase* iterator)
+    : JavaScriptBuiltinContinuationFrame(iterator) {}
 
 inline JavaScriptFrameIterator::JavaScriptFrameIterator(
     Isolate* isolate)
@@ -266,7 +276,7 @@ JavaScriptFrame* StackTraceFrameIterator::javascript_frame() const {
 inline StackFrame* SafeStackFrameIterator::frame() const {
   DCHECK(!done());
   DCHECK(frame_->is_java_script() || frame_->is_exit() ||
-         frame_->is_builtin_exit());
+         frame_->is_builtin_exit() || frame_->is_wasm());
   return frame_;
 }
 

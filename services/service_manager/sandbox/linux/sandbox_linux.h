@@ -17,12 +17,10 @@
 #include "services/service_manager/sandbox/export.h"
 #include "services/service_manager/sandbox/linux/sandbox_seccomp_bpf_linux.h"
 #include "services/service_manager/sandbox/sandbox_type.h"
+#include "services/service_manager/sandbox/sanitizer_buildflags.h"
 
-#if defined(ADDRESS_SANITIZER) || defined(MEMORY_SANITIZER) || \
-    defined(THREAD_SANITIZER) || defined(LEAK_SANITIZER) ||    \
-    defined(UNDEFINED_SANITIZER) || defined(SANITIZER_COVERAGE)
+#if BUILDFLAG(USING_SANITIZER)
 #include <sanitizer/common_interface_defs.h>
-#define ANY_OF_AMTLU_SANITIZER 1
 #endif
 
 namespace base {
@@ -56,14 +54,13 @@ class SERVICE_MANAGER_SANDBOX_EXPORT SandboxLinux {
   // sandbox host. See
   // https://chromium.googlesource.com/chromium/src/+/master/docs/linux_sandbox_ipc.md
   // This isn't the full list, values < 32 are reserved for methods called from
-  // Skia.
+  // Skia, and values < 64 are reserved for libc_interceptor.cc.
   enum LinuxSandboxIPCMethods {
-    METHOD_GET_FALLBACK_FONT_FOR_CHAR = 32,
-    METHOD_LOCALTIME = 33,
-    DEPRECATED_METHOD_GET_CHILD_WITH_INODE = 34,
-    METHOD_GET_STYLE_FOR_STRIKE = 35,
-    METHOD_MAKE_SHARED_MEMORY_SEGMENT = 36,
-    METHOD_MATCH_WITH_FALLBACK = 37,
+    DEPRECATED_METHOD_GET_FALLBACK_FONT_FOR_CHAR = 64,
+    DEPRECATED_METHOD_GET_CHILD_WITH_INODE,
+    DEPRECATED_METHOD_GET_STYLE_FOR_STRIKE,
+    METHOD_MAKE_SHARED_MEMORY_SEGMENT,
+    DEPRECATED_METHOD_MATCH_WITH_FALLBACK,
   };
 
   // These form a bitmask which describes the conditions of the Linux sandbox.
@@ -129,7 +126,16 @@ class SERVICE_MANAGER_SANDBOX_EXPORT SandboxLinux {
   // a new unprivileged namespace. This is a layer-1 sandbox.
   // In order for this sandbox to be effective, it must be "sealed" by calling
   // InitializeSandbox().
+  // Terminates the process in case the sandboxing operations cannot complete
+  // successfully.
   void EngageNamespaceSandbox(bool from_zygote);
+
+  // Performs the same actions as EngageNamespaceSandbox, but is allowed to
+  // to fail. This is useful when sandboxed non-renderer processes could
+  // benefit from extra sandboxing but is not strictly required on systems that
+  // don't support unprivileged user namespaces.
+  // Zygote should use EngageNamespaceSandbox instead.
+  bool EngageNamespaceSandboxIfPossible();
 
   // Return a list of file descriptors to close if PreinitializeSandbox() ran
   // but InitializeSandbox() won't. Avoid using.
@@ -177,10 +183,10 @@ class SERVICE_MANAGER_SANDBOX_EXPORT SandboxLinux {
                        PreSandboxHook hook,
                        const Options& options);
 
-  // Limit the address space of the current process (and its children).
-  // to make some vulnerabilities harder to exploit.
-  bool LimitAddressSpace(const std::string& process_type,
-                         const Options& options);
+  // Limit the address space of the current process (and its children) to make
+  // some vulnerabilities harder to exploit. Writes the errno due to setrlimit
+  // (including 0 if no error) into |error|.
+  bool LimitAddressSpace(int* error);
 
   // Returns a file descriptor to proc. The file descriptor is no longer valid
   // after the sandbox has been sealed.
@@ -189,7 +195,7 @@ class SERVICE_MANAGER_SANDBOX_EXPORT SandboxLinux {
     return proc_fd_;
   }
 
-#if defined(ANY_OF_AMTLU_SANITIZER)
+#if BUILDFLAG(USING_SANITIZER)
   __sanitizer_sandbox_arguments* sanitizer_args() const {
     return sanitizer_args_.get();
   };
@@ -245,6 +251,12 @@ class SERVICE_MANAGER_SANDBOX_EXPORT SandboxLinux {
   // anymore.
   void StopThreadAndEnsureNotCounted(base::Thread* thread) const;
 
+  // Engages the namespace sandbox as described for EngageNamespaceSandbox.
+  // Returns false if it fails to transition to a new user namespace, but
+  // after transitioning to a new user namespace we don't allow this function
+  // to fail.
+  bool EngageNamespaceSandboxInternal(bool from_zygote);
+
   // A file descriptor to /proc. It's dangerous to have it around as it could
   // allow for sandbox bypasses. It needs to be closed before we consider
   // ourselves sandboxed.
@@ -260,7 +272,7 @@ class SERVICE_MANAGER_SANDBOX_EXPORT SandboxLinux {
   bool yama_is_enforcing_;                 // Accurate if pre_initialized_.
   bool initialize_sandbox_ran_;            // InitializeSandbox() was called.
   std::unique_ptr<sandbox::SetuidSandboxClient> setuid_sandbox_client_;
-#if defined(ANY_OF_AMTLU_SANITIZER)
+#if BUILDFLAG(USING_SANITIZER)
   std::unique_ptr<__sanitizer_sandbox_arguments> sanitizer_args_;
 #endif
   sandbox::syscall_broker::BrokerProcess* broker_process_;  // Leaked as global.

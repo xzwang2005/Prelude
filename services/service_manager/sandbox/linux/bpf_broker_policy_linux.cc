@@ -32,6 +32,18 @@ ResultExpr BrokerProcessPolicy::EvaluateSyscall(int sysno) const {
         return Allow();
       break;
 #endif
+#if defined(__NR_mkdir)
+    case __NR_mkdir:
+      if (allowed_command_set_.test(sandbox::syscall_broker::COMMAND_MKDIR))
+        return Allow();
+      break;
+#endif
+#if defined(__NR_mkdirat)
+    case __NR_mkdirat:
+      if (allowed_command_set_.test(sandbox::syscall_broker::COMMAND_MKDIR))
+        return Allow();
+      break;
+#endif
 #if defined(__NR_open)
     case __NR_open:
       if (allowed_command_set_.test(sandbox::syscall_broker::COMMAND_OPEN))
@@ -44,12 +56,14 @@ ResultExpr BrokerProcessPolicy::EvaluateSyscall(int sysno) const {
         return Allow();
       break;
 #endif
-#if defined(__NR_unlink)
-    case __NR_unlink:
-      return Allow();
-#endif
 #if defined(__NR_rename)
     case __NR_rename:
+      if (allowed_command_set_.test(sandbox::syscall_broker::COMMAND_RENAME))
+        return Allow();
+      break;
+#endif
+#if defined(__NR_renameat)
+    case __NR_renameat:
       if (allowed_command_set_.test(sandbox::syscall_broker::COMMAND_RENAME))
         return Allow();
       break;
@@ -62,6 +76,18 @@ ResultExpr BrokerProcessPolicy::EvaluateSyscall(int sysno) const {
 #endif
 #if defined(__NR_stat64)
     case __NR_stat64:
+      if (allowed_command_set_.test(sandbox::syscall_broker::COMMAND_STAT))
+        return Allow();
+      break;
+#endif
+#if defined(__NR_lstat)
+    case __NR_lstat:
+      if (allowed_command_set_.test(sandbox::syscall_broker::COMMAND_STAT))
+        return Allow();
+      break;
+#endif
+#if defined(__NR_lstat64)
+    case __NR_lstat64:
       if (allowed_command_set_.test(sandbox::syscall_broker::COMMAND_STAT))
         return Allow();
       break;
@@ -88,6 +114,30 @@ ResultExpr BrokerProcessPolicy::EvaluateSyscall(int sysno) const {
     case __NR_readlinkat:
       if (allowed_command_set_.test(sandbox::syscall_broker::COMMAND_READLINK))
         return Allow();
+      break;
+#endif
+#if defined(__NR_rmdir)
+    case __NR_rmdir:
+      if (allowed_command_set_.test(sandbox::syscall_broker::COMMAND_RMDIR))
+        return Allow();
+      break;
+#endif
+#if defined(__NR_unlink)
+    case __NR_unlink:
+      // NOTE: Open() uses unlink() to make "temporary" files.
+      if (allowed_command_set_.test(sandbox::syscall_broker::COMMAND_OPEN) ||
+          allowed_command_set_.test(sandbox::syscall_broker::COMMAND_UNLINK)) {
+        return Allow();
+      }
+      break;
+#endif
+#if defined(__NR_unlinkat)
+    case __NR_unlinkat:
+      // NOTE: Open() uses unlink() to make "temporary" files.
+      if (allowed_command_set_.test(sandbox::syscall_broker::COMMAND_OPEN) ||
+          allowed_command_set_.test(sandbox::syscall_broker::COMMAND_UNLINK)) {
+        return Allow();
+      }
       break;
 #endif
     default:

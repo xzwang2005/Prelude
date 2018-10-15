@@ -42,14 +42,14 @@ public:
 
         SkRasterPipeline_<256> p;
         p.append(SkRasterPipeline::load_8888, &src_ctx);
-        p.append_from_srgb(kUnpremul_SkAlphaType);
+        p.append(SkRasterPipeline::from_srgb);
         p.append(SkRasterPipeline::scale_u8, &mask_ctx);
         p.append(SkRasterPipeline::move_src_dst);
         if (kF16) {
             p.append(SkRasterPipeline::load_f16, &dst_ctx);
         } else {
             p.append(SkRasterPipeline::load_8888, &dst_ctx);
-            p.append_from_srgb(kPremul_SkAlphaType);
+            p.append(SkRasterPipeline::from_srgb);
         }
         p.append(SkRasterPipeline::dstover);
         if (kF16) {
@@ -130,12 +130,8 @@ public:
         SkRasterPipeline p(&alloc);
         p.append_constant_color(&alloc, c);
         if (fParametric) {
-            p.append(SkRasterPipeline::parametric_r, &from_2dot2);
-            p.append(SkRasterPipeline::parametric_g, &from_2dot2);
-            p.append(SkRasterPipeline::parametric_b, &from_2dot2);
-            p.append(SkRasterPipeline::parametric_r, &  to_2dot2);
-            p.append(SkRasterPipeline::parametric_g, &  to_2dot2);
-            p.append(SkRasterPipeline::parametric_b, &  to_2dot2);
+            p.append(SkRasterPipeline::parametric, &from_2dot2);
+            p.append(SkRasterPipeline::parametric, &  to_2dot2);
         } else {
             p.append(SkRasterPipeline::gamma, &from_2dot2.fG);
             p.append(SkRasterPipeline::gamma, &  to_2dot2.fG);

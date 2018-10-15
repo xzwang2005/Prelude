@@ -12,6 +12,8 @@
 #include "ui/compositor/compositor.h"
 #include "ui/gfx/win/window_impl.h"
 
+#include <windows.h>
+
 namespace ui {
 
 class TestCompositorHostWin : public TestCompositorHost,
@@ -27,7 +29,7 @@ class TestCompositorHostWin : public TestCompositorHost,
         false /* enable_surface_synchronization */,
         false /* enable_pixel_canvas */));
     compositor_->SetAcceleratedWidget(hwnd());
-    compositor_->SetScaleAndSize(1.0f, GetSize());
+    compositor_->SetScaleAndSize(1.0f, GetSize(), viz::LocalSurfaceId());
   }
 
   ~TestCompositorHostWin() override { DestroyWindow(hwnd()); }
@@ -56,6 +58,8 @@ class TestCompositorHostWin : public TestCompositorHost,
   }
 
   std::unique_ptr<ui::Compositor> compositor_;
+
+  CR_MSG_MAP_CLASS_DECLARATIONS(TestCompositorHostWin)
 
   DISALLOW_COPY_AND_ASSIGN(TestCompositorHostWin);
 };

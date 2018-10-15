@@ -30,9 +30,21 @@ expression: Object(Symbol(42))
         description : Symbol
         overflow : false
         properties : [
+            [0] : {
+                name : description
+                type : string
+                value : 42
+            }
         ]
         type : object
     }
+}
+
+expression: Object(BigInt(2))
+{
+    name : [[PrimitiveValue]]
+    type : bigint
+    value : 2n
 }
 
 

@@ -39,12 +39,14 @@ class PlatformBackend(linux_based_platform_backend.LinuxBasedPlatformBackend):
 
 class FakeTracingAgentBase(tracing_agent.TracingAgent):
   def __init__(
-      self, platform, start=True, clock_sync=True, split_collection=True):
+      self, platform, start=True, clock_sync=True, split_collection=True,
+      flushing=False):
     super(FakeTracingAgentBase, self).__init__(platform)
     self._start = start
     self._clock_sync = clock_sync
     self._sync_seen = False
     self._split_collection = split_collection
+    self._flushing = flushing
 
   def StartAgentTracing(self, config, timeout):
     return self._start
@@ -63,6 +65,9 @@ class FakeTracingAgentBase(tracing_agent.TracingAgent):
 
   def CollectAgentTraceData(self, trace_data_builder, timeout=None):
     pass
+
+  def SupportsFlushingAgentTracing(self):
+    return self._flushing
 
 
 class FakeTracingAgentStartAndClockSync(FakeTracingAgentBase):
@@ -85,6 +90,7 @@ class FakeTracingAgentNoStartAndClockSync(FakeTracingAgentBase):
   def __init__(self, platform):
     super(FakeTracingAgentNoStartAndClockSync, self).__init__(
         platform, start=False, clock_sync=True)
+
 
 class TracingControllerBackendTest(unittest.TestCase):
   def _getControllerEventsAslist(self, data):

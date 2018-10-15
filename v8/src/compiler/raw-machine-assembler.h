@@ -12,8 +12,8 @@
 #include "src/compiler/machine-operator.h"
 #include "src/compiler/node.h"
 #include "src/compiler/operator.h"
-#include "src/factory.h"
 #include "src/globals.h"
+#include "src/heap/factory.h"
 
 namespace v8 {
 namespace internal {
@@ -44,8 +44,10 @@ class V8_EXPORT_PRIVATE RawMachineAssembler {
           MachineOperatorBuilder::Flag::kNoFlags,
       MachineOperatorBuilder::AlignmentRequirements alignment_requirements =
           MachineOperatorBuilder::AlignmentRequirements::
-              FullUnalignedAccessSupport());
-  ~RawMachineAssembler() {}
+              FullUnalignedAccessSupport(),
+      PoisoningMitigationLevel poisoning_level =
+          PoisoningMitigationLevel::kPoisonCriticalOnly);
+  ~RawMachineAssembler() = default;
 
   Isolate* isolate() const { return isolate_; }
   Graph* graph() const { return graph_; }
@@ -53,6 +55,7 @@ class V8_EXPORT_PRIVATE RawMachineAssembler {
   MachineOperatorBuilder* machine() { return &machine_; }
   CommonOperatorBuilder* common() { return &common_; }
   CallDescriptor* call_descriptor() const { return call_descriptor_; }
+  PoisoningMitigationLevel poisoning_level() const { return poisoning_level_; }
 
   // Finalizes the schedule and exports it to be used for code generation. Note
   // that this RawMachineAssembler becomes invalid after export.
@@ -116,11 +119,19 @@ class V8_EXPORT_PRIVATE RawMachineAssembler {
   }
 
   // Memory Operations.
-  Node* Load(MachineType rep, Node* base) {
-    return Load(rep, base, IntPtrConstant(0));
+  Node* Load(MachineType rep, Node* base,
+             LoadSensitivity needs_poisoning = LoadSensitivity::kSafe) {
+    return Load(rep, base, IntPtrConstant(0), needs_poisoning);
   }
-  Node* Load(MachineType rep, Node* base, Node* index) {
-    return AddNode(machine()->Load(rep), base, index);
+  Node* Load(MachineType rep, Node* base, Node* index,
+             LoadSensitivity needs_poisoning = LoadSensitivity::kSafe) {
+    const Operator* op = machine()->Load(rep);
+    CHECK_NE(PoisoningMitigationLevel::kPoisonAll, poisoning_level_);
+    if (needs_poisoning == LoadSensitivity::kCritical &&
+        poisoning_level_ == PoisoningMitigationLevel::kPoisonCriticalOnly) {
+      op = machine()->PoisonedLoad(rep);
+    }
+    return AddNode(op, base, index);
   }
   Node* Store(MachineRepresentation rep, Node* base, Node* value,
               WriteBarrierKind write_barrier) {
@@ -162,15 +173,15 @@ class V8_EXPORT_PRIVATE RawMachineAssembler {
 
   // Atomic memory operations.
   Node* AtomicLoad(MachineType type, Node* base, Node* index) {
-    return AddNode(machine()->AtomicLoad(type), base, index);
+    return AddNode(machine()->Word32AtomicLoad(type), base, index);
   }
   Node* AtomicStore(MachineRepresentation rep, Node* base, Node* index,
                     Node* value) {
-    return AddNode(machine()->AtomicStore(rep), base, index, value);
+    return AddNode(machine()->Word32AtomicStore(rep), base, index, value);
   }
 #define ATOMIC_FUNCTION(name)                                                 \
   Node* Atomic##name(MachineType rep, Node* base, Node* index, Node* value) { \
-    return AddNode(machine()->Atomic##name(rep), base, index, value);         \
+    return AddNode(machine()->Word32Atomic##name(rep), base, index, value);   \
   }
   ATOMIC_FUNCTION(Exchange);
   ATOMIC_FUNCTION(Add);
@@ -182,8 +193,12 @@ class V8_EXPORT_PRIVATE RawMachineAssembler {
 
   Node* AtomicCompareExchange(MachineType rep, Node* base, Node* index,
                               Node* old_value, Node* new_value) {
-    return AddNode(machine()->AtomicCompareExchange(rep), base, index,
+    return AddNode(machine()->Word32AtomicCompareExchange(rep), base, index,
                    old_value, new_value);
+  }
+
+  Node* SpeculationFence() {
+    return AddNode(machine()->SpeculationFence().op());
   }
 
   // Arithmetic Operations.
@@ -214,7 +229,7 @@ class V8_EXPORT_PRIVATE RawMachineAssembler {
   }
   Node* WordNot(Node* a) {
     if (machine()->Is32()) {
-      return Word32Not(a);
+      return Word32BitwiseNot(a);
     } else {
       return Word64Not(a);
     }
@@ -248,7 +263,7 @@ class V8_EXPORT_PRIVATE RawMachineAssembler {
   Node* Word32NotEqual(Node* a, Node* b) {
     return Word32BinaryNot(Word32Equal(a, b));
   }
-  Node* Word32Not(Node* a) { return Word32Xor(a, Int32Constant(-1)); }
+  Node* Word32BitwiseNot(Node* a) { return Word32Xor(a, Int32Constant(-1)); }
   Node* Word32BinaryNot(Node* a) { return Word32Equal(a, Int32Constant(0)); }
 
   Node* Word64And(Node* a, Node* b) {
@@ -564,6 +579,13 @@ class V8_EXPORT_PRIVATE RawMachineAssembler {
     return a;
 #endif
   }
+  Node* BitcastMaybeObjectToWord(Node* a) {
+#ifdef ENABLE_VERIFY_CSA
+    return AddNode(machine()->BitcastMaybeObjectToWord(), a);
+#else
+    return a;
+#endif
+  }
   Node* BitcastWordToTagged(Node* a) {
     return AddNode(machine()->BitcastWordToTagged(), a);
   }
@@ -583,11 +605,17 @@ class V8_EXPORT_PRIVATE RawMachineAssembler {
   Node* ChangeInt32ToFloat64(Node* a) {
     return AddNode(machine()->ChangeInt32ToFloat64(), a);
   }
+  Node* ChangeInt64ToFloat64(Node* a) {
+    return AddNode(machine()->ChangeInt64ToFloat64(), a);
+  }
   Node* ChangeUint32ToFloat64(Node* a) {
     return AddNode(machine()->ChangeUint32ToFloat64(), a);
   }
   Node* ChangeFloat64ToInt32(Node* a) {
     return AddNode(machine()->ChangeFloat64ToInt32(), a);
+  }
+  Node* ChangeFloat64ToInt64(Node* a) {
+    return AddNode(machine()->ChangeFloat64ToInt64(), a);
   }
   Node* ChangeFloat64ToUint32(Node* a) {
     return AddNode(machine()->ChangeFloat64ToUint32(), a);
@@ -689,10 +717,10 @@ class V8_EXPORT_PRIVATE RawMachineAssembler {
     return AddNode(machine()->Float64RoundTiesEven().op(), a);
   }
   Node* Word32ReverseBytes(Node* a) {
-    return AddNode(machine()->Word32ReverseBytes().op(), a);
+    return AddNode(machine()->Word32ReverseBytes(), a);
   }
   Node* Word64ReverseBytes(Node* a) {
-    return AddNode(machine()->Word64ReverseBytes().op(), a);
+    return AddNode(machine()->Word64ReverseBytes(), a);
   }
 
   // Float64 bit operations.
@@ -720,6 +748,7 @@ class V8_EXPORT_PRIVATE RawMachineAssembler {
   }
 
   // Parameters.
+  Node* TargetParameter();
   Node* Parameter(size_t index);
 
   // Pointer utilities.
@@ -741,18 +770,34 @@ class V8_EXPORT_PRIVATE RawMachineAssembler {
     return HeapConstant(isolate()->factory()->InternalizeUtf8String(string));
   }
 
+  Node* TaggedPoisonOnSpeculation(Node* value) {
+    if (poisoning_level_ != PoisoningMitigationLevel::kDontPoison) {
+      return AddNode(machine()->TaggedPoisonOnSpeculation(), value);
+    }
+    return value;
+  }
+
+  Node* WordPoisonOnSpeculation(Node* value) {
+    if (poisoning_level_ != PoisoningMitigationLevel::kDontPoison) {
+      return AddNode(machine()->WordPoisonOnSpeculation(), value);
+    }
+    return value;
+  }
+
   // Call a given call descriptor and the given arguments.
   // The call target is passed as part of the {inputs} array.
-  Node* CallN(CallDescriptor* desc, int input_count, Node* const* inputs);
+  Node* CallN(CallDescriptor* call_descriptor, int input_count,
+              Node* const* inputs);
 
   // Call a given call descriptor and the given arguments and frame-state.
   // The call target and frame state are passed as part of the {inputs} array.
-  Node* CallNWithFrameState(CallDescriptor* desc, int input_count,
+  Node* CallNWithFrameState(CallDescriptor* call_descriptor, int input_count,
                             Node* const* inputs);
 
   // Tail call a given call descriptor and the given arguments.
   // The call target is passed as part of the {inputs} array.
-  Node* TailCallN(CallDescriptor* desc, int input_count, Node* const* inputs);
+  Node* TailCallN(CallDescriptor* call_descriptor, int input_count,
+                  Node* const* inputs);
 
   // Call to a C function with zero arguments.
   Node* CallCFunction0(MachineType return_type, Node* function);
@@ -828,9 +873,12 @@ class V8_EXPORT_PRIVATE RawMachineAssembler {
   void Return(Node* value);
   void Return(Node* v1, Node* v2);
   void Return(Node* v1, Node* v2, Node* v3);
+  void Return(Node* v1, Node* v2, Node* v3, Node* v4);
+  void Return(int count, Node* v[]);
   void PopAndReturn(Node* pop, Node* value);
   void PopAndReturn(Node* pop, Node* v1, Node* v2);
   void PopAndReturn(Node* pop, Node* v1, Node* v2, Node* v3);
+  void PopAndReturn(Node* pop, Node* v1, Node* v2, Node* v3, Node* v4);
   void Bind(RawMachineLabel* label);
   void Deoptimize(Node* state);
   void DebugAbort(Node* message);
@@ -895,8 +943,10 @@ class V8_EXPORT_PRIVATE RawMachineAssembler {
   MachineOperatorBuilder machine_;
   CommonOperatorBuilder common_;
   CallDescriptor* call_descriptor_;
+  Node* target_parameter_;
   NodeVector parameters_;
   BasicBlock* current_block_;
+  PoisoningMitigationLevel poisoning_level_;
 
   DISALLOW_COPY_AND_ASSIGN(RawMachineAssembler);
 };

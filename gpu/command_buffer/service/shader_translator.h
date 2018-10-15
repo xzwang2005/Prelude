@@ -11,7 +11,7 @@
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
 #include "base/observer_list.h"
-#include "gpu/gpu_export.h"
+#include "gpu/gpu_gles2_export.h"
 #include "third_party/angle/include/GLSLANG/ShaderLang.h"
 
 namespace gl {
@@ -74,7 +74,7 @@ class ShaderTranslatorInterface
 };
 
 // Implementation of ShaderTranslatorInterface
-class GPU_EXPORT ShaderTranslator : public ShaderTranslatorInterface {
+class GPU_GLES2_EXPORT ShaderTranslator : public ShaderTranslatorInterface {
  public:
   class DestructionObserver {
    public:
@@ -127,7 +127,7 @@ class GPU_EXPORT ShaderTranslator : public ShaderTranslatorInterface {
   ShCompileOptions compile_options_;
   scoped_refptr<OptionsAffectingCompilationString>
       options_affecting_compilation_;
-  base::ObserverList<DestructionObserver> destruction_observers_;
+  base::ObserverList<DestructionObserver>::Unchecked destruction_observers_;
 };
 
 }  // namespace gles2

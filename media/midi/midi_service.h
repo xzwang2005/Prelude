@@ -37,17 +37,11 @@ class MIDI_EXPORT MidiService final {
     DISALLOW_COPY_AND_ASSIGN(ManagerFactory);
   };
 
-  // Converts Web MIDI timestamp to base::TimeDelta dealy for PostDelayedTask.
-  static base::TimeDelta TimestampToTimeDeltaDelay(double timestamp);
+  // Converts Web MIDI timestamp to base::TimeDelta delay for PostDelayedTask.
+  static base::TimeDelta TimestampToTimeDeltaDelay(base::TimeTicks timestamp);
 
-  // Use the first constructor for production code.
   MidiService();
-  // ManagerFactory can be specified in the constructor for testing.  If the
-  // factory is specified, Dynamic instantiation mode is disabled.  MidiManager
-  // will be created immediately, and won't be destructed until MidiService
-  // dies.
-  // TODO(toyoshim): Adopt dynamic instantiation mode once the mode is enabled
-  // by default.
+  // Customized ManagerFactory can be specified in the constructor for testing.
   explicit MidiService(std::unique_ptr<ManagerFactory> factory);
   ~MidiService();
 
@@ -59,13 +53,14 @@ class MIDI_EXPORT MidiService final {
   void StartSession(MidiManagerClient* client);
 
   // A client calls EndSession() to stop receiving MIDI data.
-  void EndSession(MidiManagerClient* client);
+  // Returns false if |client| did not start a session.
+  bool EndSession(MidiManagerClient* client);
 
   // A client calls DispatchSendMidiData() to send MIDI data.
   void DispatchSendMidiData(MidiManagerClient* client,
                             uint32_t port_index,
                             const std::vector<uint8_t>& data,
-                            double timestamp);
+                            base::TimeTicks timestamp);
 
   // Returns a SingleThreadTaskRunner reference to serve MidiManager. Each
   // TaskRunner will be constructed on demand.
@@ -81,14 +76,12 @@ class MIDI_EXPORT MidiService final {
   TaskService* task_service() { return task_service_.get(); }
 
  private:
-  MidiService(std::unique_ptr<ManagerFactory> factory,
-              bool enable_dynamic_instantiation);
-
+  // ManagerFactory passed in the constructor.
   std::unique_ptr<ManagerFactory> manager_factory_;
 
-  // Holds MidiManager instance. If the dynamic instantiation feature is
-  // enabled, the MidiManager would be constructed and destructed on the I/O
-  // thread, and all MidiManager methods would be called on the I/O thread.
+  // Holds MidiManager instance. The MidiManager is constructed and destructed
+  // on the I/O thread, and all MidiManager methods should be called on the I/O
+  // thread.
   std::unique_ptr<MidiManager> manager_;
 
   // Holds TaskService instance.
@@ -96,10 +89,6 @@ class MIDI_EXPORT MidiService final {
 
   // TaskRunner to destruct |manager_| on the right thread.
   scoped_refptr<base::SingleThreadTaskRunner> manager_destructor_runner_;
-
-  // A flag to indicate if the dynamic instantiation feature is supported and
-  // actually enabled.
-  const bool is_dynamic_instantiation_enabled_;
 
   // Protects all members above.
   base::Lock lock_;

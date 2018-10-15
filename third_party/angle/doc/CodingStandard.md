@@ -2,8 +2,7 @@
 
 ## Google Style Guide
 
-We generally use the [Google C++ Style Guide]
-(https://google.github.io/styleguide/cppguide.html) as a basis for
+We generally use the [Google C++ Style Guide](https://google.github.io/styleguide/cppguide.html) as a basis for
 our Coding Standard, however we will deviate from it in a few areas, as noted
 below.
 
@@ -15,7 +14,7 @@ This will catch most of the trivial formatting errors and save you time.
 
 ### [Header Files](https://google.github.io/styleguide/cppguide.html#Header_Files)
 
-*   We will use **`.h`** for C++ headers.
+*   We use **`.h`** for C++ headers.
 *   {DEV} #define guards should be of the form: `<PATH>_<FILE>_H_`. (Compiler
     codebase is varied, including `<PROJECT>_` makes the names excessively
     long).
@@ -39,7 +38,7 @@ This will catch most of the trivial formatting errors and save you time.
 *   {DO} use nullptr (instead of 0 or NULL) for pointers.
 *   {DO} use size\_t for loop iterators and size values.
 *   {DO} use uint8\_t pointers instead of void pointers to denote binary data.
-*   {DO} use C++11 according to the [Chromium guide on C++11]
+*   {DO} use C++11/14 according to the [Chromium c++ 11/14 guide]
     (http://chromium-cpp.appspot.com/).
 
 ### [Naming](https://google.github.io/styleguide/cppguide.html#Naming)
@@ -58,21 +57,21 @@ This will catch most of the trivial formatting errors and save you time.
 
 #### Variable Names
 
-Use the following guidelines, they do deviate somewhat from the Google
-guidelines.
+Use the following guidelines, they do deviate somewhat from the [Google
+guidelines](https://google.github.io/styleguide/cppguide.html#Naming).
 
-* class and type names: start with capital letter and use CamelCase.
-* {DEV} class member variables: use an **`m`** prefix instead of trailing
+* Class and type names: start with capital letter and use CamelCase.
+* {DEV} Class member variables: use an **`m`** prefix instead of trailing
 underscore and use CamelCase.
-* global variables (if they must be used): use a **`g_`** prefix.
-* {DEV} variable names: start with lower case and use CamelCase (chosen for consistency)
-* {DEV} function names: Member functions start with lower case and use CamelCase. Non-member functions start with capital letter and
+* Global variables (if they must be used): use a **`g`** prefix.
+* {DEV} Variable names: start with lower case and use CamelCase (chosen for consistency)
+* {DEV} Function names: Member functions start with lower case and use CamelCase. Non-member and static member functions start with capital letter and
 use CamelCase (chosen for consistency)
-* Constants: start with a **`k`** and use CamelCase
-* namespaces: use all lower case
-* Enum Names - use class enums, and the values should be uppercase with underscores.
-* macros: all uppercase with underscores
-* exceptions to naming: use common sense!
+* {DO} Constants: start with a **`k`** and use CamelCase
+* Namespaces: short names. use all lower case
+* Enum Names: use class enums when possible. The values should be uppercase with underscores or CamelCase.
+* Macros: all uppercase with underscores
+* Exceptions to naming: use common sense!
 
 ### [Comments](https://google.github.io/styleguide/cppguide.html#Comments)
 
@@ -81,11 +80,13 @@ use CamelCase (chosen for consistency)
 
 ```
 //
-//  Copyright (c) 2016 The ANGLE Project Authors. All rights reserved.
+//  Copyright $YEAR The ANGLE Project Authors. All rights reserved.
 //  Use of this source code is governed by a BSD-style license that can be
 //  found in the LICENSE file.
 //
 ```
+
+* $YEAR should be set to the current year at the time a file is created, and not changed thereafter.
 
 ### [Formatting](https://google.github.io/styleguide/cppguide.html#Formatting)
 

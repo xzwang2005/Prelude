@@ -7,7 +7,6 @@
 #include "base/at_exit.h"
 #include "base/command_line.h"
 #include "base/macros.h"
-#include "base/memory/ptr_util.h"
 #include "base/run_loop.h"
 #include "mojo/public/cpp/bindings/binding_set.h"
 #include "services/service_manager/public/c/main.h"
@@ -15,8 +14,8 @@
 #include "services/service_manager/public/cpp/service.h"
 #include "services/service_manager/public/cpp/service_context.h"
 #include "services/service_manager/public/cpp/service_runner.h"
-#include "services/service_manager/public/interfaces/service_factory.mojom.h"
-#include "services/service_manager/public/interfaces/service_manager.mojom.h"
+#include "services/service_manager/public/mojom/service_factory.mojom.h"
+#include "services/service_manager/public/mojom/service_manager.mojom.h"
 
 namespace {
 
@@ -80,7 +79,7 @@ class Embedder : public service_manager::Service,
   }
 
   bool OnServiceManagerConnectionLost() override {
-    base::RunLoop::QuitCurrentWhenIdleDeprecated();
+    context()->QuitNow();
     return true;
   }
 
@@ -89,9 +88,11 @@ class Embedder : public service_manager::Service,
   }
 
   // mojom::ServiceFactory:
-  void CreateService(service_manager::mojom::ServiceRequest request,
-                     const std::string& name) override {
-    if (name == "service_manager_unittest_all_users") {
+  void CreateService(
+      service_manager::mojom::ServiceRequest request,
+      const std::string& name,
+      service_manager::mojom::PIDReceiverPtr pid_receiver) override {
+    if (name == "service_manager_unittest_shared_instance_across_users") {
       context_.reset(new service_manager::ServiceContext(
           std::make_unique<AllUsersService>(), std::move(request)));
     } else if (name == "service_manager_unittest_singleton") {

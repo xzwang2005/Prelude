@@ -19,6 +19,8 @@
 #include "net/log/net_log_source.h"
 #include "net/socket/tcp_client_socket.h"
 #include "net/test/gtest_util.h"
+#include "net/test/test_with_scoped_task_environment.h"
+#include "net/traffic_annotation/network_traffic_annotation_test_helper.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "testing/platform_test.h"
@@ -31,7 +33,8 @@ namespace net {
 namespace {
 const int kListenBacklog = 5;
 
-class TCPServerSocketTest : public PlatformTest {
+class TCPServerSocketTest : public PlatformTest,
+                            public WithScopedTaskEnvironment {
  protected:
   TCPServerSocketTest() : socket_(nullptr, NetLogSource()) {}
 
@@ -209,13 +212,14 @@ TEST_F(TCPServerSocketTest, AcceptIO) {
 
   size_t bytes_written = 0;
   while (bytes_written < message.size()) {
-    scoped_refptr<IOBufferWithSize> write_buffer(
-        new IOBufferWithSize(message.size() - bytes_written));
+    scoped_refptr<IOBufferWithSize> write_buffer =
+        base::MakeRefCounted<IOBufferWithSize>(message.size() - bytes_written);
     memmove(write_buffer->data(), message.data(), message.size());
 
     TestCompletionCallback write_callback;
     int write_result = accepted_socket->Write(
-        write_buffer.get(), write_buffer->size(), write_callback.callback());
+        write_buffer.get(), write_buffer->size(), write_callback.callback(),
+        TRAFFIC_ANNOTATION_FOR_TESTS);
     write_result = write_callback.GetResult(write_result);
     ASSERT_TRUE(write_result >= 0);
     ASSERT_TRUE(bytes_written + write_result <= message.size());
@@ -224,8 +228,8 @@ TEST_F(TCPServerSocketTest, AcceptIO) {
 
   size_t bytes_read = 0;
   while (bytes_read < message.size()) {
-    scoped_refptr<IOBufferWithSize> read_buffer(
-        new IOBufferWithSize(message.size() - bytes_read));
+    scoped_refptr<IOBufferWithSize> read_buffer =
+        base::MakeRefCounted<IOBufferWithSize>(message.size() - bytes_read);
     TestCompletionCallback read_callback;
     int read_result = connecting_socket.Read(
         read_buffer.get(), read_buffer->size(), read_callback.callback());

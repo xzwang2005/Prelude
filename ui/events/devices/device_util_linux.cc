@@ -6,10 +6,8 @@
 
 #include <string>
 
-#include "base/files/file_enumerator.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
-#include "base/message_loop/message_loop.h"
 #include "base/strings/string_util.h"
 #include "base/threading/thread_restrictions.h"
 
@@ -70,4 +68,4 @@ InputDeviceType GetInputDeviceTypeFromPath(const base::FilePath& path) {
   return InputDeviceType::INPUT_DEVICE_UNKNOWN;
 }
 
-}  // namespace
+}  // namespace ui

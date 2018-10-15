@@ -112,8 +112,7 @@ bool StructTraits<viz::mojom::SurfaceQuadStateDataView, viz::DrawQuad>::Read(
   viz::SurfaceDrawQuad* quad = static_cast<viz::SurfaceDrawQuad*>(out);
   quad->default_background_color = data.default_background_color();
   quad->stretch_content_to_fill_bounds = data.stretch_content_to_fill_bounds();
-  return data.ReadPrimarySurfaceId(&quad->primary_surface_id) &&
-         data.ReadFallbackSurfaceId(&quad->fallback_surface_id);
+  return data.ReadSurfaceRange(&quad->surface_range);
 }
 
 // static
@@ -158,6 +157,7 @@ bool StructTraits<viz::mojom::TileQuadStateDataView, viz::DrawQuad>::Read(
   }
 
   quad->swizzle_contents = data.swizzle_contents();
+  quad->is_premultiplied = data.is_premultiplied();
   quad->nearest_neighbor = data.nearest_neighbor();
   quad->force_anti_aliasing_off = data.force_anti_aliasing_off();
   quad->resources.ids[viz::TileDrawQuad::kResourceIdIndex] = data.resource_id();
@@ -198,6 +198,7 @@ bool StructTraits<viz::mojom::YUVVideoQuadStateDataView, viz::DrawQuad>::Read(
     return false;
   }
   quad->require_overlay = data.require_overlay();
+  quad->is_protected_video = data.is_protected_video();
   return true;
 }
 

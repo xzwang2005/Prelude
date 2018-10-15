@@ -7,11 +7,9 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include "base/event_types.h"
 #include "base/lazy_instance.h"
 #include "base/macros.h"
 #include "base/memory/ptr_util.h"
-#include "base/message_loop/message_loop.h"
 #include "base/metrics/histogram_macros.h"
 #include "third_party/skia/include/core/SkBitmap.h"
 #include "ui/aura/client/capture_client.h"
@@ -30,6 +28,7 @@
 #include "ui/events/event.h"
 #include "ui/events/event_utils.h"
 #include "ui/events/platform/platform_event_source.h"
+#include "ui/events/platform_event.h"
 #include "ui/gfx/image/image_skia.h"
 #include "ui/gfx/x/x11.h"
 #include "ui/gfx/x/x11_atom_cache.h"
@@ -701,8 +700,8 @@ void DesktopDragDropClientAuraX11::OnXdndDrop(
               xwindow_, target_current_context_->fetched_targets()));
 
       ui::DropTargetEvent event(data,
-                                target_window_location_,
-                                target_window_root_location_,
+                                gfx::PointF(target_window_location_),
+                                gfx::PointF(target_window_root_location_),
                                 target_current_context_->GetDragOperation());
       if (target_current_context_->source_client()) {
         event.set_flags(target_current_context_->source_client()
@@ -712,7 +711,7 @@ void DesktopDragDropClientAuraX11::OnXdndDrop(
       }
 
       if (!IsDragDropInProgress()) {
-        UMA_HISTOGRAM_COUNTS("Event.DragDrop.ExternalOriginDrop", 1);
+        UMA_HISTOGRAM_COUNTS_1M("Event.DragDrop.ExternalOriginDrop", 1);
       }
 
       drag_operation = delegate->OnPerformDrop(event);
@@ -1096,8 +1095,8 @@ void DesktopDragDropClientAuraX11::DragTranslate(
 
   event->reset(new ui::DropTargetEvent(
       *(data->get()),
-      location,
-      root_location,
+      gfx::PointF(location),
+      gfx::PointF(root_location),
       drag_op));
   if (target_current_context_->source_client()) {
     (*event)->set_flags(

@@ -31,17 +31,6 @@ class PackUnpackTest : public ANGLETest
     {
         ANGLETest::SetUp();
 
-        // Vertex Shader source
-        const std::string vs =
-            R"(#version 300 es
-            precision mediump float;
-            in vec4 position;
-
-            void main()
-            {
-                gl_Position = position;
-            })";
-
         // Fragment Shader source
         const std::string sNormFS =
             R"(#version 300 es
@@ -84,9 +73,9 @@ class PackUnpackTest : public ANGLETest
                  fragColor = vec4(r, 0.0, 1.0);
              })";
 
-        mSNormProgram = CompileProgram(vs, sNormFS);
-        mUNormProgram = CompileProgram(vs, uNormFS);
-        mHalfProgram = CompileProgram(vs, halfFS);
+        mSNormProgram = CompileProgram(essl3_shaders::vs::Simple(), sNormFS);
+        mUNormProgram = CompileProgram(essl3_shaders::vs::Simple(), uNormFS);
+        mHalfProgram  = CompileProgram(essl3_shaders::vs::Simple(), halfFS);
         if (mSNormProgram == 0 || mUNormProgram == 0 || mHalfProgram == 0)
         {
             FAIL() << "shader compilation failed.";
@@ -129,7 +118,7 @@ class PackUnpackTest : public ANGLETest
         glUseProgram(program);
         glUniform2f(vec2Location, input1, input2);
 
-        drawQuad(program, "position", 0.5f);
+        drawQuad(program, essl3_shaders::PositionAttrib(), 0.5f);
 
         ASSERT_GL_NO_ERROR();
 
@@ -174,15 +163,6 @@ TEST_P(PackUnpackTest, PackUnpackUnormNormal)
 // Test the correctness of packHalf2x16 and unpackHalf2x16 functions calculating normal floating numbers.
 TEST_P(PackUnpackTest, PackUnpackHalfNormal)
 {
-    // TODO(cwallez) figure out why it is broken on Intel on Mac
-#if defined(ANGLE_PLATFORM_APPLE)
-    if (IsIntel() && getPlatformRenderer() == EGL_PLATFORM_ANGLE_TYPE_OPENGL_ANGLE)
-    {
-        std::cout << "Test skipped on Intel on Mac." << std::endl;
-        return;
-    }
-#endif
-
     // Expect the shader to output the same value as the input
     compareBeforeAfter(mHalfProgram, 0.5f, -0.2f);
     compareBeforeAfter(mHalfProgram, -0.35f, 0.75f);

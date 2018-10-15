@@ -8,19 +8,32 @@
 #ifndef SkColorSpace_DEFINED
 #define SkColorSpace_DEFINED
 
+#include "../private/SkOnce.h"
 #include "SkMatrix44.h"
 #include "SkRefCnt.h"
 
 class SkData;
+struct skcms_ICCProfile;
+
+enum SkGammaNamed {
+    kLinear_SkGammaNamed,
+    kSRGB_SkGammaNamed,
+    k2Dot2Curve_SkGammaNamed,
+    kNonStandard_SkGammaNamed,
+};
 
 /**
  *  Describes a color gamut with primaries and a white point.
  */
 struct SK_API SkColorSpacePrimaries {
-    float fRX, fRY;
-    float fGX, fGY;
-    float fBX, fBY;
-    float fWX, fWY;
+    float fRX;
+    float fRY;
+    float fGX;
+    float fGY;
+    float fBX;
+    float fBY;
+    float fWX;
+    float fWY;
 
     /**
      *  Convert primaries and a white point to a toXYZD50 matrix, the preferred color gamut
@@ -59,7 +72,7 @@ struct SK_API SkColorSpaceTransferFn {
      * Transform a single float by this transfer function.
      * For negative inputs, returns sign(x) * f(abs(x)).
      */
-    float operator()(float x) {
+    float operator()(float x) const {
         SkScalar s = SkScalarSignAsScalar(x);
         x = sk_float_abs(x);
         if (x >= fD) {
@@ -70,9 +83,8 @@ struct SK_API SkColorSpaceTransferFn {
     }
 };
 
-class SK_API SkColorSpace : public SkRefCnt {
+class SK_API SkColorSpace : public SkNVRefCnt<SkColorSpace> {
 public:
-
     /**
      *  Create the sRGB color space.
      */
@@ -113,32 +125,29 @@ public:
     static sk_sp<SkColorSpace> MakeRGB(const SkColorSpaceTransferFn& coeffs,
                                        const SkMatrix44& toXYZD50);
 
-    /**
-     *  Create an SkColorSpace from an ICC profile.
-     */
-    static sk_sp<SkColorSpace> MakeICC(const void*, size_t);
+    static sk_sp<SkColorSpace> MakeRGB(SkGammaNamed gammaNamed, const SkMatrix44& toXYZD50);
 
     /**
-     *  Types of colorspaces.
+     *  Create an SkColorSpace from a parsed (skcms) ICC profile.
      */
-    enum Type {
-        kRGB_Type,
-        kCMYK_Type,
-        kGray_Type,
-    };
-    Type type() const;
+    static sk_sp<SkColorSpace> Make(const skcms_ICCProfile&);
+
+    /**
+     *  Convert this color space to an skcms ICC profile struct.
+     */
+    void toProfile(skcms_ICCProfile*) const;
+
+    SkGammaNamed gammaNamed() const { return fGammaNamed; }
 
     /**
      *  Returns true if the color space gamma is near enough to be approximated as sRGB.
-     *  This includes the canonical sRGB transfer function as well as a 2.2f exponential
-     *  transfer function.
      */
-    bool gammaCloseToSRGB() const;
+    bool gammaCloseToSRGB() const { return kSRGB_SkGammaNamed == fGammaNamed; }
 
     /**
      *  Returns true if the color space gamma is linear.
      */
-    bool gammaIsLinear() const;
+    bool gammaIsLinear() const { return kLinear_SkGammaNamed == fGammaNamed; }
 
     /**
      *  If the transfer function can be represented as coefficients to the standard
@@ -153,6 +162,49 @@ public:
      *  Returns false otherwise.
      */
     bool toXYZD50(SkMatrix44* toXYZD50) const;
+
+    /**
+     *  Describes color space gamut as a transformation to XYZ D50.
+     *  Returns nullptr if color gamut cannot be described in terms of XYZ D50.
+     */
+    const SkMatrix44* toXYZD50() const { return &fToXYZD50; }
+
+    /**
+     *  Describes color space gamut as a transformation from XYZ D50
+     *  Returns nullptr if color gamut cannot be described in terms of XYZ D50.
+     */
+    const SkMatrix44* fromXYZD50() const;
+
+    /**
+     *  Returns a hash of the gamut transofmration to XYZ D50. Allows for fast equality checking
+     *  of gamuts, at the (very small) risk of collision.
+     *  Returns 0 if color gamut cannot be described in terms of XYZ D50.
+     */
+    uint32_t toXYZD50Hash() const { return fToXYZD50Hash; }
+
+    /**
+     *  Returns a color space with the same gamut as this one, but with a linear gamma.
+     *  For color spaces whose gamut can not be described in terms of XYZ D50, returns
+     *  linear sRGB.
+     */
+    sk_sp<SkColorSpace> makeLinearGamma() const;
+
+    /**
+     *  Returns a color space with the same gamut as this one, with with the sRGB transfer
+     *  function. For color spaces whose gamut can not be described in terms of XYZ D50, returns
+     *  sRGB.
+     */
+    sk_sp<SkColorSpace> makeSRGBGamma() const;
+
+    /**
+     *  Returns a color space with the same transfer function as this one, but with the primary
+     *  colors rotated. For any XYZ space, this produces a new color space that maps RGB to GBR
+     *  (when applied to a source), and maps RGB to BRG (when applied to a destination). For other
+     *  types of color spaces, returns nullptr.
+     *
+     *  This is used for testing, to construct color spaces that have severe and testable behavior.
+     */
+    sk_sp<SkColorSpace> makeColorSpin() const;
 
     /**
      *  Returns true if the color space is sRGB.
@@ -189,23 +241,18 @@ public:
     static bool Equals(const SkColorSpace* src, const SkColorSpace* dst);
 
 private:
-    SkColorSpace() = default;
-    friend class SkColorSpace_Base;
+    SkColorSpace(SkGammaNamed gammaNamed,
+                 const SkColorSpaceTransferFn* transferFn,
+                 const SkMatrix44& toXYZ);
+    friend class SkColorSpaceSingletonFactory;
 
-    using INHERITED = SkRefCnt;
-};
+    SkGammaNamed           fGammaNamed;    // TODO: 2-bit, pack more tightly?  or drop?
+    SkColorSpaceTransferFn fTransferFn;
+    SkMatrix44             fToXYZD50;      // TODO: SkMatrix, or just 9 floats?
+    uint32_t               fToXYZD50Hash;  // TODO: Drop?
 
-enum class SkTransferFunctionBehavior {
-    /**
-     *  Converts to a linear space before premultiplying, unpremultiplying, or blending.
-     */
-    kRespect,
-
-    /**
-     *  Premultiplies, unpremultiplies, and blends ignoring the transfer function.  Pixels are
-     *  treated as if they are linear, regardless of their transfer function encoding.
-     */
-    kIgnore,
+    mutable SkMatrix44     fFromXYZD50;    // TODO: Maybe don't cache?
+    mutable SkOnce         fFromXYZOnce;
 };
 
 #endif

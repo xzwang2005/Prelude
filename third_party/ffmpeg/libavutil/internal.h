@@ -63,10 +63,10 @@
 #endif
 #endif
 
-#if defined(_MSC_VER) && CONFIG_SHARED
-#    define av_export __declspec(dllimport)
+#if defined(_WIN32) && CONFIG_SHARED && !defined(BUILDING_avutil)
+#    define av_export_avutil __declspec(dllimport)
 #else
-#    define av_export
+#    define av_export_avutil
 #endif
 
 #if HAVE_PRAGMA_DEPRECATED
@@ -367,5 +367,14 @@ void ff_check_pixfmt_descriptors(void);
  * @return <0 on error
  */
 int avpriv_dict_set_timestamp(AVDictionary **dict, const char *key, int64_t timestamp);
+
+// Helper macro for AV_PIX_FMT_FLAG_PSEUDOPAL deprecation. Code inside FFmpeg
+// should always use FF_PSEUDOPAL. Once the public API flag gets removed, all
+// code using it is dead code.
+#if FF_API_PSEUDOPAL
+#define FF_PSEUDOPAL AV_PIX_FMT_FLAG_PSEUDOPAL
+#else
+#define FF_PSEUDOPAL 0
+#endif
 
 #endif /* AVUTIL_INTERNAL_H */

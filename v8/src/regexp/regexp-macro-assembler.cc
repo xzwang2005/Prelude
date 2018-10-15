@@ -23,10 +23,7 @@ RegExpMacroAssembler::RegExpMacroAssembler(Isolate* isolate, Zone* zone)
       isolate_(isolate),
       zone_(zone) {}
 
-
-RegExpMacroAssembler::~RegExpMacroAssembler() {
-}
-
+RegExpMacroAssembler::~RegExpMacroAssembler() = default;
 
 int RegExpMacroAssembler::CaseInsensitiveCompareUC16(Address byte_offset1,
                                                      Address byte_offset2,
@@ -117,10 +114,7 @@ NativeRegExpMacroAssembler::NativeRegExpMacroAssembler(Isolate* isolate,
                                                        Zone* zone)
     : RegExpMacroAssembler(isolate, zone) {}
 
-
-NativeRegExpMacroAssembler::~NativeRegExpMacroAssembler() {
-}
-
+NativeRegExpMacroAssembler::~NativeRegExpMacroAssembler() = default;
 
 bool NativeRegExpMacroAssembler::CanReadUnaligned() {
   return FLAG_enable_regexp_unaligned_accesses && !slow_safe();
@@ -161,13 +155,13 @@ int NativeRegExpMacroAssembler::CheckStackGuardState(
     Isolate* isolate, int start_index, bool is_direct_call,
     Address* return_address, Code* re_code, String** subject,
     const byte** input_start, const byte** input_end) {
-  DCHECK(re_code->instruction_start() <= *return_address);
-  DCHECK(*return_address <= re_code->instruction_end());
+  DCHECK(re_code->raw_instruction_start() <= *return_address);
+  DCHECK(*return_address <= re_code->raw_instruction_end());
   int return_value = 0;
   // Prepare for possible GC.
   HandleScope handles(isolate);
-  Handle<Code> code_handle(re_code);
-  Handle<String> subject_handle(*subject);
+  Handle<Code> code_handle(re_code, isolate);
+  Handle<String> subject_handle(*subject, isolate);
   bool is_one_byte = subject_handle->IsOneByteRepresentationUnderneath();
 
   StackLimitCheck check(isolate);
@@ -286,9 +280,15 @@ NativeRegExpMacroAssembler::Result NativeRegExpMacroAssembler::Execute(
   Address stack_base = stack_scope.stack()->stack_base();
 
   int direct_call = 0;
-  int result = CALL_GENERATED_REGEXP_CODE(
-      isolate, code->entry(), input, start_offset, input_start, input_end,
-      output, output_size, stack_base, direct_call, isolate);
+
+  using RegexpMatcherSig = int(
+      String * input, int start_offset,  // NOLINT(readability/casting)
+      const byte* input_start, const byte* input_end, int* output,
+      int output_size, Address stack_base, int direct_call, Isolate* isolate);
+
+  auto fn = GeneratedCode<RegexpMatcherSig>::FromCode(code);
+  int result = fn.Call(input, start_offset, input_start, input_end, output,
+                       output_size, stack_base, direct_call, isolate);
   DCHECK(result >= RETRY);
 
   if (result == EXCEPTION && !isolate->has_pending_exception()) {
@@ -353,8 +353,8 @@ Address NativeRegExpMacroAssembler::GrowStack(Address stack_pointer,
   DCHECK(stack_pointer <= old_stack_base);
   DCHECK(static_cast<size_t>(old_stack_base - stack_pointer) <= size);
   Address new_stack_base = regexp_stack->EnsureCapacity(size * 2);
-  if (new_stack_base == nullptr) {
-    return nullptr;
+  if (new_stack_base == kNullAddress) {
+    return kNullAddress;
   }
   *stack_base = new_stack_base;
   intptr_t stack_content_size = old_stack_base - stack_pointer;

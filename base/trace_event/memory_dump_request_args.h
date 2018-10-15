@@ -30,7 +30,6 @@ class ProcessMemoryDump;
 enum class MemoryDumpType {
   PERIODIC_INTERVAL,     // Dumping memory at periodic intervals.
   EXPLICITLY_TRIGGERED,  // Non maskable dump request.
-  PEAK_MEMORY_USAGE,     // Dumping memory at detected peak total memory usage.
   SUMMARY_ONLY,          // Calculate just the summary & don't add to the trace.
   LAST = SUMMARY_ONLY
 };
@@ -53,9 +52,6 @@ enum class MemoryDumpLevelOfDetail : uint32_t {
   // Few entries, typically a fixed number, per dump.
   LIGHT,
 
-  // Retrieve only memory maps. Used only for the heap profiler.
-  VM_REGIONS_ONLY_FOR_HEAP_PROFILER,
-
   // Unrestricted amount of entries per dump.
   DETAILED,
 
@@ -70,15 +66,6 @@ struct BASE_EXPORT MemoryDumpRequestArgs {
   // reconstruct the global dump.
   uint64_t dump_guid;
 
-  MemoryDumpType dump_type;
-  MemoryDumpLevelOfDetail level_of_detail;
-};
-
-// Initial request arguments for a global memory dump. (see
-// MemoryDumpManager::RequestGlobalMemoryDump()). Keep this consistent with
-// memory_instrumentation.mojo and memory_instrumentation_struct_traits.{h,cc}
-// TODO(hjd): Move this to memory_instrumentation, crbug.com/776726
-struct BASE_EXPORT GlobalMemoryDumpRequestArgs {
   MemoryDumpType dump_type;
   MemoryDumpLevelOfDetail level_of_detail;
 };

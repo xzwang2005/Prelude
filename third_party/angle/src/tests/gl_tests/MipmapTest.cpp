@@ -60,8 +60,8 @@ class MipmapTest : public BaseMipmapTest
           mTextureCube(0),
           mLevelZeroBlueInitData(nullptr),
           mLevelZeroWhiteInitData(nullptr),
-          mLevelOneInitData(nullptr),
-          mLevelTwoInitData(nullptr),
+          mLevelOneGreenInitData(nullptr),
+          mLevelTwoRedInitData(nullptr),
           mOffscreenFramebuffer(0)
     {
         setWindowWidth(128);
@@ -138,8 +138,10 @@ class MipmapTest : public BaseMipmapTest
 
         mLevelZeroBlueInitData = createRGBInitData(getWindowWidth(), getWindowHeight(), 0, 0, 255); // Blue
         mLevelZeroWhiteInitData = createRGBInitData(getWindowWidth(), getWindowHeight(), 255, 255, 255); // White
-        mLevelOneInitData = createRGBInitData((getWindowWidth() / 2), (getWindowHeight() / 2), 0, 255, 0);   // Green
-        mLevelTwoInitData = createRGBInitData((getWindowWidth() / 4), (getWindowHeight() / 4), 255, 0, 0);   // Red
+        mLevelOneGreenInitData =
+            createRGBInitData((getWindowWidth() / 2), (getWindowHeight() / 2), 0, 255, 0);  // Green
+        mLevelTwoRedInitData =
+            createRGBInitData((getWindowWidth() / 4), (getWindowHeight() / 4), 255, 0, 0);  // Red
 
         glGenFramebuffers(1, &mOffscreenFramebuffer);
         glGenTextures(1, &mTexture2D);
@@ -177,8 +179,8 @@ class MipmapTest : public BaseMipmapTest
 
         SafeDeleteArray(mLevelZeroBlueInitData);
         SafeDeleteArray(mLevelZeroWhiteInitData);
-        SafeDeleteArray(mLevelOneInitData);
-        SafeDeleteArray(mLevelTwoInitData);
+        SafeDeleteArray(mLevelOneGreenInitData);
+        SafeDeleteArray(mLevelTwoRedInitData);
 
         ANGLETest::TearDown();
     }
@@ -219,8 +221,8 @@ class MipmapTest : public BaseMipmapTest
 
     GLubyte* mLevelZeroBlueInitData;
     GLubyte* mLevelZeroWhiteInitData;
-    GLubyte* mLevelOneInitData;
-    GLubyte* mLevelTwoInitData;
+    GLubyte *mLevelOneGreenInitData;
+    GLubyte *mLevelTwoRedInitData;
 
   private:
     GLuint mOffscreenFramebuffer;
@@ -444,7 +446,8 @@ TEST_P(MipmapTest, DISABLED_ThreeLevelsInitData)
     }
 
     // Pass in level one init data.
-    glTexImage2D(GL_TEXTURE_2D, 1, GL_RGB, getWindowWidth() / 2, getWindowHeight() / 2, 0, GL_RGB, GL_UNSIGNED_BYTE, mLevelOneInitData);
+    glTexImage2D(GL_TEXTURE_2D, 1, GL_RGB, getWindowWidth() / 2, getWindowHeight() / 2, 0, GL_RGB,
+                 GL_UNSIGNED_BYTE, mLevelOneGreenInitData);
     ASSERT_GL_NO_ERROR();
 
     // Draw a full-sized quad, and check it's blue.
@@ -467,7 +470,8 @@ TEST_P(MipmapTest, DISABLED_ThreeLevelsInitData)
     EXPECT_PIXEL_COLOR_EQ(getWindowWidth() / 8, getWindowHeight() / 8, GLColor::black);
 
     // Pass in level two init data.
-    glTexImage2D(GL_TEXTURE_2D, 2, GL_RGB, getWindowWidth() / 4, getWindowHeight() / 4, 0, GL_RGB, GL_UNSIGNED_BYTE, mLevelTwoInitData);
+    glTexImage2D(GL_TEXTURE_2D, 2, GL_RGB, getWindowWidth() / 4, getWindowHeight() / 4, 0, GL_RGB,
+                 GL_UNSIGNED_BYTE, mLevelTwoRedInitData);
     ASSERT_GL_NO_ERROR();
 
     // Draw a full-sized quad, and check it's blue.
@@ -603,11 +607,7 @@ TEST_P(MipmapTest, GenerateMipmapFromRenderedImage)
 TEST_P(MipmapTest, RenderOntoLevelZeroAfterGenerateMipmap)
 {
     // TODO(geofflang): Figure out why this is broken on AMD OpenGL
-    if ((IsAMD() || IsIntel()) && getPlatformRenderer() == EGL_PLATFORM_ANGLE_TYPE_OPENGL_ANGLE)
-    {
-        std::cout << "Test skipped on Intel/AMD OpenGL." << std::endl;
-        return;
-    }
+    ANGLE_SKIP_TEST_IF(IsAMD() && IsOpenGL());
 
     glBindTexture(GL_TEXTURE_2D, mTexture2D);
 
@@ -664,15 +664,86 @@ TEST_P(MipmapTest, RenderOntoLevelZeroAfterGenerateMipmap)
     EXPECT_PIXEL_COLOR_EQ(getWindowWidth() / 8, getWindowHeight() / 8, GLColor::green);
 }
 
+// This test defines a valid mipchain manually, with an extra level that's unused on the first few
+// draws. Later on, it redefines the whole mipchain but this time, uses the last mip that was
+// already uploaded before. The test expects that mip to be usable.
+TEST_P(MipmapTest, DefineValidExtraLevelAndUseItLater)
+{
+    glBindTexture(GL_TEXTURE_2D, mTexture2D);
+
+    GLubyte *levels[] = {mLevelZeroBlueInitData, mLevelOneGreenInitData, mLevelTwoRedInitData};
+
+    int maxLevel = 1 + floor(log2(std::max(getWindowWidth(), getWindowHeight())));
+
+    for (int i = 0; i < maxLevel; i++)
+    {
+        glTexImage2D(GL_TEXTURE_2D, i, GL_RGB, getWindowWidth() >> i, getWindowHeight() >> i, 0,
+                     GL_RGB, GL_UNSIGNED_BYTE, levels[i % 3]);
+    }
+
+    // Define an extra level that won't be used for now
+    GLubyte *magentaExtraLevelData =
+        createRGBInitData(getWindowWidth() * 2, getWindowHeight() * 2, 255, 0, 255);
+    glTexImage2D(GL_TEXTURE_2D, maxLevel, GL_RGB, 1, 1, 0, GL_RGB, GL_UNSIGNED_BYTE,
+                 magentaExtraLevelData);
+
+    ASSERT_GL_NO_ERROR();
+
+    // Enable mipmaps.
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_NEAREST);
+
+    // Draw a full-sized quad using mip 0, and check it's blue.
+    clearAndDrawQuad(m2DProgram, getWindowWidth(), getWindowHeight());
+    EXPECT_PIXEL_COLOR_EQ(getWindowWidth() / 2, getWindowHeight() / 2, GLColor::blue);
+
+    // Draw a full-sized quad using mip 1, and check it's green.
+    clearAndDrawQuad(m2DProgram, getWindowWidth() / 2, getWindowHeight() / 2);
+    EXPECT_PIXEL_COLOR_EQ(getWindowWidth() / 4, getWindowHeight() / 4, GLColor::green);
+
+    // Draw a full-sized quad using mip 2, and check it's red.
+    clearAndDrawQuad(m2DProgram, getWindowWidth() / 4, getWindowHeight() / 4);
+    EXPECT_PIXEL_COLOR_EQ(getWindowWidth() / 8, getWindowHeight() / 8, GLColor::red);
+
+    // Draw a full-sized quad using the last mip, and check it's green.
+    clearAndDrawQuad(m2DProgram, 1, 1);
+    EXPECT_PIXEL_COLOR_EQ(0, 0, GLColor::green);
+
+    // Now redefine everything above level 8 to be a mipcomplete chain again.
+    GLubyte *levelDoubleSizeYellowInitData =
+        createRGBInitData(getWindowWidth() * 2, getWindowHeight() * 2, 255, 255, 0);
+
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, getWindowWidth() * 2, getWindowHeight() * 2, 0, GL_RGB,
+                 GL_UNSIGNED_BYTE, levelDoubleSizeYellowInitData);  // 256
+
+    for (int i = 0; i < maxLevel - 1; i++)
+    {
+        glTexImage2D(GL_TEXTURE_2D, i + 1, GL_RGB, getWindowWidth() >> i, getWindowHeight() >> i, 0,
+                     GL_RGB, GL_UNSIGNED_BYTE, levels[i % 3]);
+    }
+
+    // At this point we have a valid mip chain, the last level being magenta if we draw 1x1 pixel.
+    clearAndDrawQuad(m2DProgram, 1, 1);
+    EXPECT_PIXEL_COLOR_EQ(0, 0, GLColor::magenta);
+
+    // Draw a full-sized quad using mip 0, and check it's yellow.
+    clearAndDrawQuad(m2DProgram, getWindowWidth() * 2, getWindowHeight() * 2);
+    EXPECT_PIXEL_COLOR_EQ(getWindowWidth() / 2, getWindowHeight() / 2, GLColor::yellow);
+
+    // Draw a full-sized quad using mip 1, and check it's blue.
+    clearAndDrawQuad(m2DProgram, getWindowWidth(), getWindowHeight());
+    EXPECT_PIXEL_COLOR_EQ(getWindowWidth() / 4, getWindowHeight() / 4, GLColor::blue);
+
+    // Draw a full-sized quad using mip 2, and check it's green.
+    clearAndDrawQuad(m2DProgram, getWindowWidth() / 2, getWindowHeight() / 2);
+    EXPECT_PIXEL_COLOR_EQ(getWindowWidth() / 8, getWindowHeight() / 8, GLColor::green);
+}
+
 // Regression test for a bug that cause mipmaps to only generate using the top left corner as input.
 TEST_P(MipmapTest, MipMapGenerationD3D9Bug)
 {
-    if (!extensionEnabled("GL_EXT_texture_storage") || !extensionEnabled("GL_OES_rgb8_rgba8") ||
-        !extensionEnabled("GL_ANGLE_texture_usage"))
-    {
-        std::cout << "Test skipped due to missing extensions." << std::endl;
-        return;
-    }
+    ANGLE_SKIP_TEST_IF(!extensionEnabled("GL_EXT_texture_storage") ||
+                       !extensionEnabled("GL_OES_rgb8_rgba8") ||
+                       !extensionEnabled("GL_ANGLE_texture_usage"));
 
     const GLColor mip0Color[4] = {
         GLColor::red, GLColor::green, GLColor::red, GLColor::green,
@@ -696,6 +767,10 @@ TEST_P(MipmapTest, MipMapGenerationD3D9Bug)
 // works as expected. It tests enabling/disabling mipmaps, generating mipmaps, and rendering to level zero.
 TEST_P(MipmapTest, TextureCubeGeneralLevelZero)
 {
+    // This test seems to fail only on Android Vulkan.
+    // TODO(jmadill): Diagnose and fix. http://anglebug.com/2817
+    ANGLE_SKIP_TEST_IF(IsVulkan() && IsAndroid());
+
     glBindTexture(GL_TEXTURE_CUBE_MAP, mTextureCube);
 
     // Draw. Since the negative-Y face's is blue, this should be blue.
@@ -919,12 +994,8 @@ TEST_P(MipmapTestES3, MipmapsForTexture3D)
 // the levelbase array, are left unchanged by this computation."
 TEST_P(MipmapTestES3, GenerateMipmapBaseLevel)
 {
-    if (IsAMD() && IsDesktopOpenGL())
-    {
-        // Observed incorrect rendering on AMD, sampling level 2 returns black.
-        std::cout << "Test skipped on AMD OpenGL." << std::endl;
-        return;
-    }
+    // Observed incorrect rendering on AMD, sampling level 2 returns black.
+    ANGLE_SKIP_TEST_IF(IsAMD() && IsDesktopOpenGL());
 
     glBindTexture(GL_TEXTURE_2D, mTexture);
 
@@ -974,12 +1045,8 @@ TEST_P(MipmapTestES3, GenerateMipmapBaseLevel)
 // the levelbase array, are left unchanged by this computation."
 TEST_P(MipmapTestES3, GenerateMipmapCubeBaseLevel)
 {
-    if (IsAMD() && IsDesktopOpenGL())
-    {
-        // Observed incorrect rendering on AMD, sampling level 2 returns black.
-        std::cout << "Test skipped on AMD OpenGL." << std::endl;
-        return;
-    }
+    // Observed incorrect rendering on AMD, sampling level 2 returns black.
+    ANGLE_SKIP_TEST_IF(IsAMD() && IsDesktopOpenGL());
 
     ASSERT_EQ(getWindowWidth(), getWindowHeight());
 
@@ -1013,13 +1080,9 @@ TEST_P(MipmapTestES3, GenerateMipmapCubeBaseLevel)
     clearAndDrawQuad(mCubeProgram, getWindowWidth() / 4, getWindowHeight() / 4);
     EXPECT_PIXEL_COLOR_EQ(getWindowWidth() / 8, getWindowHeight() / 8, GLColor::red);
 
-    if (IsNVIDIA() && IsOpenGL())
-    {
-        // Observed incorrect rendering on NVIDIA, level zero seems to be incorrectly affected by
-        // GenerateMipmap.
-        std::cout << "Test partially skipped on NVIDIA OpenGL." << std::endl;
-        return;
-    }
+    // Observed incorrect rendering on NVIDIA, level zero seems to be incorrectly affected by
+    // GenerateMipmap.
+    ANGLE_SKIP_TEST_IF(IsNVIDIA() && IsOpenGL());
 
     // Draw using level 0. It should still be blue.
     glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_BASE_LEVEL, 0);
@@ -1133,22 +1196,12 @@ TEST_P(MipmapTestES3, GenerateMipmapBaseLevelOutOfRangeImmutableTexture)
 // A native version of the WebGL2 test tex-base-level-bug.html
 TEST_P(MipmapTestES3, BaseLevelTextureBug)
 {
-    if (IsOpenGL() && IsAMD())
-    {
-        std::cout << "Test skipped on Windows AMD OpenGL." << std::endl;
-        return;
-    }
+    ANGLE_SKIP_TEST_IF(IsOpenGL() && IsAMD());
 
-#if defined(ANGLE_PLATFORM_APPLE)
     // Regression in 10.12.4 needing workaround -- crbug.com/705865.
     // Seems to be passing on AMD GPUs. Definitely not NVIDIA.
     // Probably not Intel.
-    if (IsNVIDIA() || IsIntel())
-    {
-        std::cout << "Test skipped on macOS with NVIDIA and Intel GPUs." << std::endl;
-        return;
-    }
-#endif
+    ANGLE_SKIP_TEST_IF(IsOSX() && (IsNVIDIA() || IsIntel()));
 
     glBindTexture(GL_TEXTURE_2D, mTexture);
     glTexImage2D(GL_TEXTURE_2D, 2, GL_RGBA, 2, 2, 0, GL_RGBA, GL_UNSIGNED_BYTE, &GLColor::red);
@@ -1177,5 +1230,6 @@ ANGLE_INSTANTIATE_TEST(MipmapTest,
                        ES2_OPENGL(),
                        ES3_OPENGL(),
                        ES2_OPENGLES(),
-                       ES3_OPENGLES());
+                       ES3_OPENGLES(),
+                       ES2_VULKAN());
 ANGLE_INSTANTIATE_TEST(MipmapTestES3, ES3_D3D11(), ES3_OPENGL(), ES3_OPENGLES());

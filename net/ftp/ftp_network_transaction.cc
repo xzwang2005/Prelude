@@ -6,6 +6,7 @@
 
 #include "base/bind.h"
 #include "base/bind_helpers.h"
+#include "base/callback_helpers.h"
 #include "base/compiler_specific.h"
 #include "base/metrics/histogram_macros.h"
 #include "base/strings/string_number_conversions.h"
@@ -14,6 +15,7 @@
 #include "base/strings/utf_string_conversions.h"
 #include "base/values.h"
 #include "net/base/address_list.h"
+#include "net/base/completion_once_callback.h"
 #include "net/base/escape.h"
 #include "net/base/net_errors.h"
 #include "net/base/parse_number.h"
@@ -216,11 +218,11 @@ FtpNetworkTransaction::FtpNetworkTransaction(
     HostResolver* resolver,
     ClientSocketFactory* socket_factory)
     : command_sent_(COMMAND_NONE),
-      io_callback_(base::Bind(&FtpNetworkTransaction::OnIOComplete,
-                              base::Unretained(this))),
+      io_callback_(base::BindRepeating(&FtpNetworkTransaction::OnIOComplete,
+                                       base::Unretained(this))),
       request_(nullptr),
       resolver_(resolver),
-      read_ctrl_buf_(new IOBuffer(kCtrlBufLen)),
+      read_ctrl_buf_(base::MakeRefCounted<IOBuffer>(kCtrlBufLen)),
       read_data_buf_len_(0),
       last_error_(OK),
       system_type_(SYSTEM_TYPE_UNKNOWN),
@@ -254,11 +256,14 @@ int FtpNetworkTransaction::Stop(int error) {
   return OK;
 }
 
-int FtpNetworkTransaction::Start(const FtpRequestInfo* request_info,
-                                 const CompletionCallback& callback,
-                                 const NetLogWithSource& net_log) {
+int FtpNetworkTransaction::Start(
+    const FtpRequestInfo* request_info,
+    CompletionOnceCallback callback,
+    const NetLogWithSource& net_log,
+    const NetworkTrafficAnnotationTag& traffic_annotation) {
   net_log_ = net_log;
   request_ = request_info;
+  traffic_annotation_ = MutableNetworkTrafficAnnotationTag(traffic_annotation);
 
   ctrl_response_buffer_ = std::make_unique<FtpCtrlResponseBuffer>(net_log_);
 
@@ -277,12 +282,12 @@ int FtpNetworkTransaction::Start(const FtpRequestInfo* request_info,
   next_state_ = STATE_CTRL_RESOLVE_HOST;
   int rv = DoLoop(OK);
   if (rv == ERR_IO_PENDING)
-    user_callback_ = callback;
+    user_callback_ = std::move(callback);
   return rv;
 }
 
 int FtpNetworkTransaction::RestartWithAuth(const AuthCredentials& credentials,
-                                           const CompletionCallback& callback) {
+                                           CompletionOnceCallback callback) {
   ResetStateForRestart();
 
   credentials_ = credentials;
@@ -290,13 +295,13 @@ int FtpNetworkTransaction::RestartWithAuth(const AuthCredentials& credentials,
   next_state_ = STATE_CTRL_RESOLVE_HOST;
   int rv = DoLoop(OK);
   if (rv == ERR_IO_PENDING)
-    user_callback_ = callback;
+    user_callback_ = std::move(callback);
   return rv;
 }
 
 int FtpNetworkTransaction::Read(IOBuffer* buf,
                                 int buf_len,
-                                const CompletionCallback& callback) {
+                                CompletionOnceCallback callback) {
   DCHECK(buf);
   DCHECK_GT(buf_len, 0);
 
@@ -306,7 +311,7 @@ int FtpNetworkTransaction::Read(IOBuffer* buf,
   next_state_ = STATE_DATA_READ;
   int rv = DoLoop(OK);
   if (rv == ERR_IO_PENDING)
-    user_callback_ = callback;
+    user_callback_ = std::move(callback);
   return rv;
 }
 
@@ -345,7 +350,7 @@ void FtpNetworkTransaction::ResetStateForRestart() {
   command_sent_ = COMMAND_NONE;
   user_callback_.Reset();
   response_ = FtpResponseInfo();
-  read_ctrl_buf_ = new IOBuffer(kCtrlBufLen);
+  read_ctrl_buf_ = base::MakeRefCounted<IOBuffer>(kCtrlBufLen);
   ctrl_response_buffer_ = std::make_unique<FtpCtrlResponseBuffer>(net_log_);
   read_data_buf_ = nullptr;
   read_data_buf_len_ = 0;
@@ -368,12 +373,8 @@ void FtpNetworkTransaction::EstablishDataConnection(State state_after_connect) {
 
 void FtpNetworkTransaction::DoCallback(int rv) {
   DCHECK(rv != ERR_IO_PENDING);
-  DCHECK(!user_callback_.is_null());
 
-  // Since Run may result in Read being called, clear callback_ up front.
-  CompletionCallback c = user_callback_;
-  user_callback_.Reset();
-  c.Run(rv);
+  std::move(user_callback_).Run(rv);
 }
 
 void FtpNetworkTransaction::OnIOComplete(int result) {
@@ -478,9 +479,10 @@ int FtpNetworkTransaction::SendFtpCommand(const std::string& command,
 
   command_sent_ = cmd;
 
-  write_command_buf_ = new IOBufferWithSize(command.length() + 2);
-  write_buf_ = new DrainableIOBuffer(write_command_buf_.get(),
-                                     write_command_buf_->size());
+  write_command_buf_ =
+      base::MakeRefCounted<IOBufferWithSize>(command.length() + 2);
+  write_buf_ = base::MakeRefCounted<DrainableIOBuffer>(
+      write_command_buf_, write_command_buf_->size());
   memcpy(write_command_buf_->data(), command.data(), command.length());
   memcpy(write_command_buf_->data() + command.length(), kCRLF, 2);
 
@@ -736,8 +738,9 @@ int FtpNetworkTransaction::DoCtrlReadComplete(int result) {
 int FtpNetworkTransaction::DoCtrlWrite() {
   next_state_ = STATE_CTRL_WRITE_COMPLETE;
 
-  return ctrl_socket_->Write(
-      write_buf_.get(), write_buf_->BytesRemaining(), io_callback_);
+  return ctrl_socket_->Write(write_buf_.get(), write_buf_->BytesRemaining(),
+                             io_callback_,
+                             NetworkTrafficAnnotationTag(traffic_annotation_));
 }
 
 int FtpNetworkTransaction::DoCtrlWriteComplete(int result) {

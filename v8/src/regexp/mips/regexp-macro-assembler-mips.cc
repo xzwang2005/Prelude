@@ -85,8 +85,7 @@ namespace internal {
  *              bool direct_call = false,
  *              Isolate* isolate);
  * The call is performed by NativeRegExpMacroAssembler::Execute()
- * (in regexp-macro-assembler.cc) via the CALL_GENERATED_REGEXP_CODE macro
- * in mips/simulator-mips.h.
+ * (in regexp-macro-assembler.cc) via the GeneratedCode wrapper.
  */
 
 #define __ ACCESS_MASM(masm_)
@@ -570,7 +569,7 @@ bool RegExpMacroAssemblerMIPS::CheckSpecialCharacterClass(uc16 type,
       // Table is 256 entries, so all Latin1 characters can be tested.
       BranchOrBacktrack(on_no_match, hi, current_character(), Operand('z'));
     }
-    ExternalReference map = ExternalReference::re_word_character_map();
+    ExternalReference map = ExternalReference::re_word_character_map(isolate());
     __ li(a0, Operand(map));
     __ Addu(a0, a0, current_character());
     __ lbu(a0, MemOperand(a0, 0));
@@ -583,7 +582,7 @@ bool RegExpMacroAssemblerMIPS::CheckSpecialCharacterClass(uc16 type,
       // Table is 256 entries, so all Latin1 characters can be tested.
       __ Branch(&done, hi, current_character(), Operand('z'));
     }
-    ExternalReference map = ExternalReference::re_word_character_map();
+    ExternalReference map = ExternalReference::re_word_character_map(isolate());
     __ li(a0, Operand(map));
     __ Addu(a0, a0, current_character());
     __ lbu(a0, MemOperand(a0, 0));
@@ -1144,7 +1143,7 @@ void RegExpMacroAssemblerMIPS::CallCheckStackGuardState(Register scratch) {
 // Helper function for reading a value out of a stack frame.
 template <typename T>
 static T& frame_entry(Address re_frame, int frame_offset) {
-  return reinterpret_cast<T&>(Memory::int32_at(re_frame + frame_offset));
+  return reinterpret_cast<T&>(Memory<int32_t>(re_frame + frame_offset));
 }
 
 

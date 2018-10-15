@@ -55,8 +55,7 @@ std::unique_ptr<SkCodec> SkIcoCodec::MakeFromStream(std::unique_ptr<SkStream> st
         uint32_t offset;
         uint32_t size;
     };
-    SkAutoFree dirEntryBuffer(sk_malloc_flags(sizeof(Entry) * numImages,
-                                              SK_MALLOC_TEMP));
+    SkAutoFree dirEntryBuffer(sk_malloc_canfail(sizeof(Entry) * numImages));
     if (!dirEntryBuffer) {
         SkCodecPrintf("Error: OOM allocating ICO directory for %i images.\n",
                       numImages);
@@ -111,7 +110,7 @@ std::unique_ptr<SkCodec> SkIcoCodec::MakeFromStream(std::unique_ptr<SkStream> st
     // Now will construct a candidate codec for each of the embedded images
     uint32_t bytesRead = kIcoDirectoryBytes + numImages * kIcoDirEntryBytes;
     std::unique_ptr<SkTArray<std::unique_ptr<SkCodec>, true>> codecs(
-            new (SkTArray<std::unique_ptr<SkCodec>, true>)(numImages));
+            new SkTArray<std::unique_ptr<SkCodec>, true>(numImages));
     for (uint32_t i = 0; i < numImages; i++) {
         uint32_t offset = directoryEntries[i].offset;
         uint32_t size = directoryEntries[i].size;
@@ -131,7 +130,7 @@ std::unique_ptr<SkCodec> SkIcoCodec::MakeFromStream(std::unique_ptr<SkStream> st
         bytesRead = offset;
 
         // Create a new stream for the embedded codec
-        SkAutoFree buffer(sk_malloc_flags(size, 0));
+        SkAutoFree buffer(sk_malloc_canfail(size));
         if (!buffer) {
             SkCodecPrintf("Warning: OOM trying to create embedded stream.\n");
             break;
@@ -180,29 +179,19 @@ std::unique_ptr<SkCodec> SkIcoCodec::MakeFromStream(std::unique_ptr<SkStream> st
             maxIndex = i;
         }
     }
-    int width = codecs->operator[](maxIndex)->getInfo().width();
-    int height = codecs->operator[](maxIndex)->getInfo().height();
-    SkEncodedInfo info = codecs->operator[](maxIndex)->getEncodedInfo();
-    SkColorSpace* colorSpace = codecs->operator[](maxIndex)->getInfo().colorSpace();
+
+    auto maxInfo = codecs->operator[](maxIndex)->getEncodedInfo().copy();
 
     *result = kSuccess;
     // The original stream is no longer needed, because the embedded codecs own their
     // own streams.
-    return std::unique_ptr<SkCodec>(new SkIcoCodec(width, height, info, codecs.release(),
-                                                   sk_ref_sp(colorSpace)));
+    return std::unique_ptr<SkCodec>(new SkIcoCodec(std::move(maxInfo), codecs.release()));
 }
 
-/*
- * Creates an instance of the decoder
- * Called only by NewFromStream
- */
-SkIcoCodec::SkIcoCodec(int width, int height, const SkEncodedInfo& info,
-                       SkTArray<std::unique_ptr<SkCodec>, true>* codecs,
-                       sk_sp<SkColorSpace> colorSpace)
-    // The source SkColorSpaceXform::ColorFormat will not be used. The embedded
+SkIcoCodec::SkIcoCodec(SkEncodedInfo&& info, SkTArray<std::unique_ptr<SkCodec>, true>* codecs)
+    // The source skcms_PixelFormat will not be used. The embedded
     // codec's will be used instead.
-    : INHERITED(width, height, info, SkColorSpaceXform::ColorFormat(), nullptr,
-                std::move(colorSpace))
+    : INHERITED(std::move(info), skcms_PixelFormat(), nullptr)
     , fEmbeddedCodecs(codecs)
     , fCurrCodec(nullptr)
 {}

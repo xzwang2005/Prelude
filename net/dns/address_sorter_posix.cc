@@ -266,7 +266,7 @@ AddressSorterPosix::~AddressSorterPosix() {
 }
 
 void AddressSorterPosix::Sort(const AddressList& list,
-                              const CallbackType& callback) const {
+                              CallbackType callback) const {
   DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
   std::vector<std::unique_ptr<DestinationInfo>> sort_list;
 
@@ -280,7 +280,7 @@ void AddressSorterPosix::Sort(const AddressList& list,
     // Each socket can only be bound once.
     std::unique_ptr<DatagramClientSocket> socket(
         socket_factory_->CreateDatagramClientSocket(
-            DatagramSocket::DEFAULT_BIND, RandIntCallback(), NULL /* NetLog */,
+            DatagramSocket::DEFAULT_BIND, nullptr /* NetLog */,
             NetLogSource()));
 
     // Even though no packets are sent, cannot use port 0 in Connect.
@@ -322,7 +322,7 @@ void AddressSorterPosix::Sort(const AddressList& list,
   for (size_t i = 0; i < sort_list.size(); ++i)
     result.push_back(IPEndPoint(sort_list[i]->address, 0 /* port */));
 
-  callback.Run(true, result);
+  std::move(callback).Run(true, result);
 }
 
 void AddressSorterPosix::OnIPAddressChanged() {

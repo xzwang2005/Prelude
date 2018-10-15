@@ -4,13 +4,13 @@
 
 package org.chromium.base.test.util;
 
-import android.content.Context;
+import android.text.TextUtils;
 
 import org.junit.Assert;
 import org.junit.Rule;
 
-import org.chromium.base.BaseChromiumApplication;
 import org.chromium.base.CommandLine;
+import org.chromium.base.CommandLineInitUtil;
 import org.chromium.base.test.BaseTestResult.PreTestHook;
 
 import java.lang.annotation.ElementType;
@@ -21,7 +21,9 @@ import java.lang.annotation.Target;
 import java.lang.reflect.AnnotatedElement;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
@@ -54,6 +56,8 @@ import java.util.Set;
  * Note that this class should never be instantiated.
  */
 public final class CommandLineFlags {
+    private static final String DISABLE_FEATURES = "disable-features";
+    private static final String ENABLE_FEATURES = "enable-features";
 
     /**
      * Adds command-line flags to the {@link org.chromium.base.CommandLine} for this test.
@@ -84,18 +88,35 @@ public final class CommandLineFlags {
      * and {@link CommandLineFlags.Remove} to the {@link org.chromium.base.CommandLine}. Note that
      * trying to remove a flag set externally, i.e. by the command-line flags file, will not work.
      */
-    public static void setUp(Context targetContext, AnnotatedElement element) {
-        Assert.assertNotNull("Unable to get a non-null target context.", targetContext);
+    public static void setUp(AnnotatedElement element) {
         CommandLine.reset();
-        BaseChromiumApplication.initCommandLine(targetContext);
+        CommandLineInitUtil.initCommandLine(getTestCmdLineFile());
+        Set<String> enableFeatures = new HashSet<String>(getFeatureValues(ENABLE_FEATURES));
+        Set<String> disableFeatures = new HashSet<String>(getFeatureValues(DISABLE_FEATURES));
         Set<String> flags = getFlags(element);
         for (String flag : flags) {
             String[] parsedFlags = flag.split("=", 2);
             if (parsedFlags.length == 1) {
                 CommandLine.getInstance().appendSwitch(flag);
+            } else if (ENABLE_FEATURES.equals(parsedFlags[0])) {
+                // We collect enable/disable features flags separately and aggregate them because
+                // they may be specified multiple times, in which case the values will trample each
+                // other.
+                Collections.addAll(enableFeatures, parsedFlags[1].split(","));
+            } else if (DISABLE_FEATURES.equals(parsedFlags[0])) {
+                Collections.addAll(disableFeatures, parsedFlags[1].split(","));
             } else {
                 CommandLine.getInstance().appendSwitchWithValue(parsedFlags[0], parsedFlags[1]);
             }
+        }
+
+        if (enableFeatures.size() > 0) {
+            CommandLine.getInstance().appendSwitchWithValue(
+                    ENABLE_FEATURES, TextUtils.join(",", enableFeatures));
+        }
+        if (disableFeatures.size() > 0) {
+            CommandLine.getInstance().appendSwitchWithValue(
+                    DISABLE_FEATURES, TextUtils.join(",", disableFeatures));
         }
     }
 
@@ -154,17 +175,21 @@ public final class CommandLineFlags {
         }
     }
 
+    private static List<String> getFeatureValues(String flag) {
+        String value = CommandLine.getInstance().getSwitchValue(flag);
+        if (value == null) return new ArrayList<>();
+        return Arrays.asList(value.split(","));
+    }
+
     private CommandLineFlags() {
         throw new AssertionError("CommandLineFlags is a non-instantiable class");
     }
 
     public static PreTestHook getRegistrationHook() {
-        return new PreTestHook() {
-            @Override
-            public void run(Context targetContext, Method testMethod) {
-                CommandLineFlags.setUp(targetContext, testMethod);
-            }
+        return (targetContext, testMethod) -> CommandLineFlags.setUp(testMethod);
+    }
 
-        };
+    public static String getTestCmdLineFile() {
+        return "test-cmdline-file";
     }
 }

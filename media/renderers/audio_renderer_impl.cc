@@ -7,6 +7,7 @@
 #include <math.h>
 #include <stddef.h>
 #include <algorithm>
+#include <memory>
 #include <utility>
 
 #include "base/bind.h"
@@ -106,8 +107,8 @@ AudioRendererImpl::~AudioRendererImpl() {
   CHECK(lock_.Try());
   lock_.Release();
 
-  if (!init_cb_.is_null())
-    base::ResetAndReturn(&init_cb_).Run(PIPELINE_ERROR_ABORT);
+  if (init_cb_)
+    FinishInitialization(PIPELINE_ERROR_ABORT);
 }
 
 void AudioRendererImpl::StartTicking() {
@@ -270,10 +271,11 @@ TimeSource* AudioRendererImpl::GetTimeSource() {
 void AudioRendererImpl::Flush(const base::Closure& callback) {
   DVLOG(1) << __func__;
   DCHECK(task_runner_->BelongsToCurrentThread());
+  TRACE_EVENT_ASYNC_BEGIN0("media", "AudioRendererImpl::Flush", this);
 
   base::AutoLock auto_lock(lock_);
   DCHECK_EQ(state_, kPlaying);
-  DCHECK(flush_cb_.is_null());
+  DCHECK(!flush_cb_);
 
   flush_cb_ = callback;
   ChangeState_Locked(kFlushing);
@@ -293,8 +295,8 @@ void AudioRendererImpl::DoFlush_Locked() {
   DCHECK_EQ(state_, kFlushed);
 
   ended_timestamp_ = kInfiniteDuration;
-  audio_buffer_stream_->Reset(base::Bind(&AudioRendererImpl::ResetDecoderDone,
-                                         weak_factory_.GetWeakPtr()));
+  audio_buffer_stream_->Reset(base::BindOnce(
+      &AudioRendererImpl::ResetDecoderDone, weak_factory_.GetWeakPtr()));
 }
 
 void AudioRendererImpl::ResetDecoderDone() {
@@ -303,7 +305,7 @@ void AudioRendererImpl::ResetDecoderDone() {
     base::AutoLock auto_lock(lock_);
 
     DCHECK_EQ(state_, kFlushed);
-    DCHECK(!flush_cb_.is_null());
+    DCHECK(flush_cb_);
 
     received_end_of_stream_ = false;
     rendered_end_of_stream_ = false;
@@ -319,7 +321,8 @@ void AudioRendererImpl::ResetDecoderDone() {
 
   // Changes in buffering state are always posted. Flush callback must only be
   // run after buffering state has been set back to nothing.
-  task_runner_->PostTask(FROM_HERE, base::ResetAndReturn(&flush_cb_));
+  flush_cb_ = BindToCurrentLoop(flush_cb_);
+  FinishFlush();
 }
 
 void AudioRendererImpl::StartPlaying() {
@@ -345,9 +348,10 @@ void AudioRendererImpl::Initialize(DemuxerStream* stream,
   DCHECK(client);
   DCHECK(stream);
   DCHECK_EQ(stream->type(), DemuxerStream::AUDIO);
-  DCHECK(!init_cb.is_null());
+  DCHECK(init_cb);
   DCHECK(state_ == kUninitialized || state_ == kFlushed);
   DCHECK(sink_.get());
+  TRACE_EVENT_ASYNC_BEGIN0("media", "AudioRendererImpl::Initialize", this);
 
   // Trying to track down AudioClock crash, http://crbug.com/674856.
   // Initialize should never be called while Rendering is ongoing. This can lead
@@ -374,7 +378,14 @@ void AudioRendererImpl::Initialize(DemuxerStream* stream,
   current_decoder_config_ = stream->audio_decoder_config();
   DCHECK(current_decoder_config_.IsValidConfig());
 
-  audio_buffer_stream_ = base::MakeUnique<AudioBufferStream>(
+  auto output_device_info = sink_->GetOutputDeviceInfo();
+  const AudioParameters& hw_params = output_device_info.output_params();
+  ChannelLayout hw_channel_layout =
+      hw_params.IsValid() ? hw_params.channel_layout() : CHANNEL_LAYOUT_NONE;
+
+  audio_buffer_stream_ = std::make_unique<AudioBufferStream>(
+      std::make_unique<AudioBufferStream::StreamTraits>(media_log_,
+                                                        hw_channel_layout),
       task_runner_, create_audio_decoders_cb_, media_log_);
 
   audio_buffer_stream_->set_config_change_observer(base::Bind(
@@ -384,8 +395,6 @@ void AudioRendererImpl::Initialize(DemuxerStream* stream,
   // failed.
   init_cb_ = BindToCurrentLoop(init_cb);
 
-  auto output_device_info = sink_->GetOutputDeviceInfo();
-  const AudioParameters& hw_params = output_device_info.output_params();
   AudioCodec codec = stream->audio_decoder_config().codec();
   if (auto* mc = GetMediaClient())
     is_passthrough_ = mc->IsSupportedBitstreamAudioCodec(codec);
@@ -437,14 +446,12 @@ void AudioRendererImpl::Initialize(DemuxerStream* stream,
 
     audio_parameters_.Reset(
         format, stream->audio_decoder_config().channel_layout(),
-        stream->audio_decoder_config().samples_per_second(),
-        stream->audio_decoder_config().bits_per_channel(), buffer_size);
+        stream->audio_decoder_config().samples_per_second(), buffer_size);
     buffer_converter_.reset();
   } else if (use_stream_params) {
     audio_parameters_.Reset(AudioParameters::AUDIO_PCM_LOW_LATENCY,
                             stream->audio_decoder_config().channel_layout(),
                             stream->audio_decoder_config().samples_per_second(),
-                            stream->audio_decoder_config().bits_per_channel(),
                             preferred_buffer_size);
     audio_parameters_.set_channels_for_discrete(
         stream->audio_decoder_config().channels());
@@ -508,10 +515,13 @@ void AudioRendererImpl::Initialize(DemuxerStream* stream,
             : stream->audio_decoder_config().channel_layout();
 
     audio_parameters_.Reset(hw_params.format(), renderer_channel_layout,
-                            sample_rate, hw_params.bits_per_sample(),
+                            sample_rate,
                             media::AudioLatency::GetHighLatencyBufferSize(
                                 sample_rate, preferred_buffer_size));
   }
+
+  audio_parameters_.set_effects(audio_parameters_.effects() |
+                                ::media::AudioParameters::MULTIZONE);
 
   audio_parameters_.set_latency_tag(AudioLatency::LATENCY_PLAYBACK);
 
@@ -526,23 +536,24 @@ void AudioRendererImpl::Initialize(DemuxerStream* stream,
       new AudioClock(base::TimeDelta(), audio_parameters_.sample_rate()));
 
   audio_buffer_stream_->Initialize(
-      stream, base::Bind(&AudioRendererImpl::OnAudioBufferStreamInitialized,
-                         weak_factory_.GetWeakPtr()),
-      cdm_context, base::Bind(&AudioRendererImpl::OnStatisticsUpdate,
-                              weak_factory_.GetWeakPtr()),
-      base::Bind(&AudioRendererImpl::OnWaitingForDecryptionKey,
-                 weak_factory_.GetWeakPtr()));
+      stream,
+      base::BindOnce(&AudioRendererImpl::OnAudioBufferStreamInitialized,
+                     weak_factory_.GetWeakPtr()),
+      cdm_context,
+      base::BindRepeating(&AudioRendererImpl::OnStatisticsUpdate,
+                          weak_factory_.GetWeakPtr()),
+      base::BindRepeating(&AudioRendererImpl::OnWaitingForDecryptionKey,
+                          weak_factory_.GetWeakPtr()));
 }
 
 void AudioRendererImpl::OnAudioBufferStreamInitialized(bool success) {
   DVLOG(1) << __func__ << ": " << success;
   DCHECK(task_runner_->BelongsToCurrentThread());
-
   base::AutoLock auto_lock(lock_);
 
   if (!success) {
     state_ = kUninitialized;
-    base::ResetAndReturn(&init_cb_).Run(DECODER_ERROR_NOT_SUPPORTED);
+    FinishInitialization(DECODER_ERROR_NOT_SUPPORTED);
     return;
   }
 
@@ -550,11 +561,12 @@ void AudioRendererImpl::OnAudioBufferStreamInitialized(bool success) {
     DVLOG(1) << __func__ << ": Invalid audio parameters: "
              << audio_parameters_.AsHumanReadableString();
     ChangeState_Locked(kUninitialized);
+
     // TODO(flim): If the channel layout is discrete but channel count is 0, a
     // possible cause is that the input stream has > 8 channels but there is no
     // Web Audio renderer attached and no channel mixing matrices defined for
     // hardware renderers. Adding one for previewing content could be useful.
-    base::ResetAndReturn(&init_cb_).Run(PIPELINE_ERROR_INITIALIZATION_FAILED);
+    FinishInitialization(PIPELINE_ERROR_INITIALIZATION_FAILED);
     return;
   }
 
@@ -579,7 +591,20 @@ void AudioRendererImpl::OnAudioBufferStreamInitialized(bool success) {
   }
 
   DCHECK(!sink_playing_);
-  base::ResetAndReturn(&init_cb_).Run(PIPELINE_OK);
+  FinishInitialization(PIPELINE_OK);
+}
+
+void AudioRendererImpl::FinishInitialization(PipelineStatus status) {
+  DCHECK(init_cb_);
+  TRACE_EVENT_ASYNC_END1("media", "AudioRendererImpl::Initialize", this,
+                         "status", MediaLog::PipelineStatusToString(status));
+  std::move(init_cb_).Run(status);
+}
+
+void AudioRendererImpl::FinishFlush() {
+  DCHECK(flush_cb_);
+  TRACE_EVENT_ASYNC_END0("media", "AudioRendererImpl::Flush", this);
+  std::move(flush_cb_).Run();
 }
 
 void AudioRendererImpl::OnPlaybackError(PipelineStatus error) {
@@ -678,12 +703,17 @@ void AudioRendererImpl::DecodedAudioReady(
       last_decoded_sample_rate_ = buffer->sample_rate();
 
       if (last_decoded_channel_layout_ != buffer->channel_layout()) {
-        last_decoded_channel_layout_ = buffer->channel_layout();
-        last_decoded_channels_ = buffer->channel_count();
-
-        // Input layouts should never be discrete.
-        DCHECK_NE(last_decoded_channel_layout_, CHANNEL_LAYOUT_DISCRETE);
-        ConfigureChannelMask();
+        if (buffer->channel_layout() == CHANNEL_LAYOUT_DISCRETE) {
+          MEDIA_LOG(ERROR, media_log_)
+              << "Unsupported midstream configuration change! Discrete channel"
+              << " layout not allowed by sink.";
+          HandleAbortedReadOrDecodeError(PIPELINE_ERROR_DECODE);
+          return;
+        } else {
+          last_decoded_channel_layout_ = buffer->channel_layout();
+          last_decoded_channels_ = buffer->channel_count();
+          ConfigureChannelMask();
+        }
       }
     }
 
@@ -749,9 +779,13 @@ bool AudioRendererImpl::HandleDecodedBuffer_Locked(
       // Trim off any additional time before the start timestamp.
       const base::TimeDelta trim_time = start_timestamp_ - buffer->timestamp();
       if (trim_time > base::TimeDelta()) {
-        buffer->TrimStart(buffer->frame_count() *
-                          (static_cast<double>(trim_time.InMicroseconds()) /
-                           buffer->duration().InMicroseconds()));
+        const int frames_to_trim = AudioTimestampHelper::TimeToFrames(
+            trim_time, buffer->sample_rate());
+        DVLOG(1) << __func__ << ": Trimming first audio buffer by "
+                 << frames_to_trim << " frames so it starts at "
+                 << start_timestamp_;
+
+        buffer->TrimStart(frames_to_trim);
         buffer->set_timestamp(start_timestamp_);
       }
       // If the entire buffer was trimmed, request a new one.
@@ -811,8 +845,13 @@ void AudioRendererImpl::AttemptRead_Locked() {
     return;
 
   pending_read_ = true;
-  audio_buffer_stream_->Read(base::Bind(&AudioRendererImpl::DecodedAudioReady,
-                                        weak_factory_.GetWeakPtr()));
+
+  // Don't hold the lock while calling Read(), if the demuxer is busy this will
+  // block audio rendering for an extended period of time.
+  // |audio_buffer_stream_| is only accessed on |task_runner_| so this is safe.
+  base::AutoUnlock auto_unlock(lock_);
+  audio_buffer_stream_->Read(base::BindOnce(
+      &AudioRendererImpl::DecodedAudioReady, weak_factory_.GetWeakPtr()));
 }
 
 bool AudioRendererImpl::CanRead_Locked() {
@@ -1039,8 +1078,9 @@ void AudioRendererImpl::OnRenderError() {
 
   // Post to |task_runner_| as this is called on the audio callback thread.
   task_runner_->PostTask(
-      FROM_HERE, base::Bind(&AudioRendererImpl::OnPlaybackError,
-                            weak_factory_.GetWeakPtr(), AUDIO_RENDERER_ERROR));
+      FROM_HERE,
+      base::BindOnce(&AudioRendererImpl::OnPlaybackError,
+                     weak_factory_.GetWeakPtr(), AUDIO_RENDERER_ERROR));
 }
 
 void AudioRendererImpl::HandleAbortedReadOrDecodeError(PipelineStatus status) {
@@ -1062,7 +1102,7 @@ void AudioRendererImpl::HandleAbortedReadOrDecodeError(PipelineStatus status) {
       MEDIA_LOG(ERROR, media_log_) << "audio error during flushing, status: "
                                    << MediaLog::PipelineStatusToString(status);
       client_->OnError(status);
-      base::ResetAndReturn(&flush_cb_).Run();
+      FinishFlush();
       return;
 
     case kFlushed:
@@ -1107,8 +1147,8 @@ void AudioRendererImpl::SetBufferingState_Locked(
   buffering_state_ = buffering_state;
 
   task_runner_->PostTask(
-      FROM_HERE, base::Bind(&AudioRendererImpl::OnBufferingStateChange,
-                            weak_factory_.GetWeakPtr(), buffering_state_));
+      FROM_HERE, base::BindOnce(&AudioRendererImpl::OnBufferingStateChange,
+                                weak_factory_.GetWeakPtr(), buffering_state_));
 }
 
 void AudioRendererImpl::ConfigureChannelMask() {

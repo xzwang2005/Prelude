@@ -15,7 +15,7 @@
 #include "base/memory/ref_counted.h"
 #include "base/synchronization/lock.h"
 #include "gpu/command_buffer/service/image_factory.h"
-#include "gpu/gpu_export.h"
+#include "gpu/ipc/service/gpu_ipc_service_export.h"
 #include "gpu/ipc/service/gpu_memory_buffer_factory.h"
 #include "ui/gfx/geometry/size.h"
 #include "ui/gl/gl_image_dxgi.h"
@@ -26,8 +26,9 @@ class GLImage;
 
 namespace gpu {
 
-class GPU_EXPORT GpuMemoryBufferFactoryDXGI : public GpuMemoryBufferFactory,
-                                              public ImageFactory {
+class GPU_IPC_SERVICE_EXPORT GpuMemoryBufferFactoryDXGI
+    : public GpuMemoryBufferFactory,
+      public ImageFactory {
  public:
   GpuMemoryBufferFactoryDXGI();
   ~GpuMemoryBufferFactoryDXGI() override;
@@ -46,17 +47,12 @@ class GPU_EXPORT GpuMemoryBufferFactoryDXGI : public GpuMemoryBufferFactory,
 
   // Overridden from ImageFactory:
   scoped_refptr<gl::GLImage> CreateImageForGpuMemoryBuffer(
-      const gfx::GpuMemoryBufferHandle& handle,
+      gfx::GpuMemoryBufferHandle handle,
       const gfx::Size& size,
       gfx::BufferFormat format,
       unsigned internalformat,
       int client_id,
       SurfaceHandle surface_handle) override;
-  scoped_refptr<gl::GLImage> CreateAnonymousImage(const gfx::Size& size,
-                                                  gfx::BufferFormat format,
-                                                  gfx::BufferUsage usage,
-                                                  unsigned internalformat,
-                                                  bool* is_cleared) override;
   unsigned RequiredTextureType() override;
   bool SupportsFormatRGB() override;
 

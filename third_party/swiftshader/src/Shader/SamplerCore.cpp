@@ -131,39 +131,19 @@ namespace sw
 				convertFixed12(c, cf);
 			}
 
-			if(fixed12 && !hasFloatTexture())
+			if(fixed12)
 			{
-				if(has16bitTextureFormat())
+				if(!hasFloatTexture())
 				{
-					switch(state.textureFormat)
+					if(state.textureFormat == FORMAT_R5G6B5)
 					{
-					case FORMAT_R5G6B5:
-						if(state.sRGB)
-						{
-							sRGBtoLinear16_5_12(c.x);
-							sRGBtoLinear16_6_12(c.y);
-							sRGBtoLinear16_5_12(c.z);
-						}
-						else
-						{
-							c.x = MulHigh(As<UShort4>(c.x), UShort4(0x10000000 / 0xF800));
-							c.y = MulHigh(As<UShort4>(c.y), UShort4(0x10000000 / 0xFC00));
-							c.z = MulHigh(As<UShort4>(c.z), UShort4(0x10000000 / 0xF800));
-						}
-						break;
-					default:
-						ASSERT(false);
+						c.x = MulHigh(As<UShort4>(c.x), UShort4(0x10000000 / 0xF800));
+						c.y = MulHigh(As<UShort4>(c.y), UShort4(0x10000000 / 0xFC00));
+						c.z = MulHigh(As<UShort4>(c.z), UShort4(0x10000000 / 0xF800));
 					}
-				}
-				else
-				{
-					for(int component = 0; component < textureComponentCount(); component++)
+					else
 					{
-						if(state.sRGB && isRGBComponent(component))
-						{
-							sRGBtoLinear16_8_12(c[component]);   // FIXME: Perform linearization at surface level for read-only textures
-						}
-						else
+						for(int component = 0; component < textureComponentCount(); component++)
 						{
 							if(hasUnsignedTextureComponent(component))
 							{
@@ -176,117 +156,117 @@ namespace sw
 						}
 					}
 				}
-			}
 
-			if(fixed12 && state.textureFilter != FILTER_GATHER)
-			{
-				int componentCount = textureComponentCount();
-				short defaultColorValue = colorsDefaultToZero ? 0x0000 : 0x1000;
-
-				switch(state.textureFormat)
+				if(state.textureFilter != FILTER_GATHER)
 				{
-				case FORMAT_R8I_SNORM:
-				case FORMAT_G8R8I_SNORM:
-				case FORMAT_X8B8G8R8I_SNORM:
-				case FORMAT_A8B8G8R8I_SNORM:
-				case FORMAT_R8:
-				case FORMAT_R5G6B5:
-				case FORMAT_G8R8:
-				case FORMAT_R8I:
-				case FORMAT_R8UI:
-				case FORMAT_G8R8I:
-				case FORMAT_G8R8UI:
-				case FORMAT_X8B8G8R8I:
-				case FORMAT_X8B8G8R8UI:
-				case FORMAT_A8B8G8R8I:
-				case FORMAT_A8B8G8R8UI:
-				case FORMAT_R16I:
-				case FORMAT_R16UI:
-				case FORMAT_G16R16:
-				case FORMAT_G16R16I:
-				case FORMAT_G16R16UI:
-				case FORMAT_X16B16G16R16I:
-				case FORMAT_X16B16G16R16UI:
-				case FORMAT_A16B16G16R16:
-				case FORMAT_A16B16G16R16I:
-				case FORMAT_A16B16G16R16UI:
-				case FORMAT_R32I:
-				case FORMAT_R32UI:
-				case FORMAT_G32R32I:
-				case FORMAT_G32R32UI:
-				case FORMAT_X32B32G32R32I:
-				case FORMAT_X32B32G32R32UI:
-				case FORMAT_A32B32G32R32I:
-				case FORMAT_A32B32G32R32UI:
-				case FORMAT_X8R8G8B8:
-				case FORMAT_X8B8G8R8:
-				case FORMAT_A8R8G8B8:
-				case FORMAT_A8B8G8R8:
-				case FORMAT_SRGB8_X8:
-				case FORMAT_SRGB8_A8:
-				case FORMAT_V8U8:
-				case FORMAT_Q8W8V8U8:
-				case FORMAT_X8L8V8U8:
-				case FORMAT_V16U16:
-				case FORMAT_A16W16V16U16:
-				case FORMAT_Q16W16V16U16:
-				case FORMAT_YV12_BT601:
-				case FORMAT_YV12_BT709:
-				case FORMAT_YV12_JFIF:
-					if(componentCount < 2) c.y = Short4(defaultColorValue);
-					if(componentCount < 3) c.z = Short4(defaultColorValue);
-					if(componentCount < 4) c.w = Short4(0x1000);
-					break;
-				case FORMAT_A8:
-					c.w = c.x;
-					c.x = Short4(0x0000);
-					c.y = Short4(0x0000);
-					c.z = Short4(0x0000);
-					break;
-				case FORMAT_L8:
-				case FORMAT_L16:
-					c.y = c.x;
-					c.z = c.x;
-					c.w = Short4(0x1000);
-					break;
-				case FORMAT_A8L8:
-					c.w = c.y;
-					c.y = c.x;
-					c.z = c.x;
-					break;
-				case FORMAT_R32F:
-					c.y = Short4(defaultColorValue);
-				case FORMAT_G32R32F:
-					c.z = Short4(defaultColorValue);
-				case FORMAT_X32B32G32R32F:
-					c.w = Short4(0x1000);
-				case FORMAT_A32B32G32R32F:
-					break;
-				case FORMAT_D32F:
-				case FORMAT_D32F_LOCKABLE:
-				case FORMAT_D32FS8_TEXTURE:
-				case FORMAT_D32FS8_SHADOW:
-					c.y = c.x;
-					c.z = c.x;
-					c.w = c.x;
-					break;
-				default:
-					ASSERT(false);
+					int componentCount = textureComponentCount();
+					short defaultColorValue = colorsDefaultToZero ? 0x0000 : 0x1000;
+
+					switch(state.textureFormat)
+					{
+					case FORMAT_R8_SNORM:
+					case FORMAT_G8R8_SNORM:
+					case FORMAT_X8B8G8R8_SNORM:
+					case FORMAT_A8B8G8R8_SNORM:
+					case FORMAT_R8:
+					case FORMAT_R5G6B5:
+					case FORMAT_G8R8:
+					case FORMAT_R8I:
+					case FORMAT_R8UI:
+					case FORMAT_G8R8I:
+					case FORMAT_G8R8UI:
+					case FORMAT_X8B8G8R8I:
+					case FORMAT_X8B8G8R8UI:
+					case FORMAT_A8B8G8R8I:
+					case FORMAT_A8B8G8R8UI:
+					case FORMAT_R16I:
+					case FORMAT_R16UI:
+					case FORMAT_G16R16:
+					case FORMAT_G16R16I:
+					case FORMAT_G16R16UI:
+					case FORMAT_X16B16G16R16I:
+					case FORMAT_X16B16G16R16UI:
+					case FORMAT_A16B16G16R16:
+					case FORMAT_A16B16G16R16I:
+					case FORMAT_A16B16G16R16UI:
+					case FORMAT_R32I:
+					case FORMAT_R32UI:
+					case FORMAT_G32R32I:
+					case FORMAT_G32R32UI:
+					case FORMAT_X32B32G32R32I:
+					case FORMAT_X32B32G32R32UI:
+					case FORMAT_A32B32G32R32I:
+					case FORMAT_A32B32G32R32UI:
+					case FORMAT_X8R8G8B8:
+					case FORMAT_X8B8G8R8:
+					case FORMAT_A8R8G8B8:
+					case FORMAT_A8B8G8R8:
+					case FORMAT_SRGB8_X8:
+					case FORMAT_SRGB8_A8:
+					case FORMAT_V8U8:
+					case FORMAT_Q8W8V8U8:
+					case FORMAT_X8L8V8U8:
+					case FORMAT_V16U16:
+					case FORMAT_A16W16V16U16:
+					case FORMAT_Q16W16V16U16:
+					case FORMAT_YV12_BT601:
+					case FORMAT_YV12_BT709:
+					case FORMAT_YV12_JFIF:
+						if(componentCount < 2) c.y = Short4(defaultColorValue);
+						if(componentCount < 3) c.z = Short4(defaultColorValue);
+						if(componentCount < 4) c.w = Short4(0x1000);
+						break;
+					case FORMAT_A8:
+						c.w = c.x;
+						c.x = Short4(0x0000);
+						c.y = Short4(0x0000);
+						c.z = Short4(0x0000);
+						break;
+					case FORMAT_L8:
+					case FORMAT_L16:
+						c.y = c.x;
+						c.z = c.x;
+						c.w = Short4(0x1000);
+						break;
+					case FORMAT_A8L8:
+						c.w = c.y;
+						c.y = c.x;
+						c.z = c.x;
+						break;
+					case FORMAT_R32F:
+						c.y = Short4(defaultColorValue);
+					case FORMAT_G32R32F:
+						c.z = Short4(defaultColorValue);
+					case FORMAT_X32B32G32R32F:
+					case FORMAT_X32B32G32R32F_UNSIGNED:
+						c.w = Short4(0x1000);
+					case FORMAT_A32B32G32R32F:
+						break;
+					case FORMAT_D32F_LOCKABLE:
+					case FORMAT_D32FS8_TEXTURE:
+					case FORMAT_D32F_SHADOW:
+					case FORMAT_D32FS8_SHADOW:
+						c.y = c.x;
+						c.z = c.x;
+						c.w = c.x;
+						break;
+					default:
+						ASSERT(false);
+					}
+				}
+
+				if((state.swizzleR != SWIZZLE_RED) ||
+				   (state.swizzleG != SWIZZLE_GREEN) ||
+				   (state.swizzleB != SWIZZLE_BLUE) ||
+				   (state.swizzleA != SWIZZLE_ALPHA))
+				{
+					const Vector4s col(c);
+					applySwizzle(state.swizzleR, c.x, col);
+					applySwizzle(state.swizzleG, c.y, col);
+					applySwizzle(state.swizzleB, c.z, col);
+					applySwizzle(state.swizzleA, c.w, col);
 				}
 			}
-		}
-
-		if(fixed12 &&
-		   ((state.swizzleR != SWIZZLE_RED) ||
-		    (state.swizzleG != SWIZZLE_GREEN) ||
-		    (state.swizzleB != SWIZZLE_BLUE) ||
-		    (state.swizzleA != SWIZZLE_ALPHA)))
-		{
-			const Vector4s col(c);
-			applySwizzle(state.swizzleR, c.x, col);
-			applySwizzle(state.swizzleG, c.y, col);
-			applySwizzle(state.swizzleB, c.z, col);
-			applySwizzle(state.swizzleA, c.w, col);
 		}
 
 		return c;
@@ -314,10 +294,11 @@ namespace sw
 		}
 		else
 		{
-			// FIXME: YUV and sRGB are not supported by the floating point path
-			bool forceFloatFiltering = state.highPrecisionFiltering && !state.sRGB && !hasYuvFormat() && (state.textureFilter != FILTER_POINT);
+			// FIXME: YUV is not supported by the floating point path
+			bool forceFloatFiltering = state.highPrecisionFiltering && !hasYuvFormat() && (state.textureFilter != FILTER_POINT);
 			bool seamlessCube = (state.addressingModeU == ADDRESSING_SEAMLESS);
-			if(hasFloatTexture() || hasUnnormalizedIntegerTexture() || forceFloatFiltering || seamlessCube)   // FIXME: Mostly identical to integer sampling
+			bool rectangleTexture = (state.textureType == TEXTURE_RECTANGLE);
+			if(hasFloatTexture() || hasUnnormalizedIntegerTexture() || forceFloatFiltering || seamlessCube || rectangleTexture)   // FIXME: Mostly identical to integer sampling
 			{
 				Float4 uuuu = u;
 				Float4 vvvv = v;
@@ -378,52 +359,23 @@ namespace sw
 			{
 				Vector4s cs = sampleTexture(texture, u, v, w, q, bias, dsx, dsy, offset, function, false);
 
-				if(has16bitTextureFormat())
+				if(state.textureFormat ==  FORMAT_R5G6B5)
 				{
-					switch(state.textureFormat)
-					{
-					case FORMAT_R5G6B5:
-						if(state.sRGB)
-						{
-							sRGBtoLinear16_5_12(cs.x);
-							sRGBtoLinear16_6_12(cs.y);
-							sRGBtoLinear16_5_12(cs.z);
-
-							convertSigned12(c.x, cs.x);
-							convertSigned12(c.y, cs.y);
-							convertSigned12(c.z, cs.z);
-						}
-						else
-						{
-							c.x = Float4(As<UShort4>(cs.x)) * Float4(1.0f / 0xF800);
-							c.y = Float4(As<UShort4>(cs.y)) * Float4(1.0f / 0xFC00);
-							c.z = Float4(As<UShort4>(cs.z)) * Float4(1.0f / 0xF800);
-						}
-						break;
-					default:
-						ASSERT(false);
-					}
+					c.x = Float4(As<UShort4>(cs.x)) * Float4(1.0f / 0xF800);
+					c.y = Float4(As<UShort4>(cs.y)) * Float4(1.0f / 0xFC00);
+					c.z = Float4(As<UShort4>(cs.z)) * Float4(1.0f / 0xF800);
 				}
 				else
 				{
 					for(int component = 0; component < textureComponentCount(); component++)
 					{
-						// Normalized integer formats
-						if(state.sRGB && isRGBComponent(component))
+						if(hasUnsignedTextureComponent(component))
 						{
-							sRGBtoLinear16_8_12(cs[component]);   // FIXME: Perform linearization at surface level for read-only textures
-							convertSigned12(c[component], cs[component]);
+							convertUnsigned16(c[component], cs[component]);
 						}
 						else
 						{
-							if(hasUnsignedTextureComponent(component))
-							{
-								convertUnsigned16(c[component], cs[component]);
-							}
-							else
-							{
-								convertSigned15(c[component], cs[component]);
-							}
+							convertSigned15(c[component], cs[component]);
 						}
 					}
 				}
@@ -464,10 +416,10 @@ namespace sw
 				case FORMAT_A32B32G32R32I:
 				case FORMAT_A32B32G32R32UI:
 					break;
-				case FORMAT_R8I_SNORM:
-				case FORMAT_G8R8I_SNORM:
-				case FORMAT_X8B8G8R8I_SNORM:
-				case FORMAT_A8B8G8R8I_SNORM:
+				case FORMAT_R8_SNORM:
+				case FORMAT_G8R8_SNORM:
+				case FORMAT_X8B8G8R8_SNORM:
+				case FORMAT_A8B8G8R8_SNORM:
 				case FORMAT_R8:
 				case FORMAT_R5G6B5:
 				case FORMAT_G8R8:
@@ -514,12 +466,13 @@ namespace sw
 				case FORMAT_G32R32F:
 					c.z = Float4(defaultColorValue);
 				case FORMAT_X32B32G32R32F:
+				case FORMAT_X32B32G32R32F_UNSIGNED:
 					c.w = Float4(1.0f);
 				case FORMAT_A32B32G32R32F:
 					break;
-				case FORMAT_D32F:
 				case FORMAT_D32F_LOCKABLE:
 				case FORMAT_D32FS8_TEXTURE:
+				case FORMAT_D32F_SHADOW:
 				case FORMAT_D32FS8_SHADOW:
 					c.y = Float4(0.0f);
 					c.z = Float4(0.0f);
@@ -529,18 +482,18 @@ namespace sw
 					ASSERT(false);
 				}
 			}
-		}
 
-		if((state.swizzleR != SWIZZLE_RED) ||
-		   (state.swizzleG != SWIZZLE_GREEN) ||
-		   (state.swizzleB != SWIZZLE_BLUE) ||
-		   (state.swizzleA != SWIZZLE_ALPHA))
-		{
-			const Vector4f col(c);
-			applySwizzle(state.swizzleR, c.x, col);
-			applySwizzle(state.swizzleG, c.y, col);
-			applySwizzle(state.swizzleB, c.z, col);
-			applySwizzle(state.swizzleA, c.w, col);
+			if((state.swizzleR != SWIZZLE_RED) ||
+			   (state.swizzleG != SWIZZLE_GREEN) ||
+			   (state.swizzleB != SWIZZLE_BLUE) ||
+			   (state.swizzleA != SWIZZLE_ALPHA))
+			{
+				const Vector4f col(c);
+				applySwizzle(state.swizzleR, c.x, col);
+				applySwizzle(state.swizzleG, c.y, col);
+				applySwizzle(state.swizzleB, c.z, col);
+				applySwizzle(state.swizzleA, c.w, col);
+			}
 		}
 
 		return c;
@@ -619,7 +572,7 @@ namespace sw
 			return c;
 		}
 
-		if(state.mipmapFilter > MIPMAP_POINT)
+		if(state.mipmapFilter == MIPMAP_LINEAR)
 		{
 			Vector4s cc = sampleAniso(texture, u, v, w, offset, lod, anisotropy, uDelta, vDelta, face, true, function);
 
@@ -1112,7 +1065,7 @@ namespace sw
 			return c;
 		}
 
-		if(state.mipmapFilter > MIPMAP_POINT)
+		if(state.mipmapFilter == MIPMAP_LINEAR)
 		{
 			Vector4f cc = sampleFloatAniso(texture, u, v, w, q, offset, lod, anisotropy, uDelta, vDelta, face, true, function);
 
@@ -1479,16 +1432,16 @@ namespace sw
 		}
 		else if(function == Lod)
 		{
-			lod = lodBias + Float(*Pointer<Int>(texture + OFFSET(Texture,baseLevel)));
+			lod = lodBias;
 		}
 		else if(function == Fetch)
 		{
 			// TODO: Eliminate int-float-int conversion.
-			lod = Float(As<Int>(lodBias)) + Float(*Pointer<Int>(texture + OFFSET(Texture,baseLevel)));
+			lod = Float(As<Int>(lodBias));
 		}
 		else if(function == Base)
 		{
-			lod = Float(*Pointer<Int>(texture + OFFSET(Texture,baseLevel)));
+			lod = Float(0);
 		}
 		else assert(false);
 
@@ -1545,16 +1498,16 @@ namespace sw
 		}
 		else if(function == Lod)
 		{
-			lod = lodBias + Float(*Pointer<Int>(texture + OFFSET(Texture,baseLevel)));
+			lod = lodBias;
 		}
 		else if(function == Fetch)
 		{
 			// TODO: Eliminate int-float-int conversion.
-			lod = Float(As<Int>(lodBias)) + Float(*Pointer<Int>(texture + OFFSET(Texture,baseLevel)));
+			lod = Float(As<Int>(lodBias));
 		}
 		else if(function == Base)
 		{
-			lod = Float(*Pointer<Int>(texture + OFFSET(Texture,baseLevel)));
+			lod = Float(0);
 		}
 		else assert(false);
 
@@ -1564,67 +1517,61 @@ namespace sw
 
 	void SamplerCore::computeLod3D(Pointer<Byte> &texture, Float &lod, Float4 &uuuu, Float4 &vvvv, Float4 &wwww, const Float &lodBias, Vector4f &dsx, Vector4f &dsy, SamplerFunction function)
 	{
-		if(state.mipmapFilter == MIPMAP_NONE)
+		if(function != Lod && function != Fetch)
 		{
+			Float4 dudxy, dvdxy, dsdxy;
+
+			if(function != Grad)   // Implicit
+			{
+				dudxy = uuuu - uuuu.xxxx;
+				dvdxy = vvvv - vvvv.xxxx;
+				dsdxy = wwww - wwww.xxxx;
+			}
+			else
+			{
+				dudxy = Float4(dsx.x.xx, dsy.x.xx);
+				dvdxy = Float4(dsx.y.xx, dsy.y.xx);
+				dsdxy = Float4(dsx.z.xx, dsy.z.xx);
+			}
+
+			// Scale by texture dimensions and global LOD.
+			dudxy *= *Pointer<Float4>(texture + OFFSET(Texture,widthLOD));
+			dvdxy *= *Pointer<Float4>(texture + OFFSET(Texture,heightLOD));
+			dsdxy *= *Pointer<Float4>(texture + OFFSET(Texture,depthLOD));
+
+			dudxy *= dudxy;
+			dvdxy *= dvdxy;
+			dsdxy *= dsdxy;
+
+			dudxy += dvdxy;
+			dudxy += dsdxy;
+
+			lod = Max(Float(dudxy.y), Float(dudxy.z));   // FIXME: Max(dudxy.y, dudxy.z);
+
+			lod = log2sqrt(lod);   // log2(sqrt(lod))
+
+			if(function == Bias)
+			{
+				lod += lodBias;
+			}
 		}
-		else   // Point and linear filter
+		else if(function == Lod)
 		{
-			if(function != Lod && function != Fetch)
-			{
-				Float4 dudxy, dvdxy, dsdxy;
-
-				if(function != Grad)   // Implicit
-				{
-					dudxy = uuuu - uuuu.xxxx;
-					dvdxy = vvvv - vvvv.xxxx;
-					dsdxy = wwww - wwww.xxxx;
-				}
-				else
-				{
-					dudxy = Float4(dsx.x.xx, dsy.x.xx);
-					dvdxy = Float4(dsx.y.xx, dsy.y.xx);
-					dsdxy = Float4(dsx.z.xx, dsy.z.xx);
-				}
-
-				// Scale by texture dimensions and global LOD.
-				dudxy *= *Pointer<Float4>(texture + OFFSET(Texture,widthLOD));
-				dvdxy *= *Pointer<Float4>(texture + OFFSET(Texture,heightLOD));
-				dsdxy *= *Pointer<Float4>(texture + OFFSET(Texture,depthLOD));
-
-				dudxy *= dudxy;
-				dvdxy *= dvdxy;
-				dsdxy *= dsdxy;
-
-				dudxy += dvdxy;
-				dudxy += dsdxy;
-
-				lod = Max(Float(dudxy.y), Float(dudxy.z));   // FIXME: Max(dudxy.y, dudxy.z);
-
-				lod = log2sqrt(lod);   // log2(sqrt(lod))
-
-				if(function == Bias)
-				{
-					lod += lodBias;
-				}
-			}
-			else if(function == Lod)
-			{
-				lod = lodBias + Float(*Pointer<Int>(texture + OFFSET(Texture,baseLevel)));
-			}
-			else if(function == Fetch)
-			{
-				// TODO: Eliminate int-float-int conversion.
-				lod = Float(As<Int>(lodBias)) + Float(*Pointer<Int>(texture + OFFSET(Texture,baseLevel)));
-			}
-			else if(function == Base)
-			{
-				lod = Float(*Pointer<Int>(texture + OFFSET(Texture,baseLevel)));
-			}
-			else assert(false);
-
-			lod = Max(lod, *Pointer<Float>(texture + OFFSET(Texture, minLod)));
-			lod = Min(lod, *Pointer<Float>(texture + OFFSET(Texture, maxLod)));
+			lod = lodBias;
 		}
+		else if(function == Fetch)
+		{
+			// TODO: Eliminate int-float-int conversion.
+			lod = Float(As<Int>(lodBias));
+		}
+		else if(function == Base)
+		{
+			lod = Float(0);
+		}
+		else assert(false);
+
+		lod = Max(lod, *Pointer<Float>(texture + OFFSET(Texture, minLod)));
+		lod = Min(lod, *Pointer<Float>(texture + OFFSET(Texture, maxLod)));
 	}
 
 	void SamplerCore::cubeFace(Int face[4], Float4 &U, Float4 &V, Float4 &x, Float4 &y, Float4 &z, Float4 &M)
@@ -1848,7 +1795,7 @@ namespace sw
 						break;
 					case FORMAT_A8B8G8R8:
 					case FORMAT_A8B8G8R8I:
-					case FORMAT_A8B8G8R8I_SNORM:
+					case FORMAT_A8B8G8R8_SNORM:
 					case FORMAT_Q8W8V8U8:
 					case FORMAT_SRGB8_A8:
 						c.z = As<Short4>(UnpackHigh(c.x, c.y));
@@ -1902,7 +1849,7 @@ namespace sw
 						c.y = UnpackHigh(As<Byte8>(c.y), As<Byte8>(c.y));
 						c.x = UnpackLow(As<Byte8>(c.x), As<Byte8>(c.x));
 						break;
-					case FORMAT_X8B8G8R8I_SNORM:
+					case FORMAT_X8B8G8R8_SNORM:
 					case FORMAT_X8B8G8R8I:
 					case FORMAT_X8B8G8R8:
 					case FORMAT_X8L8V8U8:
@@ -1943,7 +1890,7 @@ namespace sw
 				switch(state.textureFormat)
 				{
 				case FORMAT_G8R8:
-				case FORMAT_G8R8I_SNORM:
+				case FORMAT_G8R8_SNORM:
 				case FORMAT_V8U8:
 				case FORMAT_A8L8:
 					c.y = (c.x & Short4(0xFF00u)) | As<Short4>(As<UShort4>(c.x) >> 8);
@@ -2031,6 +1978,26 @@ namespace sw
 			}
 		}
 		else ASSERT(false);
+
+		if(state.sRGB)
+		{
+			if(state.textureFormat == FORMAT_R5G6B5)
+			{
+				sRGBtoLinear16_5_16(c.x);
+				sRGBtoLinear16_6_16(c.y);
+				sRGBtoLinear16_5_16(c.z);
+			}
+			else
+			{
+				for(int i = 0; i < textureComponentCount(); i++)
+				{
+					if(isRGBComponent(i))
+					{
+						sRGBtoLinear16_8_16(c[i]);
+					}
+				}
+			}
+		}
 
 		return c;
 	}
@@ -2234,7 +2201,7 @@ namespace sw
 
 			bool isInteger = Surface::isNonNormalizedInteger(state.textureFormat);
 			int componentCount = textureComponentCount();
-			for(int n = 0; n < componentCount; ++n)
+			for(int n = 0; n < componentCount; n++)
 			{
 				if(hasUnsignedTextureComponent(n))
 				{
@@ -2266,7 +2233,7 @@ namespace sw
 
 	void SamplerCore::selectMipmap(Pointer<Byte> &texture, Pointer<Byte> buffer[4], Pointer<Byte> &mipmap, Float &lod, Int face[4], bool secondLOD)
 	{
-		if(state.mipmapFilter < MIPMAP_POINT)
+		if(state.mipmapFilter == MIPMAP_NONE)
 		{
 			mipmap = texture + OFFSET(Texture,mipmap[0]);
 		}
@@ -2278,7 +2245,7 @@ namespace sw
 			{
 				ilod = RoundInt(lod);
 			}
-			else   // Linear
+			else   // MIPMAP_LINEAR
 			{
 				ilod = Int(lod);
 			}
@@ -2397,20 +2364,31 @@ namespace sw
 
 			Float4 coord = uvw;
 
-			switch(addressingMode)
+			if(state.textureType == TEXTURE_RECTANGLE)
 			{
-			case ADDRESSING_CLAMP:
-			case ADDRESSING_BORDER:
-			case ADDRESSING_SEAMLESS:
-				// Linear filtering of cube doesn't require clamping because the coordinates
-				// are already in [0, 1] range and numerical imprecision is tolerated.
-				if(addressingMode != ADDRESSING_SEAMLESS || pointFilter)
+				// According to https://www.khronos.org/registry/OpenGL/extensions/ARB/ARB_texture_rectangle.txt
+				// "CLAMP_TO_EDGE causes the s coordinate to be clamped to the range[0.5, wt - 0.5].
+				//  CLAMP_TO_EDGE causes the t coordinate to be clamped to the range[0.5, ht - 0.5]."
+				// Unless SwiftShader implements support for ADDRESSING_BORDER, other modes should be equivalent
+				// to CLAMP_TO_EDGE. Rectangle textures have no support for any MIRROR or REPEAT modes.
+				coord = Min(Max(coord, Float4(0.5f)), Float4(dim) - Float4(0.5f));
+			}
+			else
+			{
+				switch(addressingMode)
 				{
-					Float4 one = As<Float4>(Int4(oneBits));
-					coord = Min(Max(coord, Float4(0.0f)), one);
-				}
-				break;
-			case ADDRESSING_MIRROR:
+				case ADDRESSING_CLAMP:
+				case ADDRESSING_BORDER:
+				case ADDRESSING_SEAMLESS:
+					// Linear filtering of cube doesn't require clamping because the coordinates
+					// are already in [0, 1] range and numerical imprecision is tolerated.
+					if(addressingMode != ADDRESSING_SEAMLESS || pointFilter)
+					{
+						Float4 one = As<Float4>(Int4(oneBits));
+						coord = Min(Max(coord, Float4(0.0f)), one);
+					}
+					break;
+				case ADDRESSING_MIRROR:
 				{
 					Float4 half = As<Float4>(Int4(halfBits));
 					Float4 one = As<Float4>(Int4(oneBits));
@@ -2418,7 +2396,7 @@ namespace sw
 					coord = one - Abs(two * Frac(coord * half) - one);
 				}
 				break;
-			case ADDRESSING_MIRRORONCE:
+				case ADDRESSING_MIRRORONCE:
 				{
 					Float4 half = As<Float4>(Int4(halfBits));
 					Float4 one = As<Float4>(Int4(oneBits));
@@ -2426,22 +2404,23 @@ namespace sw
 					coord = one - Abs(two * Frac(Min(Max(coord, -one), two) * half) - one);
 				}
 				break;
-			default:   // Wrap
-				coord = Frac(coord);
-				break;
+				default:   // Wrap
+					coord = Frac(coord);
+					break;
+				}
+
+				coord = coord * Float4(dim);
 			}
 
-			coord = coord * Float4(dim);
-
 			if(state.textureFilter == FILTER_POINT ||
-               state.textureFilter == FILTER_GATHER)
- 			{
+			   state.textureFilter == FILTER_GATHER)
+			{
 				xyz0 = Int4(coord);
 			}
 			else
 			{
 				if(state.textureFilter == FILTER_MIN_POINT_MAG_LINEAR ||
-            	   state.textureFilter == FILTER_MIN_LINEAR_MAG_POINT)
+				   state.textureFilter == FILTER_MIN_LINEAR_MAG_POINT)
 				{
 					coord -= As<Float4>(As<Int4>(Float4(0.5f)) & filter);
 				}
@@ -2551,11 +2530,11 @@ namespace sw
 		cf = Float4(As<UShort4>(cs)) * Float4(1.0f / 0xFFFF);
 	}
 
-	void SamplerCore::sRGBtoLinear16_8_12(Short4 &c)
+	void SamplerCore::sRGBtoLinear16_8_16(Short4 &c)
 	{
 		c = As<UShort4>(c) >> 8;
 
-		Pointer<Byte> LUT = Pointer<Byte>(constants + OFFSET(Constants,sRGBtoLinear8_12));
+		Pointer<Byte> LUT = Pointer<Byte>(constants + OFFSET(Constants,sRGBtoLinear8_16));
 
 		c = Insert(c, *Pointer<Short>(LUT + 2 * Int(Extract(c, 0))), 0);
 		c = Insert(c, *Pointer<Short>(LUT + 2 * Int(Extract(c, 1))), 1);
@@ -2563,11 +2542,11 @@ namespace sw
 		c = Insert(c, *Pointer<Short>(LUT + 2 * Int(Extract(c, 3))), 3);
 	}
 
-	void SamplerCore::sRGBtoLinear16_6_12(Short4 &c)
+	void SamplerCore::sRGBtoLinear16_6_16(Short4 &c)
 	{
 		c = As<UShort4>(c) >> 10;
 
-		Pointer<Byte> LUT = Pointer<Byte>(constants + OFFSET(Constants,sRGBtoLinear6_12));
+		Pointer<Byte> LUT = Pointer<Byte>(constants + OFFSET(Constants,sRGBtoLinear6_16));
 
 		c = Insert(c, *Pointer<Short>(LUT + 2 * Int(Extract(c, 0))), 0);
 		c = Insert(c, *Pointer<Short>(LUT + 2 * Int(Extract(c, 1))), 1);
@@ -2575,11 +2554,11 @@ namespace sw
 		c = Insert(c, *Pointer<Short>(LUT + 2 * Int(Extract(c, 3))), 3);
 	}
 
-	void SamplerCore::sRGBtoLinear16_5_12(Short4 &c)
+	void SamplerCore::sRGBtoLinear16_5_16(Short4 &c)
 	{
 		c = As<UShort4>(c) >> 11;
 
-		Pointer<Byte> LUT = Pointer<Byte>(constants + OFFSET(Constants,sRGBtoLinear5_12));
+		Pointer<Byte> LUT = Pointer<Byte>(constants + OFFSET(Constants,sRGBtoLinear5_16));
 
 		c = Insert(c, *Pointer<Short>(LUT + 2 * Int(Extract(c, 0))), 0);
 		c = Insert(c, *Pointer<Short>(LUT + 2 * Int(Extract(c, 1))), 1);
@@ -2618,10 +2597,10 @@ namespace sw
 		{
 		case FORMAT_R5G6B5:
 			return true;
-		case FORMAT_R8I_SNORM:
-		case FORMAT_G8R8I_SNORM:
-		case FORMAT_X8B8G8R8I_SNORM:
-		case FORMAT_A8B8G8R8I_SNORM:
+		case FORMAT_R8_SNORM:
+		case FORMAT_G8R8_SNORM:
+		case FORMAT_X8B8G8R8_SNORM:
+		case FORMAT_A8B8G8R8_SNORM:
 		case FORMAT_R8I:
 		case FORMAT_R8UI:
 		case FORMAT_G8R8I:
@@ -2652,13 +2631,14 @@ namespace sw
 		case FORMAT_G32R32F:
 		case FORMAT_X32B32G32R32F:
 		case FORMAT_A32B32G32R32F:
+		case FORMAT_X32B32G32R32F_UNSIGNED:
 		case FORMAT_A8:
 		case FORMAT_R8:
 		case FORMAT_L8:
 		case FORMAT_A8L8:
-		case FORMAT_D32F:
 		case FORMAT_D32F_LOCKABLE:
 		case FORMAT_D32FS8_TEXTURE:
+		case FORMAT_D32F_SHADOW:
 		case FORMAT_D32FS8_SHADOW:
 		case FORMAT_L16:
 		case FORMAT_G16R16:
@@ -2703,10 +2683,10 @@ namespace sw
 		case FORMAT_R8:
 		case FORMAT_L8:
 		case FORMAT_A8L8:
-		case FORMAT_R8I_SNORM:
-		case FORMAT_G8R8I_SNORM:
-		case FORMAT_X8B8G8R8I_SNORM:
-		case FORMAT_A8B8G8R8I_SNORM:
+		case FORMAT_R8_SNORM:
+		case FORMAT_G8R8_SNORM:
+		case FORMAT_X8B8G8R8_SNORM:
+		case FORMAT_A8B8G8R8_SNORM:
 		case FORMAT_R8I:
 		case FORMAT_R8UI:
 		case FORMAT_G8R8I:
@@ -2721,9 +2701,10 @@ namespace sw
 		case FORMAT_G32R32F:
 		case FORMAT_X32B32G32R32F:
 		case FORMAT_A32B32G32R32F:
-		case FORMAT_D32F:
+		case FORMAT_X32B32G32R32F_UNSIGNED:
 		case FORMAT_D32F_LOCKABLE:
 		case FORMAT_D32FS8_TEXTURE:
+		case FORMAT_D32F_SHADOW:
 		case FORMAT_D32FS8_SHADOW:
 		case FORMAT_L16:
 		case FORMAT_G16R16:
@@ -2763,10 +2744,10 @@ namespace sw
 		switch(state.textureFormat)
 		{
 		case FORMAT_R5G6B5:
-		case FORMAT_R8I_SNORM:
-		case FORMAT_G8R8I_SNORM:
-		case FORMAT_X8B8G8R8I_SNORM:
-		case FORMAT_A8B8G8R8I_SNORM:
+		case FORMAT_R8_SNORM:
+		case FORMAT_G8R8_SNORM:
+		case FORMAT_X8B8G8R8_SNORM:
+		case FORMAT_A8B8G8R8_SNORM:
 		case FORMAT_R8I:
 		case FORMAT_R8UI:
 		case FORMAT_G8R8I:
@@ -2797,13 +2778,14 @@ namespace sw
 		case FORMAT_G32R32F:
 		case FORMAT_X32B32G32R32F:
 		case FORMAT_A32B32G32R32F:
+		case FORMAT_X32B32G32R32F_UNSIGNED:
 		case FORMAT_A8:
 		case FORMAT_R8:
 		case FORMAT_L8:
 		case FORMAT_A8L8:
-		case FORMAT_D32F:
 		case FORMAT_D32F_LOCKABLE:
 		case FORMAT_D32FS8_TEXTURE:
+		case FORMAT_D32F_SHADOW:
 		case FORMAT_D32FS8_SHADOW:
 		case FORMAT_YV12_BT601:
 		case FORMAT_YV12_BT709:
@@ -2836,10 +2818,10 @@ namespace sw
 		switch(state.textureFormat)
 		{
 		case FORMAT_R5G6B5:
-		case FORMAT_R8I_SNORM:
-		case FORMAT_G8R8I_SNORM:
-		case FORMAT_X8B8G8R8I_SNORM:
-		case FORMAT_A8B8G8R8I_SNORM:
+		case FORMAT_R8_SNORM:
+		case FORMAT_G8R8_SNORM:
+		case FORMAT_X8B8G8R8_SNORM:
+		case FORMAT_A8B8G8R8_SNORM:
 		case FORMAT_R8I:
 		case FORMAT_R8UI:
 		case FORMAT_G8R8I:
@@ -2876,13 +2858,14 @@ namespace sw
 		case FORMAT_G32R32F:
 		case FORMAT_X32B32G32R32F:
 		case FORMAT_A32B32G32R32F:
+		case FORMAT_X32B32G32R32F_UNSIGNED:
 		case FORMAT_A8:
 		case FORMAT_R8:
 		case FORMAT_L8:
 		case FORMAT_A8L8:
-		case FORMAT_D32F:
 		case FORMAT_D32F_LOCKABLE:
 		case FORMAT_D32FS8_TEXTURE:
+		case FORMAT_D32F_SHADOW:
 		case FORMAT_D32FS8_SHADOW:
 		case FORMAT_YV12_BT601:
 		case FORMAT_YV12_BT709:
@@ -2913,10 +2896,10 @@ namespace sw
 		case FORMAT_YV12_JFIF:
 			return true;
 		case FORMAT_R5G6B5:
-		case FORMAT_R8I_SNORM:
-		case FORMAT_G8R8I_SNORM:
-		case FORMAT_X8B8G8R8I_SNORM:
-		case FORMAT_A8B8G8R8I_SNORM:
+		case FORMAT_R8_SNORM:
+		case FORMAT_G8R8_SNORM:
+		case FORMAT_X8B8G8R8_SNORM:
+		case FORMAT_A8B8G8R8_SNORM:
 		case FORMAT_R8I:
 		case FORMAT_R8UI:
 		case FORMAT_G8R8I:
@@ -2947,13 +2930,14 @@ namespace sw
 		case FORMAT_G32R32F:
 		case FORMAT_X32B32G32R32F:
 		case FORMAT_A32B32G32R32F:
+		case FORMAT_X32B32G32R32F_UNSIGNED:
 		case FORMAT_A8:
 		case FORMAT_R8:
 		case FORMAT_L8:
 		case FORMAT_A8L8:
-		case FORMAT_D32F:
 		case FORMAT_D32F_LOCKABLE:
 		case FORMAT_D32FS8_TEXTURE:
+		case FORMAT_D32F_SHADOW:
 		case FORMAT_D32FS8_SHADOW:
 		case FORMAT_L16:
 		case FORMAT_G16R16:
@@ -2982,10 +2966,10 @@ namespace sw
 		switch(state.textureFormat)
 		{
 		case FORMAT_R5G6B5:         return component < 3;
-		case FORMAT_R8I_SNORM:      return component < 1;
-		case FORMAT_G8R8I_SNORM:    return component < 2;
-		case FORMAT_X8B8G8R8I_SNORM: return component < 3;
-		case FORMAT_A8B8G8R8I_SNORM: return component < 3;
+		case FORMAT_R8_SNORM:      return component < 1;
+		case FORMAT_G8R8_SNORM:    return component < 2;
+		case FORMAT_X8B8G8R8_SNORM: return component < 3;
+		case FORMAT_A8B8G8R8_SNORM: return component < 3;
 		case FORMAT_R8I:            return component < 1;
 		case FORMAT_R8UI:           return component < 1;
 		case FORMAT_G8R8I:          return component < 2;
@@ -3016,13 +3000,14 @@ namespace sw
 		case FORMAT_G32R32F:        return component < 2;
 		case FORMAT_X32B32G32R32F:  return component < 3;
 		case FORMAT_A32B32G32R32F:  return component < 3;
+		case FORMAT_X32B32G32R32F_UNSIGNED: return component < 3;
 		case FORMAT_A8:             return false;
 		case FORMAT_R8:             return component < 1;
 		case FORMAT_L8:             return component < 1;
 		case FORMAT_A8L8:           return component < 1;
-		case FORMAT_D32F:           return false;
 		case FORMAT_D32F_LOCKABLE:  return false;
 		case FORMAT_D32FS8_TEXTURE: return false;
+		case FORMAT_D32F_SHADOW:    return false;
 		case FORMAT_D32FS8_SHADOW:  return false;
 		case FORMAT_L16:            return component < 1;
 		case FORMAT_G16R16:         return component < 2;

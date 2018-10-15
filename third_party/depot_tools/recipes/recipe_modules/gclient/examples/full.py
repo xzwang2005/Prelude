@@ -13,6 +13,7 @@ DEPS = [
 
 TEST_CONFIGS = [
   'android',
+  'angle',
   'boringssl',
   'build_internal',
   'build_internal_scripts_slave',
@@ -20,11 +21,14 @@ TEST_CONFIGS = [
   'crashpad',
   'custom_tabs_client',
   'dart',
+  'dawn',
   'disable_syntax_validation',
+  'expect_tests',
   'gerrit_test_cq_normal',
   'gyp',
   'infra',
   'infradata_master_manager',
+  'infradata_config',
   'internal_deps',
   'luci_gae',
   'luci_go',
@@ -39,6 +43,7 @@ TEST_CONFIGS = [
   'wasm_llvm',
   'webports',
   'with_branch_heads',
+  'with_tags',
 ]
 
 
@@ -51,6 +56,7 @@ def RunSteps(api):
   soln.name = 'src'
   soln.url = 'https://chromium.googlesource.com/chromium/src.git'
   soln.revision = api.properties.get('revision')
+  soln.custom_vars = {'string_var': 'string_val', 'true_var': True}
   src_cfg.parent_got_revision_mapping['parent_got_revision'] = 'got_revision'
   api.gclient.c = src_cfg
   api.gclient.checkout()
@@ -74,8 +80,6 @@ def RunSteps(api):
   del api.gclient.spec_alias
 
   api.gclient.runhooks()
-
-  assert not api.gclient.is_blink_mode
 
 
 def GenTests(api):

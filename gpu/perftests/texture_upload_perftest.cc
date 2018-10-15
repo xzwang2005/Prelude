@@ -72,7 +72,7 @@ GLuint LoadShader(const GLenum type, const char* const src) {
   GLuint shader = 0;
   shader = glCreateShader(type);
   CHECK_NE(0u, shader);
-  glShaderSource(shader, 1, &src, NULL);
+  glShaderSource(shader, 1, &src, nullptr);
   glCompileShader(shader);
 
   GLint compiled = 0;
@@ -82,7 +82,7 @@ GLuint LoadShader(const GLenum type, const char* const src) {
     glGetShaderiv(shader, GL_INFO_LOG_LENGTH, &len);
     if (len > 1) {
       std::unique_ptr<char[]> error_log(new char[len]);
-      glGetShaderInfoLog(shader, len, NULL, error_log.get());
+      glGetShaderInfoLog(shader, len, nullptr, error_log.get());
       LOG(ERROR) << "Error compiling shader: " << error_log.get();
     }
   }
@@ -149,6 +149,7 @@ bool CompareBufferToRGBABuffer(GLenum format,
         case GL_LUMINANCE:  // (L_t, L_t, L_t, 1)
           expected[1] = pixels[pixels_index];
           expected[2] = pixels[pixels_index];
+          FALLTHROUGH;
         case GL_RED:  // (R_t, 0, 0, 1)
           expected[0] = pixels[pixels_index];
           expected[3] = 255;

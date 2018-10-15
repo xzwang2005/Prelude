@@ -114,35 +114,30 @@ namespace sw
 
 	Float4 exponential2(RValue<Float4> x, bool pp)
 	{
-		Float4 x0;
-		Float4 x1;
-		Int4 x2;
+		// This implementation is based on 2^(i + f) = 2^i * 2^f,
+		// where i is the integer part of x and f is the fraction.
 
-		x0 = x;
-
+		// For 2^i we can put the integer part directly in the exponent of
+		// the IEEE-754 floating-point number. Clamp to prevent overflow
+		// past the representation of infinity.
+		Float4 x0 = x;
 		x0 = Min(x0, As<Float4>(Int4(0x43010000)));   // 129.00000e+0f
 		x0 = Max(x0, As<Float4>(Int4(0xC2FDFFFF)));   // -126.99999e+0f
-		x1 = x0;
-		x1 -= Float4(0.5f);
-		x2 = RoundInt(x1);
-		x1 = Float4(x2);
-		x2 += Int4(0x0000007F);   // 127
-		x2 = x2 << 23;
-		x0 -= x1;
-		x1 = As<Float4>(Int4(0x3AF61905));   // 1.8775767e-3f
-		x1 *= x0;
-		x1 += As<Float4>(Int4(0x3C134806));   // 8.9893397e-3f
-		x1 *= x0;
-		x1 += As<Float4>(Int4(0x3D64AA23));   // 5.5826318e-2f
-		x1 *= x0;
-		x1 += As<Float4>(Int4(0x3E75EAD4));   // 2.4015361e-1f
-		x1 *= x0;
-		x1 += As<Float4>(Int4(0x3F31727B));   // 6.9315308e-1f
-		x1 *= x0;
-		x1 += As<Float4>(Int4(0x3F7FFFFF));   // 9.9999994e-1f
-		x1 *= As<Float4>(x2);
 
-		return x1;
+		Int4 i = RoundInt(x0 - Float4(0.5f));
+		Float4 ii = As<Float4>((i + Int4(127)) << 23);   // Add single-precision bias, and shift into exponent.
+
+		// For the fractional part use a polynomial
+		// which approximates 2^f in the 0 to 1 range.
+		Float4 f = x0 - Float4(i);
+		Float4 ff = As<Float4>(Int4(0x3AF61905));     // 1.8775767e-3f
+		ff = ff * f + As<Float4>(Int4(0x3C134806));   // 8.9893397e-3f
+		ff = ff * f + As<Float4>(Int4(0x3D64AA23));   // 5.5826318e-2f
+		ff = ff * f + As<Float4>(Int4(0x3E75EAD4));   // 2.4015361e-1f
+		ff = ff * f + As<Float4>(Int4(0x3F31727B));   // 6.9315308e-1f
+		ff = ff * f + Float4(1.0f);
+
+		return ii * ff;
 	}
 
 	Float4 logarithm2(RValue<Float4> x, bool absolute, bool pp)
@@ -407,14 +402,13 @@ namespace sw
 		Float4 y0 = Abs(y);
 
 		// Rotate to right quadrant when in left quadrant
-		Int4 non_zero_y = CmpNEQ(y0, Float4(0.0f));
-		Int4 Q = CmpLT(x0, Float4(0.0f)) & non_zero_y;
+		Int4 Q = CmpLT(x0, Float4(0.0f));
 		theta += As<Float4>(Q & As<Int4>(half_pi));
 		Float4 x1 = As<Float4>((Q & As<Int4>(y0)) | (~Q & As<Int4>(x0)));  // FIXME: Vector select
 		Float4 y1 = As<Float4>((Q & As<Int4>(-x0)) | (~Q & As<Int4>(y0))); // FIXME: Vector select
 
 		// Mirror to first octant when in second octant
-		Int4 O = CmpNLT(y1, x1) & non_zero_y;
+		Int4 O = CmpNLT(y1, x1);
 		Float4 x2 = As<Float4>((O & As<Int4>(y1)) | (~O & As<Int4>(x1))); // FIXME: Vector select
 		Float4 y2 = As<Float4>((O & As<Int4>(x1)) | (~O & As<Int4>(y1))); // FIXME: Vector select
 
@@ -422,7 +416,7 @@ namespace sw
 		Int4 zero_x = CmpEQ(x2, Float4(0.0f));
 		Int4 inf_y = IsInf(y2); // Since x2 >= y2, this means x2 == y2 == inf, so we use 45 degrees or pi/4
 		Float4 atan2_theta = arctan_01(y2 / x2, pp);
-		theta += As<Float4>((~zero_x & ~inf_y & non_zero_y & ((O & As<Int4>(half_pi - atan2_theta)) | (~O & (As<Int4>(atan2_theta))))) | // FIXME: Vector select
+		theta += As<Float4>((~zero_x & ~inf_y & ((O & As<Int4>(half_pi - atan2_theta)) | (~O & (As<Int4>(atan2_theta))))) | // FIXME: Vector select
 		                    (inf_y & As<Int4>(quarter_pi)));
 
 		// Recover loss of precision for tiny theta angles
@@ -564,6 +558,100 @@ namespace sw
 		case 3: transpose4x3(row0, row1, row2, row3); break;
 		case 4: transpose4x4(row0, row1, row2, row3); break;
 		}
+	}
+
+	const Vector4f RegisterFile::operator[](RValue<Int4> index)
+	{
+		ASSERT(indirectAddressable);
+
+		Int index0 = Extract(index, 0);
+		Int index1 = Extract(index, 1);
+		Int index2 = Extract(index, 2);
+		Int index3 = Extract(index, 3);
+
+		Vector4f r;
+
+		r.x.x = Extract(x[0][index0], 0);
+		r.x.y = Extract(x[0][index1], 1);
+		r.x.z = Extract(x[0][index2], 2);
+		r.x.w = Extract(x[0][index3], 3);
+
+		r.y.x = Extract(y[0][index0], 0);
+		r.y.y = Extract(y[0][index1], 1);
+		r.y.z = Extract(y[0][index2], 2);
+		r.y.w = Extract(y[0][index3], 3);
+
+		r.z.x = Extract(z[0][index0], 0);
+		r.z.y = Extract(z[0][index1], 1);
+		r.z.z = Extract(z[0][index2], 2);
+		r.z.w = Extract(z[0][index3], 3);
+
+		r.w.x = Extract(w[0][index0], 0);
+		r.w.y = Extract(w[0][index1], 1);
+		r.w.z = Extract(w[0][index2], 2);
+		r.w.w = Extract(w[0][index3], 3);
+
+		return r;
+	}
+
+	void RegisterFile::scatter_x(Int4 index, RValue<Float4> r)
+	{
+		ASSERT(indirectAddressable);
+
+		Int index0 = Extract(index, 0);
+		Int index1 = Extract(index, 1);
+		Int index2 = Extract(index, 2);
+		Int index3 = Extract(index, 3);
+
+		x[0][index0] = Insert(x[0][index0], Extract(r, 0), 0);
+		x[0][index1] = Insert(x[0][index1], Extract(r, 1), 1);
+		x[0][index2] = Insert(x[0][index2], Extract(r, 2), 2);
+		x[0][index3] = Insert(x[0][index3], Extract(r, 3), 3);
+	}
+
+	void RegisterFile::scatter_y(Int4 index, RValue<Float4> r)
+	{
+		ASSERT(indirectAddressable);
+
+		Int index0 = Extract(index, 0);
+		Int index1 = Extract(index, 1);
+		Int index2 = Extract(index, 2);
+		Int index3 = Extract(index, 3);
+
+		y[0][index0] = Insert(y[0][index0], Extract(r, 0), 0);
+		y[0][index1] = Insert(y[0][index1], Extract(r, 1), 1);
+		y[0][index2] = Insert(y[0][index2], Extract(r, 2), 2);
+		y[0][index3] = Insert(y[0][index3], Extract(r, 3), 3);
+	}
+
+	void RegisterFile::scatter_z(Int4 index, RValue<Float4> r)
+	{
+		ASSERT(indirectAddressable);
+
+		Int index0 = Extract(index, 0);
+		Int index1 = Extract(index, 1);
+		Int index2 = Extract(index, 2);
+		Int index3 = Extract(index, 3);
+
+		z[0][index0] = Insert(z[0][index0], Extract(r, 0), 0);
+		z[0][index1] = Insert(z[0][index1], Extract(r, 1), 1);
+		z[0][index2] = Insert(z[0][index2], Extract(r, 2), 2);
+		z[0][index3] = Insert(z[0][index3], Extract(r, 3), 3);
+	}
+
+	void RegisterFile::scatter_w(Int4 index, RValue<Float4> r)
+	{
+		ASSERT(indirectAddressable);
+
+		Int index0 = Extract(index, 0);
+		Int index1 = Extract(index, 1);
+		Int index2 = Extract(index, 2);
+		Int index3 = Extract(index, 3);
+
+		w[0][index0] = Insert(w[0][index0], Extract(r, 0), 0);
+		w[0][index1] = Insert(w[0][index1], Extract(r, 1), 1);
+		w[0][index2] = Insert(w[0][index2], Extract(r, 2), 2);
+		w[0][index3] = Insert(w[0][index3], Extract(r, 3), 3);
 	}
 
 	void ShaderCore::mov(Vector4f &dst, const Vector4f &src, bool integerDestination)
@@ -727,7 +815,7 @@ namespace sw
 
 	void ShaderCore::rcpx(Vector4f &dst, const Vector4f &src, bool pp)
 	{
-		Float4 rcp = reciprocal(src.x, pp, true);
+		Float4 rcp = reciprocal(src.x, pp, true, true);
 
 		dst.x = rcp;
 		dst.y = rcp;
@@ -1605,9 +1693,9 @@ namespace sw
 		dst.w = arctanh(src.w, pp);
 	}
 
-	void ShaderCore::expp(Vector4f &dst, const Vector4f &src, unsigned short version)
+	void ShaderCore::expp(Vector4f &dst, const Vector4f &src, unsigned short shaderModel)
 	{
-		if(version < 0x0200)
+		if(shaderModel < 0x0200)
 		{
 			Float4 frc = Frac(src.x);
 			Float4 floor = src.x - frc;
@@ -1623,9 +1711,9 @@ namespace sw
 		}
 	}
 
-	void ShaderCore::logp(Vector4f &dst, const Vector4f &src, unsigned short version)
+	void ShaderCore::logp(Vector4f &dst, const Vector4f &src, unsigned short shaderModel)
 	{
-		if(version < 0x0200)
+		if(shaderModel < 0x0200)
 		{
 			Float4 tmp0;
 			Float4 tmp1;

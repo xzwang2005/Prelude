@@ -1,19 +1,19 @@
-/***************************************************************************/
-/*                                                                         */
-/*  cffload.c                                                              */
-/*                                                                         */
-/*    OpenType and CFF data/program tables loader (body).                  */
-/*                                                                         */
-/*  Copyright 1996-2017 by                                                 */
-/*  David Turner, Robert Wilhelm, and Werner Lemberg.                      */
-/*                                                                         */
-/*  This file is part of the FreeType project, and may only be used,       */
-/*  modified, and distributed under the terms of the FreeType project      */
-/*  license, LICENSE.TXT.  By continuing to use, modify, or distribute     */
-/*  this file you indicate that you have read the license and              */
-/*  understand and accept it fully.                                        */
-/*                                                                         */
-/***************************************************************************/
+/****************************************************************************
+ *
+ * cffload.c
+ *
+ *   OpenType and CFF data/program tables loader (body).
+ *
+ * Copyright 1996-2018 by
+ * David Turner, Robert Wilhelm, and Werner Lemberg.
+ *
+ * This file is part of the FreeType project, and may only be used,
+ * modified, and distributed under the terms of the FreeType project
+ * license, LICENSE.TXT.  By continuing to use, modify, or distribute
+ * this file you indicate that you have read the license and
+ * understand and accept it fully.
+ *
+ */
 
 
 #include <ft2build.h>
@@ -22,6 +22,7 @@
 #include FT_INTERNAL_STREAM_H
 #include FT_TRUETYPE_TAGS_H
 #include FT_TYPE1_TABLES_H
+#include FT_INTERNAL_POSTSCRIPT_AUX_H
 
 #ifdef TT_CONFIG_OPTION_GX_VAR_SUPPORT
 #include FT_MULTIPLE_MASTERS_H
@@ -195,14 +196,14 @@
   }
 
 
-  /*************************************************************************/
-  /*                                                                       */
-  /* The macro FT_COMPONENT is used in trace mode.  It is an implicit      */
-  /* parameter of the FT_TRACE() and FT_ERROR() macros, used to print/log  */
-  /* messages during execution.                                            */
-  /*                                                                       */
+  /**************************************************************************
+   *
+   * The macro FT_COMPONENT is used in trace mode.  It is an implicit
+   * parameter of the FT_TRACE() and FT_ERROR() macros, used to print/log
+   * messages during execution.
+   */
 #undef  FT_COMPONENT
-#define FT_COMPONENT  trace_cffload
+#define FT_COMPONENT  cffload
 
 
   /* read an offset from the index's stream current position */
@@ -1297,7 +1298,9 @@
 
     if ( numOperands > count )
     {
-      FT_TRACE4(( " cff_blend_doBlend: Stack underflow %d args\n", count ));
+      FT_TRACE4(( " cff_blend_doBlend: Stack underflow %d argument%s\n",
+                  count,
+                  count == 1 ? "" : "s" ));
 
       error = FT_THROW( Stack_Underflow );
       goto Exit;
@@ -1395,7 +1398,14 @@
     FT_UInt       master;
 
 
-    FT_ASSERT( lenNDV == 0 || NDV );
+    /* protect against malformed fonts */
+    if ( !( lenNDV == 0 || NDV ) )
+    {
+      FT_TRACE4(( " cff_blend_build_vector:"
+                  " Malformed Normalize Design Vector data\n" ));
+      error = FT_THROW( Invalid_File_Format );
+      goto Exit;
+    }
 
     blend->builtBV = FALSE;
 
@@ -1553,13 +1563,13 @@
                           FT_UInt    lenNDV,
                           FT_Fixed*  NDV )
   {
-    if ( !blend->builtBV                             ||
-         blend->lastVsindex != vsindex               ||
-         blend->lenNDV != lenNDV                     ||
-         ( lenNDV                                  &&
-           memcmp( NDV,
-                   blend->lastNDV,
-                   lenNDV * sizeof ( *NDV ) ) != 0 ) )
+    if ( !blend->builtBV                                ||
+         blend->lastVsindex != vsindex                  ||
+         blend->lenNDV != lenNDV                        ||
+         ( lenNDV                                     &&
+           ft_memcmp( NDV,
+                      blend->lastNDV,
+                      lenNDV * sizeof ( *NDV ) ) != 0 ) )
     {
       /* need to build blend vector */
       return TRUE;
@@ -1930,6 +1940,24 @@
     else if ( priv->initial_random_seed == 0 )
       priv->initial_random_seed = 987654321;
 
+    /* some sanitizing to avoid overflows later on; */
+    /* the upper limits are ad-hoc values           */
+    if ( priv->blue_shift > 1000 || priv->blue_shift < 0 )
+    {
+      FT_TRACE2(( "cff_load_private_dict:"
+                  " setting unlikely BlueShift value %d to default (7)\n",
+                  priv->blue_shift ));
+      priv->blue_shift = 7;
+    }
+
+    if ( priv->blue_fuzz > 1000 || priv->blue_fuzz < 0 )
+    {
+      FT_TRACE2(( "cff_load_private_dict:"
+                  " setting unlikely BlueFuzz value %d to default (1)\n",
+                  priv->blue_fuzz ));
+      priv->blue_fuzz = 1;
+    }
+
   Exit:
     /* clean up */
     cff_blend_clear( subfont ); /* clear blend stack */
@@ -2059,13 +2087,13 @@
       /*
        * Initialize the random number generator.
        *
-       * . If we have a face-specific seed, use it.
+       * - If we have a face-specific seed, use it.
        *   If non-zero, update it to a positive value.
        *
-       * . Otherwise, use the seed from the CFF driver.
+       * - Otherwise, use the seed from the CFF driver.
        *   If non-zero, update it to a positive value.
        *
-       * . If the random value is zero, use the seed given by the subfont's
+       * - If the random value is zero, use the seed given by the subfont's
        *   `initialRandomSeed' value.
        *
        */

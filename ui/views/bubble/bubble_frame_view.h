@@ -8,6 +8,7 @@
 #include "base/compiler_specific.h"
 #include "base/gtest_prod_util.h"
 #include "base/macros.h"
+#include "base/time/time.h"
 #include "ui/gfx/font_list.h"
 #include "ui/gfx/geometry/insets.h"
 #include "ui/views/controls/button/button.h"
@@ -65,6 +66,7 @@ class VIEWS_EXPORT BubbleFrameView : public NonClientFrameView,
   void OnNativeThemeChanged(const ui::NativeTheme* theme) override;
   void ViewHierarchyChanged(
       const ViewHierarchyChangedDetails& details) override;
+  void VisibilityChanged(View* starting_from, bool is_visible) override;
 
   // ButtonListener:
   void ButtonPressed(Button* sender, const ui::Event& event) override;
@@ -99,9 +101,19 @@ class VIEWS_EXPORT BubbleFrameView : public NonClientFrameView,
 
   Button* GetCloseButtonForTest() { return close_; }
 
+  // Resets the time when view has been shown. Tests may need to call this
+  // method if they use events that could be otherwise treated as unintended.
+  // See IsPossiblyUnintendedInteraction().
+  void ResetViewShownTimeStampForTesting();
+
  protected:
   // Returns the available screen bounds if the frame were to show in |rect|.
   virtual gfx::Rect GetAvailableScreenBounds(const gfx::Rect& rect) const;
+
+  // Override and return true to allow client view to overlap into the title
+  // area when HasTitle() returns false and/or ShouldShowCloseButton() returns
+  // true. Returns false by default.
+  virtual bool ExtendClientIntoTitle() const;
 
   bool IsCloseButtonVisible() const;
   gfx::Rect GetCloseButtonMirroredBounds() const;
@@ -110,8 +122,9 @@ class VIEWS_EXPORT BubbleFrameView : public NonClientFrameView,
   FRIEND_TEST_ALL_PREFIXES(BubbleFrameViewTest, GetBoundsForClientView);
   FRIEND_TEST_ALL_PREFIXES(BubbleFrameViewTest, RemoveFootnoteView);
   FRIEND_TEST_ALL_PREFIXES(BubbleFrameViewTest, LayoutWithIcon);
+  FRIEND_TEST_ALL_PREFIXES(BubbleFrameViewTest, IgnorePossiblyUnintendedClicks);
   FRIEND_TEST_ALL_PREFIXES(BubbleDelegateTest, CloseReasons);
-  FRIEND_TEST_ALL_PREFIXES(BubbleDialogDelegateTest, CloseMethods);
+  FRIEND_TEST_ALL_PREFIXES(BubbleDialogDelegateViewTest, CloseMethods);
 
   // Mirrors the bubble's arrow location on the |vertical| or horizontal axis,
   // if the generated window bounds don't fit in the monitor bounds.
@@ -174,6 +187,9 @@ class VIEWS_EXPORT BubbleFrameView : public NonClientFrameView,
 
   // Whether the close button was clicked.
   bool close_button_clicked_;
+
+  // Time when view has been shown.
+  base::TimeTicks view_shown_time_stamp_;
 
   DISALLOW_COPY_AND_ASSIGN(BubbleFrameView);
 };

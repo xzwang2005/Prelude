@@ -52,14 +52,35 @@ bool SharedMemoryHandleProvider::InitFromMojoHandle(
   DCHECK(!shared_memory_);
 
   base::SharedMemoryHandle memory_handle;
-  const MojoResult result =
-      mojo::UnwrapSharedMemoryHandle(std::move(buffer_handle), &memory_handle,
-                                     &mapped_size_, &read_only_flag_);
+  mojo::UnwrappedSharedMemoryHandleProtection protection;
+  const MojoResult result = mojo::UnwrapSharedMemoryHandle(
+      std::move(buffer_handle), &memory_handle, &mapped_size_, &protection);
   if (result != MOJO_RESULT_OK)
     return false;
+  read_only_flag_ =
+      protection == mojo::UnwrappedSharedMemoryHandleProtection::kReadOnly;
   shared_memory_.emplace(memory_handle, read_only_flag_);
   return true;
 }
+
+#if defined(OS_LINUX)
+bool SharedMemoryHandleProvider::InitAsReadOnlyFromRawFileDescriptor(
+    mojo::ScopedHandle fd_handle,
+    uint32_t memory_size_in_bytes) {
+  base::PlatformFile platform_file;
+  const MojoResult result =
+      mojo::UnwrapPlatformFile(std::move(fd_handle), &platform_file);
+  if (result != MOJO_RESULT_OK)
+    return false;
+  base::UnguessableToken guid = base::UnguessableToken::Create();
+  base::SharedMemoryHandle memory_handle(
+      base::FileDescriptor(platform_file, true), 0u, guid);
+  mapped_size_ = memory_size_in_bytes;
+  read_only_flag_ = true;
+  shared_memory_.emplace(memory_handle, read_only_flag_);
+  return true;
+}
+#endif  // defined(OS_LINUX)
 
 mojo::ScopedSharedBufferHandle
 SharedMemoryHandleProvider::GetHandleForInterProcessTransit(bool read_only) {
@@ -68,14 +89,26 @@ SharedMemoryHandleProvider::GetHandleForInterProcessTransit(bool read_only) {
     NOTREACHED();
     return mojo::ScopedSharedBufferHandle();
   }
+  // TODO(https://crbug.com/803136): This does not actually obey |read_only| in
+  // any capacity because it uses DuplicateHandle. In order to properly obey
+  // |read_only| (when true), we need to use |SharedMemory::GetReadOnlyHandle()|
+  // but that is not possible. With the base::SharedMemory API and this
+  // SharedMemoryHandleProvider API as they are today, it isn't possible to know
+  // whether |shared_memory_| even supports read-only duplication. Note that
+  // changing |kReadWrite| to |kReadOnly| does NOT affect the ability to map
+  // the handle read-write.
   return mojo::WrapSharedMemoryHandle(
       base::SharedMemory::DuplicateHandle(shared_memory_->handle()),
-      mapped_size_, read_only);
+      mapped_size_, mojo::UnwrappedSharedMemoryHandleProtection::kReadWrite);
 }
 
 base::SharedMemoryHandle
 SharedMemoryHandleProvider::GetNonOwnedSharedMemoryHandleForLegacyIPC() {
   return shared_memory_->handle();
+}
+
+uint32_t SharedMemoryHandleProvider::GetMemorySizeInBytes() {
+  return static_cast<uint32_t>(mapped_size_);
 }
 
 std::unique_ptr<VideoCaptureBufferHandle>

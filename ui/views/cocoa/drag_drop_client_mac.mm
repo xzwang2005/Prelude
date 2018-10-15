@@ -57,7 +57,7 @@
 
 namespace views {
 
-DragDropClientMac::DragDropClientMac(BridgedNativeWidget* bridge,
+DragDropClientMac::DragDropClientMac(BridgedNativeWidgetImpl* bridge,
                                      View* root_view)
     : drop_helper_(root_view),
       operation_(0),
@@ -103,6 +103,12 @@ void DragDropClientMac::StartDragAndDrop(
 
   NSImage* image = gfx::NSImageFromImageSkiaWithColorSpace(
       provider.GetDragImage(), base::mac::GetSRGBColorSpace());
+
+  // TODO(crbug/876201): This shouldn't happen. When a repro for this
+  // is identified and the bug is fixed, change the early return to
+  // a DCHECK.
+  if (!image || NSEqualSizes([image size], NSZeroSize))
+    return;
 
   base::scoped_nsobject<NSPasteboardItem> item([[NSPasteboardItem alloc] init]);
   [item setDataProvider:data_source_.get()

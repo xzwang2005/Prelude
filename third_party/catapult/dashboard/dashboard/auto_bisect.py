@@ -4,36 +4,19 @@
 
 """URL endpoint for a cron job to automatically run bisects."""
 
+import json
 import logging
 
 from dashboard import can_bisect
 from dashboard import pinpoint_request
 from dashboard import start_try_job
+from dashboard.common import namespaced_stored_object
 from dashboard.common import request_handler
 from dashboard.common import utils
 from dashboard.models import anomaly
 from dashboard.models import graph_data
 from dashboard.models import try_job
 from dashboard.services import pinpoint_service
-
-_PINPOINT_BOTS = [
-    'chromium-rel-mac-retina',
-    'chromium-rel-mac11',
-    'chromium-rel-mac11-air',
-    'chromium-rel-mac11-pro',
-    'chromium-rel-mac12',
-    'chromium-rel-mac12-mini-8gb',
-    'linux-release',
-    'chromium-rel-win7-dual',
-    'chromium-rel-win8-dual',
-    'chromium-rel-win7-x64-dual',
-    'chromium-rel-win10',
-    'chromium-rel-win7-gpu-ati',
-    'chromium-rel-win7-gpu-intel',
-    'chromium-rel-win7-gpu-nvidia',
-    'win-high-dpi',
-    'win-zenbook',
-]
 
 
 class NotBisectableError(Exception):
@@ -60,7 +43,8 @@ def StartNewBisectForBug(bug_id):
 
 
 def _StartBisectForBug(bug_id):
-  anomalies = anomaly.Anomaly.query(anomaly.Anomaly.bug_id == bug_id).fetch()
+  anomalies, _, _ = anomaly.Anomaly.QueryAsync(
+      bug_id=bug_id, limit=500).get_result()
   if not anomalies:
     raise NotBisectableError('No Anomaly alerts found for this bug.')
 
@@ -71,7 +55,9 @@ def _StartBisectForBug(bug_id):
   if not test or not can_bisect.IsValidTestForBisect(test.test_path):
     raise NotBisectableError('Could not select a test.')
 
-  if test.bot_name in _PINPOINT_BOTS:
+  bot_configurations = namespaced_stored_object.Get('bot_configurations')
+
+  if test.bot_name in bot_configurations.keys():
     return _StartPinpointBisect(bug_id, test_anomaly, test)
 
   return _StartRecipeBisect(bug_id, test_anomaly, test)
@@ -79,23 +65,14 @@ def _StartBisectForBug(bug_id):
 
 def _StartPinpointBisect(bug_id, test_anomaly, test):
   # Convert params to Pinpoint compatible
-  master_to_depot = {
-      'ChromiumPerf': 'chromium'
-  }
-  if not test.master_name in master_to_depot:
-    raise NotBisectableError('Unsupported master: %s' % test.master_name)
-
-  repository = master_to_depot[test.master_name]
-
   params = {
       'test_path': test.test_path,
       'start_commit': test_anomaly.start_revision - 1,
       'end_commit': test_anomaly.end_revision,
-      'start_repository': repository,
-      'end_repository': repository,
       'bug_id': bug_id,
       'bisect_mode': 'performance',
       'story_filter': start_try_job.GuessStoryFilter(test.test_path),
+      'alerts': json.dumps([test_anomaly.key.urlsafe()])
   }
 
   try:
@@ -107,6 +84,8 @@ def _StartPinpointBisect(bug_id, test_anomaly, test):
   # For compatibility with existing bisect, switch these to issueId/url
   if 'jobId' in results:
     results['issue_id'] = results['jobId']
+    test_anomaly.pinpoint_bisects.append(str(results['jobId']))
+    test_anomaly.put()
     del results['jobId']
 
   if 'jobUrl' in results:
@@ -141,8 +120,8 @@ def _MakeBisectTryJob(bug_id, test_anomaly, test):
   Raises:
     NotBisectableError: A valid bisect config could not be created.
   """
-  good_revision = _GetRevisionForBisect(test_anomaly.start_revision - 1, test)
-  bad_revision = _GetRevisionForBisect(test_anomaly.end_revision, test)
+  good_revision = GetRevisionForBisect(test_anomaly.start_revision - 1, test)
+  bad_revision = GetRevisionForBisect(test_anomaly.end_revision, test)
   if not can_bisect.IsValidRevisionForBisect(good_revision):
     raise NotBisectableError('Invalid "good" revision: %s.' % good_revision)
   if not can_bisect.IsValidRevisionForBisect(bad_revision):
@@ -246,7 +225,7 @@ def _CompareAnomalyBisectability(a1, a2):
   return 0
 
 
-def _GetRevisionForBisect(revision, test_key):
+def GetRevisionForBisect(revision, test_key):
   """Gets a start or end revision value which can be used when bisecting.
 
   Note: This logic is parallel to that in elements/chart-container.html

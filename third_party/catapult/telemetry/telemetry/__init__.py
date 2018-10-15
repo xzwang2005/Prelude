@@ -4,7 +4,6 @@
 """A library for cross-platform browser tests."""
 import os
 import sys
-import glob
 
 try:
   # This enables much better stack upon native code crashes.
@@ -37,17 +36,6 @@ def _AddDirToPythonPath(*path_parts):
   _InsertPath(path)
 
 
-# Matches only 0 or 1 glob results
-def _AddOptionalSingleGlobToPythonPath(*match_path_parts):
-  absolute_match_path = _JoinPath(*match_path_parts)
-  paths = glob.glob(absolute_match_path)
-  if len(paths) > 1:
-    raise ImportError('More than one result was found for glob {}'
-                      .format(absolute_match_path))
-  for path in paths:
-    _InsertPath(path)
-
-
 # Add Catapult dependencies to our path.
 # util depends on py_utils, so we can't use it to get the catapult dir.
 _CATAPULT_DIR = os.path.join(
@@ -58,12 +46,13 @@ _AddDirToPythonPath(_CATAPULT_DIR, 'devil')
 _AddDirToPythonPath(_CATAPULT_DIR, 'systrace')
 _AddDirToPythonPath(_CATAPULT_DIR, 'tracing')
 _AddDirToPythonPath(_CATAPULT_DIR, 'common', 'py_trace_event')
-_AddDirToPythonPath(_CATAPULT_DIR, 'common', 'battor')
 _AddDirToPythonPath(_CATAPULT_DIR, 'common', 'py_vulcanize')
 _AddDirToPythonPath(_CATAPULT_DIR, 'tracing', 'tracing_build')
 
+# pylint: disable=wrong-import-position
 from telemetry.core import util
 from telemetry.internal.util import global_hooks
+# pylint: enable=wrong-import-position
 
 # Add Catapult third party dependencies into our path.
 _AddDirToPythonPath(util.GetCatapultThirdPartyDir(), 'typ')
@@ -73,14 +62,11 @@ _AddDirToPythonPath(util.GetCatapultThirdPartyDir(), 'six')
 # Add Telemetry third party dependencies into our path.
 _TELEMETRY_3P = util.GetTelemetryThirdPartyDir()
 _AddDirToPythonPath(util.GetTelemetryThirdPartyDir(), 'altgraph')
-_AddDirToPythonPath(util.GetTelemetryThirdPartyDir(), 'mock')
 _AddDirToPythonPath(util.GetTelemetryThirdPartyDir(), 'modulegraph')
 _AddDirToPythonPath(util.GetTelemetryThirdPartyDir(), 'mox3')
 _AddDirToPythonPath(util.GetTelemetryThirdPartyDir(), 'png')
 _AddDirToPythonPath(util.GetTelemetryThirdPartyDir(), 'pyfakefs')
 _AddDirToPythonPath(util.GetTelemetryThirdPartyDir(), 'websocket-client')
-_AddOptionalSingleGlobToPythonPath(_TELEMETRY_3P, 'cv2', 'lib', 'cv2_*')
-_AddOptionalSingleGlobToPythonPath(_TELEMETRY_3P, 'numpy', 'lib', 'numpy_*')
 
 # Install Telemtry global hooks.
 global_hooks.InstallHooks()

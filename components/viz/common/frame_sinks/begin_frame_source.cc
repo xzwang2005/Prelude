@@ -10,7 +10,6 @@
 #include "base/auto_reset.h"
 #include "base/location.h"
 #include "base/logging.h"
-#include "base/memory/ptr_util.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/stringprintf.h"
 #include "base/trace_event/trace_event.h"
@@ -32,6 +31,16 @@ uint64_t GenerateSourceId(uint32_t restart_id) {
   return static_cast<uint64_t>(restart_id) << 32 | g_next_source_id.GetNext();
 }
 
+// Notifies the observer of the BeginFrame. If the BeginFrame is a
+// animate_only BeginFrame, the observer may not be notified of the
+// BeginFrame.
+void FilterAndIssueBeginFrame(BeginFrameObserver* observer,
+                              const BeginFrameArgs& args) {
+  if (args.animate_only && !observer->WantsAnimateOnlyBeginFrames())
+    return;
+  observer->OnBeginFrame(args);
+}
+
 }  // namespace
 
 // BeginFrameObserverBase -------------------------------------------------
@@ -41,6 +50,10 @@ BeginFrameObserverBase::~BeginFrameObserverBase() = default;
 
 const BeginFrameArgs& BeginFrameObserverBase::LastUsedBeginFrameArgs() const {
   return last_begin_frame_args_;
+}
+
+bool BeginFrameObserverBase::WantsAnimateOnlyBeginFrames() const {
+  return wants_animate_only_begin_frames_;
 }
 
 void BeginFrameObserverBase::OnBeginFrame(const BeginFrameArgs& args) {
@@ -156,7 +169,7 @@ void BackToBackBeginFrameSource::OnTimerTick() {
   pending_observers.swap(pending_begin_frame_observers_);
   DCHECK(!pending_observers.empty());
   for (BeginFrameObserver* obs : pending_observers)
-    obs->OnBeginFrame(args);
+    FilterAndIssueBeginFrame(obs, args);
 }
 
 // DelayBasedBeginFrameSource ---------------------------------------------
@@ -174,21 +187,13 @@ DelayBasedBeginFrameSource::~DelayBasedBeginFrameSource() = default;
 void DelayBasedBeginFrameSource::OnUpdateVSyncParameters(
     base::TimeTicks timebase,
     base::TimeDelta interval) {
-  if (!authoritative_interval_.is_zero()) {
-    interval = authoritative_interval_;
-  } else if (interval.is_zero()) {
+  if (interval.is_zero()) {
     // TODO(brianderson): We should not be receiving 0 intervals.
     interval = BeginFrameArgs::DefaultInterval();
   }
 
   last_timebase_ = timebase;
   time_source_->SetTimebaseAndInterval(timebase, interval);
-}
-
-void DelayBasedBeginFrameSource::SetAuthoritativeVSyncInterval(
-    base::TimeDelta interval) {
-  authoritative_interval_ = interval;
-  OnUpdateVSyncParameters(last_timebase_, interval);
 }
 
 BeginFrameArgs DelayBasedBeginFrameSource::CreateBeginFrameArgs(
@@ -233,7 +238,7 @@ void DelayBasedBeginFrameSource::AddObserver(BeginFrameObserver* obs) {
            missed_args.source_id != last_args.source_id)
         << "missed " << missed_args.AsValue()->ToString() << ", last "
         << last_args.AsValue()->ToString();
-    obs->OnBeginFrame(missed_args);
+    FilterAndIssueBeginFrame(obs, missed_args);
   }
 }
 
@@ -259,19 +264,22 @@ void DelayBasedBeginFrameSource::OnTimerTick() {
         (last_begin_frame_args_.frame_time >
          last_args.frame_time +
              last_begin_frame_args_.interval / kDoubleTickDivisor)) {
-      obs->OnBeginFrame(last_begin_frame_args_);
+      FilterAndIssueBeginFrame(obs, last_begin_frame_args_);
     }
   }
 }
 
 // ExternalBeginFrameSource -----------------------------------------------
 ExternalBeginFrameSource::ExternalBeginFrameSource(
-    ExternalBeginFrameSourceClient* client)
-    : BeginFrameSource(kNotRestartableId), client_(client) {
+    ExternalBeginFrameSourceClient* client,
+    uint32_t restart_id)
+    : BeginFrameSource(restart_id), client_(client) {
   DCHECK(client_);
 }
 
-ExternalBeginFrameSource::~ExternalBeginFrameSource() = default;
+ExternalBeginFrameSource::~ExternalBeginFrameSource() {
+  DCHECK(observers_.empty());
+}
 
 void ExternalBeginFrameSource::AsValueInto(
     base::trace_event::TracedValue* state) const {
@@ -299,7 +307,7 @@ void ExternalBeginFrameSource::AddObserver(BeginFrameObserver* obs) {
   BeginFrameArgs missed_args = GetMissedBeginFrameArgs(obs);
   if (missed_args.IsValid()) {
     DCHECK_EQ(BeginFrameArgs::MISSED, missed_args.type);
-    obs->OnBeginFrame(missed_args);
+    FilterAndIssueBeginFrame(obs, missed_args);
   }
 }
 
@@ -346,7 +354,7 @@ void ExternalBeginFrameSource::OnBeginFrame(const BeginFrameArgs& args) {
              (args.sequence_number > last_args.sequence_number))
           << "current " << args.AsValue()->ToString() << ", last "
           << last_args.AsValue()->ToString();
-      obs->OnBeginFrame(args);
+      FilterAndIssueBeginFrame(obs, args);
     }
   }
 }

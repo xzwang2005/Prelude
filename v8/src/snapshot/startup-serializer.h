@@ -14,23 +14,20 @@ namespace internal {
 
 class StartupSerializer : public Serializer<> {
  public:
-  StartupSerializer(
-      Isolate* isolate,
-      v8::SnapshotCreator::FunctionCodeHandling function_code_handling);
+  explicit StartupSerializer(Isolate* isolate);
   ~StartupSerializer() override;
 
   // Serialize the current state of the heap.  The order is:
-  // 1) Immortal immovable roots
-  // 2) Remaining strong references.
-  // 3) Partial snapshot cache.
-  // 4) Weak references (e.g. the string table).
+  // 1) Strong roots
+  // 2) Builtins and bytecode handlers
+  // 3) Partial snapshot cache
+  // 4) Weak references (e.g. the string table)
   void SerializeStrongReferences();
   void SerializeWeakReferencesAndDeferred();
 
   int PartialSnapshotCacheIndex(HeapObject* o);
 
   bool can_be_rehashed() const { return can_be_rehashed_; }
-  bool clear_function_code() const { return clear_function_code_; }
   bool root_has_been_serialized(int root_index) const {
     return root_has_been_serialized_.test(root_index);
   }
@@ -63,7 +60,8 @@ class StartupSerializer : public Serializer<> {
 
   // The StartupSerializer has to serialize the root array, which is slightly
   // different.
-  void VisitRootPointers(Root root, Object** start, Object** end) override;
+  void VisitRootPointers(Root root, const char* description, Object** start,
+                         Object** end) override;
   void SerializeObject(HeapObject* o, HowToCode how_to_code,
                        WhereToPoint where_to_point, int skip) override;
   void Synchronize(VisitorSynchronization::SyncTag tag) override;
@@ -71,8 +69,8 @@ class StartupSerializer : public Serializer<> {
 
   void CheckRehashability(HeapObject* obj);
 
-  const bool clear_function_code_;
-  std::bitset<Heap::kStrongRootListLength> root_has_been_serialized_;
+  std::bitset<static_cast<size_t>(RootIndex::kStrongRootListLength)>
+      root_has_been_serialized_;
   PartialCacheIndexMap partial_cache_index_map_;
   std::vector<AccessorInfo*> accessor_infos_;
   std::vector<CallHandlerInfo*> call_handler_infos_;
@@ -81,6 +79,21 @@ class StartupSerializer : public Serializer<> {
   bool can_be_rehashed_;
 
   DISALLOW_COPY_AND_ASSIGN(StartupSerializer);
+};
+
+class SerializedHandleChecker : public RootVisitor {
+ public:
+  SerializedHandleChecker(Isolate* isolate, std::vector<Context*>* contexts);
+  void VisitRootPointers(Root root, const char* description, Object** start,
+                         Object** end) override;
+  bool CheckGlobalAndEternalHandles();
+
+ private:
+  void AddToSet(FixedArray* serialized);
+
+  Isolate* isolate_;
+  std::unordered_set<Object*> serialized_;
+  bool ok_ = true;
 };
 
 }  // namespace internal

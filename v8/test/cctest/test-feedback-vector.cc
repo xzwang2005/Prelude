@@ -5,11 +5,11 @@
 #include "src/v8.h"
 #include "test/cctest/cctest.h"
 
-#include "src/api.h"
+#include "src/api-inl.h"
 #include "src/debug/debug.h"
 #include "src/execution.h"
-#include "src/factory.h"
 #include "src/global-handles.h"
+#include "src/heap/factory.h"
 #include "src/macro-assembler.h"
 #include "src/objects-inl.h"
 #include "test/cctest/test-feedback-vector.h"
@@ -95,7 +95,8 @@ TEST(VectorStructure) {
     CHECK_EQ(1,
              FeedbackMetadata::GetSlotSize(FeedbackSlotKind::kCreateClosure));
     FeedbackSlot slot = helper.slot(1);
-    Cell* cell = Cell::cast(vector->Get(slot));
+    FeedbackCell* cell =
+        FeedbackCell::cast(vector->Get(slot)->GetHeapObjectAssumeStrong());
     CHECK_EQ(cell->value(), *factory->undefined_value());
   }
 }
@@ -133,7 +134,7 @@ TEST(VectorICMetadata) {
 
   // Meanwhile set some feedback values and type feedback values to
   // verify the data structure remains intact.
-  vector->Set(FeedbackSlot(0), *vector);
+  vector->Set(FeedbackSlot(0), MaybeObject::FromObject(*vector));
 
   // Verify the metadata is correctly set up from the spec.
   for (int i = 0; i < 40; i++) {
@@ -171,10 +172,8 @@ TEST(VectorCallICStates) {
   Handle<FeedbackVector> feedback_vector =
       Handle<FeedbackVector>(f->feedback_vector(), isolate);
   FeedbackSlot slot(0);
-  CallICNexus nexus(feedback_vector, slot);
+  FeedbackNexus nexus(feedback_vector, slot);
   CHECK_EQ(MONOMORPHIC, nexus.StateFromFeedback());
-  // CallIC doesn't return map feedback.
-  CHECK(!nexus.FindFirstMap());
 
   CompileRun("f(function() { return 16; })");
   CHECK_EQ(GENERIC, nexus.StateFromFeedback());
@@ -200,11 +199,12 @@ TEST(VectorCallFeedback) {
   Handle<FeedbackVector> feedback_vector =
       Handle<FeedbackVector>(f->feedback_vector(), isolate);
   FeedbackSlot slot(0);
-  CallICNexus nexus(feedback_vector, slot);
+  FeedbackNexus nexus(feedback_vector, slot);
 
   CHECK_EQ(MONOMORPHIC, nexus.StateFromFeedback());
-  CHECK(nexus.GetFeedback()->IsWeakCell());
-  CHECK(*foo == WeakCell::cast(nexus.GetFeedback())->value());
+  HeapObject* heap_object;
+  CHECK(nexus.GetFeedback()->GetHeapObjectIfWeak(&heap_object));
+  CHECK_EQ(*foo, heap_object);
 
   CcTest::CollectAllGarbage();
   // It should stay monomorphic even after a GC.
@@ -224,16 +224,78 @@ TEST(VectorCallFeedbackForArray) {
   Handle<FeedbackVector> feedback_vector =
       Handle<FeedbackVector>(f->feedback_vector(), isolate);
   FeedbackSlot slot(0);
-  CallICNexus nexus(feedback_vector, slot);
+  FeedbackNexus nexus(feedback_vector, slot);
 
   CHECK_EQ(MONOMORPHIC, nexus.StateFromFeedback());
-  CHECK(nexus.GetFeedback()->IsWeakCell());
-  CHECK(*isolate->array_function() ==
-        WeakCell::cast(nexus.GetFeedback())->value());
+  HeapObject* heap_object;
+  CHECK(nexus.GetFeedback()->GetHeapObjectIfWeak(&heap_object));
+  CHECK_EQ(*isolate->array_function(), heap_object);
 
   CcTest::CollectAllGarbage();
   // It should stay monomorphic even after a GC.
   CHECK_EQ(MONOMORPHIC, nexus.StateFromFeedback());
+}
+
+size_t GetFeedbackVectorLength(Isolate* isolate, const char* src,
+                               bool with_oneshot_opt) {
+  i::FLAG_enable_one_shot_optimization = with_oneshot_opt;
+  i::Handle<i::Object> i_object = v8::Utils::OpenHandle(*CompileRun(src));
+  i::Handle<i::JSFunction> f = i::Handle<i::JSFunction>::cast(i_object);
+  Handle<FeedbackVector> feedback_vector =
+      Handle<FeedbackVector>(f->feedback_vector(), isolate);
+  return feedback_vector->length();
+}
+
+TEST(OneShotCallICSlotCount) {
+  if (i::FLAG_always_opt) return;
+  CcTest::InitializeVM();
+  LocalContext context;
+  v8::HandleScope scope(context->GetIsolate());
+  Isolate* isolate = CcTest::i_isolate();
+  i::FLAG_compilation_cache = false;
+
+  const char* no_call = R"(
+    function f1() {};
+    function f2() {};
+    (function() {
+      return arguments.callee;
+    })();
+  )";
+  // len = 2 * 1 ldaNamed property
+  CHECK_EQ(GetFeedbackVectorLength(isolate, no_call, false), 2);
+  // no slots of named property loads/stores in one shot
+  CHECK_EQ(GetFeedbackVectorLength(isolate, no_call, true), 0);
+
+  const char* single_call = R"(
+    function f1() {};
+    function f2() {};
+    (function() {
+      f1();
+      return arguments.callee;
+    })();
+  )";
+  // len = 2 * 1 ldaNamed Slot + 2 * 1 CachedGlobalSlot + 2 * 1 CallICSlot
+  CHECK_EQ(GetFeedbackVectorLength(isolate, single_call, false), 6);
+  // len = 2 * 1 CachedGlobalSlot
+  CHECK_EQ(GetFeedbackVectorLength(isolate, single_call, true), 2);
+
+  const char* multiple_calls = R"(
+    function f1() {};
+    function f2() {};
+    (function() {
+      f1();
+      f2();
+      f1();
+      f2();
+      return arguments.callee;
+    })();
+  )";
+  // len = 2 * 1 ldaNamedSlot + 2 *  2 CachedGlobalSlot (one for each unique
+  // function) + 2 * 4 CallICSlot (one for each function call)
+  CHECK_EQ(GetFeedbackVectorLength(isolate, multiple_calls, false), 14);
+  // CachedGlobalSlot (one for each unique function)
+  // len = 2 * 2 CachedGlobalSlot (one for each unique function)
+  CHECK_EQ(GetFeedbackVectorLength(isolate, multiple_calls, true), 4);
 }
 
 TEST(VectorCallCounts) {
@@ -252,7 +314,7 @@ TEST(VectorCallCounts) {
   Handle<FeedbackVector> feedback_vector =
       Handle<FeedbackVector>(f->feedback_vector(), isolate);
   FeedbackSlot slot(0);
-  CallICNexus nexus(feedback_vector, slot);
+  FeedbackNexus nexus(feedback_vector, slot);
   CHECK_EQ(MONOMORPHIC, nexus.StateFromFeedback());
 
   CompileRun("f(foo); f(foo);");
@@ -281,10 +343,10 @@ TEST(VectorConstructCounts) {
       Handle<FeedbackVector>(f->feedback_vector(), isolate);
 
   FeedbackSlot slot(0);
-  CallICNexus nexus(feedback_vector, slot);
+  FeedbackNexus nexus(feedback_vector, slot);
   CHECK_EQ(MONOMORPHIC, nexus.StateFromFeedback());
 
-  CHECK(feedback_vector->Get(slot)->IsWeakCell());
+  CHECK(feedback_vector->Get(slot)->IsWeak());
 
   CompileRun("f(Foo); f(Foo);");
   CHECK_EQ(MONOMORPHIC, nexus.StateFromFeedback());
@@ -312,18 +374,20 @@ TEST(VectorSpeculationMode) {
       Handle<FeedbackVector>(f->feedback_vector(), isolate);
 
   FeedbackSlot slot(0);
-  CallICNexus nexus(feedback_vector, slot);
+  FeedbackNexus nexus(feedback_vector, slot);
   CHECK_EQ(SpeculationMode::kAllowSpeculation, nexus.GetSpeculationMode());
 
   CompileRun("f(Foo); f(Foo);");
   CHECK_EQ(3, nexus.GetCallCount());
   CHECK_EQ(SpeculationMode::kAllowSpeculation, nexus.GetSpeculationMode());
 
-  nexus.SetSpeculationMode(SpeculationMode::kAllowSpeculation);
   nexus.SetSpeculationMode(SpeculationMode::kDisallowSpeculation);
   CHECK_EQ(SpeculationMode::kDisallowSpeculation, nexus.GetSpeculationMode());
+  CHECK_EQ(3, nexus.GetCallCount());
+
   nexus.SetSpeculationMode(SpeculationMode::kAllowSpeculation);
   CHECK_EQ(SpeculationMode::kAllowSpeculation, nexus.GetSpeculationMode());
+  CHECK_EQ(3, nexus.GetCallCount());
 }
 
 TEST(VectorLoadICStates) {
@@ -342,7 +406,7 @@ TEST(VectorLoadICStates) {
   Handle<FeedbackVector> feedback_vector =
       Handle<FeedbackVector>(f->feedback_vector(), isolate);
   FeedbackSlot slot(0);
-  LoadICNexus nexus(feedback_vector, slot);
+  FeedbackNexus nexus(feedback_vector, slot);
   CHECK_EQ(PREMONOMORPHIC, nexus.StateFromFeedback());
 
   CompileRun("f(o)");
@@ -408,9 +472,9 @@ TEST(VectorLoadGlobalICSlotSharing) {
   FeedbackSlot slot1 = helper.slot(0);
   FeedbackSlot slot2 = helper.slot(1);
   CHECK_EQ(MONOMORPHIC,
-           LoadGlobalICNexus(feedback_vector, slot1).StateFromFeedback());
+           FeedbackNexus(feedback_vector, slot1).StateFromFeedback());
   CHECK_EQ(MONOMORPHIC,
-           LoadGlobalICNexus(feedback_vector, slot2).StateFromFeedback());
+           FeedbackNexus(feedback_vector, slot2).StateFromFeedback());
 }
 
 
@@ -431,13 +495,13 @@ TEST(VectorLoadICOnSmi) {
   Handle<FeedbackVector> feedback_vector =
       Handle<FeedbackVector>(f->feedback_vector(), isolate);
   FeedbackSlot slot(0);
-  LoadICNexus nexus(feedback_vector, slot);
+  FeedbackNexus nexus(feedback_vector, slot);
   CHECK_EQ(PREMONOMORPHIC, nexus.StateFromFeedback());
 
   CompileRun("f(34)");
   CHECK_EQ(MONOMORPHIC, nexus.StateFromFeedback());
   // Verify that the monomorphic map is the one we expect.
-  Map* number_map = heap->heap_number_map();
+  Map* number_map = ReadOnlyRoots(heap).heap_number_map();
   CHECK_EQ(number_map, nexus.FindFirstMap());
 
   // Now go polymorphic on o.
@@ -495,11 +559,10 @@ TEST(ReferenceContextAllocatesNoSlots) {
     Handle<FeedbackVector> feedback_vector =
         handle(f->feedback_vector(), isolate);
     FeedbackVectorHelper helper(feedback_vector);
-    CHECK_EQ(4, helper.slot_count());
+    CHECK_EQ(3, helper.slot_count());
     CHECK_SLOT_KIND(helper, 0, FeedbackSlotKind::kStoreGlobalSloppy);
     CHECK_SLOT_KIND(helper, 1, FeedbackSlotKind::kLoadGlobalNotInsideTypeof);
-    CHECK_SLOT_KIND(helper, 2, FeedbackSlotKind::kStoreGlobalSloppy);
-    CHECK_SLOT_KIND(helper, 3, FeedbackSlotKind::kLoadGlobalNotInsideTypeof);
+    CHECK_SLOT_KIND(helper, 2, FeedbackSlotKind::kLoadGlobalNotInsideTypeof);
   }
 
   {
@@ -513,7 +576,7 @@ TEST(ReferenceContextAllocatesNoSlots) {
     Handle<JSFunction> f = GetFunction("testprop");
 
     // There should be one LOAD_IC, for the load of a.
-    Handle<FeedbackVector> feedback_vector(f->feedback_vector());
+    Handle<FeedbackVector> feedback_vector(f->feedback_vector(), isolate);
     FeedbackVectorHelper helper(feedback_vector);
     CHECK_EQ(2, helper.slot_count());
     CHECK_SLOT_KIND(helper, 0, FeedbackSlotKind::kLoadGlobalNotInsideTypeof);
@@ -533,7 +596,7 @@ TEST(ReferenceContextAllocatesNoSlots) {
 
     // There should be 1 LOAD_GLOBAL_IC to load x (in both cases), 2 CALL_ICs
     // to call x and a LOAD_IC to load blue.
-    Handle<FeedbackVector> feedback_vector(f->feedback_vector());
+    Handle<FeedbackVector> feedback_vector(f->feedback_vector(), isolate);
     FeedbackVectorHelper helper(feedback_vector);
     CHECK_EQ(5, helper.slot_count());
     CHECK_SLOT_KIND(helper, 0, FeedbackSlotKind::kCall);
@@ -555,7 +618,7 @@ TEST(ReferenceContextAllocatesNoSlots) {
 
     // There should be 1 LOAD_GLOBAL_ICs for the load of a, and one
     // KEYED_LOAD_IC for the load of x[0] in the return statement.
-    Handle<FeedbackVector> feedback_vector(f->feedback_vector());
+    Handle<FeedbackVector> feedback_vector(f->feedback_vector(), isolate);
     FeedbackVectorHelper helper(feedback_vector);
     CHECK_EQ(3, helper.slot_count());
     CHECK_SLOT_KIND(helper, 0, FeedbackSlotKind::kLoadGlobalNotInsideTypeof);
@@ -576,7 +639,7 @@ TEST(ReferenceContextAllocatesNoSlots) {
 
     // There should be 1 LOAD_GLOBAL_ICs for the load of a, and one
     // KEYED_LOAD_IC for the load of x[0] in the return statement.
-    Handle<FeedbackVector> feedback_vector(f->feedback_vector());
+    Handle<FeedbackVector> feedback_vector(f->feedback_vector(), isolate);
     FeedbackVectorHelper helper(feedback_vector);
     CHECK_EQ(3, helper.slot_count());
     CHECK_SLOT_KIND(helper, 0, FeedbackSlotKind::kLoadGlobalNotInsideTypeof);
@@ -597,7 +660,7 @@ TEST(ReferenceContextAllocatesNoSlots) {
 
     // There should be 1 LOAD_GLOBAL_IC for load of a and 2 LOAD_ICs, for load
     // of x.old and x.young.
-    Handle<FeedbackVector> feedback_vector(f->feedback_vector());
+    Handle<FeedbackVector> feedback_vector(f->feedback_vector(), isolate);
     FeedbackVectorHelper helper(feedback_vector);
     CHECK_EQ(7, helper.slot_count());
     CHECK_SLOT_KIND(helper, 0, FeedbackSlotKind::kLoadGlobalNotInsideTypeof);
@@ -628,11 +691,11 @@ TEST(VectorStoreICBasic) {
       "f(a);");
   Handle<JSFunction> f = GetFunction("f");
   // There should be one IC slot.
-  Handle<FeedbackVector> feedback_vector(f->feedback_vector());
+  Handle<FeedbackVector> feedback_vector(f->feedback_vector(), f->GetIsolate());
   FeedbackVectorHelper helper(feedback_vector);
   CHECK_EQ(1, helper.slot_count());
   FeedbackSlot slot(0);
-  StoreICNexus nexus(feedback_vector, slot);
+  FeedbackNexus nexus(feedback_vector, slot);
   CHECK_EQ(MONOMORPHIC, nexus.StateFromFeedback());
 }
 
@@ -652,12 +715,12 @@ TEST(StoreOwnIC) {
       "f(3);");
   Handle<JSFunction> f = GetFunction("f");
   // There should be one IC slot.
-  Handle<FeedbackVector> feedback_vector(f->feedback_vector());
+  Handle<FeedbackVector> feedback_vector(f->feedback_vector(), f->GetIsolate());
   FeedbackVectorHelper helper(feedback_vector);
   CHECK_EQ(2, helper.slot_count());
   CHECK_SLOT_KIND(helper, 0, FeedbackSlotKind::kLiteral);
   CHECK_SLOT_KIND(helper, 1, FeedbackSlotKind::kStoreOwnNamed);
-  StoreOwnICNexus nexus(feedback_vector, helper.slot(1));
+  FeedbackNexus nexus(feedback_vector, helper.slot(1));
   CHECK_EQ(MONOMORPHIC, nexus.StateFromFeedback());
 }
 

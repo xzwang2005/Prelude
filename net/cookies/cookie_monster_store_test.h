@@ -21,6 +21,7 @@
 #include "base/macros.h"
 #include "net/cookies/canonical_cookie.h"
 #include "net/cookies/cookie_monster.h"
+#include "net/log/net_log_with_source.h"
 
 class GURL;
 
@@ -88,7 +89,8 @@ class MockPersistentCookieStore : public CookieMonster::PersistentCookieStore {
 
   const CommandList& commands() const { return commands_; }
 
-  void Load(const LoadedCallback& loaded_callback) override;
+  void Load(const LoadedCallback& loaded_callback,
+            const NetLogWithSource& net_log) override;
 
   void LoadCookiesForKey(const std::string& key,
                          const LoadedCallback& loaded_callback) override;
@@ -99,11 +101,11 @@ class MockPersistentCookieStore : public CookieMonster::PersistentCookieStore {
 
   void DeleteCookie(const CanonicalCookie& cookie) override;
 
+  void SetForceKeepSessionState() override;
+
   void SetBeforeFlushCallback(base::RepeatingClosure callback) override;
 
   void Flush(base::OnceClosure callback) override;
-
-  void SetForceKeepSessionState() override;
 
  protected:
   ~MockPersistentCookieStore() override;
@@ -137,12 +139,14 @@ void AddCookieToList(const GURL& url,
 
 // Just act like a backing database.  Keep cookie information from
 // Add/Update/Delete and regurgitate it when Load is called.
+// TODO(morlovich): This still assumes that creation times are unique.
 class MockSimplePersistentCookieStore
     : public CookieMonster::PersistentCookieStore {
  public:
   MockSimplePersistentCookieStore();
 
-  void Load(const LoadedCallback& loaded_callback) override;
+  void Load(const LoadedCallback& loaded_callback,
+            const NetLogWithSource& net_log) override;
 
   void LoadCookiesForKey(const std::string& key,
                          const LoadedCallback& loaded_callback) override;
@@ -153,11 +157,11 @@ class MockSimplePersistentCookieStore
 
   void DeleteCookie(const CanonicalCookie& cookie) override;
 
+  void SetForceKeepSessionState() override;
+
   void SetBeforeFlushCallback(base::RepeatingClosure callback) override;
 
   void Flush(base::OnceClosure callback) override;
-
-  void SetForceKeepSessionState() override;
 
  protected:
   ~MockSimplePersistentCookieStore() override;

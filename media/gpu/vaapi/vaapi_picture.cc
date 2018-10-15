@@ -4,6 +4,8 @@
 
 #include "media/gpu/vaapi/vaapi_picture.h"
 
+#include <va/va.h>
+
 #include "media/gpu/vaapi/vaapi_wrapper.h"
 #include "ui/gl/gl_bindings.h"
 #include "ui/gl/gl_implementation.h"
@@ -17,13 +19,15 @@ VaapiPicture::VaapiPicture(
     int32_t picture_buffer_id,
     const gfx::Size& size,
     uint32_t texture_id,
-    uint32_t client_texture_id)
+    uint32_t client_texture_id,
+    uint32_t texture_target)
     : vaapi_wrapper_(vaapi_wrapper),
       make_context_current_cb_(make_context_current_cb),
       bind_image_cb_(bind_image_cb),
       size_(size),
       texture_id_(texture_id),
       client_texture_id_(client_texture_id),
+      texture_target_(texture_target),
       picture_buffer_id_(picture_buffer_id) {}
 
 VaapiPicture::~VaapiPicture() {
@@ -32,6 +36,10 @@ VaapiPicture::~VaapiPicture() {
 
 bool VaapiPicture::AllowOverlay() const {
   return false;
+}
+
+VASurfaceID VaapiPicture::va_surface_id() const {
+  return VA_INVALID_ID;
 }
 
 }  // namespace media

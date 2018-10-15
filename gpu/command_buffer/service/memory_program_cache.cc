@@ -22,8 +22,8 @@
 #include "gpu/command_buffer/service/disk_cache_proto.pb.h"
 #include "gpu/command_buffer/service/gl_utils.h"
 #include "gpu/command_buffer/service/gles2_cmd_decoder.h"
-#include "gpu/command_buffer/service/gpu_preferences.h"
 #include "gpu/command_buffer/service/shader_manager.h"
+#include "gpu/config/gpu_preferences.h"
 #include "third_party/zlib/zlib.h"
 #include "ui/gl/gl_bindings.h"
 
@@ -206,7 +206,7 @@ void RetrieveShaderInterfaceBlockInfo(const ShaderInterfaceBlockProto& proto,
   (*map)[proto.mapped_name()] = interface_block;
 }
 
-void RunShaderCallback(GLES2DecoderClient* client,
+void RunShaderCallback(DecoderClient* client,
                        GpuProgramProto* proto,
                        std::string sha_string) {
   std::string shader;
@@ -311,7 +311,7 @@ ProgramCache::ProgramLoadResult MemoryProgramCache::LoadLinkedProgram(
     const LocationMap* bind_attrib_location_map,
     const std::vector<std::string>& transform_feedback_varyings,
     GLenum transform_feedback_buffer_mode,
-    GLES2DecoderClient* client) {
+    DecoderClient* client) {
   if (!ProgramBinaryExtensionsAvailable()) {
     // Early exit if this context can't support program binaries
     return PROGRAM_LOAD_FAILURE;
@@ -398,7 +398,7 @@ void MemoryProgramCache::SaveLinkedProgram(
     const LocationMap* bind_attrib_location_map,
     const std::vector<std::string>& transform_feedback_varyings,
     GLenum transform_feedback_buffer_mode,
-    GLES2DecoderClient* client) {
+    DecoderClient* client) {
   if (!ProgramBinaryExtensionsAvailable()) {
     // Early exit if this context can't support program binaries
     return;
@@ -414,7 +414,7 @@ void MemoryProgramCache::SaveLinkedProgram(
     return;
   }
   std::vector<uint8_t> binary(length);
-  glGetProgramBinary(program, length, NULL, &format,
+  glGetProgramBinary(program, length, nullptr, &format,
                      reinterpret_cast<char*>(binary.data()));
 
   if (compress_program_binaries_) {
@@ -424,8 +424,8 @@ void MemoryProgramCache::SaveLinkedProgram(
       return;
     }
   }
-  UMA_HISTOGRAM_COUNTS("GPU.ProgramCache.ProgramBinarySizeBytes",
-                       binary.size());
+  UMA_HISTOGRAM_COUNTS_1M("GPU.ProgramCache.ProgramBinarySizeBytes",
+                          binary.size());
 
   char a_sha[kHashLength];
   char b_sha[kHashLength];
@@ -445,8 +445,8 @@ void MemoryProgramCache::SaveLinkedProgram(
                      sha);
   const std::string sha_string(sha, sizeof(sha));
 
-  UMA_HISTOGRAM_COUNTS("GPU.ProgramCache.MemorySizeBeforeKb",
-                       curr_size_bytes_ / 1024);
+  UMA_HISTOGRAM_COUNTS_1M("GPU.ProgramCache.MemorySizeBeforeKb",
+                          curr_size_bytes_ / 1024);
 
   // Evict any cached program with the same key in favor of the least recently
   // accessed.
@@ -484,8 +484,8 @@ void MemoryProgramCache::SaveLinkedProgram(
           shader_b->output_variable_list(), shader_b->interface_block_map(),
           this));
 
-  UMA_HISTOGRAM_COUNTS("GPU.ProgramCache.MemorySizeAfterKb",
-                       curr_size_bytes_ / 1024);
+  UMA_HISTOGRAM_COUNTS_1M("GPU.ProgramCache.MemorySizeAfterKb",
+                          curr_size_bytes_ / 1024);
 }
 
 void MemoryProgramCache::LoadProgram(const std::string& key,
@@ -563,8 +563,8 @@ void MemoryProgramCache::LoadProgram(const std::string& key,
             fragment_attribs, fragment_uniforms, fragment_varyings,
             fragment_output_variables, fragment_interface_blocks, this));
 
-    UMA_HISTOGRAM_COUNTS("GPU.ProgramCache.MemorySizeAfterKb",
-                         curr_size_bytes_ / 1024);
+    UMA_HISTOGRAM_COUNTS_1M("GPU.ProgramCache.MemorySizeAfterKb",
+                            curr_size_bytes_ / 1024);
   } else {
     LOG(ERROR) << "Failed to parse proto file.";
   }

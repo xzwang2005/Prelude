@@ -9,7 +9,8 @@
 #include "src/compiler/node-matchers.h"
 #include "src/compiler/operator-properties.h"
 #include "src/compiler/simplified-operator.h"
-#include "src/zone/zone-list-inl.h"  // TODO(mstarzinger): Fix zone-handle-set.h instead!
+#include "src/handles-inl.h"
+#include "src/objects/map-inl.h"
 
 #ifdef DEBUG
 #define TRACE(...)                                    \
@@ -223,8 +224,12 @@ class EscapeAnalysisTracker : public ZoneObject {
       replacement_ = replacement;
       vobject_ =
           replacement ? tracker_->virtual_objects_.Get(replacement) : nullptr;
-      TRACE("Set %s#%d as replacement.\n", replacement->op()->mnemonic(),
-            replacement->id());
+      if (replacement) {
+        TRACE("Set %s#%d as replacement.\n", replacement->op()->mnemonic(),
+              replacement->id());
+      } else {
+        TRACE("Set nullptr as replacement.\n");
+      }
     }
 
     void MarkForDeletion() { SetReplacement(tracker_->jsgraph_->Dead()); }
@@ -248,10 +253,6 @@ class EscapeAnalysisTracker : public ZoneObject {
   Node* GetReplacementOf(Node* node) { return replacements_[node]; }
   Node* ResolveReplacement(Node* node) {
     if (Node* replacement = GetReplacementOf(node)) {
-      // Replacements cannot have replacements. This is important to ensure
-      // re-visitation: If a replacement is replaced, then all nodes accessing
-      // the replacement have to be updated.
-      DCHECK_NULL(GetReplacementOf(replacement));
       return replacement;
     }
     return node;
@@ -283,7 +284,7 @@ EffectGraphReducer::EffectGraphReducer(
       state_(graph, kNumStates),
       revisit_(zone),
       stack_(zone),
-      reduce_(reduce) {}
+      reduce_(std::move(reduce)) {}
 
 void EffectGraphReducer::ReduceFrom(Node* node) {
   // Perform DFS and eagerly trigger revisitation as soon as possible.
@@ -502,10 +503,10 @@ int OffsetOfFieldAccess(const Operator* op) {
 Maybe<int> OffsetOfElementsAccess(const Operator* op, Node* index_node) {
   DCHECK(op->opcode() == IrOpcode::kLoadElement ||
          op->opcode() == IrOpcode::kStoreElement);
-  Type* index_type = NodeProperties::GetType(index_node);
-  if (!index_type->Is(Type::OrderedNumber())) return Nothing<int>();
-  double max = index_type->Max();
-  double min = index_type->Min();
+  Type index_type = NodeProperties::GetType(index_node);
+  if (!index_type.Is(Type::OrderedNumber())) return Nothing<int>();
+  double max = index_type.Max();
+  double min = index_type.Min();
   int index = static_cast<int>(min);
   if (!(index == min && index == max)) return Nothing<int>();
   ElementAccess access = ElementAccessOf(op);
@@ -623,9 +624,7 @@ void ReduceNode(const Operator* op, EscapeAnalysisTracker::Scope* current,
       break;
     }
     case IrOpcode::kTypeGuard: {
-      // The type-guard is re-introduced in the final reducer if the types
-      // don't match.
-      current->SetReplacement(current->ValueInput(0));
+      current->SetVirtualObject(current->ValueInput(0));
       break;
     }
     case IrOpcode::kReferenceEqual: {
@@ -651,8 +650,8 @@ void ReduceNode(const Operator* op, EscapeAnalysisTracker::Scope* current,
         // types (which might confuse representation selection). We get
         // around this by refusing to constant-fold and escape-analyze
         // if the type is not inhabited.
-        if (!NodeProperties::GetType(left)->IsNone() &&
-            !NodeProperties::GetType(right)->IsNone()) {
+        if (!NodeProperties::GetType(left).IsNone() &&
+            !NodeProperties::GetType(right).IsNone()) {
           current->SetReplacement(replacement);
         } else {
           current->SetEscaped(left);
@@ -671,10 +670,11 @@ void ReduceNode(const Operator* op, EscapeAnalysisTracker::Scope* current,
           vobject->FieldAt(HeapObject::kMapOffset).To(&map_field) &&
           current->Get(map_field).To(&map)) {
         if (map) {
-          Type* const map_type = NodeProperties::GetType(map);
-          if (map_type->IsHeapConstant() &&
+          Type const map_type = NodeProperties::GetType(map);
+          AllowHandleDereference handle_dereference;
+          if (map_type.IsHeapConstant() &&
               params.maps().contains(
-                  bit_cast<Handle<Map>>(map_type->AsHeapConstant()->Value()))) {
+                  Handle<Map>::cast(map_type.AsHeapConstant()->Value()))) {
             current->MarkForDeletion();
             break;
           }
@@ -768,7 +768,12 @@ EscapeAnalysis::EscapeAnalysis(JSGraph* jsgraph, Zone* zone)
       jsgraph_(jsgraph) {}
 
 Node* EscapeAnalysisResult::GetReplacementOf(Node* node) {
-  return tracker_->GetReplacementOf(node);
+  Node* replacement = tracker_->GetReplacementOf(node);
+  // Replacements cannot have replacements. This is important to ensure
+  // re-visitation: If a replacement is replaced, then all nodes accessing
+  // the replacement have to be updated.
+  if (replacement) DCHECK_NULL(tracker_->GetReplacementOf(replacement));
+  return replacement;
 }
 
 Node* EscapeAnalysisResult::GetVirtualObjectField(const VirtualObject* vobject,

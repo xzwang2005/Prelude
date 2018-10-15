@@ -830,26 +830,6 @@ TEST_F(InstructionSelectorTest, Float64BinopArithmetic) {
 // -----------------------------------------------------------------------------
 // Miscellaneous.
 
-
-TEST_F(InstructionSelectorTest, Uint32LessThanWithLoadAndLoadStackPointer) {
-  StreamBuilder m(this, MachineType::Bool());
-  Node* const sl = m.Load(
-      MachineType::Pointer(),
-      m.ExternalConstant(ExternalReference::address_of_stack_limit(isolate())));
-  Node* const sp = m.LoadStackPointer();
-  Node* const n = m.Uint32LessThan(sl, sp);
-  m.Return(n);
-  Stream s = m.Build();
-  ASSERT_EQ(1U, s.size());
-  EXPECT_EQ(kIA32StackCheck, s[0]->arch_opcode());
-  ASSERT_EQ(0U, s[0]->InputCount());
-  ASSERT_EQ(1U, s[0]->OutputCount());
-  EXPECT_EQ(s.ToVreg(n), s.ToVreg(s[0]->Output()));
-  EXPECT_EQ(kFlags_set, s[0]->flags_mode());
-  EXPECT_EQ(kUnsignedGreaterThan, s[0]->flags_condition());
-}
-
-
 TEST_F(InstructionSelectorTest, Word32Clz) {
   StreamBuilder m(this, MachineType::Uint32(), MachineType::Uint32());
   Node* const p0 = m.Parameter(0);
@@ -862,6 +842,67 @@ TEST_F(InstructionSelectorTest, Word32Clz) {
   EXPECT_EQ(s.ToVreg(p0), s.ToVreg(s[0]->InputAt(0)));
   ASSERT_EQ(1U, s[0]->OutputCount());
   EXPECT_EQ(s.ToVreg(n), s.ToVreg(s[0]->Output()));
+}
+
+TEST_F(InstructionSelectorTest, SpeculationFence) {
+  StreamBuilder m(this, MachineType::Int32());
+  m.SpeculationFence();
+  m.Return(m.Int32Constant(0));
+  Stream s = m.Build();
+  ASSERT_EQ(1U, s.size());
+  EXPECT_EQ(kLFence, s[0]->arch_opcode());
+}
+
+TEST_F(InstructionSelectorTest, StackCheck0) {
+  ExternalReference js_stack_limit =
+      ExternalReference::Create(isolate()->stack_guard()->address_of_jslimit());
+  StreamBuilder m(this, MachineType::Int32());
+  Node* const sp = m.LoadStackPointer();
+  Node* const stack_limit =
+      m.Load(MachineType::Pointer(), m.ExternalConstant(js_stack_limit));
+  Node* const interrupt = m.UintPtrLessThan(sp, stack_limit);
+
+  RawMachineLabel if_true, if_false;
+  m.Branch(interrupt, &if_true, &if_false);
+
+  m.Bind(&if_true);
+  m.Return(m.Int32Constant(1));
+
+  m.Bind(&if_false);
+  m.Return(m.Int32Constant(0));
+
+  Stream s = m.Build();
+
+  ASSERT_EQ(1U, s.size());
+  EXPECT_EQ(kIA32Cmp, s[0]->arch_opcode());
+  EXPECT_EQ(4U, s[0]->InputCount());
+  EXPECT_EQ(0U, s[0]->OutputCount());
+}
+
+TEST_F(InstructionSelectorTest, StackCheck1) {
+  ExternalReference js_stack_limit =
+      ExternalReference::Create(isolate()->stack_guard()->address_of_jslimit());
+  StreamBuilder m(this, MachineType::Int32());
+  Node* const sp = m.LoadStackPointer();
+  Node* const stack_limit =
+      m.Load(MachineType::Pointer(), m.ExternalConstant(js_stack_limit));
+  Node* const sp_within_limit = m.UintPtrLessThan(stack_limit, sp);
+
+  RawMachineLabel if_true, if_false;
+  m.Branch(sp_within_limit, &if_true, &if_false);
+
+  m.Bind(&if_true);
+  m.Return(m.Int32Constant(1));
+
+  m.Bind(&if_false);
+  m.Return(m.Int32Constant(0));
+
+  Stream s = m.Build();
+
+  ASSERT_EQ(1U, s.size());
+  EXPECT_EQ(kIA32StackCheck, s[0]->arch_opcode());
+  EXPECT_EQ(2U, s[0]->InputCount());
+  EXPECT_EQ(0U, s[0]->OutputCount());
 }
 
 }  // namespace compiler

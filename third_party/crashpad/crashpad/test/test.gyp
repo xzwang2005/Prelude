@@ -22,7 +22,6 @@
       'type': 'static_library',
       'dependencies': [
         '../compat/compat.gyp:crashpad_compat',
-        '../snapshot/snapshot.gyp:crashpad_snapshot',
         '../third_party/gtest/gtest.gyp:gtest',
         '../third_party/mini_chromium/mini_chromium.gyp:base',
         '../util/util.gyp:crashpad_util',
@@ -44,6 +43,8 @@
         'hex_string.h',
         'linux/fake_ptrace_connection.cc',
         'linux/fake_ptrace_connection.h',
+        'linux/get_tls.cc',
+        'linux/get_tls.h',
         'mac/dyld.cc',
         'mac/dyld.h',
         'mac/exception_swallower.cc',
@@ -55,10 +56,13 @@
         'main_arguments.cc',
         'main_arguments.h',
         'multiprocess.h',
+        'multiprocess_exec.cc',
         'multiprocess_exec.h',
         'multiprocess_exec_posix.cc',
         'multiprocess_exec_win.cc',
         'multiprocess_posix.cc',
+        'process_type.cc',
+        'process_type.h',
         'scoped_module_handle.cc',
         'scoped_module_handle.h',
         'scoped_temp_dir.cc',
@@ -85,6 +89,7 @@
         ['OS=="mac"', {
           'dependencies': [
             '../handler/handler.gyp:crashpad_handler_lib',
+            '../snapshot/snapshot.gyp:crashpad_snapshot',
           ],
           'link_settings': {
             'libraries': [

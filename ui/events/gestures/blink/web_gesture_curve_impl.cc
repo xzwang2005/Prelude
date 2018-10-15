@@ -9,20 +9,15 @@
 #include <utility>
 
 #include "base/logging.h"
-#include "base/memory/ptr_util.h"
 #include "base/metrics/histogram_macros.h"
 #include "build/build_config.h"
-#include "third_party/WebKit/public/platform/WebFloatSize.h"
-#include "third_party/WebKit/public/platform/WebGestureCurveTarget.h"
+#include "third_party/blink/public/platform/web_float_size.h"
 #include "ui/events/gestures/fixed_velocity_curve.h"
 #include "ui/events/gestures/fling_curve.h"
+#include "ui/events/mobile_scroller.h"
 #include "ui/gfx/geometry/safe_integer_conversions.h"
 #include "ui/gfx/geometry/vector2d.h"
 #include "ui/gfx/geometry/vector2d_f.h"
-
-#if defined(OS_ANDROID)
-#include "ui/events/android/scroller.h"
-#endif
 
 using blink::WebGestureCurve;
 
@@ -31,27 +26,29 @@ namespace {
 
 std::unique_ptr<GestureCurve> CreateDefaultPlatformCurve(
     blink::WebGestureDevice device_source,
-    const gfx::Vector2dF& initial_velocity) {
+    const gfx::Vector2dF& initial_velocity,
+    bool use_mobile_fling_curve) {
   if (device_source == blink::kWebGestureDeviceSyntheticAutoscroll) {
     return std::make_unique<FixedVelocityCurve>(initial_velocity,
                                                 base::TimeTicks());
   }
 
-#if defined(OS_ANDROID)
-  auto scroller = std::make_unique<Scroller>(Scroller::Config());
-  scroller->Fling(0,
-                  0,
-                  initial_velocity.x(),
-                  initial_velocity.y(),
-                  INT_MIN,
-                  INT_MAX,
-                  INT_MIN,
-                  INT_MAX,
-                  base::TimeTicks());
-  return std::move(scroller);
-#else
-  return std::make_unique<FlingCurve>(initial_velocity, base::TimeTicks());
+#ifdef USE_MOBILE_FLING_CURVE
+  use_mobile_fling_curve = true;
 #endif
+
+  if (use_mobile_fling_curve) {
+    MobileScroller::Config config;
+#ifdef USE_MOBILE_FLING_CURVE
+    config.chromecast_optimized = true;
+#endif
+    auto scroller = std::make_unique<MobileScroller>(config);
+    scroller->Fling(0, 0, initial_velocity.x(), initial_velocity.y(), INT_MIN,
+                    INT_MAX, INT_MIN, INT_MAX, base::TimeTicks());
+    return std::move(scroller);
+  }
+
+  return std::make_unique<FlingCurve>(initial_velocity, base::TimeTicks());
 }
 
 }  // namespace
@@ -62,9 +59,11 @@ WebGestureCurveImpl::CreateFromDefaultPlatformCurve(
     blink::WebGestureDevice device_source,
     const gfx::Vector2dF& initial_velocity,
     const gfx::Vector2dF& initial_offset,
-    bool on_main_thread) {
+    bool on_main_thread,
+    bool use_mobile_fling_curve) {
   return std::unique_ptr<WebGestureCurve>(new WebGestureCurveImpl(
-      CreateDefaultPlatformCurve(device_source, initial_velocity),
+      CreateDefaultPlatformCurve(device_source, initial_velocity,
+                                 use_mobile_fling_curve),
       initial_offset, on_main_thread ? ThreadType::MAIN : ThreadType::IMPL));
 }
 
@@ -88,8 +87,9 @@ WebGestureCurveImpl::WebGestureCurveImpl(std::unique_ptr<GestureCurve> curve,
 
 WebGestureCurveImpl::~WebGestureCurveImpl() {}
 
-bool WebGestureCurveImpl::Apply(double time,
-                                blink::WebGestureCurveTarget* target) {
+bool WebGestureCurveImpl::Advance(double time,
+                                  gfx::Vector2dF& out_current_velocity,
+                                  gfx::Vector2dF& out_delta_to_scroll) {
   // If the fling has yet to start, simply return and report true to prevent
   // fling termination.
   if (time <= 0)
@@ -107,23 +107,14 @@ bool WebGestureCurveImpl::Apply(double time,
 
   const base::TimeTicks time_ticks =
       base::TimeTicks() + base::TimeDelta::FromSecondsD(time);
-  gfx::Vector2dF offset, velocity;
+  gfx::Vector2dF offset;
   bool still_active =
-      curve_->ComputeScrollOffset(time_ticks, &offset, &velocity);
+      curve_->ComputeScrollOffset(time_ticks, &offset, &out_current_velocity);
 
-  gfx::Vector2dF delta = offset - last_offset_;
+  out_delta_to_scroll = offset - last_offset_;
   last_offset_ = offset;
 
-  // As successive timestamps can be arbitrarily close (but monotonic!), don't
-  // assume that a zero delta means the curve has terminated.
-  if (delta.IsZero())
-    return still_active;
-
-  // scrollBy() could delete this curve if the animation is over, so don't touch
-  // any member variables after making that call.
-  bool did_scroll = target->ScrollBy(blink::WebFloatSize(delta),
-                                     blink::WebFloatSize(velocity));
-  return did_scroll && still_active;
+  return still_active;
 }
 
 }  // namespace ui

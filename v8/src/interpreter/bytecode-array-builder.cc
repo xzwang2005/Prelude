@@ -23,7 +23,7 @@ class RegisterTransferWriter final
       public NON_EXPORTED_BASE(ZoneObject) {
  public:
   RegisterTransferWriter(BytecodeArrayBuilder* builder) : builder_(builder) {}
-  ~RegisterTransferWriter() override {}
+  ~RegisterTransferWriter() override = default;
 
   void EmitLdar(Register input) override { builder_->OutputLdarRaw(input); }
 
@@ -92,7 +92,7 @@ Handle<BytecodeArray> BytecodeArrayBuilder::ToBytecodeArray(Isolate* isolate) {
     register_count = register_optimizer_->maxiumum_register_index() + 1;
   }
 
-  Handle<FixedArray> handler_table =
+  Handle<ByteArray> handler_table =
       handler_table_builder()->ToHandlerTable(isolate);
   return bytecode_array_writer_.ToBytecodeArray(
       isolate, register_count, parameter_count(), handler_table);
@@ -176,12 +176,13 @@ namespace {
 template <OperandTypeInfo type_info>
 class UnsignedOperandHelper {
  public:
-  INLINE(static uint32_t Convert(BytecodeArrayBuilder* builder, size_t value)) {
+  V8_INLINE static uint32_t Convert(BytecodeArrayBuilder* builder,
+                                    size_t value) {
     DCHECK(IsValid(value));
     return static_cast<uint32_t>(value);
   }
 
-  INLINE(static uint32_t Convert(BytecodeArrayBuilder* builder, int value)) {
+  V8_INLINE static uint32_t Convert(BytecodeArrayBuilder* builder, int value) {
     DCHECK_GE(value, 0);
     return Convert(builder, static_cast<size_t>(value));
   }
@@ -215,7 +216,7 @@ UNSIGNED_SCALABLE_SCALAR_OPERAND_TYPE_LIST(DEFINE_UNSIGNED_OPERAND_HELPER)
 template <>
 class OperandHelper<OperandType::kImm> {
  public:
-  INLINE(static uint32_t Convert(BytecodeArrayBuilder* builder, int value)) {
+  V8_INLINE static uint32_t Convert(BytecodeArrayBuilder* builder, int value) {
     return static_cast<uint32_t>(value);
   }
 };
@@ -223,7 +224,8 @@ class OperandHelper<OperandType::kImm> {
 template <>
 class OperandHelper<OperandType::kReg> {
  public:
-  INLINE(static uint32_t Convert(BytecodeArrayBuilder* builder, Register reg)) {
+  V8_INLINE static uint32_t Convert(BytecodeArrayBuilder* builder,
+                                    Register reg) {
     return builder->GetInputRegisterOperand(reg);
   }
 };
@@ -231,8 +233,8 @@ class OperandHelper<OperandType::kReg> {
 template <>
 class OperandHelper<OperandType::kRegList> {
  public:
-  INLINE(static uint32_t Convert(BytecodeArrayBuilder* builder,
-                                 RegisterList reg_list)) {
+  V8_INLINE static uint32_t Convert(BytecodeArrayBuilder* builder,
+                                    RegisterList reg_list) {
     return builder->GetInputRegisterListOperand(reg_list);
   }
 };
@@ -240,8 +242,8 @@ class OperandHelper<OperandType::kRegList> {
 template <>
 class OperandHelper<OperandType::kRegPair> {
  public:
-  INLINE(static uint32_t Convert(BytecodeArrayBuilder* builder,
-                                 RegisterList reg_list)) {
+  V8_INLINE static uint32_t Convert(BytecodeArrayBuilder* builder,
+                                    RegisterList reg_list) {
     DCHECK_EQ(reg_list.register_count(), 2);
     return builder->GetInputRegisterListOperand(reg_list);
   }
@@ -250,7 +252,8 @@ class OperandHelper<OperandType::kRegPair> {
 template <>
 class OperandHelper<OperandType::kRegOut> {
  public:
-  INLINE(static uint32_t Convert(BytecodeArrayBuilder* builder, Register reg)) {
+  V8_INLINE static uint32_t Convert(BytecodeArrayBuilder* builder,
+                                    Register reg) {
     return builder->GetOutputRegisterOperand(reg);
   }
 };
@@ -258,8 +261,8 @@ class OperandHelper<OperandType::kRegOut> {
 template <>
 class OperandHelper<OperandType::kRegOutList> {
  public:
-  INLINE(static uint32_t Convert(BytecodeArrayBuilder* builder,
-                                 RegisterList reg_list)) {
+  V8_INLINE static uint32_t Convert(BytecodeArrayBuilder* builder,
+                                    RegisterList reg_list) {
     return builder->GetOutputRegisterListOperand(reg_list);
   }
 };
@@ -267,8 +270,8 @@ class OperandHelper<OperandType::kRegOutList> {
 template <>
 class OperandHelper<OperandType::kRegOutPair> {
  public:
-  INLINE(static uint32_t Convert(BytecodeArrayBuilder* builder,
-                                 RegisterList reg_list)) {
+  V8_INLINE static uint32_t Convert(BytecodeArrayBuilder* builder,
+                                    RegisterList reg_list) {
     DCHECK_EQ(2, reg_list.register_count());
     return builder->GetOutputRegisterListOperand(reg_list);
   }
@@ -277,8 +280,8 @@ class OperandHelper<OperandType::kRegOutPair> {
 template <>
 class OperandHelper<OperandType::kRegOutTriple> {
  public:
-  INLINE(static uint32_t Convert(BytecodeArrayBuilder* builder,
-                                 RegisterList reg_list)) {
+  V8_INLINE static uint32_t Convert(BytecodeArrayBuilder* builder,
+                                    RegisterList reg_list) {
     DCHECK_EQ(3, reg_list.register_count());
     return builder->GetOutputRegisterListOperand(reg_list);
   }
@@ -291,8 +294,8 @@ template <Bytecode bytecode, AccumulatorUse accumulator_use,
 class BytecodeNodeBuilder {
  public:
   template <typename... Operands>
-  INLINE(static BytecodeNode Make(BytecodeArrayBuilder* builder,
-                                  Operands... operands)) {
+  V8_INLINE static BytecodeNode Make(BytecodeArrayBuilder* builder,
+                                     Operands... operands) {
     static_assert(sizeof...(Operands) <= Bytecodes::kMaxOperands,
                   "too many operands for bytecode");
     builder->PrepareToOutputBytecode<bytecode, accumulator_use>();
@@ -511,15 +514,17 @@ BytecodeArrayBuilder& BytecodeArrayBuilder::CompareOperation(
 BytecodeArrayBuilder& BytecodeArrayBuilder::CompareOperation(Token::Value op,
                                                              Register reg) {
   switch (op) {
-    case Token::Value::EQ_STRICT:
-      OutputTestEqualStrictNoFeedback(reg);
-      break;
     case Token::Value::IN:
       OutputTestIn(reg);
       break;
     default:
       UNREACHABLE();
   }
+  return *this;
+}
+
+BytecodeArrayBuilder& BytecodeArrayBuilder::CompareReference(Register reg) {
+  OutputTestReferenceEqual(reg);
   return *this;
 }
 
@@ -701,14 +706,9 @@ BytecodeArrayBuilder& BytecodeArrayBuilder::LoadGlobal(const AstRawString* name,
 }
 
 BytecodeArrayBuilder& BytecodeArrayBuilder::StoreGlobal(
-    const AstRawString* name, int feedback_slot, LanguageMode language_mode) {
+    const AstRawString* name, int feedback_slot) {
   size_t name_index = GetConstantPoolEntry(name);
-  if (language_mode == LanguageMode::kSloppy) {
-    OutputStaGlobalSloppy(name_index, feedback_slot);
-  } else {
-    DCHECK_EQ(language_mode, LanguageMode::kStrict);
-    OutputStaGlobalStrict(name_index, feedback_slot);
-  }
+  OutputStaGlobal(name_index, feedback_slot);
   return *this;
 }
 
@@ -869,6 +869,12 @@ BytecodeArrayBuilder& BytecodeArrayBuilder::StoreKeyedProperty(
   return *this;
 }
 
+BytecodeArrayBuilder& BytecodeArrayBuilder::StoreInArrayLiteral(
+    Register array, Register index, int feedback_slot) {
+  OutputStaInArrayLiteral(array, index, feedback_slot);
+  return *this;
+}
+
 BytecodeArrayBuilder& BytecodeArrayBuilder::StoreHomeObjectProperty(
     Register object, int feedback_slot, LanguageMode language_mode) {
   size_t name_index = HomeObjectSymbolConstantPoolEntry();
@@ -903,20 +909,23 @@ BytecodeArrayBuilder& BytecodeArrayBuilder::CreateBlockContext(
 }
 
 BytecodeArrayBuilder& BytecodeArrayBuilder::CreateCatchContext(
-    Register exception, const AstRawString* name, const Scope* scope) {
-  size_t name_index = GetConstantPoolEntry(name);
+    Register exception, const Scope* scope) {
   size_t scope_index = GetConstantPoolEntry(scope);
-  OutputCreateCatchContext(exception, name_index, scope_index);
+  OutputCreateCatchContext(exception, scope_index);
   return *this;
 }
 
-BytecodeArrayBuilder& BytecodeArrayBuilder::CreateFunctionContext(int slots) {
-  OutputCreateFunctionContext(slots);
+BytecodeArrayBuilder& BytecodeArrayBuilder::CreateFunctionContext(
+    const Scope* scope, int slots) {
+  size_t scope_index = GetConstantPoolEntry(scope);
+  OutputCreateFunctionContext(scope_index, slots);
   return *this;
 }
 
-BytecodeArrayBuilder& BytecodeArrayBuilder::CreateEvalContext(int slots) {
-  OutputCreateEvalContext(slots);
+BytecodeArrayBuilder& BytecodeArrayBuilder::CreateEvalContext(
+    const Scope* scope, int slots) {
+  size_t scope_index = GetConstantPoolEntry(scope);
+  OutputCreateEvalContext(scope_index, slots);
   return *this;
 }
 
@@ -964,6 +973,11 @@ BytecodeArrayBuilder& BytecodeArrayBuilder::CreateArrayLiteral(
   return *this;
 }
 
+BytecodeArrayBuilder& BytecodeArrayBuilder::CreateArrayFromIterable() {
+  OutputCreateArrayFromIterable();
+  return *this;
+}
+
 BytecodeArrayBuilder& BytecodeArrayBuilder::CreateObjectLiteral(
     size_t constant_properties_entry, int literal_index, int flags,
     Register output) {
@@ -977,9 +991,16 @@ BytecodeArrayBuilder& BytecodeArrayBuilder::CreateEmptyObjectLiteral() {
   return *this;
 }
 
+BytecodeArrayBuilder& BytecodeArrayBuilder::CloneObject(Register source,
+                                                        int flags,
+                                                        int feedback_slot) {
+  OutputCloneObject(source, flags, feedback_slot);
+  return *this;
+}
+
 BytecodeArrayBuilder& BytecodeArrayBuilder::GetTemplateObject(
-    size_t template_object_description_entry) {
-  OutputGetTemplateObject(template_object_description_entry);
+    size_t template_object_description_entry, int feedback_slot) {
+  OutputGetTemplateObject(template_object_description_entry, feedback_slot);
   return *this;
 }
 
@@ -1000,6 +1021,11 @@ BytecodeArrayBuilder& BytecodeArrayBuilder::ToObject(Register out) {
 
 BytecodeArrayBuilder& BytecodeArrayBuilder::ToName(Register out) {
   OutputToName(out);
+  return *this;
+}
+
+BytecodeArrayBuilder& BytecodeArrayBuilder::ToString() {
+  OutputToString();
   return *this;
 }
 
@@ -1185,8 +1211,10 @@ BytecodeArrayBuilder& BytecodeArrayBuilder::ReThrow() {
   return *this;
 }
 
-BytecodeArrayBuilder& BytecodeArrayBuilder::Abort(BailoutReason reason) {
-  OutputAbort(reason);
+BytecodeArrayBuilder& BytecodeArrayBuilder::Abort(AbortReason reason) {
+  DCHECK_LT(reason, AbortReason::kLastErrorMessage);
+  DCHECK_GE(reason, AbortReason::kNoReason);
+  OutputAbort(static_cast<int>(reason));
   return *this;
 }
 
@@ -1274,16 +1302,19 @@ BytecodeArrayBuilder& BytecodeArrayBuilder::SuspendGenerator(
   return *this;
 }
 
-BytecodeArrayBuilder& BytecodeArrayBuilder::RestoreGeneratorState(
-    Register generator) {
-  OutputRestoreGeneratorState(generator);
+BytecodeArrayBuilder& BytecodeArrayBuilder::SwitchOnGeneratorState(
+    Register generator, BytecodeJumpTable* jump_table) {
+  DCHECK_EQ(jump_table->case_value_base(), 0);
+  BytecodeNode node(CreateSwitchOnGeneratorStateNode(
+      generator, jump_table->constant_pool_index(), jump_table->size()));
+  WriteSwitch(&node, jump_table);
+  LeaveBasicBlock();
   return *this;
 }
 
-BytecodeArrayBuilder& BytecodeArrayBuilder::RestoreGeneratorRegisters(
+BytecodeArrayBuilder& BytecodeArrayBuilder::ResumeGenerator(
     Register generator, RegisterList registers) {
-  OutputRestoreGeneratorRegisters(generator, registers,
-                                  registers.register_count());
+  OutputResumeGenerator(generator, registers, registers.register_count());
   return *this;
 }
 
@@ -1349,6 +1380,12 @@ BytecodeArrayBuilder& BytecodeArrayBuilder::CallAnyReceiver(Register callable,
   return *this;
 }
 
+BytecodeArrayBuilder& BytecodeArrayBuilder::CallNoFeedback(Register callable,
+                                                           RegisterList args) {
+  OutputCallNoFeedback(callable, args, args.register_count());
+  return *this;
+}
+
 BytecodeArrayBuilder& BytecodeArrayBuilder::CallWithSpread(Register callable,
                                                            RegisterList args,
                                                            int feedback_slot) {
@@ -1389,7 +1426,7 @@ BytecodeArrayBuilder& BytecodeArrayBuilder::CallRuntime(
 
 BytecodeArrayBuilder& BytecodeArrayBuilder::CallRuntime(
     Runtime::FunctionId function_id, Register arg) {
-  return CallRuntime(function_id, RegisterList(arg.index(), 1));
+  return CallRuntime(function_id, RegisterList(arg));
 }
 
 BytecodeArrayBuilder& BytecodeArrayBuilder::CallRuntime(
@@ -1411,8 +1448,7 @@ BytecodeArrayBuilder& BytecodeArrayBuilder::CallRuntimeForPair(
 
 BytecodeArrayBuilder& BytecodeArrayBuilder::CallRuntimeForPair(
     Runtime::FunctionId function_id, Register arg, RegisterList return_pair) {
-  return CallRuntimeForPair(function_id, RegisterList(arg.index(), 1),
-                            return_pair);
+  return CallRuntimeForPair(function_id, RegisterList(arg), return_pair);
 }
 
 BytecodeArrayBuilder& BytecodeArrayBuilder::CallJSRuntime(int context_index,

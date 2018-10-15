@@ -4,10 +4,9 @@
 
 #import "ui/base/cocoa/menu_controller.h"
 
+#include "base/bind.h"
 #include "base/cancelable_callback.h"
 #include "base/logging.h"
-#include "base/mac/bind_objc_block.h"
-#include "base/memory/ptr_util.h"
 #include "base/strings/sys_string_conversions.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "ui/base/accelerators/accelerator.h"
@@ -89,7 +88,7 @@ NSString* const kMenuControllerMenuDidCloseNotification =
                          toWidth:(int)width {
   NSFont* nsfont = [NSFont menuBarFontOfSize:0];  // 0 means "default"
   return gfx::ElideText(title, gfx::FontList(gfx::Font(nsfont)), width,
-                        gfx::ELIDE_TAIL);
+                        gfx::ELIDE_TAIL, gfx::Typesetter::NATIVE);
 }
 
 - (id)init {
@@ -192,15 +191,17 @@ NSString* const kMenuControllerMenuDidCloseNotification =
     [item setTarget:self];
     NSValue* modelObject = [NSValue valueWithPointer:model];
     [item setRepresentedObject:modelObject];  // Retains |modelObject|.
-    ui::Accelerator accelerator;
-    if (model->GetAcceleratorAt(index, &accelerator)) {
-      const ui::PlatformAcceleratorCocoa* platformAccelerator =
-          static_cast<const ui::PlatformAcceleratorCocoa*>(
-              accelerator.platform_accelerator());
-      if (platformAccelerator) {
-        [item setKeyEquivalent:platformAccelerator->characters()];
-        [item setKeyEquivalentModifierMask:
-            platformAccelerator->modifier_mask()];
+    // On the Mac, context menus never have accelerators. Menus constructed
+    // for context use have useWithPopUpButtonCell_ set to NO.
+    if (useWithPopUpButtonCell_) {
+      ui::Accelerator accelerator;
+      if (model->GetAcceleratorAt(index, &accelerator)) {
+        NSString* key_equivalent;
+        NSUInteger modifier_mask;
+        GetKeyEquivalentAndModifierMaskFromAccelerator(
+            accelerator, &key_equivalent, &modifier_mask);
+        [item setKeyEquivalent:key_equivalent];
+        [item setKeyEquivalentModifierMask:modifier_mask];
       }
     }
   }
@@ -263,8 +264,8 @@ NSString* const kMenuControllerMenuDidCloseNotification =
     // likely if the -cancel happens in the delegate method.
     NSMenu* menu = menu_;
 
-    postedItemSelectedTask_ =
-        std::make_unique<base::CancelableClosure>(base::BindBlock(^{
+    postedItemSelectedTask_ = std::make_unique<base::CancelableClosure>(
+        base::BindRepeating(base::RetainBlock(^{
           id target = [sender target];
           if ([target respondsToSelector:@selector(itemSelected:uiEventFlags:)])
             [target itemSelected:sender uiEventFlags:uiEventFlags];
@@ -277,7 +278,7 @@ NSString* const kMenuControllerMenuDidCloseNotification =
           // the target can not be set to nil here since that prevents re-use of
           // the menu for well-behaved consumers.
           CHECK([menu delegate]);  // Note: set to nil in -dealloc.
-        }));
+        })));
     base::ThreadTaskRunnerHandle::Get()->PostTask(
         FROM_HERE, postedItemSelectedTask_->callback());
   }
@@ -334,20 +335,20 @@ NSString* const kMenuControllerMenuDidCloseNotification =
 
 - (void)menuWillOpen:(NSMenu*)menu {
   isMenuOpen_ = YES;
-  model_->MenuWillShow();
   [[NSNotificationCenter defaultCenter]
       postNotificationName:kMenuControllerMenuWillOpenNotification
                     object:self];
+  model_->MenuWillShow();  // Note: |model_| may trigger -[self dealloc].
 }
 
 - (void)menuDidClose:(NSMenu*)menu {
-  if (isMenuOpen_) {
-    model_->MenuWillClose();
-    isMenuOpen_ = NO;
-  }
   [[NSNotificationCenter defaultCenter]
       postNotificationName:kMenuControllerMenuDidCloseNotification
                     object:self];
+  if (isMenuOpen_) {
+    isMenuOpen_ = NO;
+    model_->MenuWillClose();  // Note: |model_| may trigger -[self dealloc].
+  }
 }
 
 @end

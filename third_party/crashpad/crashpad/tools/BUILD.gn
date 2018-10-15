@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import("../build/crashpad_buildconfig.gni")
+
 source_set("tool_support") {
   sources = [
     "tool_support.cc",
@@ -21,75 +23,92 @@ source_set("tool_support") {
   public_configs = [ "..:crashpad_config" ]
 
   deps = [
-    "//base",
+    "../third_party/mini_chromium:base",
   ]
 }
 
-executable("crashpad_database_util") {
+crashpad_executable("crashpad_database_util") {
   sources = [
     "crashpad_database_util.cc",
   ]
 
   deps = [
     ":tool_support",
+    "../build:default_exe_manifest_win",
     "../client",
     "../compat",
+    "../third_party/mini_chromium:base",
     "../util",
-    "//base",
-    "//build/win:default_exe_manifest",
   ]
 }
 
-executable("crashpad_http_upload") {
+crashpad_executable("crashpad_http_upload") {
   sources = [
     "crashpad_http_upload.cc",
   ]
 
   deps = [
     ":tool_support",
+    "../build:default_exe_manifest_win",
     "../compat",
+    "../third_party/mini_chromium:base",
     "../util",
-    "//base",
-    "//build/win:default_exe_manifest",
   ]
 }
 
-executable("generate_dump") {
+crashpad_executable("generate_dump") {
   sources = [
     "generate_dump.cc",
   ]
 
   deps = [
     ":tool_support",
+    "../build:default_exe_manifest_win",
     "../compat",
     "../minidump",
     "../snapshot",
+    "../third_party/mini_chromium:base",
     "../util",
-    "//base",
-    "//build/win:default_exe_manifest",
   ]
 
-  if (is_mac) {
+  if (crashpad_is_mac) {
     # This would be better as a config so that it could be shared with
     # exception_port_tool, but configs can’t alter “inputs”.
+    # https://crbug.com/781858.
     inputs = [
-      rebase_path("mac/sectaskaccess_info.plist"),
+      "mac/sectaskaccess_info.plist",
     ]
     ldflags = [
       "-sectcreate",
       "__TEXT",
       "__info_plist",
-      inputs[0],
+      rebase_path(inputs[0], root_build_dir),
     ]
   }
 
-  if (is_win) {
+  if (crashpad_is_win) {
     cflags = [ "/wd4201" ]  # nonstandard extension used : nameless struct/union
   }
 }
 
-if (is_mac) {
-  executable("catch_exception_tool") {
+if (crashpad_is_mac || crashpad_is_fuchsia) {
+  crashpad_executable("run_with_crashpad") {
+    sources = [
+      "run_with_crashpad.cc",
+    ]
+
+    deps = [
+      ":tool_support",
+      "../client",
+      "../compat",
+      "../third_party/mini_chromium:base",
+      "../util",
+    ]
+  }
+}
+
+if (crashpad_is_mac) {
+  crashpad_executable("catch_exception_tool") {
     sources = [
       "mac/catch_exception_tool.cc",
     ]
@@ -97,37 +116,37 @@ if (is_mac) {
     deps = [
       ":tool_support",
       "../compat",
+      "../third_party/mini_chromium:base",
       "../util",
-      "//base",
     ]
   }
 
-  executable("exception_port_tool") {
+  crashpad_executable("exception_port_tool") {
     sources = [
       "mac/exception_port_tool.cc",
     ]
 
     # This would be better as a config so that it could be shared with
-    # generate_dump, but configs can’t alter “inputs”.
+    # generate_dump, but configs can’t alter “inputs”. https://crbug.com/781858.
     inputs = [
-      rebase_path("mac/sectaskaccess_info.plist"),
+      "mac/sectaskaccess_info.plist",
     ]
     ldflags = [
       "-sectcreate",
       "__TEXT",
       "__info_plist",
-      inputs[0],
+      rebase_path(inputs[0], root_build_dir),
     ]
 
     deps = [
       ":tool_support",
       "../compat",
+      "../third_party/mini_chromium:base",
       "../util",
-      "//base",
     ]
   }
 
-  executable("on_demand_service_tool") {
+  crashpad_executable("on_demand_service_tool") {
     sources = [
       "mac/on_demand_service_tool.mm",
     ]
@@ -140,22 +159,8 @@ if (is_mac) {
     deps = [
       ":tool_support",
       "../compat",
+      "../third_party/mini_chromium:base",
       "../util",
-      "//base",
-    ]
-  }
-
-  executable("run_with_crashpad") {
-    sources = [
-      "mac/run_with_crashpad.cc",
-    ]
-
-    deps = [
-      ":tool_support",
-      "../client",
-      "../compat",
-      "../util",
-      "//base",
     ]
   }
 }

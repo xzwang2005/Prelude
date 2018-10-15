@@ -19,9 +19,14 @@
 #include "gpu/gpu_export.h"
 
 extern "C" typedef struct _ClientBuffer* ClientBuffer;
+extern "C" typedef struct _ClientGpuFence* ClientGpuFence;
 
 namespace base {
 class Lock;
+}
+
+namespace gfx {
+class GpuFence;
 }
 
 namespace gpu {
@@ -50,7 +55,12 @@ class GPU_EXPORT GpuControl {
 
   // Runs |callback| when a query created via glCreateQueryEXT() has cleared
   // passed the glEndQueryEXT() point.
-  virtual void SignalQuery(uint32_t query, const base::Closure& callback) = 0;
+  virtual void SignalQuery(uint32_t query, base::OnceClosure callback) = 0;
+
+  virtual void CreateGpuFence(uint32_t gpu_fence_id, ClientGpuFence source) = 0;
+  virtual void GetGpuFence(
+      uint32_t gpu_fence_id,
+      base::OnceCallback<void(std::unique_ptr<gfx::GpuFence>)> callback) = 0;
 
   // Sets a lock this will be held on every callback from the GPU
   // implementation. This lock must be set and must be held on every call into
@@ -85,16 +95,6 @@ class GPU_EXPORT GpuControl {
   // must be verified before sending a sync token across channel boundaries.
   virtual uint64_t GenerateFenceSyncRelease() = 0;
 
-  // Returns true if the fence sync is valid.
-  virtual bool IsFenceSyncRelease(uint64_t release) = 0;
-
-  // Returns true if the client has flushed the fence sync.
-  virtual bool IsFenceSyncFlushed(uint64_t release) = 0;
-
-  // Returns true if the service has received the fence sync. Used for verifying
-  // sync tokens.
-  virtual bool IsFenceSyncFlushReceived(uint64_t release) = 0;
-
   // Returns true if the service has released (executed) the fence sync. Some
   // implementations may support calling this from any thread without holding
   // the lock provided by the client.
@@ -102,7 +102,7 @@ class GPU_EXPORT GpuControl {
 
   // Runs |callback| when sync token is signaled.
   virtual void SignalSyncToken(const SyncToken& sync_token,
-                               const base::Closure& callback) = 0;
+                               base::OnceClosure callback) = 0;
 
   // This allows the command buffer proxy to mark the next flush with sync token
   // dependencies for the gpu scheduler. This is used in addition to the
@@ -116,9 +116,6 @@ class GPU_EXPORT GpuControl {
   // channel as the wait command guarantee that the fence sync will be enqueued
   // first so does not need to be flushed.
   virtual bool CanWaitUnverifiedSyncToken(const SyncToken& sync_token) = 0;
-
-  // Indicates whether a snapshot is associated with the next swap.
-  virtual void SetSnapshotRequested() = 0;
 
  private:
   DISALLOW_COPY_AND_ASSIGN(GpuControl);

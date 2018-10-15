@@ -25,16 +25,18 @@ class SimplifiedOperatorReducerTest : public GraphTest {
  public:
   explicit SimplifiedOperatorReducerTest(int num_parameters = 1)
       : GraphTest(num_parameters), simplified_(zone()) {}
-  ~SimplifiedOperatorReducerTest() override {}
+  ~SimplifiedOperatorReducerTest() override = default;
 
  protected:
   Reduction Reduce(Node* node) {
+    JSHeapBroker js_heap_broker(isolate(), zone());
     MachineOperatorBuilder machine(zone());
     JSOperatorBuilder javascript(zone());
     JSGraph jsgraph(isolate(), graph(), common(), &javascript, simplified(),
                     &machine);
     GraphReducer graph_reducer(zone(), graph());
-    SimplifiedOperatorReducer reducer(&graph_reducer, &jsgraph);
+    SimplifiedOperatorReducer reducer(&graph_reducer, &jsgraph,
+                                      &js_heap_broker);
     return reducer.Reduce(node);
   }
 
@@ -52,7 +54,7 @@ class SimplifiedOperatorReducerTestWithParam
  public:
   explicit SimplifiedOperatorReducerTestWithParam(int num_parameters = 1)
       : SimplifiedOperatorReducerTest(num_parameters) {}
-  ~SimplifiedOperatorReducerTestWithParam() override {}
+  ~SimplifiedOperatorReducerTestWithParam() override = default;
 };
 
 
@@ -356,10 +358,10 @@ TEST_F(SimplifiedOperatorReducerTest, CheckedFloat64ToInt32WithConstant) {
   Node* effect = graph()->start();
   Node* control = graph()->start();
   TRACED_FOREACH(int32_t, n, kInt32Values) {
-    Reduction r = Reduce(
-        graph()->NewNode(simplified()->CheckedFloat64ToInt32(
-                             CheckForMinusZeroMode::kDontCheckForMinusZero),
-                         Float64Constant(n), effect, control));
+    Reduction r = Reduce(graph()->NewNode(
+        simplified()->CheckedFloat64ToInt32(
+            CheckForMinusZeroMode::kDontCheckForMinusZero, VectorSlotPair()),
+        Float64Constant(n), effect, control));
     ASSERT_TRUE(r.Changed());
     EXPECT_THAT(r.replacement(), IsInt32Constant(n));
   }
@@ -415,8 +417,8 @@ TEST_F(SimplifiedOperatorReducerTest, CheckSmiWithChangeInt31ToTaggedSigned) {
   Node* control = graph()->start();
   Node* value =
       graph()->NewNode(simplified()->ChangeInt31ToTaggedSigned(), param0);
-  Reduction reduction = Reduce(
-      graph()->NewNode(simplified()->CheckSmi(), value, effect, control));
+  Reduction reduction = Reduce(graph()->NewNode(
+      simplified()->CheckSmi(VectorSlotPair()), value, effect, control));
   ASSERT_TRUE(reduction.Changed());
   EXPECT_EQ(value, reduction.replacement());
 }
@@ -425,8 +427,8 @@ TEST_F(SimplifiedOperatorReducerTest, CheckSmiWithNumberConstant) {
   Node* effect = graph()->start();
   Node* control = graph()->start();
   Node* value = NumberConstant(1.0);
-  Reduction reduction = Reduce(
-      graph()->NewNode(simplified()->CheckSmi(), value, effect, control));
+  Reduction reduction = Reduce(graph()->NewNode(
+      simplified()->CheckSmi(VectorSlotPair()), value, effect, control));
   ASSERT_TRUE(reduction.Changed());
   EXPECT_EQ(value, reduction.replacement());
 }
@@ -435,10 +437,10 @@ TEST_F(SimplifiedOperatorReducerTest, CheckSmiWithCheckSmi) {
   Node* param0 = Parameter(0);
   Node* effect = graph()->start();
   Node* control = graph()->start();
-  Node* value = effect =
-      graph()->NewNode(simplified()->CheckSmi(), param0, effect, control);
-  Reduction reduction = Reduce(
-      graph()->NewNode(simplified()->CheckSmi(), value, effect, control));
+  Node* value = effect = graph()->NewNode(
+      simplified()->CheckSmi(VectorSlotPair()), param0, effect, control);
+  Reduction reduction = Reduce(graph()->NewNode(
+      simplified()->CheckSmi(VectorSlotPair()), value, effect, control));
   ASSERT_TRUE(reduction.Changed());
   EXPECT_EQ(value, reduction.replacement());
 }

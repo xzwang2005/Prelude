@@ -9,6 +9,8 @@
 #include "SkCodec.h"
 #include "SkCodecPriv.h"
 #include "SkMakeUnique.h"
+#include "SkPixmap.h"
+#include "SkPixmapPriv.h"
 #include "SkRawAdapterCodec.h"
 #include "SkSampledCodec.h"
 #include "SkWebpAdapterCodec.h"
@@ -21,14 +23,14 @@ static bool is_valid_sample_size(int sampleSize) {
 /**
  *  Loads the gamut as a set of three points (triangle).
  */
-static void load_gamut(SkPoint rgb[], const SkMatrix44& xyz) {
+static void load_gamut(SkPoint rgb[], const skcms_Matrix3x3& xyz) {
     // rx = rX / (rX + rY + rZ)
     // ry = rY / (rX + rY + rZ)
     // gx, gy, bx, and gy are calulcated similarly.
     for (int rgbIdx = 0; rgbIdx < 3; rgbIdx++) {
-        float sum = xyz.get(0, rgbIdx) + xyz.get(1, rgbIdx) + xyz.get(2, rgbIdx);
-        rgb[rgbIdx].fX = xyz.get(0, rgbIdx) / sum;
-        rgb[rgbIdx].fY = xyz.get(1, rgbIdx) / sum;
+        float sum = xyz.vals[rgbIdx][0] + xyz.vals[rgbIdx][1] + xyz.vals[rgbIdx][2];
+        rgb[rgbIdx].fX = xyz.vals[rgbIdx][0] / sum;
+        rgb[rgbIdx].fY = xyz.vals[rgbIdx][1] / sum;
     }
 }
 
@@ -44,28 +46,44 @@ static float calculate_area(SkPoint abc[]) {
 
 static constexpr float kSRGB_D50_GamutArea = 0.084f;
 
-static bool is_wide_gamut(const SkColorSpace* colorSpace) {
+static bool is_wide_gamut(const skcms_ICCProfile& profile) {
     // Determine if the source image has a gamut that is wider than sRGB.  If so, we
     // will use P3 as the output color space to avoid clipping the gamut.
-    const SkMatrix44* toXYZD50 = as_CSB(colorSpace)->toXYZD50();
-    if (toXYZD50) {
+    if (profile.has_toXYZD50) {
         SkPoint rgb[3];
-        load_gamut(rgb, *toXYZD50);
+        load_gamut(rgb, profile.toXYZD50);
         return calculate_area(rgb) > kSRGB_D50_GamutArea;
     }
 
     return false;
 }
 
-SkAndroidCodec::SkAndroidCodec(SkCodec* codec)
-    : fInfo(codec->getInfo())
+static inline SkImageInfo adjust_info(SkCodec* codec,
+        SkAndroidCodec::ExifOrientationBehavior orientationBehavior) {
+    auto info = codec->getInfo();
+    if (orientationBehavior == SkAndroidCodec::ExifOrientationBehavior::kIgnore
+            || !SkPixmapPriv::ShouldSwapWidthHeight(codec->getOrigin())) {
+        return info;
+    }
+    return SkPixmapPriv::SwapWidthHeight(info);
+}
+
+SkAndroidCodec::SkAndroidCodec(SkCodec* codec, ExifOrientationBehavior orientationBehavior)
+    : fInfo(adjust_info(codec, orientationBehavior))
+    , fOrientationBehavior(orientationBehavior)
     , fCodec(codec)
 {}
 
 SkAndroidCodec::~SkAndroidCodec() {}
 
-std::unique_ptr<SkAndroidCodec> SkAndroidCodec::MakeFromStream(std::unique_ptr<SkStream> stream, SkPngChunkReader* chunkReader) {
+std::unique_ptr<SkAndroidCodec> SkAndroidCodec::MakeFromStream(std::unique_ptr<SkStream> stream,
+                                                               SkPngChunkReader* chunkReader) {
     auto codec = SkCodec::MakeFromStream(std::move(stream), nullptr, chunkReader);
+    return MakeFromCodec(std::move(codec));
+}
+
+std::unique_ptr<SkAndroidCodec> SkAndroidCodec::MakeFromCodec(std::unique_ptr<SkCodec> codec,
+        ExifOrientationBehavior orientationBehavior) {
     if (nullptr == codec) {
         return nullptr;
     }
@@ -84,14 +102,16 @@ std::unique_ptr<SkAndroidCodec> SkAndroidCodec::MakeFromStream(std::unique_ptr<S
 #ifdef SK_HAS_HEIF_LIBRARY
         case SkEncodedImageFormat::kHEIF:
 #endif
-            return skstd::make_unique<SkSampledCodec>(codec.release());
+            return skstd::make_unique<SkSampledCodec>(codec.release(), orientationBehavior);
 #ifdef SK_HAS_WEBP_LIBRARY
         case SkEncodedImageFormat::kWEBP:
-            return skstd::make_unique<SkWebpAdapterCodec>((SkWebpCodec*) codec.release());
+            return skstd::make_unique<SkWebpAdapterCodec>((SkWebpCodec*) codec.release(),
+                    orientationBehavior);
 #endif
 #ifdef SK_CODEC_DECODES_RAW
         case SkEncodedImageFormat::kDNG:
-            return skstd::make_unique<SkRawAdapterCodec>((SkRawCodec*)codec.release());
+            return skstd::make_unique<SkRawAdapterCodec>((SkRawCodec*)codec.release(),
+                    orientationBehavior);
 #endif
         default:
             return nullptr;
@@ -156,14 +176,14 @@ sk_sp<SkColorSpace> SkAndroidCodec::computeOutputColorSpace(SkColorType outputCo
                 return prefColorSpace;
             }
 
-            SkColorSpace* encodedSpace = fCodec->getInfo().colorSpace();
-            if (encodedSpace->isNumericalTransferFn(&fn)) {
+            const skcms_ICCProfile* encodedProfile = fCodec->getEncodedInfo().profile();
+            if (auto encodedSpace = SkColorSpace::Make(*encodedProfile)) {
                 // Leave the pixels in the encoded color space.  Color space conversion
                 // will be handled after decode time.
-                return sk_ref_sp(encodedSpace);
+                return encodedSpace;
             }
 
-            if (is_wide_gamut(encodedSpace)) {
+            if (is_wide_gamut(*encodedProfile)) {
                 return SkColorSpace::MakeRGB(SkColorSpace::kSRGB_RenderTargetGamma,
                                              SkColorSpace::kDCIP3_D65_Gamut);
             }
@@ -180,6 +200,100 @@ sk_sp<SkColorSpace> SkAndroidCodec::computeOutputColorSpace(SkColorType outputCo
             // Color correction not supported for kGray.
             return nullptr;
     }
+}
+
+static bool supports_any_down_scale(const SkCodec* codec) {
+    return codec->getEncodedFormat() == SkEncodedImageFormat::kWEBP;
+}
+
+// There are a variety of ways two SkISizes could be compared. This method
+// returns true if either dimensions of a is < that of b.
+// computeSampleSize also uses the opposite, which means that both
+// dimensions of a >= b.
+static inline bool smaller_than(const SkISize& a, const SkISize& b) {
+    return a.width() < b.width() || a.height() < b.height();
+}
+
+// Both dimensions of a > that of b.
+static inline bool strictly_bigger_than(const SkISize& a, const SkISize& b) {
+    return a.width() > b.width() && a.height() > b.height();
+}
+
+int SkAndroidCodec::computeSampleSize(SkISize* desiredSize) const {
+    SkASSERT(desiredSize);
+
+    if (!desiredSize || *desiredSize == fInfo.dimensions()) {
+        return 1;
+    }
+
+    if (smaller_than(fInfo.dimensions(), *desiredSize)) {
+        *desiredSize = fInfo.dimensions();
+        return 1;
+    }
+
+    // Handle bad input:
+    if (desiredSize->width() < 1 || desiredSize->height() < 1) {
+        *desiredSize = SkISize::Make(std::max(1, desiredSize->width()),
+                                     std::max(1, desiredSize->height()));
+    }
+
+    if (supports_any_down_scale(fCodec.get())) {
+        return 1;
+    }
+
+    int sampleX = fInfo.width()  / desiredSize->width();
+    int sampleY = fInfo.height() / desiredSize->height();
+    int sampleSize = std::min(sampleX, sampleY);
+    auto computedSize = this->getSampledDimensions(sampleSize);
+    if (computedSize == *desiredSize) {
+        return sampleSize;
+    }
+
+    if (computedSize == fInfo.dimensions() || sampleSize == 1) {
+        // Cannot downscale
+        *desiredSize = computedSize;
+        return 1;
+    }
+
+    if (strictly_bigger_than(computedSize, *desiredSize)) {
+        // See if there is a tighter fit.
+        while (true) {
+            auto smaller = this->getSampledDimensions(sampleSize + 1);
+            if (smaller == *desiredSize) {
+                return sampleSize + 1;
+            }
+            if (smaller == computedSize || smaller_than(smaller, *desiredSize)) {
+                // Cannot get any smaller without being smaller than desired.
+                *desiredSize = computedSize;
+                return sampleSize;
+            }
+
+            sampleSize++;
+            computedSize = smaller;
+        }
+
+        SkASSERT(false);
+    }
+
+    if (!smaller_than(computedSize, *desiredSize)) {
+        // This means one of the computed dimensions is equal to desired, and
+        // the other is bigger. This is as close as we can get.
+        *desiredSize = computedSize;
+        return sampleSize;
+    }
+
+    // computedSize is too small. Make it larger.
+    while (sampleSize > 2) {
+        auto bigger = this->getSampledDimensions(sampleSize - 1);
+        if (bigger == *desiredSize || !smaller_than(bigger, *desiredSize)) {
+            *desiredSize = bigger;
+            return sampleSize - 1;
+        }
+        sampleSize--;
+    }
+
+    *desiredSize = fInfo.dimensions();
+    return 1;
 }
 
 SkISize SkAndroidCodec::getSampledDimensions(int sampleSize) const {
@@ -227,24 +341,43 @@ SkISize SkAndroidCodec::getSampledSubsetDimensions(int sampleSize, const SkIRect
             get_scaled_dimension(subset.height(), sampleSize)};
 }
 
-SkCodec::Result SkAndroidCodec::getAndroidPixels(const SkImageInfo& info, void* pixels,
-        size_t rowBytes, const AndroidOptions* options) {
-    if (!pixels) {
+static bool acceptable_result(SkCodec::Result result) {
+    switch (result) {
+        // These results mean a partial or complete image. They should be considered
+        // a success by SkPixmapPriv.
+        case SkCodec::kSuccess:
+        case SkCodec::kIncompleteInput:
+        case SkCodec::kErrorInInput:
+            return true;
+        default:
+            return false;
+    }
+}
+
+SkCodec::Result SkAndroidCodec::getAndroidPixels(const SkImageInfo& requestInfo,
+        void* requestPixels, size_t requestRowBytes, const AndroidOptions* options) {
+    if (!requestPixels) {
         return SkCodec::kInvalidParameters;
     }
-    if (rowBytes < info.minRowBytes()) {
+    if (requestRowBytes < requestInfo.minRowBytes()) {
         return SkCodec::kInvalidParameters;
+    }
+
+    SkImageInfo adjustedInfo = fInfo;
+    if (ExifOrientationBehavior::kRespect == fOrientationBehavior
+            && SkPixmapPriv::ShouldSwapWidthHeight(fCodec->getOrigin())) {
+        adjustedInfo = SkPixmapPriv::SwapWidthHeight(adjustedInfo);
     }
 
     AndroidOptions defaultOptions;
     if (!options) {
         options = &defaultOptions;
     } else if (options->fSubset) {
-        if (!is_valid_subset(*options->fSubset, fInfo.dimensions())) {
+        if (!is_valid_subset(*options->fSubset, adjustedInfo.dimensions())) {
             return SkCodec::kInvalidParameters;
         }
 
-        if (SkIRect::MakeSize(fInfo.dimensions()) == *options->fSubset) {
+        if (SkIRect::MakeSize(adjustedInfo.dimensions()) == *options->fSubset) {
             // The caller wants the whole thing, rather than a subset. Modify
             // the AndroidOptions passed to onGetAndroidPixels to not specify
             // a subset.
@@ -254,7 +387,27 @@ SkCodec::Result SkAndroidCodec::getAndroidPixels(const SkImageInfo& info, void* 
         }
     }
 
-    return this->onGetAndroidPixels(info, pixels, rowBytes, *options);
+    if (ExifOrientationBehavior::kIgnore == fOrientationBehavior) {
+        return this->onGetAndroidPixels(requestInfo, requestPixels, requestRowBytes, *options);
+    }
+
+    SkCodec::Result result;
+    auto decode = [this, options, &result](const SkPixmap& pm) {
+        result = this->onGetAndroidPixels(pm.info(), pm.writable_addr(), pm.rowBytes(), *options);
+        return acceptable_result(result);
+    };
+
+    SkPixmap dst(requestInfo, requestPixels, requestRowBytes);
+    if (SkPixmapPriv::Orient(dst, fCodec->getOrigin(), decode)) {
+        return result;
+    }
+
+    // Orient returned false. If onGetAndroidPixels succeeded, then Orient failed internally.
+    if (acceptable_result(result)) {
+        return SkCodec::kInternalError;
+    }
+
+    return result;
 }
 
 SkCodec::Result SkAndroidCodec::getAndroidPixels(const SkImageInfo& info, void* pixels,

@@ -12,15 +12,17 @@
 #include "Resources.h"
 #include "SkBitmap.h"
 #include "SkCanvas.h"
+#include "SkClusterator.h"
 #include "SkData.h"
-#include "SkDocument.h"
 #include "SkDeflate.h"
+#include "SkGlyphRun.h"
 #include "SkImageEncoder.h"
 #include "SkImageFilterPriv.h"
 #include "SkMakeUnique.h"
 #include "SkMatrix.h"
 #include "SkPDFCanon.h"
 #include "SkPDFDevice.h"
+#include "SkPDFDocument.h"
 #include "SkPDFFont.h"
 #include "SkPDFTypes.h"
 #include "SkPDFUtils.h"
@@ -28,6 +30,7 @@
 #include "SkScalar.h"
 #include "SkSpecialImage.h"
 #include "SkStream.h"
+#include "SkTo.h"
 #include "SkTypes.h"
 #include "sk_tool_utils.h"
 
@@ -162,7 +165,7 @@ static void TestObjectRef(skiatest::Reporter* reporter) {
 // and there is no assert on input data in Debug mode.
 static void test_issue1083() {
     SkDynamicMemoryWStream outStream;
-    sk_sp<SkDocument> doc(SkDocument::MakePDF(&outStream));
+    sk_sp<SkDocument> doc(SkPDF::MakeDocument(&outStream));
     SkCanvas* canvas = doc->beginPage(100.0f, 100.0f);
     SkPaint paint;
     paint.setTextEncoding(SkPaint::kGlyphID_TextEncoding);
@@ -356,7 +359,6 @@ public:
         return sk_sp<DummyImageFilter>(new DummyImageFilter(visited));
     }
 
-    SK_TO_STRING_OVERRIDE()
     SK_DECLARE_PUBLIC_FLATTENABLE_DESERIALIZATION_PROCS(DummyImageFilter)
     bool visited() const { return fVisited; }
 
@@ -385,13 +387,6 @@ sk_sp<SkFlattenable> DummyImageFilter::CreateProc(SkReadBuffer& buffer) {
     return DummyImageFilter::Make(visited);
 }
 
-#ifndef SK_IGNORE_TO_STRING
-void DummyImageFilter::toString(SkString* str) const {
-    str->appendf("DummyImageFilter: (");
-    str->append(")");
-}
-#endif
-
 };
 
 // Check that PDF rendering of image filters successfully falls back to
@@ -399,7 +394,7 @@ void DummyImageFilter::toString(SkString* str) const {
 DEF_TEST(SkPDF_ImageFilter, reporter) {
     REQUIRE_PDF_DOCUMENT(SkPDF_ImageFilter, reporter);
     SkDynamicMemoryWStream stream;
-    sk_sp<SkDocument> doc(SkDocument::MakePDF(&stream));
+    sk_sp<SkDocument> doc(SkPDF::MakeDocument(&stream));
     SkCanvas* canvas = doc->beginPage(100.0f, 100.0f);
 
     sk_sp<DummyImageFilter> filter(DummyImageFilter::Make());
@@ -436,8 +431,8 @@ DEF_TEST(SkPDF_FontCanEmbedTypeface, reporter) {
 // test to see that all finite scalars round trip via scanf().
 static void check_pdf_scalar_serialization(
         skiatest::Reporter* reporter, float inputFloat) {
-    char floatString[SkPDFUtils::kMaximumFloatDecimalLength];
-    size_t len = SkPDFUtils::FloatToDecimal(inputFloat, floatString);
+    char floatString[kMaximumSkFloatToDecimalLength];
+    size_t len = SkFloatToDecimal(inputFloat, floatString);
     if (len >= sizeof(floatString)) {
         ERRORF(reporter, "string too long: %u", (unsigned)len);
         return;
@@ -493,4 +488,66 @@ DEF_TEST(SkPDF_Primitives_Color, reporter) {
         REPORTER_ASSERT(reporter, roundTrip == i);
     }
 }
+
+static SkGlyphRun make_run(size_t len, const SkGlyphID* glyphs, SkPoint* pos,
+                           SkPaint paint, const uint32_t* clusters,
+                           size_t utf8TextByteLength, const char* utf8Text) {
+    return SkGlyphRun(std::move(paint),
+                      SkSpan<const uint16_t>{},  // No dense indices for now.
+                      SkSpan<const SkPoint>{pos, len},
+                      SkSpan<const SkGlyphID>{glyphs, len},
+                      SkSpan<const SkGlyphID>{},
+                      SkSpan<const char>{utf8Text, utf8TextByteLength},
+                      SkSpan<const uint32_t>{clusters, len});
+}
+
+DEF_TEST(SkPDF_Clusterator, reporter) {
+    SkPaint paint;
+    paint.setTextEncoding(SkPaint::kGlyphID_TextEncoding);
+    {
+        constexpr unsigned len = 11;
+        const uint32_t clusters[len] = { 3, 2, 2, 1, 0, 4, 4, 7, 6, 6, 5 };
+        const SkGlyphID glyphs[len] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11};
+        SkPoint pos[len] = {{0, 0}, {0, 0}, {0, 0}, {0, 0}, {0, 0}, {0, 0},
+                                  {0, 0}, {0, 0}, {0, 0}, {0, 0}, {0, 0}};
+        const char text[] = "abcdefgh";
+        SkGlyphRun run = make_run(len, glyphs, pos, paint, clusters, strlen(text), text);
+        SkClusterator clusterator(run);
+        SkClusterator::Cluster expectations[] = {
+            {&text[3], 1, 0, 1},
+            {&text[2], 1, 1, 2},
+            {&text[1], 1, 3, 1},
+            {&text[0], 1, 4, 1},
+            {&text[4], 1, 5, 2},
+            {&text[7], 1, 7, 1},
+            {&text[6], 1, 8, 2},
+            {&text[5], 1, 10, 1},
+            {nullptr, 0, 0, 0},
+        };
+        for (const auto& expectation : expectations) {
+            REPORTER_ASSERT(reporter, clusterator.next() == expectation);
+        }
+    }
+    {
+        constexpr unsigned len = 5;
+        const uint32_t clusters[len] = { 0, 1, 4, 5, 6 };
+        const SkGlyphID glyphs[len] = { 43, 167, 79, 79, 82, };
+        SkPoint pos[len] = {{0, 0}, {0, 0}, {0, 0}, {0, 0}, {0, 0}};
+        const char text[] = "Ha\xCC\x8A" "llo";
+        SkGlyphRun run = make_run(len, glyphs, pos, paint, clusters, strlen(text), text);
+        SkClusterator clusterator(run);
+        SkClusterator::Cluster expectations[] = {
+            {&text[0], 1, 0, 1},
+            {&text[1], 3, 1, 1},
+            {&text[4], 1, 2, 1},
+            {&text[5], 1, 3, 1},
+            {&text[6], 1, 4, 1},
+            {nullptr, 0, 0, 0},
+        };
+        for (const auto& expectation : expectations) {
+            REPORTER_ASSERT(reporter, clusterator.next() == expectation);
+        }
+    }
+}
+
 #endif

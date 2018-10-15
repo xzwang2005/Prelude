@@ -25,7 +25,7 @@
 namespace cc {
 namespace {
 
-typedef ParameterizedPixelResourceTest LayerTreeHostMasksPixelTest;
+using LayerTreeHostMasksPixelTest = ParameterizedPixelResourceTest;
 
 INSTANTIATE_PIXEL_RESOURCE_TEST_CASE_P(LayerTreeHostMasksPixelTest);
 
@@ -113,8 +113,10 @@ TEST_P(LayerTreeHostMasksPixelTest, ImageMaskOfLayer) {
   mask_display_list->Raster(canvas);
   mask->SetImage(PaintImageBuilder::WithDefault()
                      .set_id(PaintImage::GetNextId())
-                     .set_image(surface->makeImageSnapshot())
-                     .TakePaintImage());
+                     .set_image(surface->makeImageSnapshot(),
+                                PaintImage::GetNextContentId())
+                     .TakePaintImage(),
+                 SkMatrix::I(), false);
 
   scoped_refptr<SolidColorLayer> green = CreateSolidColorLayerWithBorder(
       gfx::Rect(25, 25, 50, 50), kCSSGreen, 1, SK_ColorBLACK);
@@ -310,17 +312,20 @@ TEST_P(LayerTreeHostMasksForBackgroundFiltersPixelTest,
   float average_error_allowed_in_bad_pixels = 100.0f;
   int large_error_allowed = 256;
   int small_error_allowed = 0;
-  pixel_comparator_.reset(new FuzzyPixelComparator(
+  pixel_comparator_ = std::make_unique<FuzzyPixelComparator>(
       true,  // discard_alpha
       percentage_pixels_large_error,
       percentage_pixels_small_error,
       average_error_allowed_in_bad_pixels,
       large_error_allowed,
-      small_error_allowed));
+      small_error_allowed);
 
-  RunPixelResourceTest(background,
-                       base::FilePath(
-                           FILE_PATH_LITERAL("mask_of_background_filter.png")));
+  base::FilePath image_name =
+      (test_case_ == GPU)
+          ? base::FilePath(
+                FILE_PATH_LITERAL("mask_of_background_filter_gpu.png"))
+          : base::FilePath(FILE_PATH_LITERAL("mask_of_background_filter.png"));
+  RunPixelResourceTest(background, image_name);
 }
 
 TEST_P(LayerTreeHostMasksForBackgroundFiltersPixelTest,
@@ -361,13 +366,13 @@ TEST_P(LayerTreeHostMasksForBackgroundFiltersPixelTest,
   float average_error_allowed_in_bad_pixels = 256.0f;
   int large_error_allowed = 256;
   int small_error_allowed = 0;
-  pixel_comparator_.reset(new FuzzyPixelComparator(
+  pixel_comparator_ = std::make_unique<FuzzyPixelComparator>(
       true,  // discard_alpha
       percentage_pixels_large_error,
       percentage_pixels_small_error,
       average_error_allowed_in_bad_pixels,
       large_error_allowed,
-      small_error_allowed));
+      small_error_allowed);
 
   RunPixelResourceTest(background,
                        base::FilePath(
@@ -426,13 +431,21 @@ class LayerTreeHostMaskAsBlendingPixelTest
       average_error_allowed_in_bad_pixels = 3.5f;
       large_error_allowed = 15;
       small_error_allowed = 1;
+    } else {
+#if defined(ARCH_CPU_ARM64)
+      // Differences in floating point calculation on ARM means a small
+      // percentage of pixels will be off by 1.
+      percentage_pixels_error = 0.112f;
+      average_error_allowed_in_bad_pixels = 1.f;
+      large_error_allowed = 1;
+#endif
     }
 
-    pixel_comparator_.reset(new FuzzyPixelComparator(
+    pixel_comparator_ = std::make_unique<FuzzyPixelComparator>(
         false,  // discard_alpha
         percentage_pixels_error, percentage_pixels_small_error,
         average_error_allowed_in_bad_pixels, large_error_allowed,
-        small_error_allowed));
+        small_error_allowed);
   }
 
   static scoped_refptr<Layer> CreateCheckerboardLayer(const gfx::Size& bounds) {
@@ -504,7 +517,8 @@ class LayerTreeHostMaskAsBlendingPixelTest
       const viz::RendererSettings& renderer_settings,
       double refresh_rate,
       scoped_refptr<viz::ContextProvider> compositor_context_provider,
-      scoped_refptr<viz::ContextProvider> worker_context_provider) override {
+      scoped_refptr<viz::RasterContextProvider> worker_context_provider)
+      override {
     viz::RendererSettings modified_renderer_settings = renderer_settings;
     modified_renderer_settings.force_antialiasing = use_antialiasing_;
     modified_renderer_settings.force_blending_with_shaders = force_shaders_;
@@ -663,9 +677,13 @@ TEST_P(LayerTreeHostMaskAsBlendingPixelTest, RotatedClippedCircle) {
   mask_layer->SetBlendMode(SkBlendMode::kDstIn);
   mask_isolation->AddChild(mask_layer);
 
-  RunPixelResourceTest(
-      root,
-      base::FilePath(FILE_PATH_LITERAL("mask_as_blending_rotated_circle.png")));
+  base::FilePath image_name =
+      (test_type_ == PIXEL_TEST_SOFTWARE)
+          ? base::FilePath(
+                FILE_PATH_LITERAL("mask_as_blending_rotated_circle.png"))
+          : base::FilePath(
+                FILE_PATH_LITERAL("mask_as_blending_rotated_circle_gl.png"));
+  RunPixelResourceTest(root, image_name);
 }
 
 TEST_P(LayerTreeHostMaskAsBlendingPixelTest, RotatedClippedCircleUnderflow) {
@@ -706,9 +724,66 @@ TEST_P(LayerTreeHostMaskAsBlendingPixelTest, RotatedClippedCircleUnderflow) {
   mask_layer->SetBlendMode(SkBlendMode::kDstIn);
   mask_isolation->AddChild(mask_layer);
 
-  RunPixelResourceTest(root,
+  base::FilePath image_name =
+      (test_type_ == PIXEL_TEST_SOFTWARE)
+          ? base::FilePath(FILE_PATH_LITERAL(
+                "mask_as_blending_rotated_circle_underflow.png"))
+          : base::FilePath(FILE_PATH_LITERAL(
+                "mask_as_blending_rotated_circle_underflow_gl.png"));
+  RunPixelResourceTest(root, image_name);
+}
+
+TEST_P(LayerTreeHostMasksForBackgroundFiltersPixelTest,
+       MaskOfLayerWithBackgroundFilterAndBlend) {
+  scoped_refptr<SolidColorLayer> background =
+      CreateSolidColorLayer(gfx::Rect(128, 128), SK_ColorWHITE);
+
+  gfx::Size picture_bounds(128, 128);
+  CheckerContentLayerClient picture_client_vertical(picture_bounds,
+                                                    SK_ColorGREEN, true);
+  scoped_refptr<PictureLayer> picture_vertical =
+      PictureLayer::Create(&picture_client_vertical);
+  picture_vertical->SetBounds(picture_bounds);
+  picture_vertical->SetIsDrawable(true);
+
+  CheckerContentLayerClient picture_client_horizontal(picture_bounds,
+                                                      SK_ColorMAGENTA, false);
+  scoped_refptr<PictureLayer> picture_horizontal =
+      PictureLayer::Create(&picture_client_horizontal);
+  picture_horizontal->SetBounds(picture_bounds);
+  picture_horizontal->SetIsDrawable(true);
+  picture_horizontal->SetContentsOpaque(false);
+  picture_horizontal->SetBlendMode(SkBlendMode::kMultiply);
+
+  FilterOperations filters;
+  filters.Append(FilterOperation::CreateGrayscaleFilter(1.0));
+  picture_horizontal->SetBackgroundFilters(filters);
+
+  background->AddChild(picture_vertical);
+  background->AddChild(picture_horizontal);
+
+  gfx::Size mask_bounds(128, 128);
+  CircleContentLayerClient mask_client(mask_bounds);
+  scoped_refptr<PictureLayer> mask = PictureLayer::Create(&mask_client);
+  mask->SetBounds(mask_bounds);
+  mask->SetIsDrawable(true);
+  mask->SetLayerMaskType(mask_type_);
+  picture_horizontal->SetMaskLayer(mask.get());
+
+  float percentage_pixels_large_error = 0.062f;  // 0.062%, ~10px / (128*128)
+  float percentage_pixels_small_error = 0.0f;
+  float average_error_allowed_in_bad_pixels = 200.0f;
+  int large_error_allowed = 256;
+  int small_error_allowed = 0;
+  pixel_comparator_ = std::make_unique<FuzzyPixelComparator>(
+      true,  // discard_alpha
+      percentage_pixels_large_error, percentage_pixels_small_error,
+      average_error_allowed_in_bad_pixels, large_error_allowed,
+      small_error_allowed);
+
+  RunPixelResourceTest(background,
                        base::FilePath(FILE_PATH_LITERAL(
-                           "mask_as_blending_rotated_circle_underflow.png")));
+                           "mask_of_background_filter_and_blend.png")));
 }
 
 }  // namespace

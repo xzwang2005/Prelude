@@ -12,6 +12,7 @@ _CATAPULT_PATH = os.path.abspath(
 THIRD_PARTY_LIBRARIES = [
     'apiclient',
     'beautifulsoup4',
+    'cloudstorage',
     'graphy',
     'html5lib-python',
     'httplib2',
@@ -25,16 +26,18 @@ THIRD_PARTY_LIBRARIES = [
     'jquery',
     'polymer',
     'six',
+    'gae_ts_mon',
 ]
 
 # Files and directories in catapult/dashboard.
 DASHBOARD_FILES = [
     'appengine_config.py',
     'app.yaml',
+    'v2spa.yaml',
+    'scripts.yaml',
     'cron.yaml',
     'dashboard',
     'index.yaml',
-    'mapreduce.yaml',
     'pinpoint.yaml',
     'queue.yaml',
 ]

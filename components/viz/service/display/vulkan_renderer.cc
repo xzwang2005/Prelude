@@ -19,7 +19,7 @@ void VulkanRenderer::SwapBuffers(std::vector<ui::LatencyInfo> latency_info) {
 
 VulkanRenderer::VulkanRenderer(const RendererSettings* settings,
                                OutputSurface* output_surface,
-                               cc::DisplayResourceProvider* resource_provider)
+                               DisplayResourceProvider* resource_provider)
     : DirectRenderer(settings, output_surface, resource_provider) {}
 
 void VulkanRenderer::DidChangeVisibility() {
@@ -31,7 +31,8 @@ void VulkanRenderer::BindFramebufferToOutputSurface() {
 }
 
 ResourceFormat VulkanRenderer::BackbufferFormat() const {
-  return resource_provider_->best_texture_format();
+  NOTIMPLEMENTED();
+  return RGBA_8888;
 }
 
 void VulkanRenderer::BindFramebufferToTexture(

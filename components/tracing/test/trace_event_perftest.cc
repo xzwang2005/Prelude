@@ -2,6 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include <memory>
+
 #include "base/bind.h"
 #include "base/memory/ptr_util.h"
 #include "base/memory/ref_counted_memory.h"
@@ -17,16 +19,16 @@
 namespace tracing {
 namespace {
 
-using base::Bind;
+using base::BindOnce;
 using base::Closure;
 using base::RunLoop;
 using base::Thread;
 using base::Unretained;
 using base::WaitableEvent;
 using base::trace_event::TraceConfig;
+using base::trace_event::TracedValue;
 using base::trace_event::TraceLog;
 using base::trace_event::TraceRecordMode;
-using base::trace_event::TracedValue;
 
 const int kNumRuns = 10;
 
@@ -57,7 +59,7 @@ class TraceEventPerfTest : public ::testing::Test {
   }
 
   std::unique_ptr<TracedValue> MakeTracedValue(int counter) {
-    auto value = base::MakeUnique<TracedValue>();
+    auto value = std::make_unique<TracedValue>();
     value->SetInteger("counter", counter);
     value->BeginDictionary("test_dict");
     value->BeginArray("nodes");
@@ -157,8 +159,8 @@ TEST_F(TraceEventPerfTest, Submit_10000_TRACE_EVENT0_multithreaded) {
     ScopedStopwatch stopwatch("events_over_multiple_threads");
     for (int i = 0; i < kNumThreads; i++) {
       threads[i]->task_runner()->PostTask(
-          FROM_HERE,
-          base::Bind(&SubmitTraceEventsAndSignal, complete_events[i].get()));
+          FROM_HERE, base::BindOnce(&SubmitTraceEventsAndSignal,
+                                    complete_events[i].get()));
     }
     for (int i = 0; i < kNumThreads; i++) {
       complete_events[i]->Wait();
@@ -175,7 +177,8 @@ TEST_F(TraceEventPerfTest, Submit_10000_TRACE_EVENT0_in_traceable_tasks) {
   BeginTrace();
   IterableStopwatch task_sw("events_in_task");
   for (int i = 0; i < 100; i++) {
-    base::PendingTask pending_task(FROM_HERE, Bind(&SubmitTraceEvents, 10000));
+    base::PendingTask pending_task(FROM_HERE,
+                                   BindOnce(&SubmitTraceEvents, 10000));
     TRACE_TASK_EXECUTION("TraceEventPerfTest::PendingTask", pending_task);
     std::move(pending_task.task).Run();
     task_sw.NextLap();

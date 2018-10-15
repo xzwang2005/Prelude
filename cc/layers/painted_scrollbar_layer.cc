@@ -66,7 +66,7 @@ void PaintedScrollbarLayer::SetScrollElementId(ElementId element_id) {
     return;
 
   scroll_element_id_ = element_id;
-  SetNeedsFullTreeSync();
+  SetNeedsCommit();
 }
 
 bool PaintedScrollbarLayer::OpacityCanAnimateOnImplThread() const {
@@ -107,10 +107,6 @@ void PaintedScrollbarLayer::PushPropertiesTo(LayerImpl* layer) {
   scrollbar_layer->set_thumb_opacity(thumb_opacity_);
 
   scrollbar_layer->set_is_overlay_scrollbar(is_overlay_);
-}
-
-ScrollbarLayerInterface* PaintedScrollbarLayer::ToScrollbarLayer() {
-  return this;
 }
 
 void PaintedScrollbarLayer::SetLayerTreeHost(LayerTreeHost* host) {

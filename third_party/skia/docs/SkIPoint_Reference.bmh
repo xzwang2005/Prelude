@@ -1,65 +1,48 @@
 #Topic IPoint
-#Alias IPoints
-#Alias IPoint_Reference
+#Alias IPoints ##
+#Alias IPoint_Reference ##
 
 #Struct SkIPoint
 
-SkIPoint holds two 32 bit integer coordinates
+SkIPoint holds two 32-bit integer coordinates.
 
-#Topic Overview
-
-#Subtopic Subtopics
-#ToDo manually add subtopics ##
-#Table
-#Legend
-# topics # description ##
-#Legend ##
-#Table ##
+#Subtopic Overview
+#Populate
 ##
 
-#Subtopic Operators
-#Table
-#Legend
-# description                                               # function                             ##
-#Legend ##
-# SkIPoint operator-()_const                                # Reverses sign of IPoint.             ##
-# SkIPoint operator+(const SkIPoint& a, const SkIVector& b) # Returns IPoint offset by IVector.    ##
-# SkIVector operator-(const SkIPoint& a, const SkIPoint& b) # Returns IVector between IPoints.     ##
-# bool operator!=(const SkIPoint& a, const SkIPoint& b)     # Returns true if IPoints are unequal. ##
-# bool operator==(const SkIPoint& a, const SkIPoint& b)     # Returns true if IPoints are equal.   ##
-# void operator+=(const SkIVector& v)                       # Adds IVector to IPoint.              ##
-# void operator-=(const SkIVector& v)                       # Subtracts IVector from IPoint.       ##
-#Table ##
-#Subtopic ##
+#Subtopic Related_Function
+#Populate
+##
 
-#Subtopic Member_Functions
-#Table
-#Legend
-# description  # function ##
-#Legend ##
-# Make         # Constructs from integer inputs.          ##
-# equals()     # Returns true if members are equal.       ##
-# isZero       # Returns true if both members equal zero. ##
-# set()        # Sets to integer input.                   ##
-# x()          # Returns fX.                              ##
-# y()          # Returns fY.                              ##
-#Table ##
-#Subtopic ##
+#Subtopic Member_Function
+#Populate
+##
 
-#Topic ##
+#Subtopic Member
+#Populate
 
 #Member int32_t  fX
+#Line # x-axis value ##
 x-axis value used by IPoint.
 ##
 
 #Member int32_t  fY
+#Line # y-axis value ##
 y-axis value used by IPoint.
 ##
 
+#Subtopic Member ##
+
 # ------------------------------------------------------------------------------
+
+#Subtopic Constructor
+#Populate
+##
 
 #Method static constexpr SkIPoint Make(int32_t x, int32_t y)
 
+#In Constructor
+#Line # constructs from integer inputs ##
 Sets fX to x, fY to y.
 
 #Param x  integer x-axis value of constructed IPoint ##
@@ -76,14 +59,20 @@ pt1 == pt2
 ##
 ##
 
-#SeeAlso set() SkPoint::iset() SkPoint::Make SkIPoint16::Make
+#SeeAlso set() SkPoint::iset() SkPoint::Make
 
 #Method ##
 
 # ------------------------------------------------------------------------------
 
-#Method int32_t x() const
+#Subtopic Property
+#Line # member values ##
+#Populate
+##
 
+#Method int32_t x() const
+#In Property
+#Line # returns fX ##
 Returns x-axis value of IPoint.
 
 #Return fX ##
@@ -96,14 +85,15 @@ pt1.fX == pt1.x()
 ##
 ##
 
-#SeeAlso y() SkPoint::x() SkIPoint16::x()
+#SeeAlso y() SkPoint::x()
 
 #Method ##
 
 # ------------------------------------------------------------------------------
 
 #Method int32_t y() const
-
+#In Property
+#Line # returns fY ##
 Returns y-axis value of IPoint.
 
 #Return fY ##
@@ -116,14 +106,15 @@ pt1.fY == pt1.y()
 ##
 ##
 
-#SeeAlso x() SkPoint::y() SkIPoint16::y()
+#SeeAlso x() SkPoint::y()
 
 #Method ##
 
 # ------------------------------------------------------------------------------
 
 #Method bool isZero() const
-
+#In Property
+#Line # returns true if both members equal zero ##
 Returns true if fX and fY are both zero.
 
 #Return true if fX is zero and fY is zero ##
@@ -142,8 +133,14 @@ pt.isZero() == true
 
 # ------------------------------------------------------------------------------
 
-#Method void set(int32_t x, int32_t y)
+#Subtopic Set
+#Populate
+#Line # replaces all values ##
+##
 
+#Method void set(int32_t x, int32_t y)
+#In Set
+#Line # sets to integer input ##
 Sets fX to x and fY to y.
 
 #Param x  new value for fX ##
@@ -158,14 +155,18 @@ pt1 == pt2
 ##
 ##
 
-#SeeAlso Make SkIPoint16::set
+#SeeAlso Make
 
 #Method ##
 
 # ------------------------------------------------------------------------------
+#Subtopic Operator
+#Populate
+##
 
 #Method SkIPoint operator-()_const
 
+#Line # reverses sign of IPoint ##
 Returns IPoint changing the signs of fX and fY.
 
 #Return IPoint as (-fX, -fY) ##
@@ -173,7 +174,7 @@ Returns IPoint changing the signs of fX and fY.
 #Example
 SkIPoint test[] = { {0, -0}, {-1, -2},
                    { SK_MaxS32, SK_MinS32 },
-                   { SK_NaN32, -SK_NaN32 } };
+                   { SK_NaN32, SK_NaN32 } };
 for (const SkIPoint& pt : test) {
     SkIPoint negPt = -pt;
     SkDebugf("pt: %d, %d  negate: %d, %d\n", pt.fX, pt.fY, negPt.fX, negPt.fY);
@@ -194,11 +195,8 @@ pt: -2147483648, -2147483648  negate: -2147483648, -2147483648
 
 #Method void operator+=(const SkIVector& v)
 
-Offsets IPoint by IVector v. Sets IPoint to
-#Formula
-(fX + v.fX, fY + v.fY)
-##
-.
+#Line # adds IVector to IPoint ##
+Offsets IPoint by IVector v. Sets IPoint to #Formula # (fX + v.fX, fY + v.fY) ##.
 
 #Param v  IVector to add ##
 
@@ -232,11 +230,8 @@ Offsets IPoint by IVector v. Sets IPoint to
 
 #Method void operator-=(const SkIVector& v)
 
-Subtracts IVector v from IPoint. Sets IPoint to:
-#Formula
-(fX - v.fX, fY - v.fY)
-##
-.
+#Line # subtracts IVector from IPoint ##
+Subtracts IVector v from IPoint. Sets IPoint to: #Formula # (fX - v.fX, fY - v.fY) ##.
 
 #Param v  IVector to subtract ##
 
@@ -269,7 +264,8 @@ Subtracts IVector v from IPoint. Sets IPoint to:
 # ------------------------------------------------------------------------------
 
 #Method bool equals(int32_t x, int32_t y) const
-
+#In Operator
+#Line # returns true if members are equal ##
 Returns true if IPoint is equivalent to IPoint constructed from (x, y).
 
 #Param x  value compared with fX ##
@@ -298,6 +294,7 @@ pt: -2147483648, -1  == pt
 
 #Method bool operator==(const SkIPoint& a, const SkIPoint& b)
 
+#Line # returns true if IPoints are equal ##
 Returns true if a is equivalent to b.
 
 #Param a  IPoint to compare ##
@@ -326,6 +323,7 @@ pt: -2147483648, -1  == pt
 
 #Method bool operator!=(const SkIPoint& a, const SkIPoint& b)
 
+#Line # returns true if IPoints are unequal ##
 Returns true if a is not equivalent to b.
 
 #Param a  IPoint to compare ##
@@ -354,11 +352,8 @@ pt: -2147483648, -1  == pt
 
 #Method SkIVector operator-(const SkIPoint& a, const SkIPoint& b)
 
-Returns IVector from b to a; computed as
-#Formula
-(a.fX - b.fX, a.fY - b.fY)
-##
-.
+#Line # returns IVector between IPoints ##
+Returns IVector from b to a; computed as #Formula # (a.fX - b.fX, a.fY - b.fY) ##.
 
 Can also be used to subtract IVector from IVector, returning IVector.
 
@@ -397,11 +392,9 @@ Can also be used to subtract IVector from IVector, returning IVector.
 
 #Method SkIPoint operator+(const SkIPoint& a, const SkIVector& b)
 
+#Line # returns IPoint offset by IVector ##
 Returns IPoint resulting from IPoint a offset by IVector b, computed as:
-#Formula
-(a.fX + b.fX, a.fY + b.fY)
-##
-.
+#Formula # (a.fX + b.fX, a.fY + b.fY) ##.
 
 Can also be used to offset IPoint b by IVector a, returning IPoint.
 Can also be used to add IVector to IVector, returning IVector.
@@ -443,10 +436,20 @@ Can also be used to add IVector to IVector, returning IVector.
 
 #Struct SkIPoint ##
 
-#Topic IPoint ##
 
-#Topic IVector
-    #Alias IVectors
+#Subtopic IVector
+#Line # alias for IPoint ##
+    #Alias IVector ##
+    #Alias IVectors ##
     #Typedef SkIPoint SkIVector
+    #Line # alias for IPoint ##
+    #Code
+    typedef SkIPoint SkIVector;
+    ##
+    SkIVector provides an alternative name for SkIPoint. SkIVector and SkIPoint
+    can be used interchangeably for all purposes.
     #Typedef ##
 ##
+
+#Topic IPoint ##
+

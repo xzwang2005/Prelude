@@ -2,8 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifndef V8_IC_INL_H_
-#define V8_IC_INL_H_
+#ifndef V8_IC_IC_INL_H_
+#define V8_IC_IC_INL_H_
 
 #include "src/ic/ic.h"
 
@@ -26,7 +26,7 @@ Address IC::constant_pool() const {
   if (FLAG_enable_embedded_constant_pool) {
     return raw_constant_pool();
   } else {
-    return nullptr;
+    return kNullAddress;
   }
 }
 
@@ -35,15 +35,25 @@ Address IC::raw_constant_pool() const {
   if (FLAG_enable_embedded_constant_pool) {
     return *constant_pool_address_;
   } else {
-    return nullptr;
+    return kNullAddress;
   }
 }
 
+void IC::update_receiver_map(Handle<Object> receiver) {
+  if (receiver->IsSmi()) {
+    receiver_map_ = isolate_->factory()->heap_number_map();
+  } else {
+    receiver_map_ = handle(HeapObject::cast(*receiver)->map(), isolate_);
+  }
+}
 
-bool IC::IsHandler(Object* object) {
-  return (object->IsSmi() && (object != nullptr)) || object->IsTuple2() ||
-         object->IsTuple3() || object->IsFixedArrayExact() ||
-         object->IsWeakCell() || object->IsCode();
+bool IC::IsHandler(MaybeObject* object) {
+  HeapObject* heap_object;
+  return (object->IsSmi() && (object != nullptr)) ||
+         (object->GetHeapObjectIfWeak(&heap_object) &&
+          (heap_object->IsMap() || heap_object->IsPropertyCell())) ||
+         (object->GetHeapObjectIfStrong(&heap_object) &&
+          (heap_object->IsDataHandler() || heap_object->IsCode()));
 }
 
 bool IC::AddressIsDeoptimizedCode() const {
@@ -60,4 +70,4 @@ bool IC::AddressIsDeoptimizedCode(Isolate* isolate, Address address) {
 }  // namespace internal
 }  // namespace v8
 
-#endif  // V8_IC_INL_H_
+#endif  // V8_IC_IC_INL_H_

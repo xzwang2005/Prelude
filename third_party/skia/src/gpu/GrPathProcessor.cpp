@@ -8,8 +8,11 @@
 #include "GrPathProcessor.h"
 
 #include "GrShaderCaps.h"
+#include "SkTo.h"
 #include "gl/GrGLGpu.h"
+#include "gl/GrGLVaryingHandler.h"
 #include "glsl/GrGLSLFragmentShaderBuilder.h"
+#include "glsl/GrGLSLPrimitiveProcessor.h"
 #include "glsl/GrGLSLUniformHandler.h"
 #include "glsl/GrGLSLVarying.h"
 
@@ -24,7 +27,7 @@ public:
     }
 
     void emitCode(EmitArgs& args) override {
-        GrGLSLPPFragmentBuilder* fragBuilder = args.fFragBuilder;
+        GrGLSLFPFragmentBuilder* fragBuilder = args.fFragBuilder;
         const GrPathProcessor& pathProc = args.fGP.cast<GrPathProcessor>();
 
         if (!pathProc.viewMatrix().hasPerspective()) {
@@ -56,7 +59,7 @@ public:
 
             SkString strVaryingName;
             strVaryingName.printf("TransformedCoord_%d", i);
-            GrGLSLVertToFrag v(varyingType);
+            GrGLSLVarying v(varyingType);
             GrGLVaryingHandler* glVaryingHandler = (GrGLVaryingHandler*) varyingHandler;
             fInstalledTransforms.push_back().fHandle =
                     glVaryingHandler->addPathProcessingVarying(strVaryingName.c_str(),

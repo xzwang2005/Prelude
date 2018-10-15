@@ -17,7 +17,8 @@ import os
 import stat
 import unittest
 
-from devil import devil_env
+import mock
+
 from devil.android import device_errors
 from devil.android import device_signal
 from devil.android import device_utils
@@ -28,8 +29,16 @@ from devil.android.sdk import version_codes
 from devil.utils import cmd_helper
 from devil.utils import mock_calls
 
-with devil_env.SysPath(devil_env.PYMOCK_PATH):
-  import mock  # pylint: disable=import-error
+
+ARM32_ABI = 'armeabi-v7a'
+ARM64_ABI = 'arm64-v8a'
+
+def Process(name, pid, ppid='1'):
+  return device_utils.ProcessInfo(name=name, pid=pid, ppid=ppid)
+
+
+def Processes(*args):
+  return [Process(*arg) for arg in args]
 
 
 class AnyStringWith(object):
@@ -49,12 +58,16 @@ class _MockApkHelper(object):
     self.path = path
     self.package_name = package_name
     self.perms = perms
+    self.abis = [ARM32_ABI]
 
   def GetPackageName(self):
     return self.package_name
 
   def GetPermissions(self):
     return self.perms
+
+  def GetAbis(self):
+    return self.abis
 
 
 class _MockMultipleDevicesError(Exception):
@@ -455,6 +468,27 @@ class DeviceUtils_GetApplicationVersionTest(DeviceUtilsTest):
          '    pkg=Package{1fecf634 com.android.chrome}\n')):
       with self.assertRaises(device_errors.CommandFailedError):
         self.device.GetApplicationVersion('com.android.chrome')
+
+
+class DeviceUtils_GetPackageArchitectureTest(DeviceUtilsTest):
+
+  def test_GetPackageArchitecture_exists(self):
+    with self.assertCall(
+        self.call.device._RunPipedShellCommand(
+            'dumpsys package com.android.chrome | grep -F primaryCpuAbi'),
+        ['  primaryCpuAbi=armeabi-v7a']):
+      self.assertEquals(
+          ARM32_ABI,
+          self.device.GetPackageArchitecture('com.android.chrome'))
+
+  def test_GetPackageArchitecture_notExists(self):
+    with self.assertCall(
+        self.call.device._RunPipedShellCommand(
+            'dumpsys package com.android.chrome | grep -F primaryCpuAbi'),
+        []):
+      self.assertEquals(
+          None,
+          self.device.GetPackageArchitecture('com.android.chrome'))
 
 
 class DeviceUtilsGetApplicationDataDirectoryTest(DeviceUtilsTest):
@@ -1163,57 +1197,59 @@ class DeviceUtilsRunPipedShellCommandTest(DeviceUtilsTest):
 class DeviceUtilsKillAllTest(DeviceUtilsTest):
 
   def testKillAll_noMatchingProcessesFailure(self):
-    with self.assertCall(self.call.device.GetPids('test_process'), {}):
+    with self.assertCall(self.call.device.ListProcesses('test_process'), []):
       with self.assertRaises(device_errors.CommandFailedError):
         self.device.KillAll('test_process')
 
   def testKillAll_noMatchingProcessesQuiet(self):
-    with self.assertCall(self.call.device.GetPids('test_process'), {}):
+    with self.assertCall(self.call.device.ListProcesses('test_process'), []):
       self.assertEqual(0, self.device.KillAll('test_process', quiet=True))
 
   def testKillAll_nonblocking(self):
     with self.assertCalls(
-        (self.call.device.GetPids('some.process'),
-         {'some.process': ['1234'], 'some.processing.thing': ['5678']}),
+        (self.call.device.ListProcesses('some.process'),
+         Processes(('some.process', 1234), ('some.process.thing', 5678))),
         (self.call.adb.Shell('kill -9 1234 5678'), '')):
       self.assertEquals(
           2, self.device.KillAll('some.process', blocking=False))
 
   def testKillAll_blocking(self):
     with self.assertCalls(
-        (self.call.device.GetPids('some.process'),
-         {'some.process': ['1234'], 'some.processing.thing': ['5678']}),
+        (self.call.device.ListProcesses('some.process'),
+         Processes(('some.process', 1234), ('some.process.thing', 5678))),
         (self.call.adb.Shell('kill -9 1234 5678'), ''),
-        (self.call.device.GetPids('some.process'),
-         {'some.processing.thing': ['5678']}),
-        (self.call.device.GetPids('some.process'),
-         {'some.process': ['1111']})):  # Other instance with different pid.
+        (self.call.device.ListProcesses('some.process'),
+         Processes(('some.process.thing', 5678))),
+        (self.call.device.ListProcesses('some.process'),
+         # Other instance with different pid.
+         Processes(('some.process', 111)))):
       self.assertEquals(
           2, self.device.KillAll('some.process', blocking=True))
 
   def testKillAll_exactNonblocking(self):
     with self.assertCalls(
-        (self.call.device.GetPids('some.process'),
-         {'some.process': ['1234'], 'some.processing.thing': ['5678']}),
+        (self.call.device.ListProcesses('some.process'),
+         Processes(('some.process', 1234), ('some.process.thing', 5678))),
         (self.call.adb.Shell('kill -9 1234'), '')):
       self.assertEquals(
           1, self.device.KillAll('some.process', exact=True, blocking=False))
 
   def testKillAll_exactBlocking(self):
     with self.assertCalls(
-        (self.call.device.GetPids('some.process'),
-         {'some.process': ['1234'], 'some.processing.thing': ['5678']}),
+        (self.call.device.ListProcesses('some.process'),
+         Processes(('some.process', 1234), ('some.process.thing', 5678))),
         (self.call.adb.Shell('kill -9 1234'), ''),
-        (self.call.device.GetPids('some.process'),
-         {'some.process': ['1234'], 'some.processing.thing': ['5678']}),
-        (self.call.device.GetPids('some.process'),
-         {'some.processing.thing': ['5678']})):
+        (self.call.device.ListProcesses('some.process'),
+         Processes(('some.process', 1234), ('some.process.thing', 5678))),
+        (self.call.device.ListProcesses('some.process'),
+         Processes(('some.process.thing', 5678)))):
       self.assertEquals(
           1, self.device.KillAll('some.process', exact=True, blocking=True))
 
   def testKillAll_root(self):
     with self.assertCalls(
-        (self.call.device.GetPids('some.process'), {'some.process': ['1234']}),
+        (self.call.device.ListProcesses('some.process'),
+         Processes(('some.process', 1234))),
         (self.call.device.NeedsSU(), True),
         (self.call.device._Su("sh -c 'kill -9 1234'"),
          "su -c sh -c 'kill -9 1234'"),
@@ -1223,16 +1259,16 @@ class DeviceUtilsKillAllTest(DeviceUtilsTest):
 
   def testKillAll_sigterm(self):
     with self.assertCalls(
-        (self.call.device.GetPids('some.process'),
-            {'some.process': ['1234']}),
+        (self.call.device.ListProcesses('some.process'),
+         Processes(('some.process', 1234))),
         (self.call.adb.Shell('kill -15 1234'), '')):
       self.assertEquals(
           1, self.device.KillAll('some.process', signum=device_signal.SIGTERM))
 
   def testKillAll_multipleInstances(self):
     with self.assertCalls(
-        (self.call.device.GetPids('some.process'),
-            {'some.process': ['1234', '4567']}),
+        (self.call.device.ListProcesses('some.process'),
+         Processes(('some.process', 1234), ('some.process', 4567))),
         (self.call.adb.Shell('kill -15 1234 4567'), '')):
       self.assertEquals(
           2, self.device.KillAll('some.process', signum=device_signal.SIGTERM))
@@ -1405,6 +1441,62 @@ class DeviceUtilsStartActivityTest(DeviceUtilsTest):
       self.device.StartActivity(test_intent)
 
 
+class DeviceUtilsStartServiceTest(DeviceUtilsTest):
+  def testStartService_success(self):
+    test_intent = intent.Intent(action='android.intent.action.START',
+                                package='test.package',
+                                activity='.Main')
+    with self.patch_call(self.call.device.build_version_sdk,
+                         return_value=version_codes.NOUGAT):
+      with self.assertCall(
+          self.call.adb.Shell('am startservice '
+                              '-a android.intent.action.START '
+                              '-n test.package/.Main'),
+          'Starting service: Intent { act=android.intent.action.START }'):
+        self.device.StartService(test_intent)
+
+  def testStartService_failure(self):
+    test_intent = intent.Intent(action='android.intent.action.START',
+                                package='test.package',
+                                activity='.Main')
+    with self.patch_call(self.call.device.build_version_sdk,
+                         return_value=version_codes.NOUGAT):
+      with self.assertCall(
+          self.call.adb.Shell('am startservice '
+                              '-a android.intent.action.START '
+                              '-n test.package/.Main'),
+          'Error: Failed to start test service'):
+        with self.assertRaises(device_errors.CommandFailedError):
+          self.device.StartService(test_intent)
+
+  def testStartService_withUser(self):
+    test_intent = intent.Intent(action='android.intent.action.START',
+                                package='test.package',
+                                activity='.Main')
+    with self.patch_call(self.call.device.build_version_sdk,
+                         return_value=version_codes.NOUGAT):
+      with self.assertCall(
+          self.call.adb.Shell('am startservice '
+                              '--user TestUser '
+                              '-a android.intent.action.START '
+                              '-n test.package/.Main'),
+          'Starting service: Intent { act=android.intent.action.START }'):
+        self.device.StartService(test_intent, user_id='TestUser')
+
+  def testStartService_onOreo(self):
+    test_intent = intent.Intent(action='android.intent.action.START',
+                                package='test.package',
+                                activity='.Main')
+    with self.patch_call(self.call.device.build_version_sdk,
+                         return_value=version_codes.OREO):
+      with self.assertCall(
+          self.call.adb.Shell('am start-service '
+                              '-a android.intent.action.START '
+                              '-n test.package/.Main'),
+          'Starting service: Intent { act=android.intent.action.START }'):
+        self.device.StartService(test_intent)
+
+
 class DeviceUtilsStartInstrumentationTest(DeviceUtilsTest):
 
   def testStartInstrumentation_nothing(self):
@@ -1566,7 +1658,7 @@ class DeviceUtilsForceStopTest(DeviceUtilsTest):
 
   def testForceStop(self):
     with self.assertCalls(
-        (self.call.device.GetPids('test.package'), {'test.package': [1111]}),
+        (self.call.device.GetApplicationPids('test.package'), [1111]),
         (self.call.device.RunShellCommand(
             ['am', 'force-stop', 'test.package'],
             check_return=True),
@@ -1575,7 +1667,7 @@ class DeviceUtilsForceStopTest(DeviceUtilsTest):
 
   def testForceStop_NoProcessFound(self):
     with self.assertCall(
-        self.call.device.GetPids('test.package'), {}):
+        self.call.device.GetApplicationPids('test.package'), []):
       self.device.ForceStop('test.package')
 
 
@@ -1681,6 +1773,8 @@ class DeviceUtilsPushChangedFilesZippedTest(DeviceUtilsTest):
          mock_zip_temp_dir),
         (mock.call.devil.utils.zip_utils.WriteZipFile(
             '/test/temp/dir/tmp.zip', test_files)),
+        (mock.call.os.path.getsize(
+            '/test/temp/dir/tmp.zip'), 123),
         (self.call.device.NeedsSU(), True),
         (mock.call.devil.android.device_temp_file.DeviceTempFile(self.adb,
                                                                  suffix='.zip'),
@@ -2001,6 +2095,8 @@ class DeviceUtilsStatDirectoryTest(DeviceUtilsTest):
     'drwxr-xr-x   6 root   root            1970-01-01 00:00 some_dir',
     '-rw-r--r--   1 root   root        723 1971-01-01 07:04 some_file',
     '-rw-r-----   1 root   root        327 2009-02-13 23:30 My Music File',
+    # Some Android versions escape spaces in file names
+    '-rw-rw-rw-   1 root   root          0 2018-01-11 13:35 Local\\ State',
     # Older Android versions do not print st_nlink
     'lrwxrwxrwx root     root              1970-01-01 00:00 lnk -> /some/path',
     'srwxrwx--- system   system            2016-05-31 17:25 a_socket1',
@@ -2012,8 +2108,8 @@ class DeviceUtilsStatDirectoryTest(DeviceUtilsTest):
   ]
 
   FILENAMES = [
-    'some_dir', 'some_file', 'My Music File', 'lnk', 'a_socket1',
-    'tmp', 'my_cmd', 'random', 'block_dev', 'silly']
+    'some_dir', 'some_file', 'My Music File', 'Local State', 'lnk',
+    'a_socket1', 'tmp', 'my_cmd', 'random', 'block_dev', 'silly']
 
   def getStatEntries(self, path_given='/', path_listed='/'):
     with self.assertCall(
@@ -2311,23 +2407,23 @@ class DeviceUtilsSetPropTest(DeviceUtilsTest):
         self.device.SetProp('test.property', 'new_value', check=True)
 
 
-class DeviceUtilsGetPidsTest(DeviceUtilsTest):
+class DeviceUtilsListProcessesTest(DeviceUtilsTest):
   def setUp(self):
-    super(DeviceUtilsGetPidsTest, self).setUp()
+    super(DeviceUtilsListProcessesTest, self).setUp()
     self.sample_output = [
         'USER  PID     PPID  VSIZE RSS   WCHAN          PC  NAME',
         'user  1001    100   1024  1024  ffffffff 00000000 one.match',
         'user  1002    100   1024  1024  ffffffff 00000000 two.match',
-        'user  1003    100   1024  1024  ffffffff 00000000 three.match',
-        'user  1234    100   1024  1024  ffffffff 00000000 my$process',
-        'user  1000    100   1024  1024  ffffffff 00000000 foo',
+        'user  1003    101   1024  1024  ffffffff 00000000 three.match',
+        'user  1234    101   1024  1024  ffffffff 00000000 my$process',
         'user  1236    100   1024  1024  ffffffff 00000000 foo',
+        'user  1578    1236  1024  1024  ffffffff 00000000 foo',
     ]
 
   def _grepOutput(self, substring):
     return [line for line in self.sample_output if substring in line]
 
-  def testGetPids_sdkGreaterThanNougatMR1(self):
+  def testListProcesses_sdkGreaterThanNougatMR1(self):
     with self.patch_call(self.call.device.build_version_sdk,
                          return_value=(version_codes.NOUGAT_MR1 + 1)):
       with self.patch_call(self.call.device.build_id,
@@ -2335,47 +2431,49 @@ class DeviceUtilsGetPidsTest(DeviceUtilsTest):
         with self.assertCall(
             self.call.device._RunPipedShellCommand(
                 'ps -e | grep -F example.process'), []):
-          self.device.GetPids('example.process')
+          self.device.ListProcesses('example.process')
 
-  def testGetPids_noMatches(self):
+  def testListProcesses_noMatches(self):
     with self.patch_call(self.call.device.build_version_sdk,
                          return_value=version_codes.LOLLIPOP):
       with self.assertCall(
           self.call.device._RunPipedShellCommand('ps | grep -F does.not.match'),
           self._grepOutput('does.not.match')):
-        self.assertEqual({}, self.device.GetPids('does.not.match'))
+        self.assertEqual([], self.device.ListProcesses('does.not.match'))
 
-  def testGetPids_oneMatch(self):
+  def testListProcesses_oneMatch(self):
     with self.patch_call(self.call.device.build_version_sdk,
                          return_value=version_codes.LOLLIPOP):
       with self.assertCall(
           self.call.device._RunPipedShellCommand('ps | grep -F one.match'),
           self._grepOutput('one.match')):
         self.assertEqual(
-            {'one.match': ['1001']},
-            self.device.GetPids('one.match'))
+            Processes(('one.match', 1001, 100)),
+            self.device.ListProcesses('one.match'))
 
-  def testGetPids_multipleMatches(self):
+  def testListProcesses_multipleMatches(self):
     with self.patch_call(self.call.device.build_version_sdk,
                          return_value=version_codes.LOLLIPOP):
       with self.assertCall(
           self.call.device._RunPipedShellCommand('ps | grep -F match'),
           self._grepOutput('match')):
         self.assertEqual(
-            {'one.match': ['1001'],
-             'two.match': ['1002'],
-             'three.match': ['1003']},
-            self.device.GetPids('match'))
+            Processes(('one.match', 1001, 100),
+                      ('two.match', 1002, 100),
+                      ('three.match', 1003, 101)),
+            self.device.ListProcesses('match'))
 
-  def testGetPids_quotable(self):
+  def testListProcesses_quotable(self):
     with self.patch_call(self.call.device.build_version_sdk,
                          return_value=version_codes.LOLLIPOP):
       with self.assertCall(
           self.call.device._RunPipedShellCommand("ps | grep -F 'my$process'"),
           self._grepOutput('my$process')):
         self.assertEqual(
-            {'my$process': ['1234']}, self.device.GetPids('my$process'))
+            Processes(('my$process', 1234, 101)),
+            self.device.ListProcesses('my$process'))
 
+  # Tests for the GetPids wrapper interface.
   def testGetPids_multipleInstances(self):
     with self.patch_call(self.call.device.build_version_sdk,
                          return_value=version_codes.LOLLIPOP):
@@ -2383,7 +2481,7 @@ class DeviceUtilsGetPidsTest(DeviceUtilsTest):
           self.call.device._RunPipedShellCommand('ps | grep -F foo'),
           self._grepOutput('foo')):
         self.assertEqual(
-            {'foo': ['1000', '1236']},
+            {'foo': ['1236', '1578']},
             self.device.GetPids('foo'))
 
   def testGetPids_allProcesses(self):
@@ -2398,9 +2496,10 @@ class DeviceUtilsGetPidsTest(DeviceUtilsTest):
              'two.match': ['1002'],
              'three.match': ['1003'],
              'my$process': ['1234'],
-             'foo': ['1000', '1236']},
+             'foo': ['1236', '1578']},
             self.device.GetPids())
 
+  # Tests for the GetApplicationPids wrapper interface.
   def testGetApplicationPids_notFound(self):
     with self.patch_call(self.call.device.build_version_sdk,
                          return_value=version_codes.LOLLIPOP):
@@ -2416,7 +2515,7 @@ class DeviceUtilsGetPidsTest(DeviceUtilsTest):
       with self.assertCall(
           self.call.device._RunPipedShellCommand('ps | grep -F one.match'),
           self._grepOutput('one.match')):
-        self.assertEqual(['1001'], self.device.GetApplicationPids('one.match'))
+        self.assertEqual([1001], self.device.GetApplicationPids('one.match'))
 
   def testGetApplicationPids_foundMany(self):
     with self.patch_call(self.call.device.build_version_sdk,
@@ -2425,7 +2524,7 @@ class DeviceUtilsGetPidsTest(DeviceUtilsTest):
           self.call.device._RunPipedShellCommand('ps | grep -F foo'),
           self._grepOutput('foo')):
         self.assertEqual(
-            ['1000', '1236'],
+            [1236, 1578],
             self.device.GetApplicationPids('foo'))
 
   def testGetApplicationPids_atMostOneNotFound(self):
@@ -2446,7 +2545,7 @@ class DeviceUtilsGetPidsTest(DeviceUtilsTest):
           self.call.device._RunPipedShellCommand('ps | grep -F one.match'),
           self._grepOutput('one.match')):
         self.assertEqual(
-            '1001',
+            1001,
             self.device.GetApplicationPids('one.match', at_most_one=True))
 
   def testGetApplicationPids_atMostOneFoundTooMany(self):
@@ -2508,6 +2607,20 @@ class DeviceUtilsGetSetEnforce(DeviceUtilsTest):
         (self.call.device.NeedsSU(), False),
         (self.call.adb.Shell('setenforce 0'), '')):
       self.device.SetEnforce(enabled='0')  # Not recommended but it works!
+
+
+class DeviceUtilsSetWebViewImplementationTest(DeviceUtilsTest):
+
+  def testSetWebViewImplementation_success(self):
+    with self.assertCall(self.call.adb.Shell(
+        'cmd webviewupdate set-webview-implementation foo.org'), 'Success'):
+      self.device.SetWebViewImplementation('foo.org')
+
+  def testSetWebViewImplementation_failure(self):
+    with self.assertCall(self.call.adb.Shell(
+        'cmd webviewupdate set-webview-implementation foo.org'), 'Oops!'):
+      with self.assertRaises(device_errors.CommandFailedError):
+        self.device.SetWebViewImplementation('foo.org')
 
 
 class DeviceUtilsTakeScreenshotTest(DeviceUtilsTest):
@@ -2606,7 +2719,11 @@ class DeviceUtilsHealthyDevicesTest(mock_calls.TestCase):
     test_serials = ['0123456789abcdef', 'fedcba9876543210']
     with self.assertCalls(
         (mock.call.devil.android.sdk.adb_wrapper.AdbWrapper.Devices(),
-         [_AdbWrapperMock(s) for s in test_serials])):
+         [_AdbWrapperMock(s) for s in test_serials]),
+        (mock.call.devil.android.device_utils.DeviceUtils.GetABI(),
+         ARM32_ABI),
+        (mock.call.devil.android.device_utils.DeviceUtils.GetABI(),
+         ARM32_ABI)):
       blacklist = mock.NonCallableMock(**{'Read.return_value': []})
       devices = device_utils.DeviceUtils.HealthyDevices(blacklist)
     for serial, device in zip(test_serials, devices):
@@ -2617,7 +2734,9 @@ class DeviceUtilsHealthyDevicesTest(mock_calls.TestCase):
     test_serials = ['0123456789abcdef', 'fedcba9876543210']
     with self.assertCalls(
         (mock.call.devil.android.sdk.adb_wrapper.AdbWrapper.Devices(),
-         [_AdbWrapperMock(s) for s in test_serials])):
+         [_AdbWrapperMock(s) for s in test_serials]),
+        (mock.call.devil.android.device_utils.DeviceUtils.GetABI(),
+         ARM32_ABI)):
       blacklist = mock.NonCallableMock(
           **{'Read.return_value': ['fedcba9876543210']})
       devices = device_utils.DeviceUtils.HealthyDevices(blacklist)
@@ -2630,6 +2749,10 @@ class DeviceUtilsHealthyDevicesTest(mock_calls.TestCase):
     with self.assertCalls(
         (mock.call.devil.android.sdk.adb_wrapper.AdbWrapper.Devices(),
          [_AdbWrapperMock(s) for s in test_serials]),
+        (mock.call.devil.android.device_utils.DeviceUtils.GetABI(),
+         ARM32_ABI),
+        (mock.call.devil.android.device_utils.DeviceUtils.GetABI(),
+         ARM32_ABI),
         (mock.call.devil.android.device_errors.MultipleDevicesError(mock.ANY),
          _MockMultipleDevicesError())):
       with self.assertRaises(_MockMultipleDevicesError):
@@ -2639,7 +2762,9 @@ class DeviceUtilsHealthyDevicesTest(mock_calls.TestCase):
     test_serials = ['0123456789abcdef']
     with self.assertCalls(
         (mock.call.devil.android.sdk.adb_wrapper.AdbWrapper.Devices(),
-         [_AdbWrapperMock(s) for s in test_serials])):
+         [_AdbWrapperMock(s) for s in test_serials]),
+        (mock.call.devil.android.device_utils.DeviceUtils.GetABI(),
+         ARM32_ABI)):
       devices = device_utils.DeviceUtils.HealthyDevices(device_arg=None)
     self.assertEquals(1, len(devices))
 
@@ -2669,7 +2794,11 @@ class DeviceUtilsHealthyDevicesTest(mock_calls.TestCase):
     test_serials = ['0123456789abcdef', 'fedcba9876543210']
     with self.assertCalls(
         (mock.call.devil.android.sdk.adb_wrapper.AdbWrapper.Devices(),
-         [_AdbWrapperMock(s) for s in test_serials])):
+         [_AdbWrapperMock(s) for s in test_serials]),
+        (mock.call.devil.android.device_utils.DeviceUtils.GetABI(),
+         ARM32_ABI),
+        (mock.call.devil.android.device_utils.DeviceUtils.GetABI(),
+         ARM32_ABI)):
       devices = device_utils.DeviceUtils.HealthyDevices(device_arg=())
     self.assertEquals(2, len(devices))
 
@@ -2709,6 +2838,33 @@ class DeviceUtilsHealthyDevicesTest(mock_calls.TestCase):
     finally:
       del os.environ['ANDROID_SERIAL']
     self.assertEquals(2, len(devices))
+
+  def testHealthyDevices_abisArg_no_matching_abi(self):
+    test_serials = ['0123456789abcdef', 'fedcba9876543210']
+    with self.assertCalls(
+        (mock.call.devil.android.sdk.adb_wrapper.AdbWrapper.Devices(),
+         [_AdbWrapperMock(s) for s in test_serials]),
+        (mock.call.devil.android.device_utils.DeviceUtils.GetABI(),
+         ARM32_ABI),
+        (mock.call.devil.android.device_utils.DeviceUtils.GetABI(),
+         ARM32_ABI)):
+      with self.assertRaises(device_errors.NoDevicesError):
+        device_utils.DeviceUtils.HealthyDevices(device_arg=[], retry=False,
+                                                abis=[ARM64_ABI])
+
+  def testHealthyDevices_abisArg_filter_on_abi(self):
+    test_serials = ['0123456789abcdef', 'fedcba9876543210']
+    with self.assertCalls(
+        (mock.call.devil.android.sdk.adb_wrapper.AdbWrapper.Devices(),
+         [_AdbWrapperMock(s) for s in test_serials]),
+        (mock.call.devil.android.device_utils.DeviceUtils.GetABI(),
+         ARM64_ABI),
+        (mock.call.devil.android.device_utils.DeviceUtils.GetABI(),
+         ARM32_ABI)):
+      devices = device_utils.DeviceUtils.HealthyDevices(device_arg=[],
+                                                        retry=False,
+                                                        abis=[ARM64_ABI])
+    self.assertEquals(1, len(devices))
 
 
 class DeviceUtilsRestartAdbdTest(DeviceUtilsTest):
@@ -2951,6 +3107,27 @@ class DeviceUtilsGetIMEITest(DeviceUtilsTest):
       with self.assertRaises(device_errors.CommandFailedError):
         self.device.GetIMEI()
 
+
+class DeviceUtilsChangeOwner(DeviceUtilsTest):
+
+  def testChangeOwner(self):
+    with self.assertCalls(
+        (self.call.device.RunShellCommand(
+            ['chown', 'user.group', '/path/to/file1', 'file2'],
+            check_return=True))):
+      self.device.ChangeOwner('user.group', ['/path/to/file1', 'file2'])
+
+
+class DeviceUtilsChangeSecurityContext(DeviceUtilsTest):
+
+
+  def testChangeSecurityContext(self):
+    with self.assertCalls(
+        (self.call.device.RunShellCommand(
+            ['chcon', 'u:object_r:system_data_file:s0', '/path', '/path2'],
+            as_root=device_utils._FORCE_SU, check_return=True))):
+      self.device.ChangeSecurityContext('u:object_r:system_data_file:s0',
+                                        ['/path', '/path2'])
 
 if __name__ == '__main__':
   logging.getLogger().setLevel(logging.DEBUG)

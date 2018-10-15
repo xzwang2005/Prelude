@@ -5,17 +5,22 @@
  * found in the LICENSE file.
  */
 
+#include "FakeStreams.h"
+#include "Resources.h"
 #include "SkBitmap.h"
 #include "SkCodec.h"
 #include "SkData.h"
 #include "SkImageInfo.h"
 #include "SkMakeUnique.h"
-#include "SkRWBuffer.h"
-#include "SkString.h"
-
-#include "FakeStreams.h"
-#include "Resources.h"
+#include "SkRefCnt.h"
+#include "SkStream.h"
+#include "SkTypes.h"
 #include "Test.h"
+
+#include <cstring>
+#include <memory>
+#include <utility>
+#include <vector>
 
 static SkImageInfo standardize_info(SkCodec* codec) {
     SkImageInfo defaultInfo = codec->getInfo();
@@ -175,7 +180,7 @@ DEF_TEST(Codec_requiredFrame, r) {
 
     std::vector<SkCodec::FrameInfo> partialInfo;
     size_t frameToCompare = 0;
-    for (; stream->getLength() <= file->size(); stream->addNewData(1)) {
+    while (true) {
         partialInfo = partialCodec->getFrameInfo();
         for (; frameToCompare < partialInfo.size(); frameToCompare++) {
             REPORTER_ASSERT(r, partialInfo[frameToCompare].fRequiredFrame
@@ -185,6 +190,12 @@ DEF_TEST(Codec_requiredFrame, r) {
         if (frameToCompare == frameInfo.size()) {
             break;
         }
+
+        if (stream->getLength() == file->size()) {
+            ERRORF(r, "Should have found all frames for %s", path);
+            return;
+        }
+        stream->addNewData(1);
     }
 }
 
@@ -434,7 +445,7 @@ DEF_TEST(Codec_incomplete, r) {
                               "images/mandrill.wbmp",
                               }) {
         sk_sp<SkData> file = GetResourceAsData(name);
-        if (!name) {
+        if (!file) {
             continue;
         }
 

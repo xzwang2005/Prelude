@@ -9,8 +9,8 @@
 #include "SkCodecPriv.h"
 #include "SkWebpAdapterCodec.h"
 
-SkWebpAdapterCodec::SkWebpAdapterCodec(SkWebpCodec* codec)
-    : INHERITED(codec)
+SkWebpAdapterCodec::SkWebpAdapterCodec(SkWebpCodec* codec, ExifOrientationBehavior behavior)
+    : INHERITED(codec, behavior)
 {}
 
 SkISize SkWebpAdapterCodec::onGetSampledDimensions(int sampleSize) const {
@@ -27,6 +27,5 @@ SkCodec::Result SkWebpAdapterCodec::onGetAndroidPixels(const SkImageInfo& info, 
     SkCodec::Options codecOptions;
     codecOptions.fZeroInitialized = options.fZeroInitialized;
     codecOptions.fSubset = options.fSubset;
-    codecOptions.fPremulBehavior = SkTransferFunctionBehavior::kIgnore;
     return this->codec()->getPixels(info, pixels, rowBytes, &codecOptions);
 }

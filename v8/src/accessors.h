@@ -22,31 +22,27 @@ class JavaScriptFrame;
 
 // The list of accessor descriptors. This is a second-order macro
 // taking a macro to be applied to all accessor descriptor names.
-#define ACCESSOR_INFO_LIST(V)                                       \
-  V(arguments_iterator, ArgumentsIterator)                          \
-  V(array_length, ArrayLength)                                      \
-  V(bound_function_length, BoundFunctionLength)                     \
-  V(bound_function_name, BoundFunctionName)                         \
-  V(error_stack, ErrorStack)                                        \
-  V(function_arguments, FunctionArguments)                          \
-  V(function_caller, FunctionCaller)                                \
-  V(function_name, FunctionName)                                    \
-  V(function_length, FunctionLength)                                \
-  V(function_prototype, FunctionPrototype)                          \
-  V(script_column_offset, ScriptColumnOffset)                       \
-  V(script_compilation_type, ScriptCompilationType)                 \
-  V(script_context_data, ScriptContextData)                         \
-  V(script_eval_from_script, ScriptEvalFromScript)                  \
-  V(script_eval_from_script_position, ScriptEvalFromScriptPosition) \
-  V(script_eval_from_function_name, ScriptEvalFromFunctionName)     \
-  V(script_id, ScriptId)                                            \
-  V(script_line_offset, ScriptLineOffset)                           \
-  V(script_name, ScriptName)                                        \
-  V(script_source, ScriptSource)                                    \
-  V(script_type, ScriptType)                                        \
-  V(script_source_url, ScriptSourceUrl)                             \
-  V(script_source_mapping_url, ScriptSourceMappingUrl)              \
-  V(string_length, StringLength)
+// V(accessor_name, AccessorName, GetterSideEffectType, SetterSideEffectType)
+#define ACCESSOR_INFO_LIST(V)                                                \
+  V(arguments_iterator, ArgumentsIterator, kHasNoSideEffect,                 \
+    kHasSideEffectToReceiver)                                                \
+  V(array_length, ArrayLength, kHasNoSideEffect, kHasSideEffectToReceiver)   \
+  V(bound_function_length, BoundFunctionLength, kHasNoSideEffect,            \
+    kHasSideEffectToReceiver)                                                \
+  V(bound_function_name, BoundFunctionName, kHasNoSideEffect,                \
+    kHasSideEffectToReceiver)                                                \
+  V(error_stack, ErrorStack, kHasSideEffectToReceiver,                       \
+    kHasSideEffectToReceiver)                                                \
+  V(function_arguments, FunctionArguments, kHasNoSideEffect,                 \
+    kHasSideEffectToReceiver)                                                \
+  V(function_caller, FunctionCaller, kHasNoSideEffect,                       \
+    kHasSideEffectToReceiver)                                                \
+  V(function_name, FunctionName, kHasNoSideEffect, kHasSideEffectToReceiver) \
+  V(function_length, FunctionLength, kHasNoSideEffect,                       \
+    kHasSideEffectToReceiver)                                                \
+  V(function_prototype, FunctionPrototype, kHasNoSideEffect,                 \
+    kHasSideEffectToReceiver)                                                \
+  V(string_length, StringLength, kHasNoSideEffect, kHasSideEffectToReceiver)
 
 #define ACCESSOR_SETTER_LIST(V) \
   V(ArrayLengthSetter)          \
@@ -59,9 +55,9 @@ class JavaScriptFrame;
 
 class Accessors : public AllStatic {
  public:
-#define ACCESSOR_GETTER_DECLARATION(accessor_name, AccessorName) \
-  static void AccessorName##Getter(                              \
-      v8::Local<v8::Name> name,                                  \
+#define ACCESSOR_GETTER_DECLARATION(accessor_name, AccessorName, ...) \
+  static void AccessorName##Getter(                                   \
+      v8::Local<v8::Name> name,                                       \
       const v8::PropertyCallbackInfo<v8::Value>& info);
   ACCESSOR_INFO_LIST(ACCESSOR_GETTER_DECLARATION)
 #undef ACCESSOR_GETTER_DECLARATION
@@ -72,6 +68,16 @@ class Accessors : public AllStatic {
       const v8::PropertyCallbackInfo<v8::Boolean>& info);
   ACCESSOR_SETTER_LIST(ACCESSOR_SETTER_DECLARATION)
 #undef ACCESSOR_SETTER_DECLARATION
+
+  static constexpr int kAccessorInfoCount =
+#define COUNT_ACCESSOR(...) +1
+      ACCESSOR_INFO_LIST(COUNT_ACCESSOR);
+#undef COUNT_ACCESSOR
+
+  static constexpr int kAccessorSetterCount =
+#define COUNT_ACCESSOR(...) +1
+      ACCESSOR_SETTER_LIST(COUNT_ACCESSOR);
+#undef COUNT_ACCESSOR
 
   static void ModuleNamespaceEntryGetter(
       v8::Local<v8::Name> name,
@@ -87,8 +93,13 @@ class Accessors : public AllStatic {
 
   // Returns true for properties that are accessors to object fields.
   // If true, the matching FieldIndex is returned through |field_index|.
-  static bool IsJSObjectFieldAccessor(Handle<Map> map, Handle<Name> name,
+  static bool IsJSObjectFieldAccessor(Isolate* isolate, Handle<Map> map,
+                                      Handle<Name> name,
                                       FieldIndex* field_index);
+
+  static MaybeHandle<Object> ReplaceAccessorWithDataProperty(
+      Handle<Object> receiver, Handle<JSObject> holder, Handle<Name> name,
+      Handle<Object> value);
 
   // Create an AccessorInfo. The setter is optional (can be nullptr).
   //
@@ -107,7 +118,7 @@ class Accessors : public AllStatic {
       AccessorNameBooleanSetterCallback setter);
 
  private:
-#define ACCESSOR_INFO_DECLARATION(accessor_name, AccessorName) \
+#define ACCESSOR_INFO_DECLARATION(accessor_name, AccessorName, ...) \
   static Handle<AccessorInfo> Make##AccessorName##Info(Isolate* isolate);
   ACCESSOR_INFO_LIST(ACCESSOR_INFO_DECLARATION)
 #undef ACCESSOR_INFO_DECLARATION

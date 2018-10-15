@@ -6,8 +6,10 @@
 
 #include <drm_fourcc.h>
 #include <xf86drm.h>
+#include <memory>
 
-#include "base/memory/ptr_util.h"
+#include "base/trace_event/memory_allocator_dump_guid.h"
+#include "base/trace_event/process_memory_dump.h"
 
 namespace media {
 
@@ -52,6 +54,8 @@ gbm_device* CreateGbmDevice() {
 
 uint32_t GetDrmFormat(gfx::BufferFormat gfx_format) {
   switch (gfx_format) {
+    case gfx::BufferFormat::R_8:
+      return DRM_FORMAT_R8;
     case gfx::BufferFormat::YUV_420_BIPLANAR:
       return DRM_FORMAT_NV12;
     // Add more formats when needed.
@@ -70,11 +74,10 @@ class GpuMemoryBufferImplGbm : public gfx::GpuMemoryBuffer {
     handle_.native_pixmap_handle.fds.push_back(
         base::FileDescriptor(gbm_bo_get_fd(buffer_object), false));
     for (size_t i = 0; i < gbm_bo_get_num_planes(buffer_object); ++i) {
-      handle_.native_pixmap_handle.planes.push_back(gfx::NativePixmapPlane(
-          gbm_bo_get_plane_stride(buffer_object, i),
-          gbm_bo_get_plane_offset(buffer_object, i),
-          gbm_bo_get_plane_size(buffer_object, i),
-          gbm_bo_get_plane_format_modifier(buffer_object, i)));
+      handle_.native_pixmap_handle.planes.push_back(
+          gfx::NativePixmapPlane(gbm_bo_get_plane_stride(buffer_object, i),
+                                 gbm_bo_get_plane_offset(buffer_object, i),
+                                 gbm_bo_get_plane_size(buffer_object, i)));
     }
   }
 
@@ -150,10 +153,33 @@ class GpuMemoryBufferImplGbm : public gfx::GpuMemoryBuffer {
 
   gfx::GpuMemoryBufferId GetId() const override { return handle_.id; }
 
-  gfx::GpuMemoryBufferHandle GetHandle() const override { return handle_; }
+  gfx::GpuMemoryBufferType GetType() const override {
+    return gfx::NATIVE_PIXMAP;
+  }
+
+  gfx::GpuMemoryBufferHandle CloneHandle() const override {
+    DCHECK_EQ(handle_.type, gfx::NATIVE_PIXMAP);
+    gfx::GpuMemoryBufferHandle handle;
+    handle.type = gfx::NATIVE_PIXMAP;
+    handle.id = handle_.id;
+    handle.native_pixmap_handle =
+        gfx::CloneHandleForIPC(handle_.native_pixmap_handle);
+    return handle;
+  }
 
   ClientBuffer AsClientBuffer() override {
     return reinterpret_cast<ClientBuffer>(this);
+  }
+
+  void OnMemoryDump(
+      base::trace_event::ProcessMemoryDump* pmd,
+      const base::trace_event::MemoryAllocatorDumpGuid& buffer_dump_guid,
+      uint64_t tracing_process_id,
+      int importance) const override {
+    auto shared_buffer_guid = gfx::GetGenericSharedGpuMemoryGUIDForTracing(
+        tracing_process_id, GetId());
+    pmd->CreateSharedGlobalAllocatorDump(shared_buffer_guid);
+    pmd->AddOwnershipEdge(buffer_dump_guid, shared_buffer_guid, importance);
   }
 
  private:
@@ -188,7 +214,8 @@ LocalGpuMemoryBufferManager::CreateGpuMemoryBuffer(
     gfx::BufferFormat format,
     gfx::BufferUsage usage,
     gpu::SurfaceHandle surface_handle) {
-  if (usage != gfx::BufferUsage::SCANOUT_CAMERA_READ_WRITE) {
+  if (usage != gfx::BufferUsage::SCANOUT_CAMERA_READ_WRITE &&
+      usage != gfx::BufferUsage::CAMERA_AND_CPU_READ_WRITE) {
     LOG(ERROR) << "Unsupported gfx::BufferUsage" << static_cast<int>(usage);
     return std::unique_ptr<gfx::GpuMemoryBuffer>();
   }
@@ -218,7 +245,7 @@ LocalGpuMemoryBufferManager::CreateGpuMemoryBuffer(
     return std::unique_ptr<gfx::GpuMemoryBuffer>();
   }
 
-  return base::MakeUnique<GpuMemoryBufferImplGbm>(format, buffer_object);
+  return std::make_unique<GpuMemoryBufferImplGbm>(format, buffer_object);
 }
 
 void LocalGpuMemoryBufferManager::SetDestructionSyncToken(

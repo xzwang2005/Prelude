@@ -11,6 +11,7 @@
 #include "src/objects/dictionary.h"
 #include "src/objects/map-inl.h"
 #include "src/objects/regexp-match-info.h"
+#include "src/objects/scope-info.h"
 #include "src/objects/shared-function-info-inl.h"
 #include "src/objects/template-objects.h"
 
@@ -24,21 +25,21 @@ ScriptContextTable* ScriptContextTable::cast(Object* context) {
   return reinterpret_cast<ScriptContextTable*>(context);
 }
 
-int ScriptContextTable::used() const { return Smi::ToInt(get(kUsedSlot)); }
+int ScriptContextTable::used() const { return Smi::ToInt(get(kUsedSlotIndex)); }
 
 void ScriptContextTable::set_used(int used) {
-  set(kUsedSlot, Smi::FromInt(used));
+  set(kUsedSlotIndex, Smi::FromInt(used));
 }
 
 
 // static
-Handle<Context> ScriptContextTable::GetContext(Handle<ScriptContextTable> table,
+Handle<Context> ScriptContextTable::GetContext(Isolate* isolate,
+                                               Handle<ScriptContextTable> table,
                                                int i) {
   DCHECK(i < table->used());
   return Handle<Context>::cast(
-      FixedArray::get(*table, i + kFirstContextSlot, table->GetIsolate()));
+      FixedArray::get(*table, i + kFirstContextSlotIndex, isolate));
 }
-
 
 // static
 Context* Context::cast(Object* context) {
@@ -46,10 +47,14 @@ Context* Context::cast(Object* context) {
   return reinterpret_cast<Context*>(context);
 }
 
+NativeContext* NativeContext::cast(Object* context) {
+  DCHECK(context->IsNativeContext());
+  return reinterpret_cast<NativeContext*>(context);
+}
 
-JSFunction* Context::closure() { return JSFunction::cast(get(CLOSURE_INDEX)); }
-void Context::set_closure(JSFunction* closure) { set(CLOSURE_INDEX, closure); }
-
+void Context::set_scope_info(ScopeInfo* scope_info) {
+  set(SCOPE_INFO_INDEX, scope_info);
+}
 
 Context* Context::previous() {
   Object* result = get(PREVIOUS_INDEX);
@@ -60,7 +65,7 @@ void Context::set_previous(Context* context) { set(PREVIOUS_INDEX, context); }
 
 Object* Context::next_context_link() { return get(Context::NEXT_CONTEXT_LINK); }
 
-bool Context::has_extension() { return !extension()->IsTheHole(GetIsolate()); }
+bool Context::has_extension() { return !extension()->IsTheHole(); }
 HeapObject* Context::extension() {
   return HeapObject::cast(get(EXTENSION_INDEX));
 }
@@ -68,60 +73,46 @@ void Context::set_extension(HeapObject* object) {
   set(EXTENSION_INDEX, object);
 }
 
-Context* Context::native_context() const {
+NativeContext* Context::native_context() const {
   Object* result = get(NATIVE_CONTEXT_INDEX);
   DCHECK(IsBootstrappingOrNativeContext(this->GetIsolate(), result));
-  return reinterpret_cast<Context*>(result);
+  return reinterpret_cast<NativeContext*>(result);
 }
 
-
-void Context::set_native_context(Context* context) {
+void Context::set_native_context(NativeContext* context) {
   set(NATIVE_CONTEXT_INDEX, context);
 }
 
-bool Context::IsNativeContext() const {
-  Map* map = this->map();
-  return map == map->GetHeap()->native_context_map();
-}
-
 bool Context::IsFunctionContext() const {
-  Map* map = this->map();
-  return map == map->GetHeap()->function_context_map();
+  return map()->instance_type() == FUNCTION_CONTEXT_TYPE;
 }
 
 bool Context::IsCatchContext() const {
-  Map* map = this->map();
-  return map == map->GetHeap()->catch_context_map();
+  return map()->instance_type() == CATCH_CONTEXT_TYPE;
 }
 
 bool Context::IsWithContext() const {
-  Map* map = this->map();
-  return map == map->GetHeap()->with_context_map();
+  return map()->instance_type() == WITH_CONTEXT_TYPE;
 }
 
 bool Context::IsDebugEvaluateContext() const {
-  Map* map = this->map();
-  return map == map->GetHeap()->debug_evaluate_context_map();
+  return map()->instance_type() == DEBUG_EVALUATE_CONTEXT_TYPE;
 }
 
 bool Context::IsBlockContext() const {
-  Map* map = this->map();
-  return map == map->GetHeap()->block_context_map();
+  return map()->instance_type() == BLOCK_CONTEXT_TYPE;
 }
 
 bool Context::IsModuleContext() const {
-  Map* map = this->map();
-  return map == map->GetHeap()->module_context_map();
+  return map()->instance_type() == MODULE_CONTEXT_TYPE;
 }
 
 bool Context::IsEvalContext() const {
-  Map* map = this->map();
-  return map == map->GetHeap()->eval_context_map();
+  return map()->instance_type() == EVAL_CONTEXT_TYPE;
 }
 
 bool Context::IsScriptContext() const {
-  Map* map = this->map();
-  return map == map->GetHeap()->script_context_map();
+  return map()->instance_type() == SCRIPT_CONTEXT_TYPE;
 }
 
 bool Context::HasSameSecurityTokenAs(Context* that) const {
@@ -218,7 +209,7 @@ Map* Context::GetInitialJSArrayMap(ElementsKind kind) const {
   if (!IsFastElementsKind(kind)) return nullptr;
   DisallowHeapAllocation no_gc;
   Object* const initial_js_array_map = get(Context::ArrayMapIndex(kind));
-  DCHECK(!initial_js_array_map->IsUndefined(GetIsolate()));
+  DCHECK(!initial_js_array_map->IsUndefined());
   return Map::cast(initial_js_array_map);
 }
 

@@ -5,10 +5,13 @@
 #include "url/origin.h"
 
 #include <stdint.h>
-#include <string.h>
+
+#include <algorithm>
 
 #include "base/logging.h"
+#include "base/stl_util.h"
 #include "base/strings/string_number_conversions.h"
+#include "base/strings/string_util.h"
 #include "url/gurl.h"
 #include "url/url_canon.h"
 #include "url/url_canon_stdstring.h"
@@ -17,31 +20,13 @@
 
 namespace url {
 
-namespace {
-
-GURL AddSuboriginToUrl(const GURL& url, const std::string& suborigin) {
-  GURL::Replacements replacements;
-  if (url.scheme() == kHttpScheme) {
-    replacements.SetSchemeStr(kHttpSuboriginScheme);
-  } else {
-    DCHECK(url.scheme() == kHttpsScheme);
-    replacements.SetSchemeStr(kHttpsSuboriginScheme);
-  }
-  std::string new_host = suborigin + "." + url.host();
-  replacements.SetHostStr(new_host);
-  return url.ReplaceComponents(replacements);
-}
-
-}  // namespace
-
-Origin::Origin() : unique_(true), suborigin_(std::string()) {}
+Origin::Origin() : nonce_(Nonce()) {}
 
 Origin Origin::Create(const GURL& url) {
-  if (!url.is_valid() || (!url.IsStandard() && !url.SchemeIsBlob()))
+  if (!url.is_valid())
     return Origin();
 
   SchemeHostPort tuple;
-  std::string suborigin;
 
   if (url.SchemeIsFileSystem()) {
     tuple = SchemeHostPort(*url.inner_url());
@@ -51,77 +36,89 @@ Origin Origin::Create(const GURL& url) {
     // the "path", which boils down to everything after the scheme. GURL's
     // 'GetContent()' gives us exactly that.
     tuple = SchemeHostPort(GURL(url.GetContent()));
-  } else if (url.SchemeIsSuborigin()) {
-    GURL::Replacements replacements;
-    if (url.scheme() == kHttpSuboriginScheme) {
-      replacements.SetSchemeStr(kHttpScheme);
-    } else {
-      DCHECK(url.scheme() == kHttpsSuboriginScheme);
-      replacements.SetSchemeStr(kHttpsScheme);
-    }
-
-    std::string host = url.host();
-    size_t suborigin_end = host.find(".");
-    bool no_dot = suborigin_end == std::string::npos;
-    std::string new_host(
-        no_dot ? ""
-               : host.substr(suborigin_end + 1,
-                             url.host().length() - suborigin_end - 1));
-    replacements.SetHostStr(new_host);
-
-    tuple = SchemeHostPort(url.ReplaceComponents(replacements));
-
-    bool invalid_suborigin = no_dot || suborigin_end == 0;
-    if (invalid_suborigin || tuple.IsInvalid())
-      return Origin();
-    suborigin = host.substr(0, suborigin_end);
   } else {
     tuple = SchemeHostPort(url);
+
+    // It's SchemeHostPort's responsibility to filter out unrecognized schemes;
+    // sanity check that this is happening.
+    DCHECK(tuple.IsInvalid() || url.IsStandard() ||
+           base::ContainsValue(GetLocalSchemes(), url.scheme_piece()));
   }
 
   if (tuple.IsInvalid())
     return Origin();
-
-  return Origin(std::move(tuple), std::move(suborigin));
+  return Origin(std::move(tuple));
 }
 
-Origin::Origin(SchemeHostPort tuple, std::string suborigin)
-    : tuple_(std::move(tuple)),
-      unique_(false),
-      suborigin_(std::move(suborigin)) {
-  DCHECK(!tuple_.IsInvalid());
+Origin Origin::Resolve(const GURL& url, const Origin& base_origin) {
+  if (url.IsAboutBlank())
+    return base_origin;
+  Origin result = Origin::Create(url);
+  if (!result.unique())
+    return result;
+  return base_origin.DeriveNewOpaqueOrigin();
 }
 
-Origin::Origin(const Origin&) = default;
-Origin& Origin::operator=(const Origin&) = default;
-Origin::Origin(Origin&&) = default;
-Origin& Origin::operator=(Origin&&) = default;
-
+Origin::Origin(const Origin& other) = default;
+Origin& Origin::operator=(const Origin& other) = default;
+Origin::Origin(Origin&& other) = default;
+Origin& Origin::operator=(Origin&& other) = default;
 Origin::~Origin() = default;
 
 // static
-Origin Origin::UnsafelyCreateOriginWithoutNormalization(
+base::Optional<Origin> Origin::UnsafelyCreateTupleOriginWithoutNormalization(
     base::StringPiece scheme,
     base::StringPiece host,
-    uint16_t port,
-    base::StringPiece suborigin) {
+    uint16_t port) {
   SchemeHostPort tuple(scheme.as_string(), host.as_string(), port,
                        SchemeHostPort::CHECK_CANONICALIZATION);
   if (tuple.IsInvalid())
-    return Origin();
-  return Origin(std::move(tuple), suborigin.as_string());
+    return base::nullopt;
+  return Origin(std::move(tuple));
 }
 
-Origin Origin::CreateFromNormalizedTupleWithSuborigin(
-    std::string scheme,
-    std::string host,
-    uint16_t port,
-    std::string suborigin) {
+// static
+base::Optional<Origin> Origin::UnsafelyCreateOpaqueOriginWithoutNormalization(
+    base::StringPiece precursor_scheme,
+    base::StringPiece precursor_host,
+    uint16_t precursor_port,
+    const Origin::Nonce& nonce) {
+  SchemeHostPort precursor(precursor_scheme.as_string(),
+                           precursor_host.as_string(), precursor_port,
+                           SchemeHostPort::CHECK_CANONICALIZATION);
+  // For opaque origins, it is okay for the SchemeHostPort to be invalid;
+  // however, this should only arise when the arguments indicate the
+  // canonical representation of the invalid SchemeHostPort.
+  if (precursor.IsInvalid() &&
+      !(precursor_scheme.empty() && precursor_host.empty() &&
+        precursor_port == 0)) {
+    return base::nullopt;
+  }
+  return Origin(std::move(nonce), std::move(precursor));
+}
+
+// static
+Origin Origin::CreateFromNormalizedTuple(std::string scheme,
+                                         std::string host,
+                                         uint16_t port) {
   SchemeHostPort tuple(std::move(scheme), std::move(host), port,
                        SchemeHostPort::ALREADY_CANONICALIZED);
   if (tuple.IsInvalid())
     return Origin();
-  return Origin(std::move(tuple), std::move(suborigin));
+  return Origin(std::move(tuple));
+}
+
+// static
+Origin Origin::CreateOpaqueFromNormalizedPrecursorTuple(
+    std::string precursor_scheme,
+    std::string precursor_host,
+    uint16_t precursor_port,
+    const Origin::Nonce& nonce) {
+  SchemeHostPort precursor(std::move(precursor_scheme),
+                           std::move(precursor_host), precursor_port,
+                           SchemeHostPort::ALREADY_CANONICALIZED);
+  // For opaque origins, it is okay for the SchemeHostPort to be invalid.
+  return Origin(std::move(nonce), std::move(precursor));
 }
 
 std::string Origin::Serialize() const {
@@ -131,19 +128,7 @@ std::string Origin::Serialize() const {
   if (scheme() == kFileScheme)
     return "file://";
 
-  if (!suborigin_.empty()) {
-    GURL url_with_suborigin = AddSuboriginToUrl(tuple_.GetURL(), suborigin_);
-    return SchemeHostPort(url_with_suborigin).Serialize();
-  }
-
   return tuple_.Serialize();
-}
-
-Origin Origin::GetPhysicalOrigin() const {
-  if (suborigin_.empty())
-    return *this;
-
-  return Origin(tuple_, std::string());
 }
 
 GURL Origin::GetURL() const {
@@ -153,44 +138,133 @@ GURL Origin::GetURL() const {
   if (scheme() == kFileScheme)
     return GURL("file:///");
 
-  GURL tuple_url(tuple_.GetURL());
+  return tuple_.GetURL();
+}
 
-  if (!suborigin_.empty())
-    return AddSuboriginToUrl(tuple_url, suborigin_);
-
-  return tuple_url;
+base::Optional<base::UnguessableToken> Origin::GetNonceForSerialization()
+    const {
+  // TODO(nasko): Consider not making a copy here, but return a reference to
+  // the nonce.
+  return nonce_ ? base::make_optional(nonce_->token()) : base::nullopt;
 }
 
 bool Origin::IsSameOriginWith(const Origin& other) const {
-  if (unique_ || other.unique_)
-    return false;
-
-  return tuple_.Equals(other.tuple_) && suborigin_ == other.suborigin_;
-}
-
-bool Origin::IsSamePhysicalOriginWith(const Origin& other) const {
-  return GetPhysicalOrigin().IsSameOriginWith(other.GetPhysicalOrigin());
+  // scheme/host/port must match, even for opaque origins where |tuple_| holds
+  // the precursor origin.
+  return std::tie(tuple_, nonce_) == std::tie(other.tuple_, other.nonce_);
 }
 
 bool Origin::DomainIs(base::StringPiece canonical_domain) const {
-  return !unique_ && url::DomainIs(tuple_.host(), canonical_domain);
+  return !unique() && url::DomainIs(tuple_.host(), canonical_domain);
 }
 
 bool Origin::operator<(const Origin& other) const {
-  return tuple_ < other.tuple_ ||
-         (tuple_.Equals(other.tuple_) && suborigin_ < other.suborigin_);
+  return std::tie(tuple_, nonce_) < std::tie(other.tuple_, other.nonce_);
+}
+
+Origin Origin::DeriveNewOpaqueOrigin() const {
+  return Origin(Nonce(), tuple_);
+}
+
+Origin::Origin(SchemeHostPort tuple) : tuple_(std::move(tuple)) {
+  DCHECK(!unique());
+  DCHECK(!tuple_.IsInvalid());
+}
+
+// Constructs an opaque origin derived from |precursor|.
+Origin::Origin(const Nonce& nonce, SchemeHostPort precursor)
+    : tuple_(std::move(precursor)), nonce_(std::move(nonce)) {
+  DCHECK(unique());
+  // |precursor| is retained, but not accessible via scheme()/host()/port().
+  DCHECK_EQ("", scheme());
+  DCHECK_EQ("", host());
+  DCHECK_EQ(0U, port());
 }
 
 std::ostream& operator<<(std::ostream& out, const url::Origin& origin) {
-  return out << origin.Serialize();
+  out << origin.Serialize();
+
+  if (origin.unique()) {
+    // For opaque origins, log the nonce and precursor as well. Without this,
+    // EXPECT_EQ failures between opaque origins are nearly impossible to
+    // understand.
+    out << " [internally: " << *origin.nonce_;
+    if (origin.tuple_.IsInvalid())
+      out << " anonymous";
+    else
+      out << " derived from " << origin.tuple_;
+    out << "]";
+  } else if (origin.scheme() == kFileScheme) {
+    out << " [internally: " << origin.tuple_ << "]";
+  }
+  return out;
+}
+
+std::ostream& operator<<(std::ostream& out, const url::Origin::Nonce& nonce) {
+  // Subtle: don't let logging trigger lazy-generation of the token value.
+  if (nonce.raw_token().is_empty())
+    return (out << "(nonce TBD)");
+  else
+    return (out << nonce.raw_token());
 }
 
 bool IsSameOriginWith(const GURL& a, const GURL& b) {
   return Origin::Create(a).IsSameOriginWith(Origin::Create(b));
 }
 
-bool IsSamePhysicalOriginWith(const GURL& a, const GURL& b) {
-  return Origin::Create(a).IsSamePhysicalOriginWith(Origin::Create(b));
+Origin::Nonce::Nonce() {}
+Origin::Nonce::Nonce(const base::UnguessableToken& token) : token_(token) {
+  CHECK(!token_.is_empty());
+}
+
+const base::UnguessableToken& Origin::Nonce::token() const {
+  // Inspecting the value of a nonce triggers lazy-generation.
+  // TODO(dcheng): UnguessableToken::is_empty should go away -- what sentinel
+  // value to use instead?
+  if (token_.is_empty())
+    token_ = base::UnguessableToken::Create();
+  return token_;
+}
+
+const base::UnguessableToken& Origin::Nonce::raw_token() const {
+  return token_;
+}
+
+// Copying a Nonce triggers lazy-generation of the token.
+Origin::Nonce::Nonce(const Origin::Nonce& other) : token_(other.token()) {}
+
+Origin::Nonce& Origin::Nonce::operator=(const Origin::Nonce& other) {
+  // Copying a Nonce triggers lazy-generation of the token.
+  token_ = other.token();
+  return *this;
+}
+
+// Moving a nonce does NOT trigger lazy-generation of the token.
+Origin::Nonce::Nonce(Origin::Nonce&& other) : token_(other.token_) {
+  other.token_ = base::UnguessableToken();  // Reset |other|.
+}
+
+Origin::Nonce& Origin::Nonce::operator=(Origin::Nonce&& other) {
+  token_ = other.token_;
+  other.token_ = base::UnguessableToken();  // Reset |other|.
+  return *this;
+}
+
+bool Origin::Nonce::operator<(const Origin::Nonce& other) const {
+  // When comparing, lazy-generation is required of both tokens, so that an
+  // ordering is established.
+  return token() < other.token();
+}
+
+bool Origin::Nonce::operator==(const Origin::Nonce& other) const {
+  // Equality testing doesn't actually require that the tokens be generated.
+  // If the tokens are both zero, equality only holds if they're the same
+  // object.
+  return (other.token_ == token_) && !(token_.is_empty() && (&other != this));
+}
+
+bool Origin::Nonce::operator!=(const Origin::Nonce& other) const {
+  return !(*this == other);
 }
 
 }  // namespace url

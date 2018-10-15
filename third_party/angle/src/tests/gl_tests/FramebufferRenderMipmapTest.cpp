@@ -25,27 +25,13 @@ class FramebufferRenderMipmapTest : public ANGLETest
     {
         ANGLETest::SetUp();
 
-        const std::string vsSource =
-            R"(attribute highp vec4 position;
-            void main(void)
-            {
-                gl_Position = position;
-            })";
-
-        const std::string fsSource =
-            R"(uniform highp vec4 color;
-            void main(void)
-            {
-                gl_FragColor = color;
-            })";
-
-        mProgram = CompileProgram(vsSource, fsSource);
+        mProgram = CompileProgram(essl1_shaders::vs::Simple(), essl1_shaders::fs::UniformColor());
         if (mProgram == 0)
         {
             FAIL() << "shader compilation failed.";
         }
 
-        mColorLocation = glGetUniformLocation(mProgram, "color");
+        mColorLocation = glGetUniformLocation(mProgram, essl1_shaders::ColorUniform());
 
         glUseProgram(mProgram);
 
@@ -117,20 +103,9 @@ TEST_P(FramebufferRenderMipmapTest, Validation)
 // Render to various levels of a texture and check that they have the correct color data via ReadPixels
 TEST_P(FramebufferRenderMipmapTest, RenderToMipmap)
 {
-    // TODO(geofflang): Figure out why this is broken on Intel OpenGL
-    if (IsIntel() && getPlatformRenderer() == EGL_PLATFORM_ANGLE_TYPE_OPENGL_ANGLE)
-    {
-        std::cout << "Test skipped on Intel OpenGL." << std::endl;
-        return;
-    }
-
     bool renderToMipmapSupported =
         extensionEnabled("GL_OES_fbo_render_mipmap") || getClientMajorVersion() > 2;
-    if (!renderToMipmapSupported)
-    {
-        std::cout << "Test skipped because GL_OES_fbo_render_mipmap or ES3 is not available." << std::endl;
-        return;
-    }
+    ANGLE_SKIP_TEST_IF(!renderToMipmapSupported);
 
     const GLfloat levelColors[] =
     {
@@ -169,7 +144,7 @@ TEST_P(FramebufferRenderMipmapTest, RenderToMipmap)
         glUseProgram(mProgram);
         glUniform4fv(mColorLocation, 1, levelColors + (i * 4));
 
-        drawQuad(mProgram, "position", 0.5f);
+        drawQuad(mProgram, essl1_shaders::PositionAttrib(), 0.5f);
         EXPECT_GL_NO_ERROR();
     }
 

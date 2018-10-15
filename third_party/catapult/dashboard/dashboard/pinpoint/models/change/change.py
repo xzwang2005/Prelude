@@ -23,8 +23,8 @@ class Change(collections.namedtuple('Change', ('commits', 'patch'))):
       commits: An iterable of Commits representing this Change's dependencies.
       patch: An optional Patch to apply to the Change.
     """
-    if not commits:
-      raise TypeError('At least one commit required.')
+    if not (commits or patch):
+      raise TypeError('At least one commit or patch required.')
     return super(Change, cls).__new__(cls, tuple(commits), patch)
 
   def __str__(self):
@@ -58,11 +58,45 @@ class Change(collections.namedtuple('Change', ('commits', 'patch'))):
   def deps(self):
     return tuple(self.commits[1:])
 
+  def Update(self, other):
+    """Updates this Change with another Change and returns it as a new Change.
+
+    Similar to OrderedDict.update(), for each Commit in the other Change:
+    * If the Commit's repository already exists in this Change,
+      override the git hash with the other Commit's git hash.
+    * Otherwise, add the Commit to this Change.
+    Also apply the other Change's patches to this Change.
+
+    Since Changes are immutable, this method returns a new Change instead of
+    modifying the existing Change.
+
+    Args:
+      other: The overriding Change.
+
+    Returns:
+      A new Change object.
+    """
+    commits = collections.OrderedDict(self.commits)
+    commits.update(other.commits)
+    commits = tuple(commit_module.Commit(repository, git_hash)
+                    for repository, git_hash in commits.iteritems())
+
+    if self.patch and other.patch:
+      raise NotImplementedError(
+          "Pinpoint builders don't yet support multiple patches.")
+    patch = self.patch or other.patch
+
+    return Change(commits, patch)
+
   def AsDict(self):
-    return {
+    result = {
         'commits': [commit.AsDict() for commit in self.commits],
-        'patch': self.patch.AsDict() if self.patch else None,
     }
+
+    if self.patch:
+      result['patch'] = self.patch.AsDict()
+
+    return result
 
   @classmethod
   def FromDict(cls, data):
@@ -155,9 +189,9 @@ def _ExpandDepsToMatchRepositories(commits_a, commits_b):
 
     # Look through commits_b for any extra slots to fill with the DEPS.
     for commit_b in commits_b[len(commits_a):]:
-      dep_a = _FindCommitWithRepository(deps_a, commit_b.repository)
+      dep_a = _FindRepositoryUrlInDeps(deps_a, commit_b.repository_url)
       if dep_a:
-        commits_a.append(dep_a)
+        commits_a.append(commit_module.Commit.FromDep(dep_a))
       else:
         break
 
@@ -200,17 +234,24 @@ def _FindMidpoints(commits_a, commits_b):
       deps_a = commit_a.Deps()
       deps_b = commit_b.Deps()
       commits_a += sorted(
-          dep for dep in deps_a.difference(deps_b)
-          if not _FindCommitWithRepository(commits_a, dep.repository))
+          commit_module.Commit.FromDep(dep) for dep in deps_a.difference(deps_b)
+          if not _FindRepositoryUrlInCommits(commits_a, dep.repository_url))
       commits_b += sorted(
-          dep for dep in deps_b.difference(deps_a)
-          if not _FindCommitWithRepository(commits_b, dep.repository))
+          commit_module.Commit.FromDep(dep) for dep in deps_b.difference(deps_a)
+          if not _FindRepositoryUrlInCommits(commits_b, dep.repository_url))
 
   return commits_midpoint
 
 
-def _FindCommitWithRepository(commits, repository):
+def _FindRepositoryUrlInDeps(deps, repository_url):
+  for dep in deps:
+    if dep[0] == repository_url:
+      return dep
+  return None
+
+
+def _FindRepositoryUrlInCommits(commits, repository_url):
   for commit in commits:
-    if commit.repository == repository:
+    if commit.repository_url == repository_url:
       return commit
   return None

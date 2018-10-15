@@ -29,14 +29,6 @@ class UniformBufferTest : public ANGLETest
     {
         ANGLETest::SetUp();
 
-        mVertexShaderSource =
-            R"(#version 300 es
-            in vec4 position;
-            void main()
-            {
-                gl_Position = position;
-            })";
-
         mFragmentShaderSource =
             R"(#version 300 es
             precision highp float;
@@ -47,7 +39,7 @@ class UniformBufferTest : public ANGLETest
                 fragColor = color;
             })";
 
-        mProgram = CompileProgram(mVertexShaderSource, mFragmentShaderSource);
+        mProgram = CompileProgram(essl3_shaders::vs::Simple(), mFragmentShaderSource);
         ASSERT_NE(mProgram, 0u);
 
         mUniformBufferIndex = glGetUniformBlockIndex(mProgram, "uni");
@@ -65,7 +57,6 @@ class UniformBufferTest : public ANGLETest
         ANGLETest::TearDown();
     }
 
-    std::string mVertexShaderSource;
     std::string mFragmentShaderSource;
     GLuint mProgram;
     GLint mUniformBufferIndex;
@@ -84,7 +75,7 @@ TEST_P(UniformBufferTest, Simple)
     glBindBufferBase(GL_UNIFORM_BUFFER, 0, mUniformBuffer);
 
     glUniformBlockBinding(mProgram, mUniformBufferIndex, 0);
-    drawQuad(mProgram, "position", 0.5f);
+    drawQuad(mProgram, essl3_shaders::PositionAttrib(), 0.5f);
 
     ASSERT_GL_NO_ERROR();
     EXPECT_PIXEL_NEAR(0, 0, 128, 191, 64, 255, 1);
@@ -147,7 +138,7 @@ TEST_P(UniformBufferTest, UniformBufferRange)
     // Use a size which is smaller than the alignment to check
     // to check that this case is handle correctly in the conversion to 11.1.
     glBindBufferRange(GL_UNIFORM_BUFFER, 0, mUniformBuffer, 0, vec4Size);
-    drawQuad(mProgram, "position", 0.5f);
+    drawQuad(mProgram, essl3_shaders::PositionAttrib(), 0.5f);
     EXPECT_GL_NO_ERROR();
     EXPECT_PIXEL_EQ(px, py, 10, 20, 30, 40);
 
@@ -156,7 +147,7 @@ TEST_P(UniformBufferTest, UniformBufferRange)
     // (256 bytes) hence it will try to map the range [stride, 2 * stride] which is out-of-bound of
     // the buffer bufferSize = stride + vec4Size < 2 * stride. Ensure that this behaviour works.
     glBindBufferRange(GL_UNIFORM_BUFFER, 0, mUniformBuffer, stride, vec4Size);
-    drawQuad(mProgram, "position", 0.5f);
+    drawQuad(mProgram, essl3_shaders::PositionAttrib(), 0.5f);
     EXPECT_GL_NO_ERROR();
     EXPECT_PIXEL_EQ(px, py, 110, 120, 130, 140);
 }
@@ -187,7 +178,7 @@ TEST_P(UniformBufferTest, UniformBufferBindings)
     // Try to bind the buffer to binding point 2
     glUniformBlockBinding(mProgram, mUniformBufferIndex, 2);
     glBindBufferBase(GL_UNIFORM_BUFFER, 2, mUniformBuffer);
-    drawQuad(mProgram, "position", 0.5f);
+    drawQuad(mProgram, essl3_shaders::PositionAttrib(), 0.5f);
     EXPECT_GL_NO_ERROR();
     EXPECT_PIXEL_EQ(px, py, 10, 20, 30, 40);
 
@@ -199,21 +190,20 @@ TEST_P(UniformBufferTest, UniformBufferBindings)
     // Try to bind the buffer to another binding point
     glUniformBlockBinding(mProgram, mUniformBufferIndex, 5);
     glBindBufferBase(GL_UNIFORM_BUFFER, 5, mUniformBuffer);
-    drawQuad(mProgram, "position", 0.5f);
+    drawQuad(mProgram, essl3_shaders::PositionAttrib(), 0.5f);
     EXPECT_GL_NO_ERROR();
     EXPECT_PIXEL_EQ(px, py, 10, 20, 30, 40);
 }
 
-// Test that ANGLE handles used but unbound UBO.
-// TODO: A test case shouldn't depend on the error code of an undefined behaviour. Move this to unit
-// tests of the validation layer.
-TEST_P(UniformBufferTest, UnboundUniformBuffer)
+// Test that ANGLE handles used but unbound UBO. Assumes we are running on ANGLE and produce
+// optional but not mandatory errors.
+TEST_P(UniformBufferTest, ANGLEUnboundUniformBuffer)
 {
     glUniformBlockBinding(mProgram, mUniformBufferIndex, 0);
     glBindBufferBase(GL_UNIFORM_BUFFER, 0, 0);
     EXPECT_GL_NO_ERROR();
 
-    drawQuad(mProgram, "position", 0.5f);
+    drawQuad(mProgram, essl3_shaders::PositionAttrib(), 0.5f);
     EXPECT_GL_ERROR(GL_INVALID_OPERATION);
 }
 
@@ -221,12 +211,8 @@ TEST_P(UniformBufferTest, UnboundUniformBuffer)
 // https://code.google.com/p/angleproject/issues/detail?id=965
 TEST_P(UniformBufferTest, UniformBufferManyUpdates)
 {
-    // TODO(jmadill): Figure out why this fails on Intel OpenGL.
-    if (IsIntel() && IsOpenGL())
-    {
-        std::cout << "Test skipped on Intel OpenGL." << std::endl;
-        return;
-    }
+    // TODO(jmadill): Figure out why this fails on OSX Intel OpenGL.
+    ANGLE_SKIP_TEST_IF(IsIntel() && IsOSX() && IsOpenGL());
 
     int px = getWindowWidth() / 2;
     int py = getWindowHeight() / 2;
@@ -252,7 +238,7 @@ TEST_P(UniformBufferTest, UniformBufferManyUpdates)
 
         glBufferSubData(GL_UNIFORM_BUFFER, 0, sizeof(data), data);
 
-        drawQuad(mProgram, "position", 0.5f);
+        drawQuad(mProgram, essl3_shaders::PositionAttrib(), 0.5f);
         EXPECT_GL_NO_ERROR();
         EXPECT_PIXEL_EQ(px, py, i + 10, i + 20, i + 30, i + 40);
     }
@@ -310,7 +296,7 @@ TEST_P(UniformBufferTest, ManyUniformBufferRange)
     for (size_t i = 0; i < 8; ++i)
     {
         glBindBufferRange(GL_UNIFORM_BUFFER, 0, mUniformBuffer, i * stride, stride);
-        drawQuad(mProgram, "position", 0.5f);
+        drawQuad(mProgram, essl3_shaders::PositionAttrib(), 0.5f);
         EXPECT_GL_NO_ERROR();
         EXPECT_PIXEL_EQ(px, py, 10 + i, 20 + i, 30 + i, 40 + i);
     }
@@ -319,7 +305,7 @@ TEST_P(UniformBufferTest, ManyUniformBufferRange)
     for (size_t i = 0; i < 7; ++i)
     {
         glBindBufferRange(GL_UNIFORM_BUFFER, 0, mUniformBuffer, i * stride, 2 * stride);
-        drawQuad(mProgram, "position", 0.5f);
+        drawQuad(mProgram, essl3_shaders::PositionAttrib(), 0.5f);
         EXPECT_GL_NO_ERROR();
         EXPECT_PIXEL_EQ(px, py, 10 + i, 20 + i, 30 + i, 40 + i);
     }
@@ -328,7 +314,7 @@ TEST_P(UniformBufferTest, ManyUniformBufferRange)
     for (size_t i = 0; i < 5; ++i)
     {
         glBindBufferRange(GL_UNIFORM_BUFFER, 0, mUniformBuffer, i * stride, 4 * stride);
-        drawQuad(mProgram, "position", 0.5f);
+        drawQuad(mProgram, essl3_shaders::PositionAttrib(), 0.5f);
         EXPECT_GL_NO_ERROR();
         EXPECT_PIXEL_EQ(px, py, 10 + i, 20 + i, 30 + i, 40 + i);
     }
@@ -583,7 +569,7 @@ TEST_P(UniformBufferTest, VeryLarge)
     glBindBufferBase(GL_UNIFORM_BUFFER, 0, mUniformBuffer);
 
     glUniformBlockBinding(mProgram, mUniformBufferIndex, 0);
-    drawQuad(mProgram, "position", 0.5f);
+    drawQuad(mProgram, essl3_shaders::PositionAttrib(), 0.5f);
 
     ASSERT_GL_NO_ERROR();
     EXPECT_PIXEL_NEAR(0, 0, 128, 191, 64, 255, 1);
@@ -616,7 +602,7 @@ TEST_P(UniformBufferTest, VeryLargeReadback)
     // Draw with the buffer.
     glBindBufferBase(GL_UNIFORM_BUFFER, 0, mUniformBuffer);
     glUniformBlockBinding(mProgram, mUniformBufferIndex, 0);
-    drawQuad(mProgram, "position", 0.5f);
+    drawQuad(mProgram, essl3_shaders::PositionAttrib(), 0.5f);
 
     ASSERT_GL_NO_ERROR();
     EXPECT_PIXEL_NEAR(0, 0, 128, 191, 64, 255, 1);
@@ -736,13 +722,6 @@ TEST_P(UniformBufferTest31, UniformBufferBindings)
 // Test uniform blocks used as instanced array take next binding point for each subsequent element.
 TEST_P(UniformBufferTest31, ConsecutiveBindingsForBlockArray)
 {
-    const std::string &vertexShaderSource =
-        "#version 310 es\n"
-        "in vec4 position;\n"
-        "void main()\n"
-        "{\n"
-        "    gl_Position = position;\n"
-        "}";
     const std::string &fragmentShaderSource =
         "#version 310 es\n"
         "precision highp float;\n"
@@ -755,7 +734,7 @@ TEST_P(UniformBufferTest31, ConsecutiveBindingsForBlockArray)
         "    fragColor = blocks[0].color + blocks[1].color;\n"
         "}";
 
-    ANGLE_GL_PROGRAM(program, vertexShaderSource, fragmentShaderSource);
+    ANGLE_GL_PROGRAM(program, essl31_shaders::vs::Simple(), fragmentShaderSource);
     std::array<GLBuffer, 2> uniformBuffers;
 
     int px = getWindowWidth() / 2;
@@ -783,7 +762,7 @@ TEST_P(UniformBufferTest31, ConsecutiveBindingsForBlockArray)
     EXPECT_GL_NO_ERROR();
     glBindBufferBase(GL_UNIFORM_BUFFER, 3, uniformBuffers[1].get());
 
-    drawQuad(program, "position", 0.5f);
+    drawQuad(program, essl31_shaders::PositionAttrib(), 0.5f);
     EXPECT_GL_NO_ERROR();
     EXPECT_PIXEL_EQ(px, py, 20, 40, 60, 80);
 }
@@ -844,7 +823,7 @@ TEST_P(UniformBufferTest, BlockContainingArrayOfStructs)
         "    my_FragColor = lighting;\n"
         "}\n";
 
-    ANGLE_GL_PROGRAM(program, mVertexShaderSource, fragmentShader);
+    ANGLE_GL_PROGRAM(program, essl3_shaders::vs::Simple(), fragmentShader);
     GLint uniformBufferIndex = glGetUniformBlockIndex(program, "lightData");
 
     glBindBuffer(GL_UNIFORM_BUFFER, mUniformBuffer);
@@ -862,7 +841,7 @@ TEST_P(UniformBufferTest, BlockContainingArrayOfStructs)
 
     glBindBufferBase(GL_UNIFORM_BUFFER, 0, mUniformBuffer);
     glUniformBlockBinding(program, uniformBufferIndex, 0);
-    drawQuad(program.get(), "position", 0.5f);
+    drawQuad(program.get(), essl3_shaders::PositionAttrib(), 0.5f);
     EXPECT_PIXEL_COLOR_EQ(0, 0, GLColor::green);
 }
 
@@ -893,7 +872,7 @@ TEST_P(UniformBufferTest, BlockArrayContainingArrayOfStructs)
             my_FragColor = lighting;
         })";
 
-    ANGLE_GL_PROGRAM(program, mVertexShaderSource, fragmentShader);
+    ANGLE_GL_PROGRAM(program, essl3_shaders::vs::Simple(), fragmentShader);
     GLint uniformBufferIndex  = glGetUniformBlockIndex(program, "lightData[0]");
     GLint uniformBuffer2Index = glGetUniformBlockIndex(program, "lightData[1]");
 
@@ -922,7 +901,7 @@ TEST_P(UniformBufferTest, BlockArrayContainingArrayOfStructs)
     glBindBufferBase(GL_UNIFORM_BUFFER, 1, uniformBuffer2);
     glUniformBlockBinding(program, uniformBufferIndex, 0);
     glUniformBlockBinding(program, uniformBuffer2Index, 1);
-    drawQuad(program.get(), "position", 0.5f);
+    drawQuad(program.get(), essl3_shaders::PositionAttrib(), 0.5f);
     EXPECT_PIXEL_COLOR_EQ(0, 0, GLColor::green);
 }
 
@@ -951,7 +930,7 @@ TEST_P(UniformBufferTest, BlockContainingArrayOfStructsContainingArrays)
             my_FragColor = lighting;
         })";
 
-    ANGLE_GL_PROGRAM(program, mVertexShaderSource, fragmentShader);
+    ANGLE_GL_PROGRAM(program, essl3_shaders::vs::Simple(), fragmentShader);
     GLint uniformBufferIndex = glGetUniformBlockIndex(program, "lightData");
 
     glBindBuffer(GL_UNIFORM_BUFFER, mUniformBuffer);
@@ -970,7 +949,7 @@ TEST_P(UniformBufferTest, BlockContainingArrayOfStructsContainingArrays)
     glBufferData(GL_UNIFORM_BUFFER, kDataSize, v.data(), GL_STATIC_DRAW);
     glBindBufferBase(GL_UNIFORM_BUFFER, 0, mUniformBuffer);
     glUniformBlockBinding(program, uniformBufferIndex, 0);
-    drawQuad(program.get(), "position", 0.5f);
+    drawQuad(program.get(), essl3_shaders::PositionAttrib(), 0.5f);
     EXPECT_PIXEL_COLOR_EQ(0, 0, GLColor::green);
 }
 
@@ -1003,7 +982,7 @@ TEST_P(UniformBufferTest, BlockContainingNestedStructs)
         "    my_FragColor = lighting;\n"
         "}\n";
 
-    ANGLE_GL_PROGRAM(program, mVertexShaderSource, fragmentShader);
+    ANGLE_GL_PROGRAM(program, essl3_shaders::vs::Simple(), fragmentShader);
     GLint uniformBufferIndex = glGetUniformBlockIndex(program, "lightData");
 
     glBindBuffer(GL_UNIFORM_BUFFER, mUniformBuffer);
@@ -1019,7 +998,7 @@ TEST_P(UniformBufferTest, BlockContainingNestedStructs)
     glBufferData(GL_UNIFORM_BUFFER, kDataSize, v.data(), GL_STATIC_DRAW);
     glBindBufferBase(GL_UNIFORM_BUFFER, 0, mUniformBuffer);
     glUniformBlockBinding(program, uniformBufferIndex, 0);
-    drawQuad(program.get(), "position", 0.5f);
+    drawQuad(program.get(), essl3_shaders::PositionAttrib(), 0.5f);
     EXPECT_PIXEL_COLOR_EQ(0, 0, GLColor::green);
 }
 
@@ -1044,7 +1023,7 @@ TEST_P(UniformBufferTest, UniformBlockReservedOpenGLName)
         "    my_FragColor = color;\n"
         "}\n";
 
-    ANGLE_GL_PROGRAM(program, mVertexShaderSource, fragmentShader);
+    ANGLE_GL_PROGRAM(program, essl3_shaders::vs::Simple(), fragmentShader);
     GLint uniformBufferIndex = glGetUniformBlockIndex(program, "buffer");
 
     glBindBuffer(GL_UNIFORM_BUFFER, mUniformBuffer);
@@ -1060,7 +1039,7 @@ TEST_P(UniformBufferTest, UniformBlockReservedOpenGLName)
     glBufferData(GL_UNIFORM_BUFFER, kDataSize, v.data(), GL_STATIC_DRAW);
     glBindBufferBase(GL_UNIFORM_BUFFER, 0, mUniformBuffer);
     glUniformBlockBinding(program, uniformBufferIndex, 0);
-    drawQuad(program.get(), "position", 0.5f);
+    drawQuad(program.get(), essl3_shaders::PositionAttrib(), 0.5f);
     EXPECT_PIXEL_COLOR_EQ(0, 0, GLColor::green);
 }
 
@@ -1077,7 +1056,7 @@ TEST_P(UniformBufferTest, UniformBlockInstanceReservedOpenGLName)
         "    my_FragColor = buffer.color;\n"
         "}\n";
 
-    ANGLE_GL_PROGRAM(program, mVertexShaderSource, fragmentShader);
+    ANGLE_GL_PROGRAM(program, essl3_shaders::vs::Simple(), fragmentShader);
     GLint uniformBufferIndex = glGetUniformBlockIndex(program, "dmat2");
 
     glBindBuffer(GL_UNIFORM_BUFFER, mUniformBuffer);
@@ -1093,7 +1072,7 @@ TEST_P(UniformBufferTest, UniformBlockInstanceReservedOpenGLName)
     glBufferData(GL_UNIFORM_BUFFER, kDataSize, v.data(), GL_STATIC_DRAW);
     glBindBufferBase(GL_UNIFORM_BUFFER, 0, mUniformBuffer);
     glUniformBlockBinding(program, uniformBufferIndex, 0);
-    drawQuad(program.get(), "position", 0.5f);
+    drawQuad(program.get(), essl3_shaders::PositionAttrib(), 0.5f);
     EXPECT_PIXEL_COLOR_EQ(0, 0, GLColor::green);
 }
 
@@ -1134,7 +1113,7 @@ TEST_P(UniformBufferTest, Std140UniformBlockInstanceWithNestedStructsContainingV
             accessStruct(buffer.s);
         })";
 
-    ANGLE_GL_PROGRAM(program, mVertexShaderSource, fragmentShader);
+    ANGLE_GL_PROGRAM(program, essl3_shaders::vs::Simple(), fragmentShader);
     GLint uniformBufferIndex = glGetUniformBlockIndex(program, "structBuffer");
 
     glBindBuffer(GL_UNIFORM_BUFFER, mUniformBuffer);
@@ -1152,7 +1131,7 @@ TEST_P(UniformBufferTest, Std140UniformBlockInstanceWithNestedStructsContainingV
     glBufferData(GL_UNIFORM_BUFFER, kDataSize, v.data(), GL_STATIC_DRAW);
     glBindBufferBase(GL_UNIFORM_BUFFER, 0, mUniformBuffer);
     glUniformBlockBinding(program, uniformBufferIndex, 0);
-    drawQuad(program.get(), "position", 0.5f);
+    drawQuad(program.get(), essl3_shaders::PositionAttrib(), 0.5f);
     EXPECT_PIXEL_COLOR_EQ(0, 0, GLColor::green);
 }
 
@@ -1160,7 +1139,7 @@ TEST_P(UniformBufferTest, Std140UniformBlockInstanceWithNestedStructsContainingV
 // This covers a bug in ANGLE's D3D back-end.
 TEST_P(UniformBufferTest, DetachShaders)
 {
-    GLuint vertexShader = CompileShader(GL_VERTEX_SHADER, mVertexShaderSource);
+    GLuint vertexShader = CompileShader(GL_VERTEX_SHADER, essl3_shaders::vs::Simple());
     ASSERT_NE(0u, vertexShader);
     GLuint fragmentShader = CompileShader(GL_FRAGMENT_SHADER, mFragmentShaderSource);
     ASSERT_NE(0u, fragmentShader);
@@ -1188,7 +1167,7 @@ TEST_P(UniformBufferTest, DetachShaders)
     ASSERT_NE(uniformBufferIndex, -1);
 
     glUniformBlockBinding(program, uniformBufferIndex, 0);
-    drawQuad(program, "position", 0.5f);
+    drawQuad(program, essl3_shaders::PositionAttrib(), 0.5f);
 
     ASSERT_GL_NO_ERROR();
     EXPECT_PIXEL_NEAR(0, 0, 128, 191, 64, 255, 1);
@@ -1220,7 +1199,7 @@ TEST_P(UniformBufferTest, Std140UniformBlockWithRowMajorQualifier)
             my_FragColor = vec4(buffer.m);
         })";
 
-    ANGLE_GL_PROGRAM(program, mVertexShaderSource, fragmentShader);
+    ANGLE_GL_PROGRAM(program, essl3_shaders::vs::Simple(), fragmentShader);
     GLint uniformBufferIndex = glGetUniformBlockIndex(program, "matrixBuffer");
 
     glBindBuffer(GL_UNIFORM_BUFFER, mUniformBuffer);
@@ -1238,7 +1217,7 @@ TEST_P(UniformBufferTest, Std140UniformBlockWithRowMajorQualifier)
     glBufferData(GL_UNIFORM_BUFFER, kDataSize, v.data(), GL_STATIC_DRAW);
     glBindBufferBase(GL_UNIFORM_BUFFER, 0, mUniformBuffer);
     glUniformBlockBinding(program, uniformBufferIndex, 0);
-    drawQuad(program.get(), "position", 0.5f);
+    drawQuad(program.get(), essl3_shaders::PositionAttrib(), 0.5f);
     ASSERT_GL_NO_ERROR();
     EXPECT_PIXEL_COLOR_NEAR(0, 0, GLColor(255, 64, 128, 32), 5);
 }
@@ -1268,7 +1247,7 @@ TEST_P(UniformBufferTest, Std140UniformBlockWithPerMemberRowMajorQualifier)
             my_FragColor = vec4(buffer.m);
         })";
 
-    ANGLE_GL_PROGRAM(program, mVertexShaderSource, fragmentShader);
+    ANGLE_GL_PROGRAM(program, essl3_shaders::vs::Simple(), fragmentShader);
     GLint uniformBufferIndex = glGetUniformBlockIndex(program, "matrixBuffer");
 
     glBindBuffer(GL_UNIFORM_BUFFER, mUniformBuffer);
@@ -1286,7 +1265,7 @@ TEST_P(UniformBufferTest, Std140UniformBlockWithPerMemberRowMajorQualifier)
     glBufferData(GL_UNIFORM_BUFFER, kDataSize, v.data(), GL_STATIC_DRAW);
     glBindBufferBase(GL_UNIFORM_BUFFER, 0, mUniformBuffer);
     glUniformBlockBinding(program, uniformBufferIndex, 0);
-    drawQuad(program.get(), "position", 0.5f);
+    drawQuad(program.get(), essl3_shaders::PositionAttrib(), 0.5f);
     ASSERT_GL_NO_ERROR();
     EXPECT_PIXEL_COLOR_NEAR(0, 0, GLColor(255, 64, 128, 32), 5);
 }
@@ -1313,7 +1292,7 @@ TEST_P(UniformBufferTest, Std140UniformBlockWithPerMemberColumnMajorQualifier)
             my_FragColor = vec4(buffer.m);
         })";
 
-    ANGLE_GL_PROGRAM(program, mVertexShaderSource, fragmentShader);
+    ANGLE_GL_PROGRAM(program, essl3_shaders::vs::Simple(), fragmentShader);
     GLint uniformBufferIndex = glGetUniformBlockIndex(program, "matrixBuffer");
 
     glBindBuffer(GL_UNIFORM_BUFFER, mUniformBuffer);
@@ -1333,7 +1312,7 @@ TEST_P(UniformBufferTest, Std140UniformBlockWithPerMemberColumnMajorQualifier)
     glBufferData(GL_UNIFORM_BUFFER, kDataSize, v.data(), GL_STATIC_DRAW);
     glBindBufferBase(GL_UNIFORM_BUFFER, 0, mUniformBuffer);
     glUniformBlockBinding(program, uniformBufferIndex, 0);
-    drawQuad(program.get(), "position", 0.5f);
+    drawQuad(program.get(), essl3_shaders::PositionAttrib(), 0.5f);
     ASSERT_GL_NO_ERROR();
     EXPECT_PIXEL_COLOR_NEAR(0, 0, GLColor(255, 192, 128, 96), 5);
 }
@@ -1367,7 +1346,7 @@ TEST_P(UniformBufferTest, Std140UniformBlockWithRowMajorQualifierOnStruct)
             my_FragColor = vec4(buffer.s.m);
         })";
 
-    ANGLE_GL_PROGRAM(program, mVertexShaderSource, fragmentShader);
+    ANGLE_GL_PROGRAM(program, essl3_shaders::vs::Simple(), fragmentShader);
     GLint uniformBufferIndex = glGetUniformBlockIndex(program, "matrixBuffer");
 
     glBindBuffer(GL_UNIFORM_BUFFER, mUniformBuffer);
@@ -1385,9 +1364,158 @@ TEST_P(UniformBufferTest, Std140UniformBlockWithRowMajorQualifierOnStruct)
     glBufferData(GL_UNIFORM_BUFFER, kDataSize, v.data(), GL_STATIC_DRAW);
     glBindBufferBase(GL_UNIFORM_BUFFER, 0, mUniformBuffer);
     glUniformBlockBinding(program, uniformBufferIndex, 0);
-    drawQuad(program.get(), "position", 0.5f);
+    drawQuad(program.get(), essl3_shaders::PositionAttrib(), 0.5f);
     ASSERT_GL_NO_ERROR();
     EXPECT_PIXEL_COLOR_NEAR(0, 0, GLColor(255, 64, 128, 32), 5);
+}
+
+constexpr char kFragmentShader[] = R"(#version 300 es
+precision mediump float;
+
+layout (std140) uniform color_ubo
+{
+  vec4 color;
+};
+
+out vec4 fragColor;
+void main()
+{
+  fragColor = color;
+})";
+
+// Regression test for a dirty bit bug in ANGLE. See http://crbug.com/792966
+TEST_P(UniformBufferTest, SimpleBindingChange)
+{
+    // http://anglebug.com/2287
+    ANGLE_SKIP_TEST_IF(IsOSX() && IsNVIDIA() && IsDesktopOpenGL());
+
+    ANGLE_GL_PROGRAM(program, essl3_shaders::vs::Simple(), kFragmentShader);
+
+    glBindAttribLocation(program, 0, essl3_shaders::PositionAttrib());
+    glUseProgram(program);
+    GLint uboIndex = glGetUniformBlockIndex(program, "color_ubo");
+
+    std::array<GLfloat, 12> vertices{{-1, -1, 0, 1, -1, 0, -1, 1, 0, 1, 1, 0}};
+    GLBuffer vertexBuf;
+    glBindBuffer(GL_ARRAY_BUFFER, vertexBuf);
+    glBufferData(GL_ARRAY_BUFFER, vertices.size() * sizeof(GLfloat), vertices.data(),
+                 GL_STATIC_DRAW);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 3, GL_FLOAT, false, 0, 0);
+
+    std::array<GLshort, 12> indexData = {{0, 1, 2, 2, 1, 3, 0, 1, 2, 2, 1, 3}};
+
+    GLBuffer indexBuf;
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, indexBuf);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, indexData.size() * sizeof(GLshort), indexData.data(),
+                 GL_STATIC_DRAW);
+
+    // Bind a first buffer with red.
+    GLBuffer uboBuf1;
+    glBindBufferBase(GL_UNIFORM_BUFFER, 0, uboBuf1);
+    glBufferData(GL_UNIFORM_BUFFER, sizeof(GLColor32F), &kFloatRed, GL_STATIC_DRAW);
+    glUniformBlockBinding(program, uboIndex, 0);
+
+    glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_SHORT, 0);
+
+    // Bind a second buffer with green, updating the buffer binding.
+    GLBuffer uboBuf2;
+    glBindBufferBase(GL_UNIFORM_BUFFER, 1, uboBuf2);
+    glBufferData(GL_UNIFORM_BUFFER, sizeof(GLColor32F), &kFloatGreen, GL_STATIC_DRAW);
+    glUniformBlockBinding(program, uboIndex, 1);
+
+    glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_SHORT, reinterpret_cast<const GLvoid *>(12));
+
+    // Verify we get the second buffer.
+    ASSERT_GL_NO_ERROR();
+    EXPECT_PIXEL_COLOR_EQ(0, 0, GLColor::green);
+}
+
+// Regression test for a dirty bit bug in ANGLE. Same as above but for the indexed bindings.
+TEST_P(UniformBufferTest, SimpleBufferChange)
+{
+    ANGLE_GL_PROGRAM(program, essl3_shaders::vs::Simple(), kFragmentShader);
+
+    glBindAttribLocation(program, 0, essl3_shaders::PositionAttrib());
+    glUseProgram(program);
+    GLint uboIndex = glGetUniformBlockIndex(program, "color_ubo");
+
+    std::array<GLfloat, 12> vertices{{-1, -1, 0, 1, -1, 0, -1, 1, 0, 1, 1, 0}};
+    GLBuffer vertexBuf;
+    glBindBuffer(GL_ARRAY_BUFFER, vertexBuf);
+    glBufferData(GL_ARRAY_BUFFER, vertices.size() * sizeof(GLfloat), vertices.data(),
+                 GL_STATIC_DRAW);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 3, GL_FLOAT, false, 0, 0);
+
+    std::array<GLshort, 12> indexData = {{0, 1, 2, 2, 1, 3, 0, 1, 2, 2, 1, 3}};
+
+    GLBuffer indexBuf;
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, indexBuf);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, indexData.size() * sizeof(GLshort), indexData.data(),
+                 GL_STATIC_DRAW);
+
+    // Bind a first buffer with red.
+    GLBuffer uboBuf1;
+    glBindBufferBase(GL_UNIFORM_BUFFER, 0, uboBuf1);
+    glBufferData(GL_UNIFORM_BUFFER, sizeof(GLColor32F), &kFloatRed, GL_STATIC_DRAW);
+    glUniformBlockBinding(program, uboIndex, 0);
+
+    glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_SHORT, 0);
+
+    // Bind a second buffer to the same binding point (0). This should set to draw green.
+    GLBuffer uboBuf2;
+    glBindBufferBase(GL_UNIFORM_BUFFER, 0, uboBuf2);
+    glBufferData(GL_UNIFORM_BUFFER, sizeof(GLColor32F), &kFloatGreen, GL_STATIC_DRAW);
+
+    glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_SHORT, reinterpret_cast<const GLvoid *>(12));
+
+    ASSERT_GL_NO_ERROR();
+    EXPECT_PIXEL_COLOR_EQ(0, 0, GLColor::green);
+}
+
+// Tests a bug in the D3D11 back-end where re-creating the buffer storage should trigger a state
+// update in the State Manager class.
+TEST_P(UniformBufferTest, DependentBufferChange)
+{
+    ANGLE_GL_PROGRAM(program, essl3_shaders::vs::Simple(), kFragmentShader);
+
+    glBindAttribLocation(program, 0, essl3_shaders::PositionAttrib());
+    glUseProgram(program);
+    GLint uboIndex = glGetUniformBlockIndex(program, "color_ubo");
+
+    std::array<GLfloat, 12> vertices{{-1, -1, 0, 1, -1, 0, -1, 1, 0, 1, 1, 0}};
+    GLBuffer vertexBuf;
+    glBindBuffer(GL_ARRAY_BUFFER, vertexBuf);
+    glBufferData(GL_ARRAY_BUFFER, vertices.size() * sizeof(GLfloat), vertices.data(),
+                 GL_STATIC_DRAW);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 3, GL_FLOAT, false, 0, 0);
+
+    std::array<GLshort, 6> indexData = {{0, 1, 2, 2, 1, 3}};
+
+    GLBuffer indexBuf;
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, indexBuf);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, indexData.size() * sizeof(GLshort), indexData.data(),
+                 GL_STATIC_DRAW);
+
+    GLBuffer ubo;
+    glBindBufferBase(GL_UNIFORM_BUFFER, 0, ubo);
+    glBufferData(GL_UNIFORM_BUFFER, sizeof(GLColor32F), &kFloatRed, GL_STATIC_DRAW);
+    glUniformBlockBinding(program, uboIndex, 0);
+
+    glDrawElements(GL_TRIANGLES, 3, GL_UNSIGNED_SHORT, 0);
+    ASSERT_GL_NO_ERROR();
+    EXPECT_PIXEL_COLOR_EQ(0, 0, GLColor::red);
+
+    // Resize the buffer - triggers a re-allocation in the D3D11 back-end.
+    std::vector<GLColor32F> bigData(128, kFloatGreen);
+    glBufferData(GL_UNIFORM_BUFFER, sizeof(GLColor32F) * bigData.size(), bigData.data(),
+                 GL_STATIC_DRAW);
+
+    glDrawElements(GL_TRIANGLES, 3, GL_UNSIGNED_SHORT, 0);
+    ASSERT_GL_NO_ERROR();
+    EXPECT_PIXEL_COLOR_EQ(0, 0, GLColor::green);
 }
 
 // Use this to select which configurations (e.g. which renderer, which GLES major version) these tests should be run against.

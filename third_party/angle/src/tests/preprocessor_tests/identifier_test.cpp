@@ -4,8 +4,13 @@
 // found in the LICENSE file.
 //
 
+#include <tuple>
+
 #include "PreprocessorTest.h"
 #include "compiler/preprocessor/Token.h"
+
+namespace angle
+{
 
 #define CLOSED_RANGE(x, y) testing::Range(x, static_cast<char>((y) + 1))
 
@@ -50,7 +55,7 @@ INSTANTIATE_TEST_CASE_P(A_Z,
                         SingleLetterIdentifierTest,
                         CLOSED_RANGE('A', 'Z'));
 
-typedef std::tr1::tuple<char, char> IdentifierParams;
+typedef std::tuple<char, char> IdentifierParams;
 class DoubleLetterIdentifierTest :
     public IdentifierTest,
     public testing::WithParamInterface<IdentifierParams>
@@ -61,8 +66,8 @@ class DoubleLetterIdentifierTest :
 TEST_P(DoubleLetterIdentifierTest, Identified)
 {
     std::string str;
-    str.push_back(std::tr1::get<0>(GetParam()));
-    str.push_back(std::tr1::get<1>(GetParam()));
+    str.push_back(std::get<0>(GetParam()));
+    str.push_back(std::get<1>(GetParam()));
 
     expectIdentifier(str);
 }
@@ -159,3 +164,5 @@ TEST_F(IdentifierTest, AllLetters)
 
     expectIdentifier(str);
 }
+
+}  // namespace angle

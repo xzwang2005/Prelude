@@ -6,7 +6,7 @@
 
 #include <stdint.h>
 #include <memory>
-#include "src/api.h"
+#include "src/api-inl.h"
 #include "src/base/ieee754.h"
 #include "src/base/utils/random-number-generator.h"
 #include "src/frames-inl.h"
@@ -76,11 +76,7 @@ SamplingHeapProfiler::~SamplingHeapProfiler() {
   heap_->RemoveAllocationObserversFromAllSpaces(other_spaces_observer_.get(),
                                                 new_space_observer_.get());
 
-  for (auto sample : samples_) {
-    delete sample;
-  }
-  std::set<Sample*> empty;
-  samples_.swap(empty);
+  samples_.clear();
 }
 
 
@@ -101,8 +97,18 @@ void SamplingHeapProfiler::SampleObject(Address soon_object, size_t size) {
   AllocationNode* node = AddStack();
   node->allocations_[size]++;
   Sample* sample = new Sample(size, node, loc, this);
-  samples_.insert(sample);
+  samples_.emplace(sample);
   sample->global.SetWeak(sample, OnWeakCallback, WeakCallbackType::kParameter);
+#if __clang__
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated"
+#endif
+  // MarkIndependent is marked deprecated but we still rely on it here
+  // temporarily.
+  sample->global.MarkIndependent();
+#if __clang__
+#pragma clang diagnostic pop
+#endif
 }
 
 void SamplingHeapProfiler::OnWeakCallback(
@@ -123,8 +129,14 @@ void SamplingHeapProfiler::OnWeakCallback(
       node = parent;
     }
   }
-  sample->profiler->samples_.erase(sample);
-  delete sample;
+  auto it = std::find_if(sample->profiler->samples_.begin(),
+                         sample->profiler->samples_.end(),
+                         [&sample](const std::unique_ptr<Sample>& s) {
+                           return s.get() == sample;
+                         });
+
+  sample->profiler->samples_.erase(it);
+  // sample is deleted because its unique ptr was erased from samples_.
 }
 
 SamplingHeapProfiler::AllocationNode*
@@ -148,12 +160,21 @@ SamplingHeapProfiler::AllocationNode* SamplingHeapProfiler::AddStack() {
   std::vector<SharedFunctionInfo*> stack;
   JavaScriptFrameIterator it(isolate_);
   int frames_captured = 0;
+  bool found_arguments_marker_frames = false;
   while (!it.done() && frames_captured < stack_depth_) {
     JavaScriptFrame* frame = it.frame();
-    SharedFunctionInfo* shared = frame->function()->shared();
-    stack.push_back(shared);
-
-    frames_captured++;
+    // If we are materializing objects during deoptimization, inlined
+    // closures may not yet be materialized, and this includes the
+    // closure on the stack. Skip over any such frames (they'll be
+    // in the top frames of the stack). The allocations made in this
+    // sensitive moment belong to the formerly optimized frame anyway.
+    if (frame->unchecked_function()->IsJSFunction()) {
+      SharedFunctionInfo* shared = frame->function()->shared();
+      stack.push_back(shared);
+      frames_captured++;
+    } else {
+      found_arguments_marker_frames = true;
+    }
     it.Advance();
   }
 
@@ -192,14 +213,20 @@ SamplingHeapProfiler::AllocationNode* SamplingHeapProfiler::AddStack() {
   // the first element in the list.
   for (auto it = stack.rbegin(); it != stack.rend(); ++it) {
     SharedFunctionInfo* shared = *it;
-    const char* name = this->names()->GetFunctionName(shared->DebugName());
+    const char* name = this->names()->GetName(shared->DebugName());
     int script_id = v8::UnboundScript::kNoScriptId;
     if (shared->script()->IsScript()) {
       Script* script = Script::cast(shared->script());
       script_id = script->id();
     }
-    node = node->FindOrAddChildNode(name, script_id, shared->start_position());
+    node = node->FindOrAddChildNode(name, script_id, shared->StartPosition());
   }
+
+  if (found_arguments_marker_frames) {
+    node =
+        node->FindOrAddChildNode("(deopt)", v8::UnboundScript::kNoScriptId, 0);
+  }
+
   return node;
 }
 
@@ -264,7 +291,7 @@ v8::AllocationProfile* SamplingHeapProfiler::GetAllocationProfile() {
   {
     Script::Iterator iterator(isolate_);
     while (Script* script = iterator.Next()) {
-      scripts[script->id()] = handle(script);
+      scripts[script->id()] = handle(script, isolate_);
     }
   }
   auto profile = new v8::internal::AllocationProfile();

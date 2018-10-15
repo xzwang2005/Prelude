@@ -6,8 +6,10 @@
 
 #include "components/ukm/ukm_reporting_service.h"
 
-#include "base/memory/ptr_util.h"
+#include <memory>
+
 #include "base/metrics/field_trial_params.h"
+#include "base/metrics/histogram_functions.h"
 #include "base/metrics/histogram_macros.h"
 #include "components/prefs/pref_registry_simple.h"
 #include "components/ukm/persisted_logs_metrics_impl.h"
@@ -58,7 +60,7 @@ void UkmReportingService::RegisterPrefs(PrefRegistrySimple* registry) {
 UkmReportingService::UkmReportingService(metrics::MetricsServiceClient* client,
                                          PrefService* local_state)
     : ReportingService(client, local_state, kMaxLogRetransmitSize),
-      persisted_logs_(base::MakeUnique<ukm::PersistedLogsMetricsImpl>(),
+      persisted_logs_(std::make_unique<ukm::PersistedLogsMetricsImpl>(),
                       local_state,
                       prefs::kUkmPersistedLogs,
                       kMinPersistedLogs,
@@ -97,8 +99,8 @@ void UkmReportingService::LogResponseOrErrorCode(int response_code,
                                                  int error_code,
                                                  bool was_https) {
   // |was_https| is ignored since all UKM logs are received over HTTPS.
-  UMA_HISTOGRAM_SPARSE_SLOWLY("UKM.LogUpload.ResponseOrErrorCode",
-                              response_code >= 0 ? response_code : error_code);
+  base::UmaHistogramSparse("UKM.LogUpload.ResponseOrErrorCode",
+                           response_code >= 0 ? response_code : error_code);
 }
 
 void UkmReportingService::LogSuccess(size_t log_size) {

@@ -4,8 +4,11 @@
 
 #include "components/metrics/net/network_metrics_provider.h"
 
+#include <memory>
+
 #include "base/callback.h"
 #include "base/macros.h"
+#include "base/memory/ptr_util.h"
 #include "base/run_loop.h"
 #include "base/test/scoped_task_environment.h"
 #include "base/threading/thread_task_runner_handle.h"
@@ -87,8 +90,7 @@ TEST_F(NetworkMetricsProviderTest, EffectiveConnectionType) {
 
   // Set RTT so that the effective connection type is computed as 2G.
   estimator.set_recent_http_rtt(base::TimeDelta::FromMilliseconds(1500));
-  estimator.set_start_time_null_http_rtt(
-      base::TimeDelta::FromMilliseconds(1500));
+  estimator.SetStartTimeNullHttpRtt(base::TimeDelta::FromMilliseconds(1500));
   EXPECT_EQ(net::EFFECTIVE_CONNECTION_TYPE_UNKNOWN,
             network_metrics_provider.effective_connection_type_);
   EXPECT_EQ(net::EFFECTIVE_CONNECTION_TYPE_UNKNOWN,
@@ -112,8 +114,7 @@ TEST_F(NetworkMetricsProviderTest, EffectiveConnectionType) {
 
   // Set RTT so that the effective connection type is computed as SLOW_2G.
   estimator.set_recent_http_rtt(base::TimeDelta::FromMilliseconds(3000));
-  estimator.set_start_time_null_http_rtt(
-      base::TimeDelta::FromMilliseconds(3000));
+  estimator.SetStartTimeNullHttpRtt(base::TimeDelta::FromMilliseconds(3000));
   // Running a request would cause the effective connection type to be computed
   // as SLOW_2G, and observers to be notified.
   estimator.RunOneRequest();
@@ -160,8 +161,7 @@ TEST_F(NetworkMetricsProviderTest, ECTAmbiguousOnConnectionTypeChange) {
 
   // Set RTT so that the effective connection type is computed as 2G.
   estimator.set_recent_http_rtt(base::TimeDelta::FromMilliseconds(1500));
-  estimator.set_start_time_null_http_rtt(
-      base::TimeDelta::FromMilliseconds(1500));
+  estimator.SetStartTimeNullHttpRtt(base::TimeDelta::FromMilliseconds(1500));
   // Running a request would cause the effective connection type to be computed
   // as 2G, and observers to be notified.
   estimator.RunOneRequest();
@@ -182,7 +182,7 @@ TEST_F(NetworkMetricsProviderTest, ECTAmbiguousOnConnectionTypeChange) {
 
   // Even with change in the connection type, effective connection types
   // should be reported as 2G.
-  network_metrics_provider.OnConnectionTypeChanged(
+  network_metrics_provider.OnNetworkChanged(
       net::NetworkChangeNotifier::CONNECTION_2G);
   network_metrics_provider.ProvideSystemProfileMetrics(&system_profile);
   EXPECT_EQ(SystemProfileProto::Network::EFFECTIVE_CONNECTION_TYPE_2G,
@@ -198,7 +198,7 @@ TEST_F(NetworkMetricsProviderTest, ECTNotAmbiguousOnOffline) {
        {net::EFFECTIVE_CONNECTION_TYPE_UNKNOWN,
         net::EFFECTIVE_CONNECTION_TYPE_OFFLINE}) {
     std::unique_ptr<net::NetworkQualityEstimatorParams> params =
-        base::MakeUnique<net::NetworkQualityEstimatorParams>(
+        std::make_unique<net::NetworkQualityEstimatorParams>(
             std::map<std::string, std::string>());
     net::NetworkQualityEstimatorParams* params_ptr = params.get();
     net::TestNetworkQualityEstimator estimator(std::move(params));
@@ -252,7 +252,7 @@ TEST_F(NetworkMetricsProviderTest, ConnectionTypeIsAmbiguous) {
 
   // When a connection type change callback is received, network change notifier
   // should be marked as initialized.
-  network_metrics_provider.OnConnectionTypeChanged(
+  network_metrics_provider.OnNetworkChanged(
       net::NetworkChangeNotifier::CONNECTION_2G);
   EXPECT_EQ(net::NetworkChangeNotifier::CONNECTION_2G,
             network_metrics_provider.connection_type_);
@@ -271,7 +271,7 @@ TEST_F(NetworkMetricsProviderTest, ConnectionTypeIsAmbiguous) {
   EXPECT_EQ(SystemProfileProto::Network::CONNECTION_2G,
             system_profile.network().connection_type());
 
-  network_metrics_provider.OnConnectionTypeChanged(
+  network_metrics_provider.OnNetworkChanged(
       net::NetworkChangeNotifier::CONNECTION_3G);
   EXPECT_TRUE(network_metrics_provider.connection_type_is_ambiguous_);
   EXPECT_TRUE(network_metrics_provider.network_change_notifier_initialized_);

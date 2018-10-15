@@ -69,6 +69,7 @@ namespace sw
 	{
 		TEXTURE_NULL,
 		TEXTURE_2D,
+		TEXTURE_RECTANGLE,
 		TEXTURE_CUBE,
 		TEXTURE_3D,
 		TEXTURE_2D_ARRAY,
@@ -192,6 +193,7 @@ namespace sw
 		void setMaxLevel(int maxLevel);
 		void setMinLod(float minLod);
 		void setMaxLod(float maxLod);
+		void setSyncRequired(bool isSincRequired);
 
 		static void setFilterQuality(FilterType maximumFilterQuality);
 		static void setMipmapQuality(MipmapType maximumFilterQuality);
@@ -201,6 +203,7 @@ namespace sw
 		bool hasUnsignedTexture() const;
 		bool hasCubeTexture() const;
 		bool hasVolumeTexture() const;
+		bool requiresSync() const;
 
 		const Texture &getTextureData();
 
@@ -225,6 +228,7 @@ namespace sw
 		bool sRGB;
 		bool gather;
 		bool highPrecisionFiltering;
+		bool syncRequired;
 		int border;
 
 		SwizzleType swizzleR;

@@ -4,15 +4,16 @@
 
 #include "components/viz/service/gl/gpu_service_impl.h"
 
+#include <memory>
+
+#include "base/callback.h"
 #include "base/macros.h"
-#include "base/memory/ptr_util.h"
 #include "base/memory/weak_ptr.h"
-#include "base/message_loop/message_loop.h"
 #include "base/run_loop.h"
 #include "base/single_thread_task_runner.h"
 #include "gpu/config/gpu_info.h"
 #include "gpu/ipc/service/gpu_watchdog_thread.h"
-#include "services/ui/public/interfaces/gpu.mojom.h"
+#include "services/ws/public/mojom/gpu.mojom.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace viz {
@@ -32,8 +33,8 @@ class GpuServiceTest : public testing::Test {
 
   void BlockIOThread() {
     wait_.Reset();
-    io_runner()->PostTask(FROM_HERE, base::Bind(&base::WaitableEvent::Wait,
-                                                base::Unretained(&wait_)));
+    io_runner()->PostTask(FROM_HERE, base::BindOnce(&base::WaitableEvent::Wait,
+                                                    base::Unretained(&wait_)));
   }
 
   void UnblockIOThread() {
@@ -48,9 +49,11 @@ class GpuServiceTest : public testing::Test {
   // testing::Test
   void SetUp() override {
     ASSERT_TRUE(io_thread_.Start());
-    gpu_service_ = base::MakeUnique<GpuServiceImpl>(
+    gpu_service_ = std::make_unique<GpuServiceImpl>(
         gpu::GPUInfo(), nullptr /* watchdog_thread */, io_thread_.task_runner(),
-        gpu::GpuFeatureInfo(), gpu::GpuPreferences());
+        gpu::GpuFeatureInfo(), gpu::GpuPreferences(), gpu::GPUInfo(),
+        gpu::GpuFeatureInfo(), nullptr /* vulkan_implementation */,
+        base::DoNothing() /* exit_callback */);
   }
 
   void TearDown() override {
@@ -87,8 +90,8 @@ TEST_F(GpuServiceTest, ServiceDestroyedAfterBind) {
   gpu_service()->Bind(mojo::MakeRequest(&ptr));
   base::WaitableEvent wait(base::WaitableEvent::ResetPolicy::MANUAL,
                            base::WaitableEvent::InitialState::NOT_SIGNALED);
-  io_runner()->PostTask(FROM_HERE, base::Bind(&base::WaitableEvent::Signal,
-                                              base::Unretained(&wait)));
+  io_runner()->PostTask(FROM_HERE, base::BindOnce(&base::WaitableEvent::Signal,
+                                                  base::Unretained(&wait)));
   wait.Wait();
   DestroyService();
 }

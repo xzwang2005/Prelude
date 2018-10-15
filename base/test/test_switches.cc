@@ -23,8 +23,13 @@ const char switches::kTestLauncherDebugLauncher[] =
 const char switches::kTestLauncherForceRunBrokenTests[] =
     "test-launcher-force-run-broken-tests";
 
-// Path to file containing test filter (one pattern per line).
+// List of paths to files (separated by ';') containing test filters (one
+// pattern per line).
 const char switches::kTestLauncherFilterFile[] = "test-launcher-filter-file";
+
+// Whether the test launcher should launch in "interactive mode", which disables
+// timeouts (and may have other effects for specific test types).
+const char switches::kTestLauncherInteractive[] = "test-launcher-interactive";
 
 // Number of parallel test launcher jobs.
 const char switches::kTestLauncherJobs[] = "test-launcher-jobs";

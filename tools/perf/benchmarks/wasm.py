@@ -6,12 +6,11 @@ from core import perf_benchmark
 import page_sets
 
 from telemetry import benchmark
-from telemetry import story
 from telemetry.timeline import chrome_trace_category_filter
 from telemetry.web_perf import timeline_based_measurement
 
 
-@benchmark.Owner(emails=['bradnelson@chromium.org'])
+@benchmark.Info(emails=['bradnelson@chromium.org'])
 class Wasm(perf_benchmark.PerfBenchmark):
   """Runtime Stats benchmark for real world wasm apps."""
 
@@ -55,14 +54,3 @@ class Wasm(perf_benchmark.PerfBenchmark):
 
   def CreateStorySet(self, options):
     return page_sets.WasmRealWorldPagesStorySet()
-
-  def GetExpectations(self):
-    class StoryExpectations(story.expectations.StoryExpectations):
-      def SetExpectations(self):
-        self.DisableStory(
-            'WasmTanks', [story.expectations.ALL_ANDROID],
-            'Unity WebGL in not supported on mobile')
-        self.DisableStory(
-            'WasmSpaceBuggy', [story.expectations.ANDROID_ONE,
-                story.expectations.ANDROID_WEBVIEW], 'crbug.com/788976')
-    return StoryExpectations()

@@ -8,12 +8,13 @@
 #include "SkCodec.h"
 #include "SkCodecPriv.h"
 #include "SkMath.h"
+#include "SkMathPriv.h"
 #include "SkSampledCodec.h"
 #include "SkSampler.h"
 #include "SkTemplates.h"
 
-SkSampledCodec::SkSampledCodec(SkCodec* codec)
-    : INHERITED(codec)
+SkSampledCodec::SkSampledCodec(SkCodec* codec, ExifOrientationBehavior behavior)
+    : INHERITED(codec, behavior)
 {}
 
 SkISize SkSampledCodec::accountForNativeScaling(int* sampleSizePtr, int* nativeSampleSize) const {
@@ -75,7 +76,6 @@ SkCodec::Result SkSampledCodec::onGetAndroidPixels(const SkImageInfo& info, void
     // Create an Options struct for the codec.
     SkCodec::Options codecOptions;
     codecOptions.fZeroInitialized = options.fZeroInitialized;
-    codecOptions.fPremulBehavior = SkTransferFunctionBehavior::kIgnore;
 
     SkIRect* subset = options.fSubset;
     if (!subset || subset->size() == this->codec()->getInfo().dimensions()) {
@@ -170,7 +170,6 @@ SkCodec::Result SkSampledCodec::sampledDecode(const SkImageInfo& info, void* pix
     // Create options struct for the codec.
     SkCodec::Options sampledOptions;
     sampledOptions.fZeroInitialized = options.fZeroInitialized;
-    sampledOptions.fPremulBehavior = SkTransferFunctionBehavior::kIgnore;
 
     // FIXME: This was already called by onGetAndroidPixels. Can we reduce that?
     int sampleSize = options.fSampleSize;
@@ -329,7 +328,6 @@ SkCodec::Result SkSampledCodec::sampledDecode(const SkImageInfo& info, void* pix
 
             // We handle filling uninitialized memory here instead of using this->codec().
             // this->codec() does not know that we are sampling.
-            const uint64_t fillValue = this->codec()->getFillValue(info);
             const SkImageInfo fillInfo = info.makeWH(info.width(), 1);
             for (; y < nativeSize.height(); y++) {
                 int srcY = this->codec()->outputScanline(y);
@@ -338,7 +336,7 @@ SkCodec::Result SkSampledCodec::sampledDecode(const SkImageInfo& info, void* pix
                 }
 
                 void* rowPtr = SkTAddOffset<void>(pixels, rowBytes * get_dst_coord(srcY, sampleY));
-                SkSampler::Fill(fillInfo, rowPtr, rowBytes, fillValue, options.fZeroInitialized);
+                SkSampler::Fill(fillInfo, rowPtr, rowBytes, options.fZeroInitialized);
             }
             return SkCodec::kIncompleteInput;
         }

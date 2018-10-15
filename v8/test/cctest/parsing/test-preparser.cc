@@ -2,12 +2,13 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "src/api.h"
+#include "src/api-inl.h"
 #include "src/ast/ast.h"
 #include "src/compiler.h"
 #include "src/objects-inl.h"
 #include "src/parsing/parse-info.h"
 #include "src/parsing/parsing.h"
+#include "src/parsing/preparsed-scope-data-impl.h"
 #include "src/parsing/preparsed-scope-data.h"
 
 #include "test/cctest/cctest.h"
@@ -88,6 +89,11 @@ TEST(PreParserScopeAnalysis) {
        "}\n"
        "get_method();",
        true, true, false},
+
+      // Corner case: function expression with name "arguments".
+      {"var test = function arguments(%s) { %s function skippable() { } };\n"
+       "test;\n",
+       false, false, false}
 
       // FIXME(marja): Generators and async functions
   };
@@ -660,11 +666,29 @@ TEST(PreParserScopeAnalysis) {
        [] { i::FLAG_harmony_public_fields = true; },
        [] { i::FLAG_harmony_public_fields = false; }},
       {"class X { static ['foo'] = 2; }; new X;",
-       [] { i::FLAG_harmony_public_fields = true; },
-       [] { i::FLAG_harmony_public_fields = false; }},
+       [] {
+         i::FLAG_harmony_public_fields = true;
+         i::FLAG_harmony_static_fields = true;
+       },
+       [] {
+         i::FLAG_harmony_public_fields = false;
+         i::FLAG_harmony_static_fields = false;
+       }},
       {"class X { ['bar'] = 1; static ['foo'] = 2; }; new X;",
-       [] { i::FLAG_harmony_public_fields = true; },
-       [] { i::FLAG_harmony_public_fields = false; }},
+       [] {
+         i::FLAG_harmony_public_fields = true;
+         i::FLAG_harmony_static_fields = true;
+       },
+       [] {
+         i::FLAG_harmony_public_fields = false;
+         i::FLAG_harmony_static_fields = false;
+       }},
+      {"class X { #x = 1 }; new X;",
+       [] { i::FLAG_harmony_private_fields = true; },
+       [] { i::FLAG_harmony_private_fields = false; }},
+      {"function t() { return class { #x = 1 }; } new t();",
+       [] { i::FLAG_harmony_private_fields = true; },
+       [] { i::FLAG_harmony_private_fields = false; }},
   };
 
   for (unsigned outer_ix = 0; outer_ix < arraysize(outers); ++outer_ix) {
@@ -707,23 +731,25 @@ TEST(PreParserScopeAnalysis) {
       v8::Local<v8::Value> v = CompileRun(program.start());
       i::Handle<i::Object> o = v8::Utils::OpenHandle(*v);
       i::Handle<i::JSFunction> f = i::Handle<i::JSFunction>::cast(o);
-      i::Handle<i::SharedFunctionInfo> shared = i::handle(f->shared());
+      i::Handle<i::SharedFunctionInfo> shared = i::handle(f->shared(), isolate);
 
       if (inners[inner_ix].bailout == Bailout::BAILOUT_IF_OUTER_SLOPPY &&
           !outers[outer_ix].strict_outer) {
-        CHECK(!shared->HasPreParsedScopeData());
+        CHECK(!shared->HasUncompiledDataWithPreParsedScope());
         continue;
       }
 
-      CHECK(shared->HasPreParsedScopeData());
+      CHECK(shared->HasUncompiledDataWithPreParsedScope());
       i::Handle<i::PreParsedScopeData> produced_data_on_heap(
-          i::PreParsedScopeData::cast(shared->preparsed_scope_data()));
+          shared->uncompiled_data_with_pre_parsed_scope()
+              ->pre_parsed_scope_data(),
+          isolate);
 
       // Parse the lazy function using the scope data.
-      i::ParseInfo using_scope_data(shared);
+      i::ParseInfo using_scope_data(isolate, shared);
       using_scope_data.set_lazy_compile();
-      using_scope_data.consumed_preparsed_scope_data()->SetData(
-          produced_data_on_heap);
+      using_scope_data.set_consumed_preparsed_scope_data(
+          i::ConsumedPreParsedScopeData::For(isolate, produced_data_on_heap));
       CHECK(i::parsing::ParseFunction(&using_scope_data, shared, isolate));
 
       // Verify that we skipped at least one function inside that scope.
@@ -733,10 +759,10 @@ TEST(PreParserScopeAnalysis) {
           scope_with_skipped_functions));
 
       // Do scope allocation (based on the preparsed scope data).
-      i::DeclarationScope::Analyze(&using_scope_data);
+      CHECK(i::DeclarationScope::Analyze(&using_scope_data));
 
       // Parse the lazy function again eagerly to produce baseline data.
-      i::ParseInfo not_using_scope_data(shared);
+      i::ParseInfo not_using_scope_data(isolate, shared);
       not_using_scope_data.set_lazy_compile();
       CHECK(i::parsing::ParseFunction(&not_using_scope_data, shared, isolate));
 
@@ -748,7 +774,7 @@ TEST(PreParserScopeAnalysis) {
           scope_without_skipped_functions));
 
       // Do normal scope allocation.
-      i::DeclarationScope::Analyze(&not_using_scope_data);
+      CHECK(i::DeclarationScope::Analyze(&not_using_scope_data));
 
       // Verify that scope allocation gave the same results when parsing w/ the
       // scope data (and skipping functions), and when parsing without.
@@ -776,7 +802,7 @@ TEST(Regress753896) {
   i::Handle<i::String> source = factory->InternalizeUtf8String(
       "function lazy() { let v = 0; if (true) { var v = 0; } }");
   i::Handle<i::Script> script = factory->NewScript(source);
-  i::ParseInfo info(script);
+  i::ParseInfo info(isolate, script);
 
   // We don't assert that parsing succeeded or that it failed; currently the
   // error is not detected inside lazy functions, but it might be in the future.
@@ -789,7 +815,7 @@ TEST(ProducingAndConsumingByteData) {
   LocalContext env;
 
   i::Zone zone(isolate->allocator(), ZONE_NAME);
-  i::ProducedPreParsedScopeData::ByteData bytes(&zone);
+  i::PreParsedScopeDataBuilder::ByteData bytes(&zone);
   // Write some data.
   bytes.WriteUint32(1983);  // This will be overwritten.
   bytes.WriteUint32(2147483647);
@@ -797,7 +823,9 @@ TEST(ProducingAndConsumingByteData) {
   bytes.WriteUint8(255);
   bytes.WriteUint32(0);
   bytes.WriteUint8(0);
+#ifdef DEBUG
   bytes.OverwriteFirstUint32(2017);
+#endif
   bytes.WriteUint8(100);
   // Write quarter bytes between uint8s and uint32s to verify they're stored
   // correctly.
@@ -814,28 +842,67 @@ TEST(ProducingAndConsumingByteData) {
   // End with a lonely quarter.
   bytes.WriteQuarter(2);
 
-  i::Handle<i::PodArray<uint8_t>> data_on_heap = bytes.Serialize(isolate);
-  i::ConsumedPreParsedScopeData::ByteData bytes_for_reading;
-  i::ConsumedPreParsedScopeData::ByteData::ReadingScope reading_scope(
-      &bytes_for_reading, *data_on_heap);
+  {
+    // Serialize as a ZoneConsumedPreParsedScopeData, and read back data.
+    i::ZonePreParsedScopeData zone_serialized(&zone, bytes.begin(), bytes.end(),
+                                              0);
+    i::ZoneConsumedPreParsedScopeData::ByteData bytes_for_reading;
+    i::ZoneVectorWrapper wrapper(zone_serialized.byte_data());
+    i::ZoneConsumedPreParsedScopeData::ByteData::ReadingScope reading_scope(
+        &bytes_for_reading, &wrapper);
 
-  // Read the data back.
-  CHECK_EQ(bytes_for_reading.ReadUint32(), 2017);
-  CHECK_EQ(bytes_for_reading.ReadUint32(), 2147483647);
-  CHECK_EQ(bytes_for_reading.ReadUint8(), 4);
-  CHECK_EQ(bytes_for_reading.ReadUint8(), 255);
-  CHECK_EQ(bytes_for_reading.ReadUint32(), 0);
-  CHECK_EQ(bytes_for_reading.ReadUint8(), 0);
-  CHECK_EQ(bytes_for_reading.ReadUint8(), 100);
-  CHECK_EQ(bytes_for_reading.ReadQuarter(), 3);
-  CHECK_EQ(bytes_for_reading.ReadQuarter(), 0);
-  CHECK_EQ(bytes_for_reading.ReadQuarter(), 2);
-  CHECK_EQ(bytes_for_reading.ReadQuarter(), 1);
-  CHECK_EQ(bytes_for_reading.ReadQuarter(), 0);
-  CHECK_EQ(bytes_for_reading.ReadUint8(), 50);
-  CHECK_EQ(bytes_for_reading.ReadQuarter(), 0);
-  CHECK_EQ(bytes_for_reading.ReadQuarter(), 1);
-  CHECK_EQ(bytes_for_reading.ReadQuarter(), 2);
-  CHECK_EQ(bytes_for_reading.ReadUint32(), 50);
-  CHECK_EQ(bytes_for_reading.ReadQuarter(), 2);
+#ifdef DEBUG
+    CHECK_EQ(bytes_for_reading.ReadUint32(), 2017);
+#else
+    CHECK_EQ(bytes_for_reading.ReadUint32(), 1983);
+#endif
+    CHECK_EQ(bytes_for_reading.ReadUint32(), 2147483647);
+    CHECK_EQ(bytes_for_reading.ReadUint8(), 4);
+    CHECK_EQ(bytes_for_reading.ReadUint8(), 255);
+    CHECK_EQ(bytes_for_reading.ReadUint32(), 0);
+    CHECK_EQ(bytes_for_reading.ReadUint8(), 0);
+    CHECK_EQ(bytes_for_reading.ReadUint8(), 100);
+    CHECK_EQ(bytes_for_reading.ReadQuarter(), 3);
+    CHECK_EQ(bytes_for_reading.ReadQuarter(), 0);
+    CHECK_EQ(bytes_for_reading.ReadQuarter(), 2);
+    CHECK_EQ(bytes_for_reading.ReadQuarter(), 1);
+    CHECK_EQ(bytes_for_reading.ReadQuarter(), 0);
+    CHECK_EQ(bytes_for_reading.ReadUint8(), 50);
+    CHECK_EQ(bytes_for_reading.ReadQuarter(), 0);
+    CHECK_EQ(bytes_for_reading.ReadQuarter(), 1);
+    CHECK_EQ(bytes_for_reading.ReadQuarter(), 2);
+    CHECK_EQ(bytes_for_reading.ReadUint32(), 50);
+    CHECK_EQ(bytes_for_reading.ReadQuarter(), 2);
+  }
+
+  {
+    // Serialize as an OnHeapConsumedPreParsedScopeData, and read back data.
+    i::Handle<i::PodArray<uint8_t>> data_on_heap = bytes.Serialize(isolate);
+    i::OnHeapConsumedPreParsedScopeData::ByteData bytes_for_reading;
+    i::OnHeapConsumedPreParsedScopeData::ByteData::ReadingScope reading_scope(
+        &bytes_for_reading, *data_on_heap);
+
+#ifdef DEBUG
+    CHECK_EQ(bytes_for_reading.ReadUint32(), 2017);
+#else
+    CHECK_EQ(bytes_for_reading.ReadUint32(), 1983);
+#endif
+    CHECK_EQ(bytes_for_reading.ReadUint32(), 2147483647);
+    CHECK_EQ(bytes_for_reading.ReadUint8(), 4);
+    CHECK_EQ(bytes_for_reading.ReadUint8(), 255);
+    CHECK_EQ(bytes_for_reading.ReadUint32(), 0);
+    CHECK_EQ(bytes_for_reading.ReadUint8(), 0);
+    CHECK_EQ(bytes_for_reading.ReadUint8(), 100);
+    CHECK_EQ(bytes_for_reading.ReadQuarter(), 3);
+    CHECK_EQ(bytes_for_reading.ReadQuarter(), 0);
+    CHECK_EQ(bytes_for_reading.ReadQuarter(), 2);
+    CHECK_EQ(bytes_for_reading.ReadQuarter(), 1);
+    CHECK_EQ(bytes_for_reading.ReadQuarter(), 0);
+    CHECK_EQ(bytes_for_reading.ReadUint8(), 50);
+    CHECK_EQ(bytes_for_reading.ReadQuarter(), 0);
+    CHECK_EQ(bytes_for_reading.ReadQuarter(), 1);
+    CHECK_EQ(bytes_for_reading.ReadQuarter(), 2);
+    CHECK_EQ(bytes_for_reading.ReadUint32(), 50);
+    CHECK_EQ(bytes_for_reading.ReadQuarter(), 2);
+  }
 }

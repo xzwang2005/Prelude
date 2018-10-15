@@ -12,8 +12,8 @@
 #include "src/assert-scope.h"
 #include "src/char-predicates-inl.h"
 #include "src/dtoa.h"
-#include "src/factory.h"
 #include "src/handles.h"
+#include "src/heap/factory.h"
 #include "src/objects-inl.h"
 #include "src/objects/bigint.h"
 #include "src/strtod.h"
@@ -29,8 +29,6 @@
 
 namespace v8 {
 namespace internal {
-
-namespace {
 
 inline double JunkStringValue() {
   return bit_cast<double, uint64_t>(kQuietNaNMask);
@@ -175,8 +173,8 @@ double InternalStringToIntDouble(UnicodeCache* unicode_cache, Iterator current,
 }
 
 // ES6 18.2.5 parseInt(string, radix) (with NumberParseIntHelper subclass);
-// https://tc39.github.io/proposal-bigint/#sec-bigint-parseint-string-radix
-// (with BigIntParseIntHelper subclass).
+// and BigInt parsing cases from https://tc39.github.io/proposal-bigint/
+// (with StringToBigIntHelper subclass).
 class StringToIntHelper {
  public:
   StringToIntHelper(Isolate* isolate, Handle<String> subject, int radix)
@@ -194,7 +192,7 @@ class StringToIntHelper {
   // buffer of one-byte digits, along with an optional radix prefix.
   StringToIntHelper(Isolate* isolate, const uint8_t* subject, int length)
       : isolate_(isolate), raw_one_byte_subject_(subject), length_(length) {}
-  virtual ~StringToIntHelper() {}
+  virtual ~StringToIntHelper() = default;
 
  protected:
   // Subclasses must implement these:
@@ -333,12 +331,12 @@ void StringToIntHelper::DetectRadixInternal(Char current, int length) {
                  (*current == 'o' || *current == 'O')) {
         radix_ = 8;
         ++current;
-        DCHECK(current != end);
+        if (current == end) return set_state(kJunk);
       } else if (allow_binary_and_octal_prefixes_ &&
                  (*current == 'b' || *current == 'B')) {
         radix_ = 2;
         ++current;
-        DCHECK(current != end);
+        if (current == end) return set_state(kJunk);
       } else {
         leading_zero_ = true;
       }
@@ -462,13 +460,13 @@ class NumberParseIntHelper : public StringToIntHelper {
   }
 
  protected:
-  virtual void AllocateResult() {}
-  virtual void ResultMultiplyAdd(uint32_t multiplier, uint32_t part) {
+  void AllocateResult() override {}
+  void ResultMultiplyAdd(uint32_t multiplier, uint32_t part) override {
     result_ = result_ * multiplier + part;
   }
 
  private:
-  virtual void HandleSpecialCases() {
+  void HandleSpecialCases() override {
     bool is_power_of_two = base::bits::IsPowerOfTwo(radix());
     if (!is_power_of_two && radix() != 10) return;
     DisallowHeapAllocation no_gc;
@@ -812,8 +810,6 @@ parsing_done:
   return (sign == NEGATIVE) ? -converted : converted;
 }
 
-}  // namespace
-
 double StringToDouble(UnicodeCache* unicode_cache,
                       const char* str, int flags, double empty_string_val) {
   // We cast to const uint8_t* here to avoid instantiating the
@@ -852,17 +848,12 @@ double StringToInt(Isolate* isolate, Handle<String> string, int radix) {
   return helper.GetResult();
 }
 
-class BigIntParseIntHelper : public StringToIntHelper {
+class StringToBigIntHelper : public StringToIntHelper {
  public:
-  enum class Behavior { kParseInt, kStringToBigInt, kLiteral };
-
-  // Used for BigInt.parseInt API, where the input is a Heap-allocated String.
-  BigIntParseIntHelper(Isolate* isolate, Handle<String> string, int radix)
-      : StringToIntHelper(isolate, string, radix),
-        behavior_(Behavior::kParseInt) {}
+  enum class Behavior { kStringToBigInt, kLiteral };
 
   // Used for StringToBigInt operation (BigInt constructor and == operator).
-  BigIntParseIntHelper(Isolate* isolate, Handle<String> string)
+  StringToBigIntHelper(Isolate* isolate, Handle<String> string)
       : StringToIntHelper(isolate, string),
         behavior_(Behavior::kStringToBigInt) {
     set_allow_binary_and_octal_prefixes();
@@ -871,7 +862,7 @@ class BigIntParseIntHelper : public StringToIntHelper {
 
   // Used for parsing BigInt literals, where the input is a buffer of
   // one-byte ASCII digits, along with an optional radix prefix.
-  BigIntParseIntHelper(Isolate* isolate, const uint8_t* string, int length)
+  StringToBigIntHelper(Isolate* isolate, const uint8_t* string, int length)
       : StringToIntHelper(isolate, string, length),
         behavior_(Behavior::kLiteral) {
     set_allow_binary_and_octal_prefixes();
@@ -884,9 +875,7 @@ class BigIntParseIntHelper : public StringToIntHelper {
       return MaybeHandle<BigInt>();
     }
     if (state() == kEmpty) {
-      if (behavior_ == Behavior::kParseInt) {
-        set_state(kJunk);
-      } else if (behavior_ == Behavior::kStringToBigInt) {
+      if (behavior_ == Behavior::kStringToBigInt) {
         set_state(kZero);
       } else {
         UNREACHABLE();
@@ -918,48 +907,43 @@ class BigIntParseIntHelper : public StringToIntHelper {
   }
 
  protected:
-  virtual void AllocateResult() {
+  void AllocateResult() override {
     // We have to allocate a BigInt that's big enough to fit the result.
     // Conseratively assume that all remaining digits are significant.
     // Optimization opportunity: Would it makes sense to scan for trailing
     // junk before allocating the result?
     int charcount = length() - cursor();
-    // TODO(adamk): Pretenure if this is for a literal.
-    MaybeHandle<FreshlyAllocatedBigInt> maybe =
-        BigInt::AllocateFor(isolate(), radix(), charcount, should_throw());
+    // For literals, we pretenure the allocated BigInt, since it's about
+    // to be stored in the interpreter's constants array.
+    PretenureFlag pretenure =
+        behavior_ == Behavior::kLiteral ? TENURED : NOT_TENURED;
+    MaybeHandle<FreshlyAllocatedBigInt> maybe = BigInt::AllocateFor(
+        isolate(), radix(), charcount, should_throw(), pretenure);
     if (!maybe.ToHandle(&result_)) {
       set_state(kError);
     }
   }
 
-  virtual void ResultMultiplyAdd(uint32_t multiplier, uint32_t part) {
+  void ResultMultiplyAdd(uint32_t multiplier, uint32_t part) override {
     BigInt::InplaceMultiplyAdd(result_, static_cast<uintptr_t>(multiplier),
                                static_cast<uintptr_t>(part));
   }
 
  private:
-  ShouldThrow should_throw() const {
-    return behavior_ == Behavior::kParseInt ? kThrowOnError : kDontThrow;
-  }
+  ShouldThrow should_throw() const { return kDontThrow; }
 
   Handle<FreshlyAllocatedBigInt> result_;
   Behavior behavior_;
 };
 
-MaybeHandle<BigInt> BigIntParseInt(Isolate* isolate, Handle<String> string,
-                                   int radix) {
-  BigIntParseIntHelper helper(isolate, string, radix);
-  return helper.GetResult();
-}
-
 MaybeHandle<BigInt> StringToBigInt(Isolate* isolate, Handle<String> string) {
-  string = String::Flatten(string);
-  BigIntParseIntHelper helper(isolate, string);
+  string = String::Flatten(isolate, string);
+  StringToBigIntHelper helper(isolate, string);
   return helper.GetResult();
 }
 
 MaybeHandle<BigInt> BigIntLiteral(Isolate* isolate, const char* string) {
-  BigIntParseIntHelper helper(isolate, reinterpret_cast<const uint8_t*>(string),
+  StringToBigIntHelper helper(isolate, reinterpret_cast<const uint8_t*>(string),
                               static_cast<int>(strlen(string)));
   return helper.GetResult();
 }
@@ -1342,9 +1326,10 @@ char* DoubleToRadixCString(double value, int radix) {
 
 
 // ES6 18.2.4 parseFloat(string)
-double StringToDouble(UnicodeCache* unicode_cache, Handle<String> string,
-                      int flags, double empty_string_val) {
-  Handle<String> flattened = String::Flatten(string);
+double StringToDouble(Isolate* isolate, UnicodeCache* unicode_cache,
+                      Handle<String> string, int flags,
+                      double empty_string_val) {
+  Handle<String> flattened = String::Flatten(isolate, string);
   {
     DisallowHeapAllocation no_gc;
     String::FlatContent flat = flattened->GetFlatContent();

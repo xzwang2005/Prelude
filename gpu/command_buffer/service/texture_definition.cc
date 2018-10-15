@@ -44,7 +44,9 @@ class GLImageSync : public gl::GLImage {
                             int z_order,
                             gfx::OverlayTransform transform,
                             const gfx::Rect& bounds_rect,
-                            const gfx::RectF& crop_rect) override;
+                            const gfx::RectF& crop_rect,
+                            bool enable_blend,
+                            std::unique_ptr<gfx::GpuFence> gpu_fence) override;
   void SetColorSpace(const gfx::ColorSpace& color_space) override {}
   void Flush() override {}
   void OnMemoryDump(base::trace_event::ProcessMemoryDump* pmd,
@@ -100,11 +102,14 @@ bool GLImageSync::CopyTexSubImage(unsigned target,
   return false;
 }
 
-bool GLImageSync::ScheduleOverlayPlane(gfx::AcceleratedWidget widget,
-                                       int z_order,
-                                       gfx::OverlayTransform transform,
-                                       const gfx::Rect& bounds_rect,
-                                       const gfx::RectF& crop_rect) {
+bool GLImageSync::ScheduleOverlayPlane(
+    gfx::AcceleratedWidget widget,
+    int z_order,
+    gfx::OverlayTransform transform,
+    const gfx::Rect& bounds_rect,
+    const gfx::RectF& crop_rect,
+    bool enable_blend,
+    std::unique_ptr<gfx::GpuFence> gpu_fence) {
   NOTREACHED();
   return false;
 }
@@ -170,7 +175,7 @@ scoped_refptr<NativeImageBufferEGL> NativeImageBufferEGL::Create(
   if (egl_image == EGL_NO_IMAGE_KHR) {
     LOG(ERROR) << "eglCreateImageKHR for cross-thread sharing failed: 0x"
                << std::hex << eglGetError();
-    return NULL;
+    return nullptr;
   }
 
   return new NativeImageBufferEGL(egl_display, egl_image);
@@ -186,7 +191,7 @@ NativeImageBufferEGL::NativeImageBufferEGL(EGLDisplay display,
     : NativeImageBuffer(),
       egl_display_(display),
       egl_image_(image),
-      write_client_(NULL) {
+      write_client_(nullptr) {
   DCHECK(egl_display_ != EGL_NO_DISPLAY);
   DCHECK(egl_image_ != EGL_NO_IMAGE_KHR);
 }
@@ -205,7 +210,7 @@ void NativeImageBufferEGL::AddClient(gl::GLImage* client) {
 void NativeImageBufferEGL::RemoveClient(gl::GLImage* client) {
   base::AutoLock lock(lock_);
   if (write_client_ == client)
-    write_client_ = NULL;
+    write_client_ = nullptr;
   for (std::list<ClientInfo>::iterator it = client_infos_.begin();
        it != client_infos_.end();
        it++) {
@@ -267,7 +272,7 @@ scoped_refptr<NativeImageBuffer> NativeImageBuffer::Create(GLuint texture_id) {
       return new NativeImageBufferStub;
     default:
       NOTREACHED();
-      return NULL;
+      return nullptr;
   }
 }
 
@@ -319,8 +324,8 @@ TextureDefinition::TextureDefinition()
       wrap_s_(0),
       wrap_t_(0),
       usage_(0),
-      immutable_(true) {
-}
+      immutable_(true),
+      defined_(false) {}
 
 TextureDefinition::TextureDefinition(
     Texture* texture,
@@ -334,26 +339,26 @@ TextureDefinition::TextureDefinition(
       wrap_s_(texture->wrap_s()),
       wrap_t_(texture->wrap_t()),
       usage_(texture->usage()),
-      immutable_(texture->IsImmutable()),
-      defined_(texture->IsDefined()) {
+      immutable_(texture->IsImmutable()) {
+  const Texture::LevelInfo* level = texture->GetLevelInfo(target_, 0);
+  defined_ = !!level;
   DCHECK(!image_buffer_.get() || defined_);
-  if (!image_buffer_.get() && defined_) {
+  if (!defined_)
+    return;
+  if (!image_buffer_.get()) {
     image_buffer_ = NativeImageBuffer::Create(texture->service_id());
     DCHECK(image_buffer_.get());
   }
 
-  const Texture::FaceInfo& first_face = texture->face_infos_[0];
   if (image_buffer_.get()) {
-    scoped_refptr<gl::GLImage> gl_image(new GLImageSync(
-        image_buffer_, gfx::Size(first_face.level_infos[0].width,
-                                 first_face.level_infos[0].height)));
+    scoped_refptr<gl::GLImage> gl_image(
+        new GLImageSync(image_buffer_, gfx::Size(level->width, level->height)));
     texture->SetLevelImage(target_, 0, gl_image.get(), Texture::BOUND);
   }
 
-  const Texture::LevelInfo& level = first_face.level_infos[0];
-  level_info_ = LevelInfo(level.target, level.internal_format, level.width,
-                          level.height, level.depth, level.border, level.format,
-                          level.type, level.cleared_rect);
+  level_info_ = LevelInfo(level->target, level->internal_format, level->width,
+                          level->height, level->depth, level->border,
+                          level->format, level->type, level->cleared_rect);
 }
 
 TextureDefinition::TextureDefinition(const TextureDefinition& other) = default;
@@ -361,6 +366,8 @@ TextureDefinition::TextureDefinition(const TextureDefinition& other) = default;
 TextureDefinition::~TextureDefinition() = default;
 
 Texture* TextureDefinition::CreateTexture() const {
+  if (!target_)
+    return nullptr;
   GLuint texture_id;
   glGenTextures(1, &texture_id);
 
@@ -385,16 +392,16 @@ void TextureDefinition::UpdateTextureInternal(Texture* texture) const {
     }
   }
 
+  texture->face_infos_.resize(1);
+  texture->face_infos_[0].level_infos.resize(1);
   if (defined_) {
-    texture->face_infos_.resize(1);
-    texture->face_infos_[0].level_infos.resize(1);
     texture->SetLevelInfo(level_info_.target, 0,
                           level_info_.internal_format, level_info_.width,
                           level_info_.height, level_info_.depth,
                           level_info_.border, level_info_.format,
                           level_info_.type, level_info_.cleared_rect);
     texture->face_infos_[0].level_infos.resize(
-        texture->face_infos_[0].num_mip_levels);
+        std::max(1, texture->face_infos_[0].num_mip_levels));
   }
 
   if (image_buffer_.get()) {
@@ -428,7 +435,7 @@ void TextureDefinition::UpdateTexture(Texture* texture) const {
     if (bound_id == static_cast<GLint>(old_service_id)) {
       glBindTexture(target_, service_id);
     }
-    texture->SetLevelImage(target_, 0, NULL, Texture::UNBOUND);
+    texture->SetLevelImage(target_, 0, nullptr, Texture::UNBOUND);
   }
 
   UpdateTextureInternal(texture);

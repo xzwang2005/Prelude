@@ -15,10 +15,8 @@ from telemetry.internal.results import json_3_output_formatter
 from telemetry.internal.results import page_test_results
 from telemetry.internal.results import results_options
 from telemetry.testing import options_for_unittests
-from telemetry.value import failure
 from telemetry.value import improvement_direction
 from telemetry.value import scalar
-from telemetry.value import skip
 
 
 def _MakeStorySet():
@@ -140,8 +138,7 @@ class Json3OutputFormatterTest(unittest.TestCase):
     results.DidRunPage(self._story_set[0])
 
     results.WillRunPage(self._story_set[1])
-    v1 = skip.SkipValue(results.current_page, 'fake_skip')
-    results.AddValue(v1)
+    results.Skip('fake_skip')
     results.DidRunPage(self._story_set[1])
 
     results.WillRunPage(self._story_set[0])
@@ -151,8 +148,7 @@ class Json3OutputFormatterTest(unittest.TestCase):
     results.DidRunPage(self._story_set[0])
 
     results.WillRunPage(self._story_set[1])
-    v1 = skip.SkipValue(results.current_page, 'fake_skip')
-    results.AddValue(v1)
+    results.Skip('fake_skip')
     results.DidRunPage(self._story_set[1])
 
     d = json_3_output_formatter.ResultsAsDict(results)
@@ -185,21 +181,23 @@ class Json3OutputFormatterTest(unittest.TestCase):
     results.DidRunPage(self._story_set[1])
 
     results.WillRunPage(self._story_set[0])
-    v0 = skip.SkipValue(results.current_page, 'fake_skip')
-    results.AddValue(v0)
+    results.Skip('fake_skip')
+    results.DidRunPage(self._story_set[0])
+
+    results.WillRunPage(self._story_set[0])
+    results.Skip('unexpected_skip', False)
     results.DidRunPage(self._story_set[0])
 
     results.WillRunPage(self._story_set[1])
-    v1 = failure.FailureValue.FromMessage(results.current_page, 'fake_failure')
-    results.AddValue(v1)
+    results.Fail('fake_failure')
     results.DidRunPage(self._story_set[1])
 
     d = json_3_output_formatter.ResultsAsDict(results)
 
     foo_story_result = d['tests']['benchmark_name']['Foo']
-    self.assertEquals(foo_story_result['actual'], 'PASS SKIP')
+    self.assertEquals(foo_story_result['actual'], 'PASS SKIP SKIP')
     self.assertEquals(foo_story_result['expected'], 'PASS SKIP')
-    self.assertFalse(foo_story_result['is_unexpected'])
+    self.assertTrue(foo_story_result['is_unexpected'])
 
     bar_story_result = d['tests']['benchmark_name']['Bar']
     self.assertEquals(bar_story_result['actual'], 'PASS FAIL')
@@ -207,7 +205,7 @@ class Json3OutputFormatterTest(unittest.TestCase):
     self.assertTrue(bar_story_result['is_unexpected'])
 
     self.assertEquals(
-        d['num_failures_by_type'], {'PASS': 2, 'FAIL': 1, 'SKIP': 1})
+        d['num_failures_by_type'], {'PASS': 2, 'FAIL': 1, 'SKIP': 2})
 
   def testIntegrationCreateJsonTestResultsWithDisabledBenchmark(self):
     benchmark_metadata = benchmark.BenchmarkMetadata('test_benchmark')
@@ -262,6 +260,7 @@ class Json3OutputFormatterTest(unittest.TestCase):
         3,
         improvement_direction=improvement_direction.DOWN)
     results.AddValue(v0)
+    results.current_page_run.SetDuration(5.0123)
     results.DidRunPage(test_page)
     results.PrintSummary()
     results.CloseOutputFormatters()
@@ -276,13 +275,10 @@ class Json3OutputFormatterTest(unittest.TestCase):
     self.assertEquals(json_test_results['path_delimiter'], '/')
     self.assertAlmostEqual(json_test_results['seconds_since_epoch'],
                            time.time(), delta=1)
-    self.assertEquals(json_test_results['tests'], {
-        'test_benchmark': {
-            'Foo': {
-                'actual': 'PASS',
-                'expected': 'PASS',
-                'is_unexpected': False
-            }
-        }
-    })
+    testBenchmarkFoo = json_test_results['tests']['test_benchmark']['Foo']
+    self.assertEquals(testBenchmarkFoo['actual'], 'PASS')
+    self.assertEquals(testBenchmarkFoo['expected'], 'PASS')
+    self.assertFalse(testBenchmarkFoo['is_unexpected'])
+    self.assertEquals(testBenchmarkFoo['time'], 5.0123)
+    self.assertEquals(testBenchmarkFoo['times'][0], 5.0123)
     self.assertEquals(json_test_results['version'], 3)

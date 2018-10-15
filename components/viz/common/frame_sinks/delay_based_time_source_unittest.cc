@@ -6,6 +6,7 @@
 
 #include <stdint.h>
 
+#include "base/test/simple_test_tick_clock.h"
 #include "base/test/test_simple_task_runner.h"
 #include "components/viz/test/fake_delay_based_time_source.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -21,9 +22,9 @@ base::TimeDelta Interval() {
 class DelayBasedTimeSourceTest : public ::testing::Test {
  protected:
   void SetUp() override {
-    now_src_ = base::MakeUnique<base::SimpleTestTickClock>();
+    now_src_ = std::make_unique<base::SimpleTestTickClock>();
     task_runner_ = base::MakeRefCounted<base::TestSimpleTaskRunner>();
-    delay_based_time_source_ = base::MakeUnique<FakeDelayBasedTimeSource>(
+    delay_based_time_source_ = std::make_unique<FakeDelayBasedTimeSource>(
         now_src_.get(), task_runner_.get());
     delay_based_time_source_->SetClient(&client_);
   }

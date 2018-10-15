@@ -15,17 +15,18 @@
 #include "base/time/time.h"
 #include "base/timer/timer.h"
 #include "net/base/completion_callback.h"
+#include "net/base/completion_once_callback.h"
 #include "net/base/host_port_pair.h"
 #include "net/base/load_timing_info.h"
 #include "net/http/http_auth_controller.h"
 #include "net/http/proxy_client_socket.h"
 #include "net/log/net_log_with_source.h"
-#include "net/quic/chromium/quic_stream_factory.h"
+#include "net/quic/quic_stream_factory.h"
 #include "net/socket/next_proto.h"
 #include "net/socket/ssl_client_socket.h"
 #include "net/socket/ssl_client_socket_pool.h"
 #include "net/socket/transport_client_socket_pool.h"
-#include "net/spdy/chromium/spdy_session.h"
+#include "net/spdy/spdy_session.h"
 #include "net/traffic_annotation/network_traffic_annotation.h"
 
 namespace net {
@@ -36,7 +37,6 @@ class HttpAuthCache;
 class HttpResponseInfo;
 class HttpStream;
 class IOBuffer;
-class ProxyDelegate;
 class SpdySessionPool;
 class SSLClientSocketPool;
 class TransportClientSocketPool;
@@ -58,6 +58,7 @@ class NET_EXPORT_PRIVATE HttpProxyClientSocketWrapper
   HttpProxyClientSocketWrapper(
       const std::string& group_name,
       RequestPriority priority,
+      const SocketTag& socket_tag,
       ClientSocketPool::RespectLimits respect_limits,
       base::TimeDelta connect_timeout_duration,
       base::TimeDelta proxy_negotiation_timeout_duration,
@@ -65,15 +66,16 @@ class NET_EXPORT_PRIVATE HttpProxyClientSocketWrapper
       SSLClientSocketPool* ssl_pool,
       const scoped_refptr<TransportSocketParams>& transport_params,
       const scoped_refptr<SSLSocketParams>& ssl_params,
-      QuicTransportVersion quic_version,
+      quic::QuicTransportVersion quic_version,
       const std::string& user_agent,
       const HostPortPair& endpoint,
       HttpAuthCache* http_auth_cache,
       HttpAuthHandlerFactory* http_auth_handler_factory,
       SpdySessionPool* spdy_session_pool,
       QuicStreamFactory* quic_stream_factory,
+      bool is_trusted_proxy,
       bool tunnel,
-      ProxyDelegate* proxy_delegate,
+      const NetworkTrafficAnnotationTag& traffic_annotation,
       const NetLogWithSource& net_log);
 
   // On destruction Disconnect() is called.
@@ -88,19 +90,17 @@ class NET_EXPORT_PRIVATE HttpProxyClientSocketWrapper
   // ProxyClientSocket implementation.
   const HttpResponseInfo* GetConnectResponseInfo() const override;
   std::unique_ptr<HttpStream> CreateConnectResponseStream() override;
-  int RestartWithAuth(const CompletionCallback& callback) override;
+  int RestartWithAuth(CompletionOnceCallback callback) override;
   const scoped_refptr<HttpAuthController>& GetAuthController() const override;
   bool IsUsingSpdy() const override;
   NextProto GetProxyNegotiatedProtocol() const override;
 
   // StreamSocket implementation.
-  int Connect(const CompletionCallback& callback) override;
+  int Connect(CompletionOnceCallback callback) override;
   void Disconnect() override;
   bool IsConnected() const override;
   bool IsConnectedAndIdle() const override;
   const NetLogWithSource& NetLog() const override;
-  void SetSubresourceSpeculation() override;
-  void SetOmniboxSpeculation() override;
   bool WasEverUsed() const override;
   bool WasAlpnNegotiated() const override;
   NextProto GetNegotiatedProtocol() const override;
@@ -109,17 +109,20 @@ class NET_EXPORT_PRIVATE HttpProxyClientSocketWrapper
   void ClearConnectionAttempts() override;
   void AddConnectionAttempts(const ConnectionAttempts& attempts) override;
   int64_t GetTotalReceivedBytes() const override;
+  void ApplySocketTag(const SocketTag& tag) override;
 
   // Socket implementation.
   int Read(IOBuffer* buf,
            int buf_len,
-           const CompletionCallback& callback) override;
-  // TODO(crbug.com/656607): Remove default value.
+           CompletionOnceCallback callback) override;
+  int ReadIfReady(IOBuffer* buf,
+                  int buf_len,
+                  CompletionOnceCallback callback) override;
+  int CancelReadIfReady() override;
   int Write(IOBuffer* buf,
             int buf_len,
-            const CompletionCallback& callback,
-            const NetworkTrafficAnnotationTag& traffic_annotation =
-                NO_TRAFFIC_ANNOTATION_BUG_656607) override;
+            CompletionOnceCallback callback,
+            const NetworkTrafficAnnotationTag& traffic_annotation) override;
   int SetReceiveBufferSize(int32_t size) override;
   int SetSendBufferSize(int32_t size) override;
   int GetPeerAddress(IPEndPoint* address) const override;
@@ -173,8 +176,6 @@ class NET_EXPORT_PRIVATE HttpProxyClientSocketWrapper
   int DoRestartWithAuth();
   int DoRestartWithAuthComplete(int result);
 
-  void NotifyProxyDelegateOfCompletion(int result);
-
   void SetConnectTimer(base::TimeDelta duration);
   void ConnectTimeout();
 
@@ -184,6 +185,7 @@ class NET_EXPORT_PRIVATE HttpProxyClientSocketWrapper
 
   const std::string group_name_;
   RequestPriority priority_;
+  const SocketTag initial_socket_tag_;
   ClientSocketPool::RespectLimits respect_limits_;
   const base::TimeDelta connect_timeout_duration_;
   const base::TimeDelta proxy_negotiation_timeout_duration_;
@@ -193,7 +195,7 @@ class NET_EXPORT_PRIVATE HttpProxyClientSocketWrapper
   const scoped_refptr<TransportSocketParams> transport_params_;
   const scoped_refptr<SSLSocketParams> ssl_params_;
 
-  QuicTransportVersion quic_version_;
+  quic::QuicTransportVersion quic_version_;
 
   const std::string user_agent_;
   const HostPortPair endpoint_;
@@ -201,9 +203,9 @@ class NET_EXPORT_PRIVATE HttpProxyClientSocketWrapper
 
   bool has_restarted_;
   const bool tunnel_;
-  ProxyDelegate* const proxy_delegate_;
 
   bool using_spdy_;
+  bool is_trusted_proxy_;
   NextProto negotiated_protocol_;
 
   std::unique_ptr<HttpResponseInfo> error_response_info_;
@@ -214,7 +216,7 @@ class NET_EXPORT_PRIVATE HttpProxyClientSocketWrapper
   // Called when a connection is established. Also used when restarting with
   // AUTH, which will invoke this when ready to restart, after reconnecting
   // if necessary.
-  CompletionCallback connect_callback_;
+  CompletionOnceCallback connect_callback_;
 
   SpdyStreamRequest spdy_stream_request_;
 
@@ -228,6 +230,9 @@ class NET_EXPORT_PRIVATE HttpProxyClientSocketWrapper
   NetErrorDetails quic_net_error_details_;
 
   base::OneShotTimer connect_timer_;
+
+  // Network traffic annotation for handshaking and setup.
+  const NetworkTrafficAnnotationTag traffic_annotation_;
 
   // Time when the connection to the proxy was started.
   base::TimeTicks connect_start_time_;

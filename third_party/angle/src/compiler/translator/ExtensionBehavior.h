@@ -31,8 +31,8 @@ enum class TExtension
     NV_shader_framebuffer_fetch,
     OES_EGL_image_external,
     OES_EGL_image_external_essl3,
-    OES_geometry_shader,
     OES_standard_derivatives,
+    OES_texture_storage_multisample_2d_array,
     OVR_multiview
 };
 

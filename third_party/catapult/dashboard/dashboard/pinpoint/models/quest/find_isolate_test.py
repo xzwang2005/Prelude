@@ -6,40 +6,43 @@ import unittest
 
 import mock
 
-from google.appengine.ext import ndb
-from google.appengine.ext import testbed
-
-from dashboard.common import namespaced_stored_object
-from dashboard.pinpoint.models import change as change_module
 from dashboard.pinpoint.models import isolate
+from dashboard.pinpoint.models.change import change_test
 from dashboard.pinpoint.models.quest import find_isolate
+from dashboard.pinpoint import test
 
 
-class _FindIsolateTest(unittest.TestCase):
+class FindIsolateQuestTest(unittest.TestCase):
+
+  def testMissingBuilder(self):
+    arguments = {'target': 'telemetry_perf_tests'}
+    with self.assertRaises(TypeError):
+      find_isolate.FindIsolate.FromDict(arguments)
+
+  def testMissingTarget(self):
+    arguments = {'builder': 'Mac Builder'}
+    with self.assertRaises(TypeError):
+      find_isolate.FindIsolate.FromDict(arguments)
+
+  def testAllArguments(self):
+    arguments = {
+        'builder': 'Mac Builder',
+        'target': 'telemetry_perf_tests',
+    }
+    expected = find_isolate.FindIsolate('Mac Builder', 'telemetry_perf_tests')
+    self.assertEqual(find_isolate.FindIsolate.FromDict(arguments), expected)
+
+
+class _FindIsolateExecutionTest(test.TestCase):
 
   def setUp(self):
-    self.testbed = testbed.Testbed()
-    self.testbed.activate()
-    self.testbed.init_datastore_v3_stub()
-    self.testbed.init_memcache_stub()
-    ndb.get_context().clear_cache()
+    super(_FindIsolateExecutionTest, self).setUp()
 
-    change = change_module.Change((change_module.Commit('src', 'f9f2b720'),))
+    change = change_test.Change(123)
     isolate.Put((
-        ('Mac Builder', change, 'telemetry_perf_tests', '7c7e90be'),
+        ('Mac Builder', change, 'telemetry_perf_tests',
+         'https://isolate.server', '7c7e90be'),
     ))
-
-    namespaced_stored_object.Set('repositories', {
-        'src': {
-            'repository_url': 'https://chromium.googlesource.com/chromium/src'
-        },
-        'v8': {
-            'repository_url': 'https://chromium.googlesource.com/v8/v8'
-        },
-    })
-
-  def tearDown(self):
-    self.testbed.deactivate()
 
   def assertExecutionFailure(self, execution, exception_class):
     self.assertTrue(execution.completed)
@@ -55,75 +58,48 @@ class _FindIsolateTest(unittest.TestCase):
     self.assertIsNone(execution.exception)
 
 
-class IsolateLookupTest(_FindIsolateTest):
+class IsolateLookupTest(_FindIsolateExecutionTest):
 
   def testIsolateLookupSuccess(self):
-    change = change_module.Change((change_module.Commit('src', 'f9f2b720'),))
-    quest = find_isolate.FindIsolate('Mac Pro Perf', 'telemetry_perf_tests')
-    execution = quest.Start(change)
+    quest = find_isolate.FindIsolate('Mac Builder', 'telemetry_perf_tests')
+    execution = quest.Start(change_test.Change(123))
     execution.Poll()
 
+    expected_result_arguments = {
+        'isolate_server': 'https://isolate.server',
+        'isolate_hash': '7c7e90be',
+    }
+    expected_as_dict = {
+        'completed': True,
+        'exception': None,
+        'details': [
+            {
+                'key': 'builder',
+                'value': 'Mac Builder',
+            },
+            {
+                'key': 'isolate',
+                'value': '7c7e90be',
+                'url': 'https://isolate.server/browse?digest=7c7e90be',
+            },
+        ],
+    }
     self.assertExecutionSuccess(execution)
     self.assertEqual(execution.result_values, ())
-    self.assertEqual(execution.result_arguments, {'isolate_hash': '7c7e90be'})
-    self.assertEqual(
-        {
-            'completed': True,
-            'exception': None,
-            'details': {'build': None},
-            'result_arguments': {'isolate_hash': u'7c7e90be'},
-            'result_values': (),
-        },
-        execution.AsDict())
-
-
-class BuilderLookupTest(_FindIsolateTest):
-
-  def testSuccesfulBuilderLookupForAllBuilders(self):
-    builder_testers = (
-        ('arm-builder-rel', 'health-plan-clankium-phone'),
-        ('Android Builder', 'Android Nexus5 Perf'),
-        ('Android arm64 Builder', 'Android Nexus5X Perf'),
-        ('Linux Builder', 'Linux Perf'),
-        ('Mac Builder', 'Mac Air Perf'),
-        ('Win Builder', 'chromium-rel-win7-dual'),
-        ('Win x64 Builder', 'Win Zenbook Perf'),
-    )
-
-    change = change_module.Change((change_module.Commit('src', 'git hash'),))
-    isolate.Put(
-        (builder, change, 'telemetry_perf_tests', hex(hash(builder)))
-        for builder, _ in builder_testers)
-
-    for builder, tester in builder_testers:
-      quest = find_isolate.FindIsolate(tester, 'telemetry_perf_tests')
-      execution = quest.Start(change)
-      execution.Poll()
-
-      self.assertExecutionSuccess(execution)
-      self.assertEqual(execution.result_arguments,
-                       {'isolate_hash': hex(hash(builder))})
-
-  def testUnknownBuilder(self):
-    with self.assertRaises(NotImplementedError):
-      find_isolate.FindIsolate('Unix Perf', 'telemetry_perf_tests')
+    self.assertEqual(execution.result_arguments, expected_result_arguments)
+    self.assertEqual(execution.AsDict(), expected_as_dict)
 
 
 @mock.patch('dashboard.services.buildbucket_service.GetJobStatus')
 @mock.patch('dashboard.services.buildbucket_service.Put')
-class BuildTest(_FindIsolateTest):
+class BuildTest(_FindIsolateExecutionTest):
 
-  @mock.patch.object(change_module.GerritPatch, 'BuildParameters')
-  def testBuildLifecycle(self, build_parameters, put, get_job_status):
-    change = change_module.Change(
-        (change_module.Commit('src', 'base git hash'),
-         change_module.Commit('v8', 'dep git hash')),
-        patch=change_module.GerritPatch('https://example.org', 672011, '2f0d'))
-    quest = find_isolate.FindIsolate('Mac Pro Perf', 'telemetry_perf_tests')
+  def testBuildLifecycle(self, put, get_job_status):
+    change = change_test.Change(123, 456, patch=True)
+    quest = find_isolate.FindIsolate('Mac Builder', 'telemetry_perf_tests')
     execution = quest.Start(change)
 
     # Request a build.
-    build_parameters.return_value = {'patch_storage': 'gerrit'}
     put.return_value = {'build': {'id': 'build_id'}}
     execution.Poll()
 
@@ -132,34 +108,69 @@ class BuildTest(_FindIsolateTest):
         'builder_name': 'Mac Builder',
         'properties': {
             'clobber': True,
-            'parent_got_revision': 'base git hash',
-            'deps_revision_overrides': {
-                'https://chromium.googlesource.com/v8/v8': 'dep git hash',
-            },
+            'parent_got_revision': 'commit 123',
+            'deps_revision_overrides': {test.CATAPULT_URL: 'commit 456'},
+            'patch_gerrit_url': 'https://codereview.com',
+            'patch_issue': 567890,
+            'patch_project': 'project/name',
+            'patch_ref': 'refs/changes/90/567890/5',
+            'patch_repository_url': test.CHROMIUM_URL,
+            'patch_set': 5,
             'patch_storage': 'gerrit',
         }
     })
 
     # Check build status.
-    get_job_status.return_value = {'build': {'status': 'STARTED'}}
+    get_job_status.return_value = {'build': {
+        'status': 'STARTED',
+        'url': 'build_url',
+    }}
     execution.Poll()
 
     self.assertFalse(execution.completed)
     get_job_status.assert_called_once_with('build_id')
 
     # Look up isolate hash.
-    isolate.Put((('Mac Builder', change,
-                  'telemetry_perf_tests', 'isolate git hash'),))
+    isolate.Put((
+        ('Mac Builder', change, 'telemetry_perf_tests',
+         'https://isolate.server', 'isolate git hash'),
+    ))
     execution.Poll()
 
+    expected_result_arguments = {
+        'isolate_server': 'https://isolate.server',
+        'isolate_hash': 'isolate git hash',
+    }
+    expected_as_dict = {
+        'completed': True,
+        'exception': None,
+        'details': [
+            {
+                'key': 'builder',
+                'value': 'Mac Builder',
+            },
+            {
+                'key': 'build',
+                'value': 'build_id',
+                'url': 'build_url',
+            },
+            {
+                'key': 'isolate',
+                'value': 'isolate git hash',
+                'url': 'https://isolate.server/browse?digest=isolate git hash',
+            },
+        ],
+    }
     self.assertExecutionSuccess(execution)
+    self.assertEqual(execution.result_values, ())
+    self.assertEqual(execution.result_arguments, expected_result_arguments)
+    self.assertEqual(execution.AsDict(), expected_as_dict)
 
   def testSimultaneousBuilds(self, put, get_job_status):
     # Two builds started at the same time on the same Change should reuse the
     # same build request.
-    change = change_module.Change(
-        (change_module.Commit('src', 'base git hash'),))
-    quest = find_isolate.FindIsolate('Mac Pro Perf', 'telemetry_perf_tests')
+    change = change_test.Change(0)
+    quest = find_isolate.FindIsolate('Mac Builder', 'telemetry_perf_tests')
     execution_1 = quest.Start(change)
     execution_2 = quest.Start(change)
 
@@ -182,8 +193,10 @@ class BuildTest(_FindIsolateTest):
     self.assertEqual(get_job_status.call_count, 2)
 
     # Look up isolate hash.
-    isolate.Put((('Mac Builder', change,
-                  'telemetry_perf_tests', 'isolate git hash'),))
+    isolate.Put((
+        ('Mac Builder', change, 'telemetry_perf_tests',
+         'https://isolate.server', 'isolate git hash'),
+    ))
     execution_1.Poll()
     execution_2.Poll()
 
@@ -191,10 +204,8 @@ class BuildTest(_FindIsolateTest):
     self.assertExecutionSuccess(execution_2)
 
   def testBuildFailure(self, put, get_job_status):
-    change = change_module.Change(
-        (change_module.Commit('src', 'base git hash'),))
-    quest = find_isolate.FindIsolate('Mac Pro Perf', 'telemetry_perf_tests')
-    execution = quest.Start(change)
+    quest = find_isolate.FindIsolate('Mac Builder', 'telemetry_perf_tests')
+    execution = quest.Start(change_test.Change(0))
 
     # Request a build.
     put.return_value = {'build': {'id': 'build_id'}}
@@ -213,10 +224,8 @@ class BuildTest(_FindIsolateTest):
     self.assertExecutionFailure(execution, find_isolate.BuildError)
 
   def testBuildCanceled(self, put, get_job_status):
-    change = change_module.Change(
-        (change_module.Commit('src', 'base git hash'),))
-    quest = find_isolate.FindIsolate('Mac Pro Perf', 'telemetry_perf_tests')
-    execution = quest.Start(change)
+    quest = find_isolate.FindIsolate('Mac Builder', 'telemetry_perf_tests')
+    execution = quest.Start(change_test.Change(0))
 
     # Request a build.
     put.return_value = {'build': {'id': 'build_id'}}
@@ -235,10 +244,8 @@ class BuildTest(_FindIsolateTest):
     self.assertExecutionFailure(execution, find_isolate.BuildError)
 
   def testBuildSucceededButIsolateIsMissing(self, put, get_job_status):
-    change = change_module.Change(
-        (change_module.Commit('src', 'base git hash'),))
-    quest = find_isolate.FindIsolate('Mac Pro Perf', 'telemetry_perf_tests')
-    execution = quest.Start(change)
+    quest = find_isolate.FindIsolate('Mac Builder', 'telemetry_perf_tests')
+    execution = quest.Start(change_test.Change(0))
 
     # Request a build.
     put.return_value = {'build': {'id': 'build_id'}}
@@ -251,6 +258,5 @@ class BuildTest(_FindIsolateTest):
             'result': 'SUCCESS',
         }
     }
-    execution.Poll()
-
-    self.assertExecutionFailure(execution, find_isolate.BuildError)
+    with self.assertRaises(find_isolate.IsolateNotFoundError):
+      execution.Poll()

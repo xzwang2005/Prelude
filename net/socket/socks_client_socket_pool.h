@@ -12,11 +12,13 @@
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
 #include "base/time/time.h"
+#include "net/base/completion_once_callback.h"
 #include "net/base/host_port_pair.h"
 #include "net/base/net_export.h"
 #include "net/dns/host_resolver.h"
 #include "net/socket/client_socket_pool.h"
 #include "net/socket/client_socket_pool_base.h"
+#include "net/traffic_annotation/network_traffic_annotation.h"
 
 namespace net {
 
@@ -29,13 +31,19 @@ class NET_EXPORT_PRIVATE SOCKSSocketParams
     : public base::RefCounted<SOCKSSocketParams> {
  public:
   SOCKSSocketParams(const scoped_refptr<TransportSocketParams>& proxy_server,
-                    bool socks_v5, const HostPortPair& host_port_pair);
+                    bool socks_v5,
+                    const HostPortPair& host_port_pair,
+                    const NetworkTrafficAnnotationTag& traffic_annotation);
 
   const scoped_refptr<TransportSocketParams>& transport_params() const {
     return transport_params_;
   }
   const HostResolver::RequestInfo& destination() const { return destination_; }
   bool is_socks_v5() const { return socks_v5_; }
+
+  const NetworkTrafficAnnotationTag traffic_annotation() {
+    return traffic_annotation_;
+  }
 
  private:
   friend class base::RefCounted<SOCKSSocketParams>;
@@ -47,6 +55,8 @@ class NET_EXPORT_PRIVATE SOCKSSocketParams
   HostResolver::RequestInfo destination_;
   const bool socks_v5_;
 
+  NetworkTrafficAnnotationTag traffic_annotation_;
+
   DISALLOW_COPY_AND_ASSIGN(SOCKSSocketParams);
 };
 
@@ -56,6 +66,7 @@ class SOCKSConnectJob : public ConnectJob {
  public:
   SOCKSConnectJob(const std::string& group_name,
                   RequestPriority priority,
+                  const SocketTag& socket_tag,
                   ClientSocketPool::RespectLimits respect_limits,
                   const scoped_refptr<SOCKSSocketParams>& params,
                   const base::TimeDelta& timeout_duration,
@@ -97,7 +108,6 @@ class SOCKSConnectJob : public ConnectJob {
   HostResolver* const resolver_;
 
   State next_state_;
-  CompletionCallback callback_;
   std::unique_ptr<ClientSocketHandle> transport_socket_handle_;
   std::unique_ptr<StreamSocket> socket_;
 
@@ -122,16 +132,16 @@ class NET_EXPORT_PRIVATE SOCKSClientSocketPool
   int RequestSocket(const std::string& group_name,
                     const void* connect_params,
                     RequestPriority priority,
+                    const SocketTag& socket_tag,
                     RespectLimits respect_limits,
                     ClientSocketHandle* handle,
-                    const CompletionCallback& callback,
+                    CompletionOnceCallback callback,
                     const NetLogWithSource& net_log) override;
 
   void RequestSockets(const std::string& group_name,
                       const void* params,
                       int num_sockets,
-                      const NetLogWithSource& net_log,
-                      HttpRequestInfo::RequestMotivation motivation) override;
+                      const NetLogWithSource& net_log) override;
 
   void SetPriority(const std::string& group_name,
                    ClientSocketHandle* handle,

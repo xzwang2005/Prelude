@@ -2,5 +2,3 @@
 *.gz
 *.pyc
 .vs
-*.out
-Debug

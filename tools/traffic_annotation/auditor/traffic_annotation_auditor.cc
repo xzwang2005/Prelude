@@ -18,8 +18,9 @@
 #include "build/build_config.h"
 #include "net/traffic_annotation/network_traffic_annotation.h"
 #include "net/traffic_annotation/network_traffic_annotation_test_helper.h"
-#include "tools/traffic_annotation/auditor/traffic_annotation_exporter.h"
+#include "third_party/re2/src/re2/re2.h"
 #include "tools/traffic_annotation/auditor/traffic_annotation_file_filter.h"
+#include "tools/traffic_annotation/auditor/traffic_annotation_id_checker.h"
 
 namespace {
 
@@ -36,8 +37,7 @@ std::map<int, std::string> kReservedAnnotations = {
     {TRAFFIC_ANNOTATION_FOR_TESTS.unique_id_hash_code, "test"},
     {PARTIAL_TRAFFIC_ANNOTATION_FOR_TESTS.unique_id_hash_code, "test_partial"},
     {NO_TRAFFIC_ANNOTATION_YET.unique_id_hash_code, "undefined"},
-    {MISSING_TRAFFIC_ANNOTATION.unique_id_hash_code, "missing"},
-    {NO_TRAFFIC_ANNOTATION_BUG_656607.unique_id_hash_code, "undefined-656607"}};
+    {MISSING_TRAFFIC_ANNOTATION.unique_id_hash_code, "missing"}};
 
 struct AnnotationID {
   // Two ids can be the same in the following cases:
@@ -61,6 +61,12 @@ const base::FilePath kSafeListPath =
         .Append(FILE_PATH_LITERAL("auditor"))
         .Append(FILE_PATH_LITERAL("safe_list.txt"));
 
+const base::FilePath kClangToolSwitchesPath =
+    base::FilePath(FILE_PATH_LITERAL("tools"))
+        .Append(FILE_PATH_LITERAL("traffic_annotation"))
+        .Append(FILE_PATH_LITERAL("auditor"))
+        .Append(FILE_PATH_LITERAL("traffic_annotation_extractor_switches.txt"));
+
 // The folder that includes the latest Clang built-in library. Inside this
 // folder, there should be another folder with version number, like
 // '.../lib/clang/6.0.0', which would be passed to the clang tool.
@@ -77,6 +83,49 @@ const base::FilePath kRunToolScript =
         .Append(FILE_PATH_LITERAL("scripts"))
         .Append(FILE_PATH_LITERAL("run_tool.py"));
 
+// Checks if the list of |path_filters| include the given |file_path|, or there
+// are path filters which are a folder (don't have a '.' in their name), and
+// match the file name.
+// TODO(https://crbug.com/690323): Update to a more general policy.
+bool PathFiltersMatch(const std::vector<std::string>& path_filters,
+                      const std::string file_path) {
+  if (base::ContainsValue(path_filters, file_path))
+    return true;
+  for (const std::string& path_filter : path_filters) {
+    if (path_filter.find(".") == std::string::npos &&
+        file_path.substr(0, path_filter.length()) == path_filter) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// If normalized |file_path| starts with |base_directory|, returns the
+// relative path to |file_path|, otherwise the original |file_path| is returned.
+std::string MakeRelativePath(const base::FilePath& base_directory,
+                             const std::string& file_path) {
+  DCHECK(base_directory.IsAbsolute());
+
+#if defined(OS_WIN)
+  base::FilePath converted_file_path = base::FilePath(
+      base::FilePath::StringPieceType((base::UTF8ToWide(file_path))));
+#else
+  base::FilePath converted_file_path(file_path);
+#endif
+  base::FilePath normalized_path;
+  if (base::NormalizeFilePath(converted_file_path, &normalized_path) &&
+      normalized_path.IsAbsolute()) {
+    normalized_path = normalized_path.NormalizePathSeparatorsTo('/');
+    std::string file_str = normalized_path.MaybeAsASCII();
+    std::string base_str = base_directory.MaybeAsASCII();
+    if (file_str.find(base_str) == 0) {
+      return file_str.substr(base_str.length() + 1,
+                             file_str.length() - base_str.length() - 1);
+    }
+  }
+  return file_path;
+}
+
 }  // namespace
 
 TrafficAnnotationAuditor::TrafficAnnotationAuditor(
@@ -86,10 +135,30 @@ TrafficAnnotationAuditor::TrafficAnnotationAuditor(
     : source_path_(source_path),
       build_path_(build_path),
       clang_tool_path_(clang_tool_path),
+      exporter_(source_path),
       safe_list_loaded_(false) {
   DCHECK(!source_path.empty());
   DCHECK(!build_path.empty());
   DCHECK(!clang_tool_path.empty());
+
+  // Get absolute source path.
+  base::FilePath original_path;
+  base::GetCurrentDirectory(&original_path);
+  base::SetCurrentDirectory(source_path_);
+  base::GetCurrentDirectory(&absolute_source_path_);
+  base::SetCurrentDirectory(original_path);
+  absolute_source_path_ = absolute_source_path_.NormalizePathSeparatorsTo('/');
+  DCHECK(absolute_source_path_.IsAbsolute());
+
+  base::FilePath switches_file =
+      base::MakeAbsoluteFilePath(source_path_.Append(kClangToolSwitchesPath));
+  std::string file_content;
+  if (base::ReadFileToString(switches_file, &file_content)) {
+    clang_tool_switches_ = base::SplitString(
+        file_content, "\n", base::TRIM_WHITESPACE, base::SPLIT_WANT_NONEMPTY);
+  } else {
+    LOG(ERROR) << "Could not read " << kClangToolSwitchesPath;
+  }
 }
 
 TrafficAnnotationAuditor::~TrafficAnnotationAuditor() = default;
@@ -109,12 +178,21 @@ base::FilePath TrafficAnnotationAuditor::GetClangLibraryPath() {
 
 bool TrafficAnnotationAuditor::RunClangTool(
     const std::vector<std::string>& path_filters,
-    bool filter_files,
-    bool use_compile_commands) {
+    bool filter_files_based_on_heuristics,
+    bool use_compile_commands,
+    bool rerun_on_errors,
+    const base::FilePath& errors_file) {
   if (!safe_list_loaded_ && !LoadSafeList())
     return false;
 
-  // Create a file to pass options to clang scripts.
+  // Get list of files/folders to process.
+  std::vector<std::string> file_paths;
+  GenerateFilesListForClangTool(path_filters, filter_files_based_on_heuristics,
+                                use_compile_commands, &file_paths);
+  if (file_paths.empty())
+    return true;
+
+  // Create a file to pass options to the clang tool running script.
   base::FilePath options_filepath;
   if (!base::CreateTemporaryFile(&options_filepath)) {
     LOG(ERROR) << "Could not create temporary options file.";
@@ -132,47 +210,21 @@ bool TrafficAnnotationAuditor::RunClangTool(
   fprintf(
       options_file,
       "--generate-compdb --tool=traffic_annotation_extractor -p=%s "
-      "--tool-path=%s --tool-args=--extra-arg=-resource-dir=%s ",
+      "--tool-path=%s "
+      "--tool-arg=--extra-arg=-resource-dir=%s ",
       build_path_.MaybeAsASCII().c_str(),
       base::MakeAbsoluteFilePath(clang_tool_path_).MaybeAsASCII().c_str(),
       base::MakeAbsoluteFilePath(GetClangLibraryPath()).MaybeAsASCII().c_str());
 
+  for (const std::string& item : clang_tool_switches_)
+    fprintf(options_file, "--tool-arg=--extra-arg=%s ", item.c_str());
+
   if (use_compile_commands)
     fprintf(options_file, "--all ");
 
-  // If |use_compile_commands| is requested or |filter_files| is false, we pass
-  // all given file paths to the running script and the files in the safe list
-  // will be later removed from the results.
-  if (!filter_files || use_compile_commands) {
-    for (const std::string& file_path : path_filters)
-      fprintf(options_file, "%s ", file_path.c_str());
-  } else {
-    TrafficAnnotationFileFilter filter;
-    std::vector<std::string> file_paths;
+  for (const std::string& file_path : file_paths)
+    fprintf(options_file, "%s ", file_path.c_str());
 
-    if (path_filters.size()) {
-      for (const auto& path_filter : path_filters) {
-        filter.GetRelevantFiles(
-            source_path_,
-            safe_list_[static_cast<int>(AuditorException::ExceptionType::ALL)],
-            path_filter, &file_paths);
-      }
-    } else {
-      filter.GetRelevantFiles(
-          source_path_,
-          safe_list_[static_cast<int>(AuditorException::ExceptionType::ALL)],
-          "", &file_paths);
-    }
-
-    if (!file_paths.size()) {
-      base::CloseFile(options_file);
-      base::DeleteFile(options_filepath, false);
-      LOG(ERROR) << "No file is specified for annotation tests.";
-      return false;
-    }
-    for (const auto& file_path : file_paths)
-      fprintf(options_file, "%s ", file_path.c_str());
-  }
   base::CloseFile(options_file);
 
   base::CommandLine cmdline(
@@ -192,6 +244,19 @@ bool TrafficAnnotationAuditor::RunClangTool(
   base::SetCurrentDirectory(source_path_);
   bool result = base::GetAppOutput(cmdline, &clang_tool_raw_output_);
 
+  // If running clang tool had no output, it means that the script running it
+  // could not perform the task.
+  if (clang_tool_raw_output_.empty()) {
+    result = false;
+  } else if (!result) {
+    // If clang tool had errors but also returned results, the errors can be
+    // ignored as we do not separate platform specific files here and processing
+    // them fails. This is a post-build test and if there exists any actual
+    // compile error, it should be noted when the code is built.
+    printf("WARNING: Ignoring clang tool's returned errors.\n");
+    result = true;
+  }
+
   if (!result) {
     if (use_compile_commands && !clang_tool_raw_output_.empty()) {
       printf(
@@ -203,13 +268,17 @@ bool TrafficAnnotationAuditor::RunClangTool(
       std::string tool_errors;
       std::string options_file_text;
 
-      base::GetAppOutputAndError(cmdline, &tool_errors);
+      if (rerun_on_errors)
+        base::GetAppOutputAndError(cmdline, &tool_errors);
+      else
+        tool_errors = "Not Available.";
+
       if (!base::ReadFileToString(options_filepath, &options_file_text))
         options_file_text = "Could not read options file.";
 
-      LOG(ERROR) << base::StringPrintf(
-          "Calling clang tool from %s returned false.\nCommand line: %s\n\n"
-          "Returned error text: %s\n\nPartial options file: %s\n",
+      std::string error_message = base::StringPrintf(
+          "Calling clang tool returned false from %s\nCommandline: %s\n\n"
+          "Returned output: %s\n\nPartial options file: %s\n",
           source_path_.MaybeAsASCII().c_str(),
 #if defined(OS_WIN)
           base::UTF16ToASCII(cmdline.GetCommandLineString()).c_str(),
@@ -217,6 +286,16 @@ bool TrafficAnnotationAuditor::RunClangTool(
           cmdline.GetCommandLineString().c_str(),
 #endif
           tool_errors.c_str(), options_file_text.substr(0, 1024).c_str());
+
+      if (errors_file.empty()) {
+        LOG(ERROR) << error_message;
+      } else {
+        if (base::WriteFile(errors_file, error_message.c_str(),
+                            error_message.length()) == -1) {
+          LOG(ERROR) << "Writing error message to file failed:\n"
+                     << error_message;
+        }
+      }
     }
   }
 
@@ -224,6 +303,76 @@ bool TrafficAnnotationAuditor::RunClangTool(
   base::DeleteFile(options_filepath, false);
 
   return result;
+}
+
+void TrafficAnnotationAuditor::GenerateFilesListForClangTool(
+    const std::vector<std::string>& path_filters,
+    bool filter_files_based_on_heuristics,
+    bool use_compile_commands,
+    std::vector<std::string>* file_paths) {
+  // If |use_compile_commands| is requested or
+  // |filter_files_based_on_heuristics| is false, we pass all given file paths
+  // to the running script and the files in the safe list will be later removed
+  // from the results.
+  if (!filter_files_based_on_heuristics || use_compile_commands) {
+    // If no path filter is specified, return current location. The clang tool
+    // will be run from the repository 'src' folder and hence this will point to
+    // repository root.
+    if (path_filters.empty())
+      file_paths->push_back("./");
+    else
+      *file_paths = path_filters;
+    return;
+  }
+
+  TrafficAnnotationFileFilter filter;
+
+  // If no path filter is provided, get all relevant files, except the safe
+  // listed ones.
+  if (path_filters.empty()) {
+    filter.GetRelevantFiles(
+        source_path_,
+        safe_list_[static_cast<int>(AuditorException::ExceptionType::ALL)], "",
+        file_paths);
+    return;
+  }
+
+  base::FilePath original_path;
+  base::GetCurrentDirectory(&original_path);
+  base::SetCurrentDirectory(source_path_);
+
+  bool possibly_deleted_files = false;
+  for (const auto& path_filter : path_filters) {
+#if defined(OS_WIN)
+    base::FilePath path = base::FilePath(
+        base::FilePath::StringPieceType((base::UTF8ToWide(path_filter))));
+#else
+    base::FilePath path = base::FilePath(path_filter);
+#endif
+
+    // If path filter is a directory, add its relevent, not safe-listed
+    // contents.
+    if (base::DirectoryExists(path)) {
+      filter.GetRelevantFiles(
+          source_path_,
+          safe_list_[static_cast<int>(AuditorException::ExceptionType::ALL)],
+          path_filter, file_paths);
+    } else {
+      // Add the file if it exists and is a relevant file which is not
+      // safe-listed.
+      if (base::PathExists(path)) {
+        if (!TrafficAnnotationAuditor::IsSafeListed(
+                path_filter, AuditorException::ExceptionType::ALL) &&
+            filter.IsFileRelevant(path_filter)) {
+          file_paths->push_back(path_filter);
+        }
+      } else {
+        possibly_deleted_files = true;
+      }
+    }
+  }
+
+  base::SetCurrentDirectory(original_path);
 }
 
 bool TrafficAnnotationAuditor::IsSafeListed(
@@ -234,8 +383,8 @@ bool TrafficAnnotationAuditor::IsSafeListed(
   const std::vector<std::string>& safe_list =
       safe_list_[static_cast<int>(exception_type)];
 
-  for (const std::string& ignore_path : safe_list) {
-    if (!strncmp(file_path.c_str(), ignore_path.c_str(), ignore_path.length()))
+  for (const std::string& ignore_pattern : safe_list) {
+    if (re2::RE2::FullMatch(file_path, ignore_pattern))
       return true;
   }
 
@@ -292,21 +441,50 @@ bool TrafficAnnotationAuditor::ParseClangToolRawOutput() {
     if (block_type == "ANNOTATION") {
       AnnotationInstance new_annotation;
       result = new_annotation.Deserialize(lines, current, end_line);
-      if (result.IsOK()) {
-        extracted_annotations_.push_back(new_annotation);
-      } else if (result.type() == AuditorResult::Type::ERROR_MISSING_TAG_USED &&
-                 IsSafeListed(result.file_path(),
-                              AuditorException::ExceptionType::MISSING)) {
+      std::string file_path = result.IsOK()
+                                  ? new_annotation.proto.source().file()
+                                  : result.file_path();
+      file_path = MakeRelativePath(absolute_source_path_, file_path);
+      if (IsSafeListed(file_path, AuditorException::ExceptionType::ALL))
         result = AuditorResult(AuditorResult::Type::RESULT_IGNORE);
+      switch (result.type()) {
+        case AuditorResult::Type::RESULT_OK:
+          new_annotation.proto.mutable_source()->set_file(file_path);
+          extracted_annotations_.push_back(new_annotation);
+          break;
+        case AuditorResult::Type::ERROR_MISSING_TAG_USED:
+          if (IsSafeListed(file_path, AuditorException::ExceptionType::MISSING))
+            result = AuditorResult(AuditorResult::Type::RESULT_IGNORE);
+          break;
+        case AuditorResult::Type::ERROR_TEST_ANNOTATION:
+          if (IsSafeListed(file_path,
+                           AuditorException::ExceptionType::TEST_ANNOTATION)) {
+            result = AuditorResult(AuditorResult::Type::RESULT_IGNORE);
+          }
+          break;
+        default:
+          break;
       }
     } else if (block_type == "CALL") {
       CallInstance new_call;
       result = new_call.Deserialize(lines, current, end_line);
+      new_call.file_path =
+          MakeRelativePath(absolute_source_path_, new_call.file_path);
+      if (IsSafeListed(new_call.file_path,
+                       AuditorException::ExceptionType::ALL)) {
+        result = AuditorResult(AuditorResult::Type::RESULT_IGNORE);
+      }
       if (result.IsOK())
         extracted_calls_.push_back(new_call);
     } else if (block_type == "ASSIGNMENT") {
       AssignmentInstance new_assignment;
       result = new_assignment.Deserialize(lines, current, end_line);
+      new_assignment.file_path =
+          MakeRelativePath(absolute_source_path_, new_assignment.file_path);
+      if (IsSafeListed(new_assignment.file_path,
+                       AuditorException::ExceptionType::ALL)) {
+        result = AuditorResult(AuditorResult::Type::RESULT_IGNORE);
+      }
       if (result.IsOK() &&
           !IsSafeListed(base::StringPrintf(
                             "%s@%s", new_assignment.function_context.c_str(),
@@ -345,199 +523,70 @@ bool TrafficAnnotationAuditor::ParseClangToolRawOutput() {
 bool TrafficAnnotationAuditor::LoadSafeList() {
   base::FilePath safe_list_file =
       base::MakeAbsoluteFilePath(source_path_.Append(kSafeListPath));
-  std::string file_content;
-  if (base::ReadFileToString(safe_list_file, &file_content)) {
-    base::RemoveChars(file_content, "\r", &file_content);
-    std::vector<std::string> lines = base::SplitString(
-        file_content, "\n", base::KEEP_WHITESPACE, base::SPLIT_WANT_ALL);
-    for (const std::string& line : lines) {
-      // Ignore comments and empty lines.
-      if (!line.length() || line[0] == '#')
-        continue;
-      size_t comma = line.find(',');
-      if (comma == std::string::npos) {
-        LOG(ERROR) << "Unexpected syntax in safe_list.txt, line: " << line;
-        return false;
-      }
 
-      AuditorException::ExceptionType exception_type;
-      if (AuditorException::TypeFromString(line.substr(0, comma),
-                                           &exception_type)) {
-        safe_list_[static_cast<int>(exception_type)].push_back(
-            line.substr(comma + 1, line.length() - comma - 1));
-      } else {
-        LOG(ERROR) << "Unexpected type in safe_list.txt line: " << line;
-        return false;
-      }
-    }
-    safe_list_loaded_ = true;
-    return true;
+  std::string file_content;
+  if (!base::ReadFileToString(safe_list_file, &file_content)) {
+    LOG(ERROR) << "Could not read " << kSafeListPath.MaybeAsASCII();
+    return false;
   }
 
-  LOG(ERROR) << "Could not read " << kSafeListPath.MaybeAsASCII();
-  return false;
+  base::RemoveChars(file_content, "\r", &file_content);
+  std::vector<std::string> lines = base::SplitString(
+      file_content, "\n", base::KEEP_WHITESPACE, base::SPLIT_WANT_ALL);
+
+  for (const std::string& line : lines) {
+    // Ignore comments and empty lines.
+    if (!line.length() || line[0] == '#')
+      continue;
+
+    std::vector<std::string> tokens = base::SplitString(
+        line, ",", base::KEEP_WHITESPACE, base::SPLIT_WANT_ALL);
+
+    // Expect a type and at least one value in each line.
+    if (tokens.size() < 2) {
+      LOG(ERROR) << "Unexpected syntax in safe_list.txt, line: " << line;
+      return false;
+    }
+
+    AuditorException::ExceptionType exception_type;
+    if (!AuditorException::TypeFromString(tokens[0], &exception_type)) {
+      LOG(ERROR) << "Unexpected type in safe_list.txt line: " << line;
+      return false;
+    }
+    for (unsigned i = 1; i < tokens.size(); i++) {
+      // Convert the rest of the line into re2 patterns, making dots as fixed
+      // characters and asterisks as wildcards.
+      // Note that all file paths are converted to Linux style before checking.
+      if (!base::ContainsOnlyChars(
+              base::ToLowerASCII(tokens[i]),
+              "0123456789_abcdefghijklmnopqrstuvwxyz.*/:@")) {
+        LOG(ERROR) << "Unexpected character in safe_list.txt token: "
+                   << tokens[i];
+        return false;
+      }
+      std::string pattern;
+      base::ReplaceChars(tokens[i], ".", "[.]", &pattern);
+      base::ReplaceChars(pattern, "*", ".*", &pattern);
+      safe_list_[static_cast<int>(exception_type)].push_back(pattern);
+    }
+  }
+
+  safe_list_loaded_ = true;
+  return true;
 }
 
 // static
 const std::map<int, std::string>&
-TrafficAnnotationAuditor::GetReservedUniqueIDs() {
+TrafficAnnotationAuditor::GetReservedIDsMap() {
   return kReservedAnnotations;
 }
 
-void TrafficAnnotationAuditor::PurgeAnnotations(
-    const std::set<int>& hash_codes) {
-  extracted_annotations_.erase(
-      std::remove_if(extracted_annotations_.begin(),
-                     extracted_annotations_.end(),
-                     [&hash_codes](AnnotationInstance& annotation) {
-                       return base::ContainsKey(hash_codes,
-                                                annotation.unique_id_hash_code);
-                     }),
-      extracted_annotations_.end());
-}
-
-bool TrafficAnnotationAuditor::CheckDuplicateHashes() {
-  const std::map<int, std::string> reserved_ids = GetReservedUniqueIDs();
-
-  std::map<int, std::vector<AnnotationID>> collisions;
-  std::set<int> to_be_purged;
-  std::set<int> deprecated_ids;
-
-  // Load deprecated Hashcodes.
-  if (!TrafficAnnotationExporter(source_path_)
-           .GetDeprecatedHashCodes(&deprecated_ids)) {
-    return false;
-  }
-
-  for (AnnotationInstance& instance : extracted_annotations_) {
-    // Check if partial and branched completing annotation have an extra id
-    // which is different from their unique id.
-    if ((instance.type == AnnotationInstance::Type::ANNOTATION_PARTIAL ||
-         instance.type ==
-             AnnotationInstance::Type::ANNOTATION_BRANCHED_COMPLETING) &&
-        (instance.unique_id_hash_code == instance.extra_id_hash_code)) {
-      errors_.push_back(AuditorResult(
-          AuditorResult::Type::ERROR_MISSING_EXTRA_ID, std::string(),
-          instance.proto.source().file(), instance.proto.source().line()));
-      continue;
-    }
-
-    AnnotationID current;
-    current.instance = &instance;
-    // Iterate over unique id and extra id.
-    for (int id = 0; id < 2; id++) {
-      if (id) {
-        // If it's an empty extra id, no further check is required.
-        if (instance.extra_id.empty()) {
-          continue;
-        } else {
-          current.text = instance.extra_id;
-          current.hash = instance.extra_id_hash_code;
-          if (instance.type == AnnotationInstance::Type::ANNOTATION_PARTIAL) {
-            current.type = AnnotationID::Type::kPatrialExtra;
-          } else if (instance.type ==
-                     AnnotationInstance::Type::ANNOTATION_BRANCHED_COMPLETING) {
-            current.type = AnnotationID::Type::kBranchedExtra;
-          } else {
-            current.type = AnnotationID::Type::kOther;
-          }
-        }
-      } else {
-        current.text = instance.proto.unique_id();
-        current.hash = instance.unique_id_hash_code;
-        current.type =
-            instance.type == AnnotationInstance::Type::ANNOTATION_COMPLETING
-                ? AnnotationID::Type::kCompletingMain
-                : AnnotationID::Type::kOther;
-      }
-
-      // If the id's hash code is the same as a reserved id, add an error.
-      if (base::ContainsKey(reserved_ids, current.hash)) {
-        errors_.push_back(AuditorResult(
-            AuditorResult::Type::ERROR_RESERVED_UNIQUE_ID_HASH_CODE,
-            current.text, instance.proto.source().file(),
-            instance.proto.source().line()));
-        continue;
-      }
-
-      // If the id's hash code was formerly used by a deprecated annotation,
-      // add an error.
-      if (base::ContainsKey(deprecated_ids, current.hash)) {
-        errors_.push_back(AuditorResult(
-            AuditorResult::Type::ERROR_DEPRECATED_UNIQUE_ID_HASH_CODE,
-            current.text, instance.proto.source().file(),
-            instance.proto.source().line()));
-        continue;
-      }
-
-      // Check for collisions.
-      if (!base::ContainsKey(collisions, current.hash)) {
-        collisions[current.hash] = std::vector<AnnotationID>();
-      } else {
-        // Add error for ids with the same hash codes. If the texts are really
-        // different, there is a hash collision and should be corrected in any
-        // case. Otherwise, it's an error if it doesn't match the criteria that
-        // are previously spcified in definition of AnnotationID struct.
-        for (const auto& other : collisions[current.hash]) {
-          if (current.text == other.text &&
-              ((current.type == AnnotationID::Type::kPatrialExtra &&
-                (other.type == AnnotationID::Type::kPatrialExtra ||
-                 other.type == AnnotationID::Type::kCompletingMain ||
-                 other.type == AnnotationID::Type::kBranchedExtra)) ||
-               (other.type == AnnotationID::Type::kPatrialExtra &&
-                (current.type == AnnotationID::Type::kCompletingMain ||
-                 current.type == AnnotationID::Type::kBranchedExtra)) ||
-               (current.type == AnnotationID::Type::kBranchedExtra &&
-                other.type == AnnotationID::Type::kBranchedExtra))) {
-            continue;
-          }
-
-          AuditorResult error(
-              AuditorResult::Type::ERROR_DUPLICATE_UNIQUE_ID_HASH_CODE,
-              base::StringPrintf(
-                  "%s in '%s:%i'", current.text.c_str(),
-                  current.instance->proto.source().file().c_str(),
-                  current.instance->proto.source().line()));
-          error.AddDetail(
-              base::StringPrintf("%s in '%s:%i'", other.text.c_str(),
-                                 other.instance->proto.source().file().c_str(),
-                                 other.instance->proto.source().line()));
-
-          errors_.push_back(error);
-          to_be_purged.insert(current.hash);
-          to_be_purged.insert(other.hash);
-        }
-      }
-      collisions[current.hash].push_back(current);
-    }
-  }
-
-  PurgeAnnotations(to_be_purged);
-  return true;
-}
-
-void TrafficAnnotationAuditor::CheckUniqueIDsFormat() {
-  std::set<int> to_be_purged;
-  for (const AnnotationInstance& instance : extracted_annotations_) {
-    if (!base::ContainsOnlyChars(base::ToLowerASCII(instance.proto.unique_id()),
-                                 "0123456789_abcdefghijklmnopqrstuvwxyz")) {
-      errors_.push_back(AuditorResult(
-          AuditorResult::Type::ERROR_UNIQUE_ID_INVALID_CHARACTER,
-          instance.proto.unique_id(), instance.proto.source().file(),
-          instance.proto.source().line()));
-      to_be_purged.insert(instance.unique_id_hash_code);
-    }
-    if (!instance.extra_id.empty() &&
-        !base::ContainsOnlyChars(base::ToLowerASCII(instance.extra_id),
-                                 "0123456789_abcdefghijklmnopqrstuvwxyz")) {
-      errors_.push_back(
-          AuditorResult(AuditorResult::Type::ERROR_UNIQUE_ID_INVALID_CHARACTER,
-                        instance.extra_id, instance.proto.source().file(),
-                        instance.proto.source().line()));
-      to_be_purged.insert(instance.unique_id_hash_code);
-    }
-  }
-  PurgeAnnotations(to_be_purged);
+// static
+std::set<int> TrafficAnnotationAuditor::GetReservedIDsSet() {
+  std::set<int> reserved_ids;
+  for (const auto& item : kReservedAnnotations)
+    reserved_ids.insert(item.first);
+  return reserved_ids;
 }
 
 void TrafficAnnotationAuditor::CheckAllRequiredFunctionsAreAnnotated() {
@@ -552,14 +601,6 @@ void TrafficAnnotationAuditor::CheckAllRequiredFunctionsAreAnnotated() {
 
 bool TrafficAnnotationAuditor::CheckIfCallCanBeUnannotated(
     const CallInstance& call) {
-  // At this stage we do not enforce annotation on native network requests,
-  // hence all calls except those to 'net::URLRequestContext::CreateRequest' and
-  // 'net::URLFetcher::Create' are ignored.
-  if (call.function_name != "net::URLFetcher::Create" &&
-      call.function_name != "net::URLRequestContext::CreateRequest") {
-    return true;
-  }
-
   if (IsSafeListed(call.file_path, AuditorException::ExceptionType::MISSING))
     return true;
 
@@ -579,8 +620,13 @@ bool TrafficAnnotationAuditor::CheckIfCallCanBeUnannotated(
     // Check if the file including this function is part of Chrome build.
     const base::CommandLine::CharType* args[] = {
 #if defined(OS_WIN)
-      FILE_PATH_LITERAL("gn.bat"),
+      FILE_PATH_LITERAL("buildtools/win/gn.exe"),
+#elif defined(OS_MACOSX)
+      FILE_PATH_LITERAL("buildtools/mac/gn"),
+#elif defined(OS_LINUX)
+      FILE_PATH_LITERAL("buildtools/linux64/gn"),
 #else
+      // Fallback to using PATH to find gn.
       FILE_PATH_LITERAL("gn"),
 #endif
       FILE_PATH_LITERAL("refs"),
@@ -618,19 +664,18 @@ void TrafficAnnotationAuditor::CheckAnnotationsContents() {
   std::vector<AnnotationInstance*> partial_annotations;
   std::vector<AnnotationInstance*> completing_annotations;
   std::vector<AnnotationInstance> new_annotations;
-  std::set<int> to_be_purged;
 
   // Process complete annotations and separate the others.
   for (AnnotationInstance& instance : extracted_annotations_) {
-    bool keep_annotation = false;
     switch (instance.type) {
       case AnnotationInstance::Type::ANNOTATION_COMPLETE: {
+        // Instances loaded from archive are already checked before archiving.
+        if (instance.is_loaded_from_archive)
+          continue;
         AuditorResult result = instance.IsComplete();
         if (result.IsOK())
           result = instance.IsConsistent();
-        if (result.IsOK())
-          keep_annotation = true;
-        else
+        if (!result.IsOK())
           errors_.push_back(result);
         break;
       }
@@ -640,8 +685,6 @@ void TrafficAnnotationAuditor::CheckAnnotationsContents() {
       default:
         completing_annotations.push_back(&instance);
     }
-    if (!keep_annotation)
-      to_be_purged.insert(instance.unique_id_hash_code);
   }
 
   std::set<AnnotationInstance*> used_completing_annotations;
@@ -652,6 +695,12 @@ void TrafficAnnotationAuditor::CheckAnnotationsContents() {
       if (partial->IsCompletableWith(*completing)) {
         found_a_pair = true;
         used_completing_annotations.insert(completing);
+
+        // Instances loaded from archive are already checked before archiving.
+        if (partial->is_loaded_from_archive &&
+            completing->is_loaded_from_archive) {
+          break;
+        }
 
         AnnotationInstance completed;
         AuditorResult result =
@@ -676,33 +725,83 @@ void TrafficAnnotationAuditor::CheckAnnotationsContents() {
     }
 
     if (!found_a_pair) {
-      errors_.push_back(AuditorResult(
-          AuditorResult::Type::ERROR_INCOMPLETED_ANNOTATION, std::string(),
-          partial->proto.source().file(), partial->proto.source().line()));
+      errors_.push_back(
+          AuditorResult(AuditorResult::Type::ERROR_INCOMPLETED_ANNOTATION,
+                        partial->proto.unique_id()));
     }
   }
 
   for (AnnotationInstance* instance : completing_annotations) {
     if (!base::ContainsKey(used_completing_annotations, instance)) {
-      errors_.push_back(AuditorResult(
-          AuditorResult::Type::ERROR_INCOMPLETED_ANNOTATION, std::string(),
-          instance->proto.source().file(), instance->proto.source().line()));
+      errors_.push_back(
+          AuditorResult(AuditorResult::Type::ERROR_INCOMPLETED_ANNOTATION,
+                        instance->proto.unique_id()));
     }
   }
 
-  PurgeAnnotations(to_be_purged);
   if (new_annotations.size())
     extracted_annotations_.insert(extracted_annotations_.end(),
                                   new_annotations.begin(),
                                   new_annotations.end());
 }
 
-bool TrafficAnnotationAuditor::RunAllChecks() {
-  if (!CheckDuplicateHashes())
+void TrafficAnnotationAuditor::AddMissingAnnotations(
+    const std::vector<std::string>& path_filters) {
+  for (const auto& item : exporter_.GetArchivedAnnotations()) {
+    if (item.second.deprecation_date.empty() &&
+        exporter_.MatchesCurrentPlatform(item.second) &&
+        !item.second.file_path.empty() &&
+        !PathFiltersMatch(path_filters, item.second.file_path)) {
+      extracted_annotations_.push_back(AnnotationInstance::LoadFromArchive(
+          item.second.type, item.first, item.second.unique_id_hash_code,
+          item.second.second_id_hash_code, item.second.content_hash_code,
+          item.second.semantics_fields, item.second.policy_fields,
+          item.second.file_path));
+    }
+  }
+}
+
+bool TrafficAnnotationAuditor::RunAllChecks(
+    const std::vector<std::string>& path_filters,
+    bool report_xml_updates) {
+  std::set<int> deprecated_ids;
+
+  if (!exporter_.GetDeprecatedHashCodes(&deprecated_ids)) {
     return false;
-  CheckUniqueIDsFormat();
-  CheckAnnotationsContents();
+  }
+
+  if (path_filters.size())
+    AddMissingAnnotations(path_filters);
+
+  TrafficAnnotationIDChecker id_checker(GetReservedIDsSet(), deprecated_ids);
+  id_checker.Load(extracted_annotations_);
+  id_checker.CheckIDs(&errors_);
+
+  // Only check annotation contents if IDs are all OK, because if there are
+  // id errors, there might be some mismatching annotations and irrelevant
+  // content errors.
+  if (errors_.empty())
+    CheckAnnotationsContents();
 
   CheckAllRequiredFunctionsAreAnnotated();
+
+  if (errors_.empty()) {
+    if (!exporter_.UpdateAnnotations(extracted_annotations_,
+                                     GetReservedIDsMap())) {
+      return false;
+    }
+  }
+
+  // If |report_xml_updates| is true, check annotations.xml whether or not it is
+  // modified, as there might be format differences with exporter outputs due to
+  // manual updates.
+  if (report_xml_updates) {
+    std::string updates = exporter_.GetRequiredUpdates();
+    if (!updates.empty()) {
+      errors_.push_back(AuditorResult(
+          AuditorResult::Type::ERROR_ANNOTATIONS_XML_UPDATE, updates));
+    }
+  }
+
   return true;
 }

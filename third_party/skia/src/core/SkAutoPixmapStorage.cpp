@@ -40,7 +40,7 @@ bool SkAutoPixmapStorage::tryAlloc(const SkImageInfo& info) {
     if (SkImageInfo::ByteSizeOverflowed(size)) {
         return false;
     }
-    void* pixels = sk_malloc_flags(size, 0);
+    void* pixels = sk_malloc_canfail(size);
     if (nullptr == pixels) {
         return false;
     }
@@ -53,14 +53,14 @@ void SkAutoPixmapStorage::alloc(const SkImageInfo& info) {
     SkASSERT_RELEASE(this->tryAlloc(info));
 }
 
-const SkData* SkAutoPixmapStorage::detachPixelsAsData() {
+sk_sp<SkData> SkAutoPixmapStorage::detachPixelsAsData() {
     if (!fStorage) {
         return nullptr;
     }
 
-    auto data = SkData::MakeFromMalloc(fStorage, this->computeByteSize());
+    sk_sp<SkData> data = SkData::MakeFromMalloc(fStorage, this->computeByteSize());
     fStorage = nullptr;
     this->INHERITED::reset();
 
-    return data.release();
+    return data;
 }

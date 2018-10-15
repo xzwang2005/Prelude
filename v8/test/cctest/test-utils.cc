@@ -31,6 +31,7 @@
 
 #include "src/v8.h"
 
+#include "src/api-inl.h"
 #include "src/base/platform/platform.h"
 #include "src/collector.h"
 #include "src/conversions.h"
@@ -164,7 +165,7 @@ void TestMemMove(byte* area1,
       printf("diff at offset %d (%p): is %d, should be %d\n", i,
              reinterpret_cast<void*>(area1 + i), area1[i], area2[i]);
     }
-    CHECK(false);
+    FATAL("memmove error");
   }
 }
 

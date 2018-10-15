@@ -12,6 +12,19 @@ import fnmatch
 import os
 
 
+# CIPD ensure manifest for checking CIPD client itself.
+CIPD_CLIENT_ENSURE_FILE_TEMPLATE = r'''
+# Full supported.
+$VerifiedPlatform linux-amd64 mac-amd64 windows-amd64 windows-386
+# Best effort support.
+$VerifiedPlatform linux-386 linux-ppc64 linux-ppc64le linux-s390x
+$VerifiedPlatform linux-arm64 linux-armv6l
+$VerifiedPlatform linux-mips64 linux-mips64le linux-mipsle
+
+%s %s
+'''
+
+
 def DepotToolsPylint(input_api, output_api):
   """Gather all the pylint logic into one place to make it self-contained."""
   white_list = [
@@ -46,19 +59,55 @@ def DepotToolsPylint(input_api, output_api):
 def CommonChecks(input_api, output_api, tests_to_black_list):
   results = []
   results.extend(input_api.canned_checks.CheckOwners(input_api, output_api))
+  results.extend(input_api.canned_checks.CheckOwnersFormat(
+      input_api, output_api))
+
+  # Run only selected tests on Windows.
+  tests_to_white_list = [r'.*test\.py$']
+  if input_api.platform.startswith(('cygwin', 'win32')):
+    print('Warning: skipping most unit tests on Windows')
+    tests_to_white_list = [r'.*cipd_bootstrap_test\.py$']
+
   # TODO(maruel): Make sure at least one file is modified first.
   # TODO(maruel): If only tests are modified, only run them.
   tests = DepotToolsPylint(input_api, output_api)
-  unit_tests = input_api.canned_checks.GetUnitTestsInDirectory(
+  tests.extend(input_api.canned_checks.GetUnitTestsInDirectory(
       input_api,
       output_api,
       'tests',
-      whitelist=[r'.*test\.py$'],
-      blacklist=tests_to_black_list)
-  if not input_api.platform.startswith(('cygwin', 'win32')):
-    tests.extend(unit_tests)
-  else:
-    print('Warning: not running unit tests on Windows')
+      whitelist=tests_to_white_list,
+      blacklist=tests_to_black_list))
+
+  # Validate CIPD manifests.
+  root = input_api.os_path.normpath(
+    input_api.os_path.abspath(input_api.PresubmitLocalPath()))
+  rel_file = lambda rel: input_api.os_path.join(root, rel)
+  cipd_manifests = set(rel_file(input_api.os_path.join(*x)) for x in (
+    ('cipd_manifest.txt',),
+    ('bootstrap', 'win', 'manifest.txt'),
+    ('bootstrap', 'win', 'manifest_bleeding_edge.txt'),
+
+    # Also generate a file for the cipd client itself.
+    ('cipd_client_version',),
+  ))
+  affected_manifests = input_api.AffectedFiles(
+    include_deletes=False,
+    file_filter=lambda x:
+      input_api.os_path.normpath(x.AbsoluteLocalPath()) in cipd_manifests)
+  for path in affected_manifests:
+    path = path.AbsoluteLocalPath()
+    if path.endswith('.txt'):
+      tests.append(input_api.canned_checks.CheckCIPDManifest(
+          input_api, output_api, path=path))
+    else:
+      pkg = 'infra/tools/cipd/${platform}'
+      ver = input_api.ReadFile(path)
+      tests.append(input_api.canned_checks.CheckCIPDManifest(
+          input_api, output_api,
+          content=CIPD_CLIENT_ENSURE_FILE_TEMPLATE % (pkg, ver)))
+      tests.append(input_api.canned_checks.CheckCIPDClientDigests(
+          input_api, output_api, client_version_file=path))
+
   results.extend(input_api.RunTests(tests))
   return results
 
@@ -67,10 +116,11 @@ def CheckChangeOnUpload(input_api, output_api):
   # Do not run integration tests on upload since they are way too slow.
   tests_to_black_list = [
       r'^checkout_test\.py$',
+      r'^cipd_bootstrap_test\.py$',
       r'^gclient_smoketest\.py$',
       r'^scm_unittest\.py$',
       r'^subprocess2_test\.py$',
-    ]
+  ]
   return CommonChecks(input_api, output_api, tests_to_black_list)
 
 

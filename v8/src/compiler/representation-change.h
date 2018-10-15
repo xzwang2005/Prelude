@@ -12,6 +12,9 @@ namespace v8 {
 namespace internal {
 namespace compiler {
 
+// Foward declarations.
+class TypeCache;
+
 enum IdentifyZeros { kIdentifyZeros, kDistinguishZeros };
 
 class Truncation final {
@@ -25,9 +28,6 @@ class Truncation final {
   }
   static Truncation Word32() {
     return Truncation(TruncationKind::kWord32, kIdentifyZeros);
-  }
-  static Truncation Word64() {
-    return Truncation(TruncationKind::kWord64, kIdentifyZeros);
   }
   static Truncation Float64(IdentifyZeros identify_zeros = kDistinguishZeros) {
     return Truncation(TruncationKind::kFloat64, identify_zeros);
@@ -57,10 +57,6 @@ class Truncation final {
     return LessGeneral(kind_, TruncationKind::kWord32) ||
            LessGeneral(kind_, TruncationKind::kBool);
   }
-  bool IdentifiesUndefinedAndNaN() {
-    return LessGeneral(kind_, TruncationKind::kFloat64) ||
-           LessGeneral(kind_, TruncationKind::kWord64);
-  }
   bool IdentifiesZeroAndMinusZero() const {
     return identify_zeros() == kIdentifyZeros;
   }
@@ -85,7 +81,6 @@ class Truncation final {
     kNone,
     kBool,
     kWord32,
-    kWord64,
     kFloat64,
     kAny
   };
@@ -147,18 +142,26 @@ inline std::ostream& operator<<(std::ostream& os, TypeCheckKind type_check) {
 //    to the preferred representation. The preferred representation might be
 //    insufficient to do the conversion (e.g. word32->float64 conv), so we also
 //    need the signedness information to produce the correct value.
+//    Additionally, use info may contain {CheckParameters} which contains
+//    information for the deoptimizer such as a CallIC on which speculation
+//    should be disallowed if the check fails.
 class UseInfo {
  public:
   UseInfo(MachineRepresentation representation, Truncation truncation,
-          TypeCheckKind type_check = TypeCheckKind::kNone)
+          TypeCheckKind type_check = TypeCheckKind::kNone,
+          const VectorSlotPair& feedback = VectorSlotPair())
       : representation_(representation),
         truncation_(truncation),
-        type_check_(type_check) {}
+        type_check_(type_check),
+        feedback_(feedback) {}
   static UseInfo TruncatingWord32() {
     return UseInfo(MachineRepresentation::kWord32, Truncation::Word32());
   }
-  static UseInfo TruncatingWord64() {
-    return UseInfo(MachineRepresentation::kWord64, Truncation::Word64());
+  static UseInfo Word64() {
+    return UseInfo(MachineRepresentation::kWord64, Truncation::Any());
+  }
+  static UseInfo Word() {
+    return UseInfo(MachineType::PointerRepresentation(), Truncation::Any());
   }
   static UseInfo Bool() {
     return UseInfo(MachineRepresentation::kBit, Truncation::Bool());
@@ -168,9 +171,6 @@ class UseInfo {
   }
   static UseInfo TruncatingFloat64() {
     return UseInfo(MachineRepresentation::kFloat64, Truncation::Float64());
-  }
-  static UseInfo PointerInt() {
-    return kPointerSize == 4 ? TruncatingWord32() : TruncatingWord64();
   }
   static UseInfo AnyTagged() {
     return UseInfo(MachineRepresentation::kTagged, Truncation::Any());
@@ -187,34 +187,40 @@ class UseInfo {
     return UseInfo(MachineRepresentation::kTaggedPointer, Truncation::Any(),
                    TypeCheckKind::kHeapObject);
   }
-  static UseInfo CheckedSignedSmallAsTaggedSigned() {
+  static UseInfo CheckedSignedSmallAsTaggedSigned(
+      const VectorSlotPair& feedback) {
     return UseInfo(MachineRepresentation::kTaggedSigned, Truncation::Any(),
-                   TypeCheckKind::kSignedSmall);
+                   TypeCheckKind::kSignedSmall, feedback);
   }
-  static UseInfo CheckedSignedSmallAsWord32(IdentifyZeros identify_zeros) {
+  static UseInfo CheckedSignedSmallAsWord32(IdentifyZeros identify_zeros,
+                                            const VectorSlotPair& feedback) {
     return UseInfo(MachineRepresentation::kWord32,
-                   Truncation::Any(identify_zeros),
-                   TypeCheckKind::kSignedSmall);
+                   Truncation::Any(identify_zeros), TypeCheckKind::kSignedSmall,
+                   feedback);
   }
-  static UseInfo CheckedSigned32AsWord32(IdentifyZeros identify_zeros) {
+  static UseInfo CheckedSigned32AsWord32(IdentifyZeros identify_zeros,
+                                         const VectorSlotPair& feedback) {
     return UseInfo(MachineRepresentation::kWord32,
-                   Truncation::Any(identify_zeros), TypeCheckKind::kSigned32);
+                   Truncation::Any(identify_zeros), TypeCheckKind::kSigned32,
+                   feedback);
   }
-  static UseInfo CheckedNumberAsFloat64() {
+  static UseInfo CheckedNumberAsFloat64(const VectorSlotPair& feedback) {
     return UseInfo(MachineRepresentation::kFloat64, Truncation::Any(),
-                   TypeCheckKind::kNumber);
+                   TypeCheckKind::kNumber, feedback);
   }
-  static UseInfo CheckedNumberAsWord32() {
+  static UseInfo CheckedNumberAsWord32(const VectorSlotPair& feedback) {
     return UseInfo(MachineRepresentation::kWord32, Truncation::Word32(),
-                   TypeCheckKind::kNumber);
+                   TypeCheckKind::kNumber, feedback);
   }
-  static UseInfo CheckedNumberOrOddballAsFloat64() {
+  static UseInfo CheckedNumberOrOddballAsFloat64(
+      const VectorSlotPair& feedback) {
     return UseInfo(MachineRepresentation::kFloat64, Truncation::Any(),
-                   TypeCheckKind::kNumberOrOddball);
+                   TypeCheckKind::kNumberOrOddball, feedback);
   }
-  static UseInfo CheckedNumberOrOddballAsWord32() {
+  static UseInfo CheckedNumberOrOddballAsWord32(
+      const VectorSlotPair& feedback) {
     return UseInfo(MachineRepresentation::kWord32, Truncation::Word32(),
-                   TypeCheckKind::kNumberOrOddball);
+                   TypeCheckKind::kNumberOrOddball, feedback);
   }
 
   // Undetermined representation.
@@ -238,11 +244,13 @@ class UseInfo {
                ? CheckForMinusZeroMode::kDontCheckForMinusZero
                : CheckForMinusZeroMode::kCheckForMinusZero;
   }
+  const VectorSlotPair& feedback() const { return feedback_; }
 
  private:
   MachineRepresentation representation_;
   Truncation truncation_;
   TypeCheckKind type_check_;
+  VectorSlotPair feedback_;
 };
 
 // Contains logic related to changing the representation of values for constants
@@ -250,21 +258,18 @@ class UseInfo {
 // Eagerly folds any representation changes for constants.
 class RepresentationChanger final {
  public:
-  RepresentationChanger(JSGraph* jsgraph, Isolate* isolate)
-      : jsgraph_(jsgraph),
-        isolate_(isolate),
-        testing_type_errors_(false),
-        type_error_(false) {}
+  RepresentationChanger(JSGraph* jsgraph, Isolate* isolate);
 
   // Changes representation from {output_type} to {use_rep}. The {truncation}
   // parameter is only used for sanity checking - if the changer cannot figure
   // out signedness for the word32->float64 conversion, then we check that the
   // uses truncate to word32 (so they do not care about signedness).
   Node* GetRepresentationFor(Node* node, MachineRepresentation output_rep,
-                             Type* output_type, Node* use_node,
+                             Type output_type, Node* use_node,
                              UseInfo use_info);
   const Operator* Int32OperatorFor(IrOpcode::Value opcode);
   const Operator* Int32OverflowOperatorFor(IrOpcode::Value opcode);
+  const Operator* Int64OperatorFor(IrOpcode::Value opcode);
   const Operator* TaggedSignedOperatorFor(IrOpcode::Value opcode);
   const Operator* Uint32OperatorFor(IrOpcode::Value opcode);
   const Operator* Uint32OverflowOperatorFor(IrOpcode::Value opcode);
@@ -281,6 +286,7 @@ class RepresentationChanger final {
   }
 
  private:
+  TypeCache const& cache_;
   JSGraph* jsgraph_;
   Isolate* isolate_;
 
@@ -291,30 +297,30 @@ class RepresentationChanger final {
 
   Node* GetTaggedSignedRepresentationFor(Node* node,
                                          MachineRepresentation output_rep,
-                                         Type* output_type, Node* use_node,
+                                         Type output_type, Node* use_node,
                                          UseInfo use_info);
   Node* GetTaggedPointerRepresentationFor(Node* node,
                                           MachineRepresentation output_rep,
-                                          Type* output_type, Node* use_node,
+                                          Type output_type, Node* use_node,
                                           UseInfo use_info);
   Node* GetTaggedRepresentationFor(Node* node, MachineRepresentation output_rep,
-                                   Type* output_type, Truncation truncation);
+                                   Type output_type, Truncation truncation);
   Node* GetFloat32RepresentationFor(Node* node,
                                     MachineRepresentation output_rep,
-                                    Type* output_type, Truncation truncation);
+                                    Type output_type, Truncation truncation);
   Node* GetFloat64RepresentationFor(Node* node,
                                     MachineRepresentation output_rep,
-                                    Type* output_type, Node* use_node,
+                                    Type output_type, Node* use_node,
                                     UseInfo use_info);
   Node* GetWord32RepresentationFor(Node* node, MachineRepresentation output_rep,
-                                   Type* output_type, Node* use_node,
+                                   Type output_type, Node* use_node,
                                    UseInfo use_info);
   Node* GetBitRepresentationFor(Node* node, MachineRepresentation output_rep,
-                                Type* output_type);
+                                Type output_type);
   Node* GetWord64RepresentationFor(Node* node, MachineRepresentation output_rep,
-                                   Type* output_type);
+                                   Type output_type);
   Node* TypeError(Node* node, MachineRepresentation output_rep,
-                  Type* output_type, MachineRepresentation use);
+                  Type output_type, MachineRepresentation use);
   Node* MakeTruncatedInt32Constant(double value);
   Node* InsertChangeBitToTagged(Node* node);
   Node* InsertChangeFloat32ToFloat64(Node* node);
@@ -324,8 +330,9 @@ class RepresentationChanger final {
   Node* InsertChangeTaggedSignedToInt32(Node* node);
   Node* InsertChangeTaggedToFloat64(Node* node);
   Node* InsertChangeUint32ToFloat64(Node* node);
-
   Node* InsertConversion(Node* node, const Operator* op, Node* use_node);
+  Node* InsertTruncateInt64ToInt32(Node* node);
+  Node* InsertUnconditionalDeopt(Node* node, DeoptimizeReason reason);
 
   JSGraph* jsgraph() const { return jsgraph_; }
   Isolate* isolate() const { return isolate_; }

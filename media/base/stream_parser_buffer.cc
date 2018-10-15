@@ -48,7 +48,7 @@ DecodeTimestamp StreamParserBuffer::GetDecodeTimestamp() const {
 
 void StreamParserBuffer::SetDecodeTimestamp(DecodeTimestamp timestamp) {
   decode_timestamp_ = timestamp;
-  if (preroll_buffer_.get())
+  if (preroll_buffer_)
     preroll_buffer_->SetDecodeTimestamp(timestamp);
 }
 
@@ -84,37 +84,26 @@ int StreamParserBuffer::GetConfigId() const {
 
 void StreamParserBuffer::SetConfigId(int config_id) {
   config_id_ = config_id;
-  if (preroll_buffer_.get())
+  if (preroll_buffer_)
     preroll_buffer_->SetConfigId(config_id);
 }
 
 const char* StreamParserBuffer::GetTypeName() const {
-  switch (type()) {
-    case DemuxerStream::AUDIO:
-      return "audio";
-    case DemuxerStream::VIDEO:
-      return "video";
-    case DemuxerStream::TEXT:
-      return "text";
-    case DemuxerStream::UNKNOWN:
-      return "unknown";
-  }
-  NOTREACHED();
-  return "";
+  return DemuxerStream::GetTypeName(type());
 }
 
 void StreamParserBuffer::SetPrerollBuffer(
-    const scoped_refptr<StreamParserBuffer>& preroll_buffer) {
-  DCHECK(!preroll_buffer_.get());
+    scoped_refptr<StreamParserBuffer> preroll_buffer) {
+  DCHECK(!preroll_buffer_);
   DCHECK(!end_of_stream());
   DCHECK(!preroll_buffer->end_of_stream());
-  DCHECK(!preroll_buffer->preroll_buffer_.get());
+  DCHECK(!preroll_buffer->preroll_buffer_);
   DCHECK(preroll_buffer->timestamp() <= timestamp());
   DCHECK(preroll_buffer->discard_padding() == DecoderBuffer::DiscardPadding());
   DCHECK_EQ(preroll_buffer->type(), type());
   DCHECK_EQ(preroll_buffer->track_id(), track_id());
 
-  preroll_buffer_ = preroll_buffer;
+  preroll_buffer_ = std::move(preroll_buffer);
   preroll_buffer_->set_timestamp(timestamp());
   preroll_buffer_->SetConfigId(GetConfigId());
   preroll_buffer_->SetDecodeTimestamp(GetDecodeTimestamp());
@@ -126,7 +115,7 @@ void StreamParserBuffer::SetPrerollBuffer(
 
 void StreamParserBuffer::set_timestamp(base::TimeDelta timestamp) {
   DecoderBuffer::set_timestamp(timestamp);
-  if (preroll_buffer_.get())
+  if (preroll_buffer_)
     preroll_buffer_->set_timestamp(timestamp);
 }
 

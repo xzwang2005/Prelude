@@ -25,17 +25,21 @@ class CDM_CLASS_API CdmProxyClient;
 // enum range may not work.
 class CDM_CLASS_API CdmProxy {
  public:
-  enum Function {
+  enum Function : uint32_t {
     // For Intel Negotiate Crypto SessionKey Exchange (CSME) path to call
     // ID3D11VideoContext::NegotiateCryptoSessionKeyExchange.
-    kIntelNegotiateCryptoSessionKeyExchange,
+    kIntelNegotiateCryptoSessionKeyExchange = 1,
     // There will be more values in the future e.g. for D3D11 RSA method.
   };
 
-  // Initializes the proxy with the |client|, which must be valid until
-  // Destroy() is called. The results will be returned in
+  enum KeyType : uint32_t {
+    kDecryptOnly = 0,
+    kDecryptAndDecode = 1,
+  };
+
+  // Initializes the proxy. The results will be returned in
   // CdmProxyClient::OnInitialized().
-  virtual void Initialize(CdmProxyClient* client) = 0;
+  virtual void Initialize() = 0;
 
   // Processes and updates the state of the proxy.
   // |output_data_size| is required by some protocol to set up the output data.
@@ -58,6 +62,7 @@ class CDM_CLASS_API CdmProxy {
   virtual void SetKey(uint32_t crypto_session_id,
                       const uint8_t* key_id,
                       uint32_t key_id_size,
+                      KeyType key_type,
                       const uint8_t* key_blob,
                       uint32_t key_blob_size) = 0;
 
@@ -65,9 +70,6 @@ class CDM_CLASS_API CdmProxy {
   virtual void RemoveKey(uint32_t crypto_session_id,
                          const uint8_t* key_id,
                          uint32_t key_id_size) = 0;
-
-  // Destroys the object in the same context as it was created.
-  virtual void Destroy() = 0;
 
  protected:
   CdmProxy() {}
@@ -77,14 +79,14 @@ class CDM_CLASS_API CdmProxy {
 // Responses to CdmProxy calls. All responses will be called asynchronously.
 class CDM_CLASS_API CdmProxyClient {
  public:
-  enum Status {
+  enum Status : uint32_t {
     kOk,
     kFail,
   };
 
-  enum Protocol {
-    // Method using Intel CSME.
-    kIntelConvergedSecurityAndManageabilityEngine,
+  enum Protocol : uint32_t {
+    kNone = 0,  // No protocol supported. Can be used in failure cases.
+    kIntel,  // Method using Intel CSME.
     // There will be more values in the future e.g. kD3D11RsaHardware,
     // kD3D11RsaSoftware to use the D3D11 RSA method.
   };

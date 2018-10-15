@@ -234,6 +234,9 @@ static int do_ssl3_write(SSL *ssl, int type, const uint8_t *in, unsigned len) {
     return 0;
   }
 
+  if (!tls_flush_pending_hs_data(ssl)) {
+    return -1;
+  }
   size_t flight_len = 0;
   if (ssl->s3->pending_flight != nullptr) {
     flight_len =
@@ -304,14 +307,6 @@ ssl_open_record_t ssl3_open_app_data(SSL *ssl, Span<uint8_t> *out,
   const bool is_early_data_read = ssl->server && SSL_in_early_data(ssl);
 
   if (type == SSL3_RT_HANDSHAKE) {
-    // If reading 0-RTT data, reject handshake data. 0-RTT data is terminated
-    // by an alert.
-    if (!ssl_is_draft21(ssl->version) && is_early_data_read) {
-      OPENSSL_PUT_ERROR(SSL, SSL_R_UNEXPECTED_RECORD);
-      *out_alert = SSL_AD_UNEXPECTED_MESSAGE;
-      return ssl_open_record_error;
-    }
-
     // Post-handshake data prior to TLS 1.3 is always renegotiation, which we
     // never accept as a server. Otherwise |ssl3_get_message| will send
     // |SSL_R_EXCESSIVE_MESSAGE_SIZE|.
@@ -329,16 +324,6 @@ ssl_open_record_t ssl3_open_app_data(SSL *ssl, Span<uint8_t> *out,
       *out_alert = SSL_AD_INTERNAL_ERROR;
       return ssl_open_record_error;
     }
-    return ssl_open_record_discard;
-  }
-
-  // Handle the end_of_early_data alert.
-  static const uint8_t kEndOfEarlyData[2] = {SSL3_AL_WARNING,
-                                             TLS1_AD_END_OF_EARLY_DATA};
-  if (!ssl_is_draft21(ssl->version) && is_early_data_read &&
-      type == SSL3_RT_ALERT && body == kEndOfEarlyData) {
-    // Stop accepting early data.
-    ssl->s3->hs->can_early_read = false;
     return ssl_open_record_discard;
   }
 
@@ -429,7 +414,7 @@ int ssl3_dispatch_alert(SSL *ssl) {
 
   // If the alert is fatal, flush the BIO now.
   if (ssl->s3->send_alert[0] == SSL3_AL_FATAL) {
-    BIO_flush(ssl->wbio);
+    BIO_flush(ssl->wbio.get());
   }
 
   ssl_do_msg_callback(ssl, 1 /* write */, SSL3_RT_ALERT, ssl->s3->send_alert);

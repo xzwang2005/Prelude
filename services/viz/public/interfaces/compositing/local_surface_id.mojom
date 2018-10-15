@@ -4,18 +4,18 @@
 
 module viz.mojom;
 
-import "mojo/common/unguessable_token.mojom";
+import "mojo/public/mojom/base/unguessable_token.mojom";
 
 struct LocalSurfaceId {
   // An identifier to uniquely identify a surface.
   // Prior to surface synchronization, this is allocated by the child.
   // With surface synchronization enabled, this is allocated by the parent.
-  uint32 parent_id;
+  uint32 parent_sequence_number;
 
   // An identifier allocated by the client for when the client wants to allocate
   // its own surface.
   uint32 child_sequence_number;
 
-  mojo.common.mojom.UnguessableToken nonce;
+  mojo_base.mojom.UnguessableToken embed_token;
 };
 

@@ -14,8 +14,8 @@
 #include <deque>
 #include <thread>
 
-#if defined(SK_BUILD_FOR_WIN32)
-    #include <windows.h>
+#if defined(SK_BUILD_FOR_WIN)
+    #include "SkLeanWindows.h"
     static int num_cores() {
         SYSTEM_INFO sysinfo;
         GetNativeSystemInfo(&sysinfo);

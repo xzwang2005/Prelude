@@ -7,6 +7,9 @@
 #include "PreprocessorTest.h"
 #include "compiler/preprocessor/Token.h"
 
+namespace angle
+{
+
 class LocationTest : public PreprocessorTest
 {
 protected:
@@ -272,7 +275,7 @@ TEST_F(LocationTest, LineOverflowRegular)
 {
     const char *str = "#line 0x7FFFFFFF\n\n";
 
-    ASSERT_TRUE(mPreprocessor.init(1, &str, NULL));
+    ASSERT_TRUE(mPreprocessor.init(1, &str, nullptr));
 
     using testing::_;
     // Error reported about EOF.
@@ -287,7 +290,7 @@ TEST_F(LocationTest, LineOverflowInComment)
 {
     const char *str = "#line 0x7FFFFFFF\n/*\n*/";
 
-    ASSERT_TRUE(mPreprocessor.init(1, &str, NULL));
+    ASSERT_TRUE(mPreprocessor.init(1, &str, nullptr));
 
     using testing::_;
     // Error reported about EOF.
@@ -303,7 +306,7 @@ TEST_F(LocationTest, LineOverflowInContinuationN)
 {
     const char *str = "#line 0x7FFFFFFF\n \\\n\n";
 
-    ASSERT_TRUE(mPreprocessor.init(1, &str, NULL));
+    ASSERT_TRUE(mPreprocessor.init(1, &str, nullptr));
 
     using testing::_;
     // Error reported about EOF.
@@ -319,7 +322,7 @@ TEST_F(LocationTest, LineOverflowInContinuationRN)
 {
     const char *str = "#line 0x7FFFFFFF\n \\\r\n\n";
 
-    ASSERT_TRUE(mPreprocessor.init(1, &str, NULL));
+    ASSERT_TRUE(mPreprocessor.init(1, &str, nullptr));
 
     using testing::_;
     // Error reported about EOF.
@@ -411,3 +414,5 @@ static const LineExpressionTestParam kParamsLineExpressionTest[] = {
     {"16 >> 2", 4}};
 
 INSTANTIATE_TEST_CASE_P(All, LineExpressionTest, testing::ValuesIn(kParamsLineExpressionTest));
+
+}  // namespace angle

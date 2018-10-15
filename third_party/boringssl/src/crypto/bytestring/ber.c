@@ -29,10 +29,7 @@ static const unsigned kMaxDepth = 2048;
 // is_string_type returns one if |tag| is a string type and zero otherwise. It
 // ignores the constructed bit.
 static int is_string_type(unsigned tag) {
-  if ((tag & 0xc0) != 0) {
-    return 0;
-  }
-  switch (tag & 0x1f) {
+  switch (tag & ~CBS_ASN1_CONSTRUCTED) {
     case CBS_ASN1_BITSTRING:
     case CBS_ASN1_OCTETSTRING:
     case CBS_ASN1_UTF8STRING:
@@ -192,7 +189,7 @@ static int cbs_convert_ber(CBS *in, CBB *out, unsigned string_tag,
   return looking_for_eoc == 0;
 }
 
-int CBS_asn1_ber_to_der(CBS *in, uint8_t **out, size_t *out_len) {
+int CBS_asn1_ber_to_der(CBS *in, CBS *out, uint8_t **out_storage) {
   CBB cbb;
 
   // First, do a quick walk to find any indefinite-length elements. Most of the
@@ -203,18 +200,22 @@ int CBS_asn1_ber_to_der(CBS *in, uint8_t **out, size_t *out_len) {
   }
 
   if (!conversion_needed) {
-    *out = NULL;
-    *out_len = 0;
+    if (!CBS_get_any_asn1_element(in, out, NULL, NULL)) {
+      return 0;
+    }
+    *out_storage = NULL;
     return 1;
   }
 
+  size_t len;
   if (!CBB_init(&cbb, CBS_len(in)) ||
       !cbs_convert_ber(in, &cbb, 0, 0, 0) ||
-      !CBB_finish(&cbb, out, out_len)) {
+      !CBB_finish(&cbb, out_storage, &len)) {
     CBB_cleanup(&cbb);
     return 0;
   }
 
+  CBS_init(out, *out_storage, len);
   return 1;
 }
 

@@ -112,17 +112,15 @@ def get_device_status_unsafe(device):
       except ValueError:
         continue
       key = line.split(':')[0].strip()
-      if 'MemTotal' == key:
+      if key == 'MemTotal':
         status['mem']['total'] = value
-      elif 'MemFree' == key:
+      elif key == 'MemFree':
         status['mem']['free'] = value
 
   # Process
   try:
-    # TODO(catapult:#3215): Migrate to device.GetPids()
-    lines = device.RunShellCommand(['ps'], check_return=True)
-    status['processes'] = len(lines) - 1 # Ignore the header row.
-  except device_errors.AdbShellCommandFailedError:
+    status['processes'] = len(device.ListProcesses())
+  except device_errors.AdbCommandFailedError:
     logging.exception('Unable to count process list.')
 
   # CPU Temps
@@ -164,7 +162,8 @@ def get_device_status(device):
   try:
     status = get_device_status_unsafe(device)
   except device_errors.DeviceUnreachableError:
-    status = {'state': 'offline'}
+    status = collections.defaultdict(dict)
+    status['state'] = 'offline'
   return status
 
 

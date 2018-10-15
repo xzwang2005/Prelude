@@ -4,14 +4,13 @@
  * Use of this source code is governed by a BSD-style license that can be
  * found in the LICENSE file.
  */
-#include "SampleCode.h"
+#include "Sample.h"
 #include "SkBlurMask.h"
-#include "SkBlurMaskFilter.h"
 #include "SkCanvas.h"
+#include "SkMaskFilter.h"
 #include "SkParsePath.h"
 #include "SkPath.h"
 #include "SkRandom.h"
-#include "SkView.h"
 
 
 static void test_huge_stroke(SkCanvas* canvas) {
@@ -94,7 +93,7 @@ static const struct {
     { SkPaint::kStrokeAndFill_Style,    SkPaint::kMiter_Join,   10 },
 };
 
-class StrokePathView : public SampleView {
+class StrokePathView : public Sample {
     SkScalar    fWidth;
     SkPath      fPath;
 protected:
@@ -121,10 +120,9 @@ protected:
         this->setBGColor(0xFFDDDDDD);
     }
 
-    // overrides from SkEventSink
-    bool onQuery(SkEvent* evt) override {
-        if (SampleCode::TitleQ(*evt)) {
-            SampleCode::TitleR(evt, "StrokePath");
+    bool onQuery(Sample::Event* evt) override {
+        if (Sample::TitleQ(*evt)) {
+            Sample::TitleR(evt, "StrokePath");
             return true;
         }
         return this->INHERITED::onQuery(evt);
@@ -168,7 +166,7 @@ protected:
                 SkScalar sigma = SkBlurMask::ConvertRadiusToSigma(SkIntToScalar(4));
                 for (int y = 0; y < 10; y++) {
                     if (x) {
-                        paint.setMaskFilter(SkBlurMaskFilter::Make(gStyle[x - 1], sigma));
+                        paint.setMaskFilter(SkMaskFilter::MakeBlur(gStyle[x - 1], sigma));
                     }
                     canvas->drawString("Title Bar", x*SkIntToScalar(100), y*SkIntToScalar(30), paint);
                     sigma *= 0.75f;
@@ -206,10 +204,9 @@ protected:
     }
 
 private:
-    typedef SampleView INHERITED;
+    typedef Sample INHERITED;
 };
 
 //////////////////////////////////////////////////////////////////////////////
 
-static SkView* MyFactory() { return new StrokePathView; }
-static SkViewRegister reg(MyFactory);
+DEF_SAMPLE( return new StrokePathView(); )

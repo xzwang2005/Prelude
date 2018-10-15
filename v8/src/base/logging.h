@@ -20,23 +20,13 @@
 V8_BASE_EXPORT V8_NOINLINE void V8_Dcheck(const char* file, int line,
                                           const char* message);
 
-// The FATAL, UNREACHABLE and UNIMPLEMENTED macros are useful during
-// development, but they should not be relied on in the final product.
 #ifdef DEBUG
-#define FATAL(msg)                              \
-  V8_Fatal(__FILE__, __LINE__, "%s", (msg))
-#define UNIMPLEMENTED()                         \
-  V8_Fatal(__FILE__, __LINE__, "unimplemented code")
-#define UNREACHABLE()                           \
-  V8_Fatal(__FILE__, __LINE__, "unreachable code")
+#define FATAL(...) V8_Fatal(__FILE__, __LINE__, __VA_ARGS__)
 #else
-#define FATAL(msg)                              \
-  V8_Fatal("", 0, "%s", (msg))
-#define UNIMPLEMENTED()                         \
-  V8_Fatal("", 0, "unimplemented code")
-#define UNREACHABLE() V8_Fatal("", 0, "unreachable code")
+#define FATAL(...) V8_Fatal("", 0, __VA_ARGS__)
 #endif
-
+#define UNIMPLEMENTED() FATAL("unimplemented code")
+#define UNREACHABLE() FATAL("unreachable code")
 
 namespace v8 {
 namespace base {
@@ -54,12 +44,12 @@ V8_BASE_EXPORT void SetDcheckFunction(void (*dcheck_Function)(const char*, int,
 //
 // We make sure CHECK et al. always evaluates their arguments, as
 // doing CHECK(FunctionWithSideEffect()) is a common idiom.
-#define CHECK_WITH_MSG(condition, message)                        \
-  do {                                                            \
-    if (V8_UNLIKELY(!(condition))) {                              \
-      V8_Fatal(__FILE__, __LINE__, "Check failed: %s.", message); \
-    }                                                             \
-  } while (0)
+#define CHECK_WITH_MSG(condition, message) \
+  do {                                     \
+    if (V8_UNLIKELY(!(condition))) {       \
+      FATAL("Check failed: %s.", message); \
+    }                                      \
+  } while (false)
 #define CHECK(condition) CHECK_WITH_MSG(condition, #condition)
 
 #ifdef DEBUG
@@ -69,7 +59,7 @@ V8_BASE_EXPORT void SetDcheckFunction(void (*dcheck_Function)(const char*, int,
     if (V8_UNLIKELY(!(condition))) {          \
       V8_Dcheck(__FILE__, __LINE__, message); \
     }                                         \
-  } while (0)
+  } while (false)
 #define DCHECK(condition) DCHECK_WITH_MSG(condition, #condition)
 
 // Helper macro for binary operators.
@@ -80,10 +70,10 @@ V8_BASE_EXPORT void SetDcheckFunction(void (*dcheck_Function)(const char*, int,
             typename ::v8::base::pass_value_or_ref<decltype(lhs)>::type,  \
             typename ::v8::base::pass_value_or_ref<decltype(rhs)>::type>( \
             (lhs), (rhs), #lhs " " #op " " #rhs)) {                       \
-      V8_Fatal(__FILE__, __LINE__, "Check failed: %s.", _msg->c_str());   \
+      FATAL("Check failed: %s.", _msg->c_str());                          \
       delete _msg;                                                        \
     }                                                                     \
-  } while (0)
+  } while (false)
 
 #define DCHECK_OP(name, op, lhs, rhs)                                     \
   do {                                                                    \
@@ -94,7 +84,7 @@ V8_BASE_EXPORT void SetDcheckFunction(void (*dcheck_Function)(const char*, int,
       V8_Dcheck(__FILE__, __LINE__, _msg->c_str());                       \
       delete _msg;                                                        \
     }                                                                     \
-  } while (0)
+  } while (false)
 
 #else
 
@@ -108,7 +98,7 @@ V8_BASE_EXPORT void SetDcheckFunction(void (*dcheck_Function)(const char*, int,
         typename ::v8::base::pass_value_or_ref<decltype(rhs)>::type>((lhs),  \
                                                                      (rhs)); \
     CHECK_WITH_MSG(_cmp, #lhs " " #op " " #rhs);                             \
-  } while (0)
+  } while (false)
 
 #define DCHECK_WITH_MSG(condition, msg) void(0);
 
@@ -116,9 +106,23 @@ V8_BASE_EXPORT void SetDcheckFunction(void (*dcheck_Function)(const char*, int,
 
 // Define PrintCheckOperand<T> for each T which defines operator<< for ostream.
 template <typename T>
-typename std::enable_if<has_output_operator<T>::value>::type PrintCheckOperand(
-    std::ostream& os, T val) {
+typename std::enable_if<
+    !std::is_function<typename std::remove_pointer<T>::type>::value &&
+    has_output_operator<T>::value>::type
+PrintCheckOperand(std::ostream& os, T val) {
   os << std::forward<T>(val);
+}
+
+// Provide an overload for functions and function pointers. Function pointers
+// don't implicitly convert to void* but do implicitly convert to bool, so
+// without this function pointers are always printed as 1 or 0. (MSVC isn't
+// standards-conforming here and converts function pointers to regular
+// pointers, so this is a no-op for MSVC.)
+template <typename T>
+typename std::enable_if<
+    std::is_function<typename std::remove_pointer<T>::type>::value>::type
+PrintCheckOperand(std::ostream& os, T val) {
+  os << reinterpret_cast<const void*>(val);
 }
 
 // Define PrintCheckOperand<T> for enums which have no operator<<.

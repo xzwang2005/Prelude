@@ -23,54 +23,13 @@
 namespace crashpad {
 namespace internal {
 
-ThreadSnapshotLinux::ThreadSnapshotLinux()
-    : ThreadSnapshot(),
-      context_union_(),
-      context_(),
-      stack_(),
-      thread_specific_data_address_(0),
-      thread_id_(-1),
-      priority_(-1),
-      initialized_() {
-}
+namespace {
 
-ThreadSnapshotLinux::~ThreadSnapshotLinux() {
-}
-
-bool ThreadSnapshotLinux::Initialize(
-    ProcessReader* process_reader,
-    const ProcessReader::Thread& thread) {
-  INITIALIZATION_STATE_SET_INITIALIZING(initialized_);
-
-#if defined(ARCH_CPU_X86_FAMILY)
-  if (process_reader->Is64Bit()) {
-    context_.architecture = kCPUArchitectureX86_64;
-    context_.x86_64 = &context_union_.x86_64;
-    InitializeCPUContextX86_64(thread.thread_info.thread_context.t64,
-                               thread.thread_info.float_context.f64,
-                               context_.x86_64);
-  } else {
-    context_.architecture = kCPUArchitectureX86;
-    context_.x86 = &context_union_.x86;
-    InitializeCPUContextX86(thread.thread_info.thread_context.t32,
-                            thread.thread_info.float_context.f32,
-                            context_.x86);
-  }
-#else
-#error Port.
-#endif
-
-  stack_.Initialize(process_reader,
-                    thread.stack_region_address,
-                    thread.stack_region_size);
-
-  thread_specific_data_address_ =
-      thread.thread_info.thread_specific_data_address;
-
-  thread_id_ = thread.tid;
-
-  // Map Linux scheduling policy, static priority, and nice value into a single
-  // int value.
+int ComputeThreadPriority(int static_priority,
+                          int sched_policy,
+                          int nice_value) {
+  // Map Linux scheduling policy, static priority, and nice value into a
+  // single int value.
   //
   // The possible policies in order of approximate priority (low to high) are
   //   SCHED_IDLE
@@ -96,8 +55,8 @@ bool ThreadSnapshotLinux::Initialize(
 
   struct LinuxPriority {
 #if defined(ARCH_CPU_LITTLE_ENDIAN)
-    // nice values affect how dynamic priorities are updated, which only matters
-    // for threads with the same static priority.
+    // nice values affect how dynamic priorities are updated, which only
+    // matters for threads with the same static priority.
     uint8_t nice_value = 0;
 
     // The scheduling policy also affects how threads with the same static
@@ -124,14 +83,14 @@ bool ThreadSnapshotLinux::Initialize(
 
   // Lower nice values have higher priority, so negate them and add 20 to put
   // them in the range 1-40 with 40 being highest priority.
-  if (thread.nice_value < -20 || thread.nice_value > 19) {
-    LOG(WARNING) << "invalid nice value " << thread.nice_value;
+  if (nice_value < -20 || nice_value > 19) {
+    LOG(WARNING) << "invalid nice value " << nice_value;
     prio.nice_value = 0;
   } else {
-    prio.nice_value = -1 * thread.nice_value + 20;
+    prio.nice_value = -1 * nice_value + 20;
   }
 
-  switch (thread.sched_policy) {
+  switch (sched_policy) {
     case SCHED_IDLE:
       prio.policy = Policy::kIdle;
       break;
@@ -149,18 +108,101 @@ bool ThreadSnapshotLinux::Initialize(
       break;
     default:
       prio.policy = Policy::kUnknown;
-      LOG(WARNING) << "Unknown scheduling policy " << thread.sched_policy;
+      LOG(WARNING) << "Unknown scheduling policy " << sched_policy;
   }
 
-  if (thread.static_priority < 0 || thread.static_priority > 99) {
-    LOG(WARNING) << "invalid static priority " << thread.static_priority;
+  if (static_priority < 0 || static_priority > 99) {
+    LOG(WARNING) << "invalid static priority " << static_priority;
   }
-  prio.static_priority = thread.static_priority;
+  prio.static_priority = static_priority;
 
-  if (!ReinterpretBytes(prio, &priority_)) {
+  int priority;
+  if (!ReinterpretBytes(prio, &priority)) {
     LOG(ERROR) << "Couldn't set priority";
-    return false;
+    return -1;
   }
+  return priority;
+}
+
+}  // namespace
+
+ThreadSnapshotLinux::ThreadSnapshotLinux()
+    : ThreadSnapshot(),
+      context_union_(),
+      context_(),
+      stack_(),
+      thread_specific_data_address_(0),
+      thread_id_(-1),
+      priority_(-1),
+      initialized_() {}
+
+ThreadSnapshotLinux::~ThreadSnapshotLinux() {}
+
+bool ThreadSnapshotLinux::Initialize(ProcessReaderLinux* process_reader,
+                                     const ProcessReaderLinux::Thread& thread) {
+  INITIALIZATION_STATE_SET_INITIALIZING(initialized_);
+
+#if defined(ARCH_CPU_X86_FAMILY)
+  if (process_reader->Is64Bit()) {
+    context_.architecture = kCPUArchitectureX86_64;
+    context_.x86_64 = &context_union_.x86_64;
+    InitializeCPUContextX86_64(thread.thread_info.thread_context.t64,
+                               thread.thread_info.float_context.f64,
+                               context_.x86_64);
+  } else {
+    context_.architecture = kCPUArchitectureX86;
+    context_.x86 = &context_union_.x86;
+    InitializeCPUContextX86(thread.thread_info.thread_context.t32,
+                            thread.thread_info.float_context.f32,
+                            context_.x86);
+  }
+#elif defined(ARCH_CPU_ARM_FAMILY)
+  if (process_reader->Is64Bit()) {
+    context_.architecture = kCPUArchitectureARM64;
+    context_.arm64 = &context_union_.arm64;
+    InitializeCPUContextARM64(thread.thread_info.thread_context.t64,
+                              thread.thread_info.float_context.f64,
+                              context_.arm64);
+  } else {
+    context_.architecture = kCPUArchitectureARM;
+    context_.arm = &context_union_.arm;
+    InitializeCPUContextARM(thread.thread_info.thread_context.t32,
+                            thread.thread_info.float_context.f32,
+                            context_.arm);
+  }
+#elif defined(ARCH_CPU_MIPS_FAMILY)
+  if (process_reader->Is64Bit()) {
+    context_.architecture = kCPUArchitectureMIPS64EL;
+    context_.mips64 = &context_union_.mips64;
+    InitializeCPUContextMIPS<ContextTraits64>(
+        thread.thread_info.thread_context.t64,
+        thread.thread_info.float_context.f64,
+        context_.mips64);
+  } else {
+    context_.architecture = kCPUArchitectureMIPSEL;
+    context_.mipsel = &context_union_.mipsel;
+    InitializeCPUContextMIPS<ContextTraits32>(
+        SignalThreadContext32(thread.thread_info.thread_context.t32),
+        thread.thread_info.float_context.f32,
+        context_.mipsel);
+  }
+#else
+#error Port.
+#endif
+
+  stack_.Initialize(
+      process_reader, thread.stack_region_address, thread.stack_region_size);
+
+  thread_specific_data_address_ =
+      thread.thread_info.thread_specific_data_address;
+
+  thread_id_ = thread.tid;
+
+  priority_ =
+      thread.have_priorities
+          ? ComputeThreadPriority(
+                thread.static_priority, thread.sched_policy, thread.nice_value)
+          : -1;
 
   INITIALIZATION_STATE_SET_VALID(initialized_);
   return true;

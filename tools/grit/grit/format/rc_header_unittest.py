@@ -23,7 +23,7 @@ from grit.format import rc_header
 
 class RcHeaderFormatterUnittest(unittest.TestCase):
   def FormatAll(self, grd):
-    output = rc_header.FormatDefines(grd, grd.ShouldOutputAllResourceDefines())
+    output = rc_header.FormatDefines(grd)
     return ''.join(output).replace(' ', '')
 
   def testFormatter(self):
@@ -78,7 +78,6 @@ class RcHeaderFormatterUnittest(unittest.TestCase):
     output = self.FormatAll(grd)
     self.failUnless(output.count('IDS_FIRSTPRESENTSTRING10000'))
     self.failIf(output.count('IDS_MISSINGSTRING'))
-    self.failIf(output.count('10001'))  # IDS_MISSINGSTRING should get this ID
     self.failUnless(output.count('IDS_LANGUAGESPECIFICSTRING10002'))
     self.failUnless(output.count('IDS_THIRDPRESENTSTRING10003'))
 
@@ -118,21 +117,21 @@ class RcHeaderFormatterUnittest(unittest.TestCase):
           </message>
         </messages>''')
 
-    # Using the default rc_header format string.
-    output = rc_header.FormatDefines(grd, grd.ShouldOutputAllResourceDefines(),
-                                     grd.GetRcHeaderFormat())
+    # Using the default settings.
+    output = rc_header.FormatDefines(grd)
     self.assertEqual(('#define IDR_LOGO 300\n'
                       '#define IDS_GREETING 10000\n'
                       '#define IDS_BONGO 10001\n'), ''.join(output))
 
-    # Using a custom rc_header format string.
-    grd.AssignRcHeaderFormat(
-        '#define {textual_id} _Pragma("{textual_id}") {numeric_id}')
-    output = rc_header.FormatDefines(grd, grd.ShouldOutputAllResourceDefines(),
-                                     grd.GetRcHeaderFormat())
-    self.assertEqual(('#define IDR_LOGO _Pragma("IDR_LOGO") 300\n'
-                      '#define IDS_GREETING _Pragma("IDS_GREETING") 10000\n'
-                      '#define IDS_BONGO _Pragma("IDS_BONGO") 10001\n'),
+    # Using resource whitelist support.
+    grd.SetWhitelistSupportEnabled(True)
+    output = rc_header.FormatDefines(grd)
+    self.assertEqual(('#define IDR_LOGO '
+                      '(::ui::WhitelistedResource<300>(), 300)\n'
+                      '#define IDS_GREETING '
+                      '(::ui::WhitelistedResource<10000>(), 10000)\n'
+                      '#define IDS_BONGO '
+                      '(::ui::WhitelistedResource<10001>(), 10001)\n'),
                      ''.join(output))
 
 if __name__ == '__main__':

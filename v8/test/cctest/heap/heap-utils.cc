@@ -4,23 +4,22 @@
 
 #include "test/cctest/heap/heap-utils.h"
 
-#include "src/factory.h"
+#include "src/heap/factory.h"
 #include "src/heap/heap-inl.h"
 #include "src/heap/incremental-marking.h"
 #include "src/heap/mark-compact.h"
 #include "src/isolate.h"
+#include "test/cctest/cctest.h"
 
 namespace v8 {
 namespace internal {
 namespace heap {
 
 void SealCurrentObjects(Heap* heap) {
-  heap->CollectAllGarbage(Heap::kFinalizeIncrementalMarkingMask,
-                          GarbageCollectionReason::kTesting);
-  heap->CollectAllGarbage(Heap::kFinalizeIncrementalMarkingMask,
-                          GarbageCollectionReason::kTesting);
+  CcTest::CollectAllGarbage();
+  CcTest::CollectAllGarbage();
   heap->mark_compact_collector()->EnsureSweepingCompleted();
-  heap->old_space()->EmptyAllocationInfo();
+  heap->old_space()->FreeLinearAllocationArea();
   for (Page* page : *heap->old_space()) {
     page->MarkNeverAllocateForTesting();
   }
@@ -68,11 +67,10 @@ std::vector<Handle<FixedArray>> CreatePadding(Heap* heap, int padding_size,
   int length;
   int free_memory = padding_size;
   if (tenure == i::TENURED) {
-    heap->old_space()->EmptyAllocationInfo();
+    heap->old_space()->FreeLinearAllocationArea();
     int overall_free_memory = static_cast<int>(heap->old_space()->Available());
     CHECK(padding_size <= overall_free_memory || overall_free_memory == 0);
   } else {
-    heap->new_space()->DisableInlineAllocationSteps();
     int overall_free_memory =
         static_cast<int>(*heap->new_space()->allocation_limit_address() -
                          *heap->new_space()->allocation_top_address());
@@ -96,7 +94,7 @@ std::vector<Handle<FixedArray>> CreatePadding(Heap* heap, int padding_size,
       }
     }
     handles.push_back(isolate->factory()->NewFixedArray(length, tenure));
-    CHECK((tenure == NOT_TENURED && heap->InNewSpace(*handles.back())) ||
+    CHECK((tenure == NOT_TENURED && Heap::InNewSpace(*handles.back())) ||
           (tenure == TENURED && heap->InOldSpace(*handles.back())));
     free_memory -= allocate_memory;
   }
@@ -105,7 +103,7 @@ std::vector<Handle<FixedArray>> CreatePadding(Heap* heap, int padding_size,
 
 void AllocateAllButNBytes(v8::internal::NewSpace* space, int extra_bytes,
                           std::vector<Handle<FixedArray>>* out_handles) {
-  space->DisableInlineAllocationSteps();
+  PauseAllocationObserversScope pause_observers(space->heap());
   int space_remaining = static_cast<int>(*space->allocation_limit_address() -
                                          *space->allocation_top_address());
   CHECK(space_remaining >= extra_bytes);
@@ -124,7 +122,7 @@ void FillCurrentPage(v8::internal::NewSpace* space,
 
 bool FillUpOnePage(v8::internal::NewSpace* space,
                    std::vector<Handle<FixedArray>>* out_handles) {
-  space->DisableInlineAllocationSteps();
+  PauseAllocationObserversScope pause_observers(space->heap());
   int space_remaining = static_cast<int>(*space->allocation_limit_address() -
                                          *space->allocation_top_address());
   if (space_remaining == 0) return false;
@@ -176,12 +174,12 @@ void SimulateFullSpace(v8::internal::PagedSpace* space) {
   if (collector->sweeping_in_progress()) {
     collector->EnsureSweepingCompleted();
   }
-  space->EmptyAllocationInfo();
+  space->FreeLinearAllocationArea();
   space->ResetFreeList();
 }
 
 void AbandonCurrentlyFreeMemory(PagedSpace* space) {
-  space->EmptyAllocationInfo();
+  space->FreeLinearAllocationArea();
   for (Page* page : *space) {
     page->MarkNeverAllocateForTesting();
   }
@@ -205,7 +203,7 @@ void ForceEvacuationCandidate(Page* page) {
     int remaining = static_cast<int>(limit - top);
     space->heap()->CreateFillerObjectAt(top, remaining,
                                         ClearRecordedSlots::kNo);
-    space->EmptyAllocationInfo();
+    space->FreeLinearAllocationArea();
   }
 }
 

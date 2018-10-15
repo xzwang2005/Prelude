@@ -8,7 +8,9 @@ public_headers = [ "//components/viz/common/display/renderer_settings.h" ]
 traits_headers = [ "//services/viz/privileged/interfaces/compositing/renderer_settings_struct_traits.h" ]
 deps = [
   "//cc",
-  "//mojo/common:struct_traits",
+]
+public_deps = [
+  "//ui/gfx/geometry/mojo",
 ]
 sources = [
   "renderer_settings_struct_traits.cc",

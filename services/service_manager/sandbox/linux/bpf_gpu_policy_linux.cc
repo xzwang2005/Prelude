@@ -13,7 +13,6 @@
 #include "base/compiler_specific.h"
 #include "base/logging.h"
 #include "base/macros.h"
-#include "base/memory/ptr_util.h"
 #include "build/build_config.h"
 #include "sandbox/linux/bpf_dsl/bpf_dsl.h"
 #include "sandbox/linux/seccomp-bpf-helpers/syscall_parameters_restrictions.h"
@@ -56,22 +55,17 @@ ResultExpr GpuProcessPolicy::EvaluateSyscall(int sysno) const {
     case __NR_prctl:
     case __NR_sysinfo:
       return Allow();
-#if !defined(__aarch64__)
-    case __NR_access:
-    case __NR_open:
-#endif  // !defined(__aarch64__)
-    case __NR_faccessat:
-    case __NR_openat: {
-      auto* broker_process = SandboxLinux::GetInstance()->broker_process();
-      DCHECK(broker_process);
-      return Trap(BrokerProcess::SIGSYS_Handler, broker_process);
-    }
     case __NR_sched_getaffinity:
     case __NR_sched_setaffinity:
       return sandbox::RestrictSchedTarget(GetPolicyPid(), sysno);
     default:
       if (SyscallSets::IsEventFd(sysno))
         return Allow();
+
+      auto* broker_process = SandboxLinux::GetInstance()->broker_process();
+      if (broker_process->IsSyscallAllowed(sysno)) {
+        return Trap(BrokerProcess::SIGSYS_Handler, broker_process);
+      }
 
       // Default on the baseline policy.
       return BPFBasePolicy::EvaluateSyscall(sysno);

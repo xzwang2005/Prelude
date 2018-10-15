@@ -64,10 +64,6 @@ SolidColorScrollbarLayer::SolidColorScrollbarLayer(
 
 SolidColorScrollbarLayer::~SolidColorScrollbarLayer() = default;
 
-ScrollbarLayerInterface* SolidColorScrollbarLayer::ToScrollbarLayer() {
-  return this;
-}
-
 void SolidColorScrollbarLayer::SetOpacity(float opacity) {
   // The opacity of a solid color scrollbar layer is always 0 on main thread.
   DCHECK_EQ(opacity, 0.f);
@@ -96,7 +92,7 @@ void SolidColorScrollbarLayer::SetScrollElementId(ElementId element_id) {
     return;
 
   solid_color_scrollbar_layer_inputs_.scroll_element_id = element_id;
-  SetNeedsFullTreeSync();
+  SetNeedsCommit();
 }
 
 }  // namespace cc

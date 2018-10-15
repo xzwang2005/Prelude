@@ -2,6 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include <unistd.h>
+
 #include "sandbox/linux/syscall_broker/broker_command.h"
 #include "sandbox/linux/syscall_broker/broker_permission_list.h"
 
@@ -18,6 +20,16 @@ bool CommandAccessIsSafe(const BrokerCommandSet& command_set,
                                              filename_to_use);
 }
 
+bool CommandMkdirIsSafe(const BrokerCommandSet& command_set,
+                        const BrokerPermissionList& policy,
+                        const char* requested_filename,
+                        const char** filename_to_use) {
+  return command_set.test(COMMAND_MKDIR) &&
+         policy.GetFileNameIfAllowedToOpen(requested_filename,
+                                           O_RDWR | O_CREAT | O_EXCL,
+                                           filename_to_use, nullptr);
+}
+
 bool CommandOpenIsSafe(const BrokerCommandSet& command_set,
                        const BrokerPermissionList& policy,
                        const char* requested_filename,
@@ -25,8 +37,10 @@ bool CommandOpenIsSafe(const BrokerCommandSet& command_set,
                        const char** filename_to_use,
                        bool* unlink_after_open) {
   return command_set.test(COMMAND_OPEN) &&
-         policy.GetFileNameIfAllowedToOpen(requested_filename, requested_flags,
-                                           filename_to_use, unlink_after_open);
+         policy.GetFileNameIfAllowedToOpen(
+             requested_filename,
+             requested_flags & ~kCurrentProcessOpenFlagsMask, filename_to_use,
+             unlink_after_open);
 }
 
 bool CommandReadlinkIsSafe(const BrokerCommandSet& command_set,
@@ -45,10 +59,22 @@ bool CommandRenameIsSafe(const BrokerCommandSet& command_set,
                          const char** old_filename_to_use,
                          const char** new_filename_to_use) {
   return command_set.test(COMMAND_RENAME) &&
-         policy.GetFileNameIfAllowedToOpen(old_filename, O_RDWR,
+         policy.GetFileNameIfAllowedToOpen(old_filename,
+                                           O_RDWR | O_CREAT | O_EXCL,
                                            old_filename_to_use, nullptr) &&
-         policy.GetFileNameIfAllowedToOpen(new_filename, O_RDWR,
+         policy.GetFileNameIfAllowedToOpen(new_filename,
+                                           O_RDWR | O_CREAT | O_EXCL,
                                            new_filename_to_use, nullptr);
+}
+
+bool CommandRmdirIsSafe(const BrokerCommandSet& command_set,
+                        const BrokerPermissionList& policy,
+                        const char* requested_filename,
+                        const char** filename_to_use) {
+  return command_set.test(COMMAND_RMDIR) &&
+         policy.GetFileNameIfAllowedToOpen(requested_filename,
+                                           O_RDWR | O_CREAT | O_EXCL,
+                                           filename_to_use, nullptr);
 }
 
 bool CommandStatIsSafe(const BrokerCommandSet& command_set,
@@ -56,8 +82,17 @@ bool CommandStatIsSafe(const BrokerCommandSet& command_set,
                        const char* requested_filename,
                        const char** filename_to_use) {
   return command_set.test(COMMAND_STAT) &&
-         policy.GetFileNameIfAllowedToAccess(requested_filename, F_OK,
-                                             filename_to_use);
+         policy.GetFileNameIfAllowedToStat(requested_filename, filename_to_use);
+}
+
+bool CommandUnlinkIsSafe(const BrokerCommandSet& command_set,
+                         const BrokerPermissionList& policy,
+                         const char* requested_filename,
+                         const char** filename_to_use) {
+  return command_set.test(COMMAND_UNLINK) &&
+         policy.GetFileNameIfAllowedToOpen(requested_filename,
+                                           O_RDWR | O_CREAT | O_EXCL,
+                                           filename_to_use, nullptr);
 }
 
 }  // namespace syscall_broker

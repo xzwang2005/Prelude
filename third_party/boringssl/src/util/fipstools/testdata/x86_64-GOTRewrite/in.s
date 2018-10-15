@@ -6,6 +6,12 @@ foo:
 	# As is the equivalent GOTPCREL movq.
 	movq OPENSSL_ia32cap_P@GOTPCREL(%rip), %r12
 
+	# And a non-movq instruction via the GOT.
+	orq OPENSSL_ia32cap_P@GOTPCREL(%rip), %r12
+
+	# ... which targets the default temp register
+	orq OPENSSL_ia32cap_P@GOTPCREL(%rip), %rax
+
 	# Test that GOTPCREL accesses get translated. They are handled
 	# differently for local and external symbols.
 
@@ -33,5 +39,9 @@ foo:
 	movq BORINGSSL_bcm_text_start@GOTPCREL(%rip), %r11
 	movq foobar_bss_get@GOTPCREL(%rip), %r11
 	movq OPENSSL_ia32cap_get@GOTPCREL(%rip), %r11
+
+	# Transforming moves run the transform in-place after the load.
+	vpbroadcastq stderr@GOTPCREL(%rip), %xmm0
+	vpbroadcastq foo@GOTPCREL(%rip), %xmm0
 
 .comm foobar,64,32

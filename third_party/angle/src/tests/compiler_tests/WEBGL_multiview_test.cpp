@@ -8,7 +8,7 @@
 //
 
 #include "GLSLANG/ShaderLang.h"
-#include "compiler/translator/IntermTraverse.h"
+#include "compiler/translator/tree_util/IntermTraverse.h"
 #include "tests/test_utils/ShaderCompileTreeTest.h"
 #include "tests/test_utils/compiler_test.h"
 
@@ -58,33 +58,34 @@ class SymbolOccurrenceCounterByQualifier : public SymbolOccurrenceCounter
 class SymbolOccurrenceCounterByName : public SymbolOccurrenceCounter
 {
   public:
-    SymbolOccurrenceCounterByName(const TString &symbolName) : mSymbolName(symbolName) {}
+    SymbolOccurrenceCounterByName(const ImmutableString &symbolName) : mSymbolName(symbolName) {}
 
     bool shouldCountSymbol(const TIntermSymbol *node) const override
     {
-        return node->getName().getString() == mSymbolName;
+        return node->variable().symbolType() != SymbolType::Empty && node->getName() == mSymbolName;
     }
 
   private:
-    TString mSymbolName;
+    ImmutableString mSymbolName;
 };
 
 class SymbolOccurrenceCounterByNameAndQualifier : public SymbolOccurrenceCounter
 {
   public:
-    SymbolOccurrenceCounterByNameAndQualifier(const TString &symbolName, TQualifier qualifier)
+    SymbolOccurrenceCounterByNameAndQualifier(const ImmutableString &symbolName,
+                                              TQualifier qualifier)
         : mSymbolName(symbolName), mSymbolQualifier(qualifier)
     {
     }
 
     bool shouldCountSymbol(const TIntermSymbol *node) const override
     {
-        return node->getName().getString() == mSymbolName &&
-               node->getQualifier() == mSymbolQualifier;
+        return node->variable().symbolType() != SymbolType::Empty &&
+               node->getName() == mSymbolName && node->getQualifier() == mSymbolQualifier;
     }
 
   private:
-    TString mSymbolName;
+    ImmutableString mSymbolName;
     TQualifier mSymbolQualifier;
 };
 
@@ -171,7 +172,7 @@ class WEBGLMultiviewComputeShaderOutputCodeTest : public WEBGLMultiviewOutputCod
 };
 
 void VariableOccursNTimes(TIntermBlock *root,
-                          const TString &varName,
+                          const ImmutableString &varName,
                           const TQualifier varQualifier,
                           unsigned n)
 {
@@ -489,7 +490,7 @@ TEST_F(WEBGLMultiviewVertexShaderTest, GLInstanceIDIsRenamed)
     mExtraCompileOptions |= SH_INITIALIZE_BUILTINS_FOR_INSTANCED_MULTIVIEW;
     compileAssumeSuccess(shaderString);
 
-    SymbolOccurrenceCounterByName glInstanceIDByName("gl_InstanceID");
+    SymbolOccurrenceCounterByName glInstanceIDByName(ImmutableString("gl_InstanceID"));
     mASTRoot->traverse(&glInstanceIDByName);
     EXPECT_EQ(2u, glInstanceIDByName.getNumberOfOccurrences());
 
@@ -497,7 +498,7 @@ TEST_F(WEBGLMultiviewVertexShaderTest, GLInstanceIDIsRenamed)
     mASTRoot->traverse(&glInstanceIDByQualifier);
     EXPECT_EQ(2u, glInstanceIDByQualifier.getNumberOfOccurrences());
 
-    SymbolOccurrenceCounterByName instanceIDByName("InstanceID");
+    SymbolOccurrenceCounterByName instanceIDByName(ImmutableString("InstanceID"));
     mASTRoot->traverse(&instanceIDByName);
     EXPECT_EQ(5u, instanceIDByName.getNumberOfOccurrences());
 }
@@ -521,7 +522,7 @@ TEST_F(WEBGLMultiviewVertexShaderTest, GLViewIDIsRenamed)
     mExtraCompileOptions |= SH_INITIALIZE_BUILTINS_FOR_INSTANCED_MULTIVIEW;
     compileAssumeSuccess(shaderString);
 
-    SymbolOccurrenceCounterByName glViewIDOVRByName("gl_ViewID_OVR");
+    SymbolOccurrenceCounterByName glViewIDOVRByName(ImmutableString("gl_ViewID_OVR"));
     mASTRoot->traverse(&glViewIDOVRByName);
     EXPECT_EQ(0u, glViewIDOVRByName.getNumberOfOccurrences());
 
@@ -529,7 +530,8 @@ TEST_F(WEBGLMultiviewVertexShaderTest, GLViewIDIsRenamed)
     mASTRoot->traverse(&glViewIDOVRByQualifier);
     EXPECT_EQ(0u, glViewIDOVRByQualifier.getNumberOfOccurrences());
 
-    SymbolOccurrenceCounterByNameAndQualifier viewIDByNameAndQualifier("ViewID_OVR", EvqFlatOut);
+    SymbolOccurrenceCounterByNameAndQualifier viewIDByNameAndQualifier(
+        ImmutableString("ViewID_OVR"), EvqFlatOut);
     mASTRoot->traverse(&viewIDByNameAndQualifier);
     EXPECT_EQ(6u, viewIDByNameAndQualifier.getNumberOfOccurrences());
 }
@@ -556,6 +558,9 @@ TEST_F(WEBGLMultiviewVertexShaderOutputCodeTest, ViewIDAndInstanceIDHaveCorrectV
     EXPECT_TRUE(foundInAllGLSLCode("InstanceID = int((uint(gl_InstanceID) / 3u))"));
 
     EXPECT_TRUE(foundInHLSLCode("ViewID_OVR = (uint_ctor(gl_InstanceID) % 3)"));
+#if defined(ANGLE_ENABLE_HLSL)
+    EXPECT_FALSE(foundInHLSLCode("_ViewID_OVR = (uint_ctor(gl_InstanceID) % 3)"));
+#endif
     EXPECT_TRUE(foundInHLSLCode("InstanceID = int_ctor((uint_ctor(gl_InstanceID) / 3))"));
 }
 
@@ -572,10 +577,6 @@ TEST_F(WEBGLMultiviewVertexShaderOutputCodeTest, StrippedOVRMultiviewDirective)
         "}\n";
     // The directive must not be present if any of the multiview emulation options are set.
     compile(shaderString, SH_INITIALIZE_BUILTINS_FOR_INSTANCED_MULTIVIEW);
-    EXPECT_FALSE(foundInESSLCode("GL_OVR_multiview"));
-    EXPECT_FALSE(foundInGLSLCode("GL_OVR_multiview"));
-
-    compile(shaderString, SH_TRANSLATE_VIEWID_OVR_TO_UNIFORM);
     EXPECT_FALSE(foundInESSLCode("GL_OVR_multiview"));
     EXPECT_FALSE(foundInGLSLCode("GL_OVR_multiview"));
 
@@ -621,7 +622,7 @@ TEST_F(WEBGLMultiviewFragmentShaderTest, ViewIDDeclaredAsFlatInput)
         "}\n";
     mExtraCompileOptions |= SH_INITIALIZE_BUILTINS_FOR_INSTANCED_MULTIVIEW;
     compileAssumeSuccess(shaderString);
-    VariableOccursNTimes(mASTRoot, "ViewID_OVR", EvqFlatIn, 1u);
+    VariableOccursNTimes(mASTRoot, ImmutableString("ViewID_OVR"), EvqFlatIn, 1u);
 }
 
 // Test that ViewID_OVR is declared as a flat output variable in an ESSL 1.00 vertex shader.
@@ -634,7 +635,7 @@ TEST_F(WEBGLMultiviewVertexShaderTest, ViewIDDeclaredAsFlatOutput)
         "}\n";
     mExtraCompileOptions |= SH_INITIALIZE_BUILTINS_FOR_INSTANCED_MULTIVIEW;
     compileAssumeSuccess(shaderString);
-    VariableOccursNTimes(mASTRoot, "ViewID_OVR", EvqFlatOut, 2u);
+    VariableOccursNTimes(mASTRoot, ImmutableString("ViewID_OVR"), EvqFlatOut, 2u);
 }
 
 // The test checks that the GL_NV_viewport_array2 extension is emitted in a vertex shader if the
@@ -690,11 +691,11 @@ TEST_F(WEBGLMultiviewFragmentShaderOutputCodeTest, ViewportArray2IsNotEmitted)
 TEST_F(WEBGLMultiviewComputeShaderOutputCodeTest, ViewportArray2IsNotEmitted)
 {
     const std::string &shaderString =
-        "#version 300 es\n"
-        "#extension GL_OVR_multiview : require\n"
-        "void main()\n"
-        "{\n"
-        "}\n";
+        R"(#version 310 es
+        #extension GL_OVR_multiview : require
+        void main()
+        {
+        })";
     compile(shaderString, SH_INITIALIZE_BUILTINS_FOR_INSTANCED_MULTIVIEW |
                               SH_SELECT_VIEW_IN_NV_GLSL_VERTEX_SHADER);
     EXPECT_FALSE(foundInGLSLCode("#extension GL_NV_viewport_array2"));

@@ -2,8 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifndef V8_INVALIDATED_SLOTS_H
-#define V8_INVALIDATED_SLOTS_H
+#ifndef V8_HEAP_INVALIDATED_SLOTS_H_
+#define V8_HEAP_INVALIDATED_SLOTS_H_
 
 #include <map>
 #include <stack>
@@ -42,6 +42,7 @@ class InvalidatedSlotsFilter {
   Address invalidated_end_;
   HeapObject* invalidated_object_;
   int invalidated_object_size_;
+  bool slots_in_free_space_are_valid_;
   InvalidatedSlots empty_;
 #ifdef DEBUG
   Address last_slot_;
@@ -51,4 +52,4 @@ class InvalidatedSlotsFilter {
 }  // namespace internal
 }  // namespace v8
 
-#endif  // V8_INVALIDATED_SLOTS_H
+#endif  // V8_HEAP_INVALIDATED_SLOTS_H_

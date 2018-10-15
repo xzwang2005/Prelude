@@ -20,8 +20,7 @@ class AstValueFactory;
 class AstRawString;
 class Declaration;
 class ParseInfo;
-class PreParsedScopeData;
-class ProducedPreParsedScopeData;
+class PreParsedScopeDataBuilder;
 class SloppyBlockFunctionStatement;
 class Statement;
 class StringSet;
@@ -78,8 +77,6 @@ class SloppyBlockFunctionMap : public ZoneHashMap {
   int count_;
 };
 
-enum class AnalyzeMode { kRegular, kDebugger };
-
 // Global invariants after AST construction: Each reference (i.e. identifier)
 // to a JavaScript variable (including global properties) is represented by a
 // VariableProxy node. Immediately after AST construction and before variable
@@ -116,7 +113,7 @@ class V8_EXPORT_PRIVATE Scope : public NON_EXPORTED_BASE(ZoneObject) {
   ModuleScope* AsModuleScope();
   const ModuleScope* AsModuleScope() const;
 
-  class Snapshot final BASE_EMBEDDED {
+  class Snapshot final {
    public:
     explicit Snapshot(Scope* scope);
     ~Snapshot();
@@ -134,7 +131,8 @@ class V8_EXPORT_PRIVATE Scope : public NON_EXPORTED_BASE(ZoneObject) {
 
   enum class DeserializationMode { kIncludingVariables, kScopesOnly };
 
-  static Scope* DeserializeScopeChain(Zone* zone, ScopeInfo* scope_info,
+  static Scope* DeserializeScopeChain(Isolate* isolate, Zone* zone,
+                                      ScopeInfo* scope_info,
                                       DeclarationScope* script_scope,
                                       AstValueFactory* ast_value_factory,
                                       DeserializationMode deserialization_mode);
@@ -219,8 +217,7 @@ class V8_EXPORT_PRIVATE Scope : public NON_EXPORTED_BASE(ZoneObject) {
     DCHECK(!already_resolved_);
     DCHECK_EQ(factory->zone(), zone());
     VariableProxy* proxy = factory->NewVariableProxy(name, kind, start_pos);
-    proxy->set_next_unresolved(unresolved_);
-    unresolved_ = proxy;
+    AddUnresolved(proxy);
     return proxy;
   }
 
@@ -256,7 +253,7 @@ class V8_EXPORT_PRIVATE Scope : public NON_EXPORTED_BASE(ZoneObject) {
   // which is an error even though the two 'e's are declared in different
   // scopes.
   Declaration* CheckLexDeclarationsConflictingWith(
-      const ZoneList<const AstRawString*>& names);
+      const ZonePtrList<const AstRawString>& names);
 
   // ---------------------------------------------------------------------------
   // Scope-specific info.
@@ -334,14 +331,6 @@ class V8_EXPORT_PRIVATE Scope : public NON_EXPORTED_BASE(ZoneObject) {
   bool is_hidden() const { return is_hidden_; }
   void set_is_hidden() { is_hidden_ = true; }
 
-  // In some cases we want to force context allocation for a whole scope.
-  void ForceContextAllocation() {
-    DCHECK(!already_resolved_);
-    force_context_allocation_ = true;
-  }
-  bool has_forced_context_allocation() const {
-    return force_context_allocation_;
-  }
   void ForceContextAllocationForParameters() {
     DCHECK(!already_resolved_);
     force_context_allocation_for_parameters_ = true;
@@ -374,7 +363,8 @@ class V8_EXPORT_PRIVATE Scope : public NON_EXPORTED_BASE(ZoneObject) {
   // Whether this needs to be represented by a runtime context.
   bool NeedsContext() const {
     // Catch scopes always have heap slots.
-    DCHECK(!is_catch_scope() || num_heap_slots() > 0);
+    DCHECK_IMPLIES(is_catch_scope(), num_heap_slots() > 0);
+    DCHECK_IMPLIES(is_with_scope(), num_heap_slots() > 0);
     return num_heap_slots() > 0;
   }
 
@@ -403,6 +393,8 @@ class V8_EXPORT_PRIVATE Scope : public NON_EXPORTED_BASE(ZoneObject) {
     DCHECK_EQ(1, num_var());
     return static_cast<Variable*>(variables_.Start()->value);
   }
+
+  bool ShouldBanArguments();
 
   // ---------------------------------------------------------------------------
   // Variable allocation.
@@ -486,6 +478,9 @@ class V8_EXPORT_PRIVATE Scope : public NON_EXPORTED_BASE(ZoneObject) {
     return false;
   }
 
+  static void* const kDummyPreParserVariable;
+  static void* const kDummyPreParserLexicalVariable;
+
  protected:
   explicit Scope(Zone* zone);
 
@@ -531,7 +526,7 @@ class V8_EXPORT_PRIVATE Scope : public NON_EXPORTED_BASE(ZoneObject) {
   ThreadedList<Variable> locals_;
   // Unresolved variables referred to from this scope. The proxies themselves
   // form a linked list of all unresolved proxies.
-  VariableProxy* unresolved_;
+  ThreadedList<VariableProxy> unresolved_list_;
   // Declarations.
   ThreadedList<Declaration> decls_;
 
@@ -593,17 +588,20 @@ class V8_EXPORT_PRIVATE Scope : public NON_EXPORTED_BASE(ZoneObject) {
   // scope, and stopping when reaching the outer_scope_end scope. If the code is
   // executed because of a call to 'eval', the context parameter should be set
   // to the calling context of 'eval'.
-  Variable* LookupRecursive(VariableProxy* proxy, Scope* outer_scope_end);
+  Variable* LookupRecursive(ParseInfo* info, VariableProxy* proxy,
+                            Scope* outer_scope_end);
   void ResolveTo(ParseInfo* info, VariableProxy* proxy, Variable* var);
-  void ResolveVariable(ParseInfo* info, VariableProxy* proxy);
-  void ResolveVariablesRecursively(ParseInfo* info);
+  V8_WARN_UNUSED_RESULT bool ResolveVariable(ParseInfo* info,
+                                             VariableProxy* proxy);
+  V8_WARN_UNUSED_RESULT bool ResolveVariablesRecursively(ParseInfo* info);
 
   // Finds free variables of this scope. This mutates the unresolved variables
   // list along the way, so full resolution cannot be done afterwards.
   // If a ParseInfo* is passed, non-free variables will be resolved.
-  VariableProxy* FetchFreeVariables(DeclarationScope* max_outer_scope,
-                                    ParseInfo* info = nullptr,
-                                    VariableProxy* stack = nullptr);
+  template <typename T>
+  void ResolveScopesThenForEachVariable(DeclarationScope* max_outer_scope,
+                                        T variable_proxy_stackvisitor,
+                                        ParseInfo* info = nullptr);
 
   // Predicates.
   bool MustAllocate(Variable* var);
@@ -650,12 +648,7 @@ class V8_EXPORT_PRIVATE DeclarationScope : public Scope {
   // Creates a script scope.
   DeclarationScope(Zone* zone, AstValueFactory* ast_value_factory);
 
-  bool IsDeclaredParameter(const AstRawString* name) {
-    // If IsSimpleParameterList is false, duplicate parameters are not allowed,
-    // however `arguments` may be allowed if function is not strict code. Thus,
-    // the assumptions explained above do not hold.
-    return params_.Contains(variables_.Lookup(name));
-  }
+  bool IsDeclaredParameter(const AstRawString* name);
 
   FunctionKind function_kind() const { return function_kind_; }
 
@@ -703,6 +696,10 @@ class V8_EXPORT_PRIVATE DeclarationScope : public Scope {
 
   bool asm_module() const { return asm_module_; }
   void set_asm_module();
+
+  bool should_ban_arguments() const {
+    return IsClassFieldsInitializerFunction(function_kind());
+  }
 
   void DeclareThis(AstValueFactory* ast_value_factory);
   void DeclareArguments(AstValueFactory* ast_value_factory);
@@ -809,10 +806,20 @@ class V8_EXPORT_PRIVATE DeclarationScope : public Scope {
     has_simple_parameters_ = false;
   }
 
+  // Returns whether the arguments object aliases formal parameters.
+  CreateArgumentsType GetArgumentsType() const {
+    DCHECK(is_function_scope());
+    DCHECK(!is_arrow_scope());
+    DCHECK_NOT_NULL(arguments_);
+    return is_sloppy(language_mode()) && has_simple_parameters()
+               ? CreateArgumentsType::kMappedArguments
+               : CreateArgumentsType::kUnmappedArguments;
+  }
+
   // The local variable 'arguments' if we need to allocate it; nullptr
   // otherwise.
   Variable* arguments() const {
-    DCHECK(!is_arrow_scope() || arguments_ == nullptr);
+    DCHECK_IMPLIES(is_arrow_scope(), arguments_ == nullptr);
     return arguments_;
   }
 
@@ -851,7 +858,12 @@ class V8_EXPORT_PRIVATE DeclarationScope : public Scope {
   // Compute top scope and allocate variables. For lazy compilation the top
   // scope only contains the single lazily compiled function, so this
   // doesn't re-allocate variables repeatedly.
-  static void Analyze(ParseInfo* info);
+  //
+  // Returns false if private fields can not be resolved and
+  // ParseInfo's pending_error_handler will be populated with an
+  // error. Otherwise, returns true.
+  V8_WARN_UNUSED_RESULT
+  static bool Analyze(ParseInfo* info);
 
   // To be called during parsing. Do just enough scope analysis that we can
   // discard the Scope contents for lazily compiled functions. In particular,
@@ -862,10 +874,9 @@ class V8_EXPORT_PRIVATE DeclarationScope : public Scope {
 
   // Allocate ScopeInfos for top scope and any inner scopes that need them.
   // Does nothing if ScopeInfo is already allocated.
-  static void AllocateScopeInfos(ParseInfo* info, Isolate* isolate,
-                                 AnalyzeMode mode);
+  static void AllocateScopeInfos(ParseInfo* info, Isolate* isolate);
 
-  Handle<StringSet> CollectNonLocals(ParseInfo* info,
+  Handle<StringSet> CollectNonLocals(Isolate* isolate, ParseInfo* info,
                                      Handle<StringSet> non_locals);
 
   // Determine if we can use lazy compilation for this scope.
@@ -897,18 +908,26 @@ class V8_EXPORT_PRIVATE DeclarationScope : public Scope {
     is_skipped_function_ = is_skipped_function;
   }
 
+  bool has_inferred_function_name() const {
+    return has_inferred_function_name_;
+  }
+  void set_has_inferred_function_name(bool value) {
+    DCHECK(is_function_scope());
+    has_inferred_function_name_ = value;
+  }
+
   // Save data describing the context allocation of the variables in this scope
   // and its subscopes (except scopes at the laziness boundary). The data is
   // saved in produced_preparsed_scope_data_.
   void SavePreParsedScopeDataForDeclarationScope();
 
-  void set_produced_preparsed_scope_data(
-      ProducedPreParsedScopeData* produced_preparsed_scope_data) {
-    produced_preparsed_scope_data_ = produced_preparsed_scope_data;
+  void set_preparsed_scope_data_builder(
+      PreParsedScopeDataBuilder* preparsed_scope_data_builder) {
+    preparsed_scope_data_builder_ = preparsed_scope_data_builder;
   }
 
-  ProducedPreParsedScopeData* produced_preparsed_scope_data() const {
-    return produced_preparsed_scope_data_;
+  PreParsedScopeDataBuilder* preparsed_scope_data_builder() const {
+    return preparsed_scope_data_builder_;
   }
 
  private:
@@ -922,7 +941,9 @@ class V8_EXPORT_PRIVATE DeclarationScope : public Scope {
   // In the case of code compiled and run using 'eval', the context
   // parameter is the context in which eval was called.  In all other
   // cases the context parameter is an empty handle.
-  void AllocateVariables(ParseInfo* info);
+  //
+  // Returns false if private fields can not be resolved.
+  bool AllocateVariables(ParseInfo* info);
 
   void SetDefaults();
 
@@ -946,9 +967,10 @@ class V8_EXPORT_PRIVATE DeclarationScope : public Scope {
   bool is_being_lazily_parsed_ : 1;
 #endif
   bool is_skipped_function_ : 1;
+  bool has_inferred_function_name_ : 1;
 
   // Parameter list in source order.
-  ZoneList<Variable*> params_;
+  ZonePtrList<Variable> params_;
   // Map of function names to lists of functions defined in sloppy blocks
   SloppyBlockFunctionMap* sloppy_block_function_map_;
   // Convenience variable.
@@ -961,7 +983,7 @@ class V8_EXPORT_PRIVATE DeclarationScope : public Scope {
   Variable* arguments_;
 
   // For producing the scope allocation data during preparsing.
-  ProducedPreParsedScopeData* produced_preparsed_scope_data_;
+  PreParsedScopeDataBuilder* preparsed_scope_data_builder_;
 
   struct RareData : public ZoneObject {
     // Convenience variable; Subclass constructor only
@@ -1015,7 +1037,8 @@ class ModuleScope final : public DeclarationScope {
   // The generated ModuleDescriptor does not preserve all information.  In
   // particular, its module_requests map will be empty because we no longer need
   // the map after parsing.
-  ModuleScope(Handle<ScopeInfo> scope_info, AstValueFactory* ast_value_factory);
+  ModuleScope(Isolate* isolate, Handle<ScopeInfo> scope_info,
+              AstValueFactory* ast_value_factory);
 
   ModuleDescriptor* module() const {
     DCHECK_NOT_NULL(module_descriptor_);

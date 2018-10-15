@@ -9,8 +9,11 @@ namespace ui {
 void LayerDelegate::OnLayerBoundsChanged(const gfx::Rect& old_bounds,
                                          PropertyChangeReason reason) {}
 
-void LayerDelegate::OnLayerTransformed(PropertyChangeReason reason) {}
+void LayerDelegate::OnLayerTransformed(const gfx::Transform& old_transform,
+                                       PropertyChangeReason reason) {}
 
 void LayerDelegate::OnLayerOpacityChanged(PropertyChangeReason reason) {}
+
+void LayerDelegate::OnLayerAlphaShapeChanged() {}
 
 }  // namespace ui

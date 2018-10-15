@@ -80,7 +80,7 @@ def CheckChangeWasUploaded(input_api, output_api):
 
 ### Content checks
 
-def CheckAuthorizedAuthor(input_api, output_api):
+def CheckAuthorizedAuthor(input_api, output_api, bot_whitelist=None):
   """For non-googler/chromites committers, verify the author's email address is
   in AUTHORS.
   """
@@ -93,6 +93,11 @@ def CheckAuthorizedAuthor(input_api, output_api):
   if not author:
     input_api.logging.info('No author, skipping AUTHOR check')
     return []
+
+  # This is used for CLs created by trusted robot accounts.
+  if bot_whitelist and author in bot_whitelist:
+    return []
+
   authors_path = input_api.os_path.join(
       input_api.PresubmitLocalPath(), 'AUTHORS')
   valid_authors = (
@@ -528,11 +533,7 @@ def GetUnitTests(input_api, output_api, unit_tests, env=None):
 
   results = []
   for unit_test in unit_tests:
-    cmd = []
-    if input_api.platform == 'win32' and unit_test.endswith('.py'):
-      # Windows needs some help.
-      cmd = [input_api.python_executable]
-    cmd.append(unit_test)
+    cmd = [unit_test]
     if input_api.verbose:
       cmd.append('--verbose')
     kwargs = {'cwd': input_api.PresubmitLocalPath()}
@@ -611,6 +612,7 @@ def GetPythonUnitTests(input_api, output_api, unit_tests):
       if env.get('PYTHONPATH'):
         backpath.append(env.get('PYTHONPATH'))
       env['PYTHONPATH'] = input_api.os_path.pathsep.join((backpath))
+      env.pop('VPYTHON_CLEAR_PYTHONPATH', None)
     cmd = [input_api.python_executable, '-m', '%s' % unit_test]
     results.append(input_api.Command(
         name=unit_test_name,
@@ -730,12 +732,11 @@ def GetPylint(input_api, output_api, white_list=None, black_list=None,
 
   input_api.logging.info('Running pylint on %d files', len(files))
   input_api.logging.debug('Running pylint on: %s', files)
-  # Copy the system path to the environment so pylint can find the right
-  # imports.
   env = input_api.environ.copy()
-  import sys
   env['PYTHONPATH'] = input_api.os_path.pathsep.join(
-      extra_paths_list + sys.path).encode('utf8')
+    extra_paths_list).encode('utf8')
+  env.pop('VPYTHON_CLEAR_PYTHONPATH', None)
+  input_api.logging.debug('  with extra PYTHONPATH: %r', extra_paths_list)
 
   def GetPylintCmd(flist, extra, parallel):
     # Windows needs help running python files so we explicitly specify
@@ -797,15 +798,6 @@ def RunPylint(input_api, *args, **kwargs):
   return input_api.RunTests(GetPylint(input_api, *args, **kwargs), False)
 
 
-def CheckRietveldTryJobExecution(dummy_input_api, output_api,
-                                 dummy_host_url, dummy_platforms,
-                                 dummy_owner):
-  return [
-    output_api.PresubmitNotifyResult(
-        'CheckRietveldTryJobExecution is deprecated, please remove it.')
-  ]
-
-
 def CheckBuildbotPendingBuilds(input_api, output_api, url, max_pendings,
     ignored):
   try:
@@ -839,9 +831,29 @@ def CheckBuildbotPendingBuilds(input_api, output_api, url, max_pendings,
   return []
 
 
+def CheckOwnersFormat(input_api, output_api):
+  affected_files = set([
+      f.LocalPath()
+      for f in input_api.change.AffectedFiles()
+      if 'OWNERS' in f.LocalPath() and f.Action() != 'D'
+  ])
+  if not affected_files:
+    return []
+  try:
+    input_api.owners_db.load_data_needed_for(affected_files)
+    return []
+  except Exception as e:
+    return [output_api.PresubmitError(
+        'Error parsing OWNERS files:\n%s' % e)]
+
+
 def CheckOwners(input_api, output_api, source_file_filter=None):
+  affected_files = set([f.LocalPath() for f in
+      input_api.change.AffectedFiles(file_filter=source_file_filter)])
+  affects_owners = any('OWNERS' in name for name in affected_files)
+
   if input_api.is_committing:
-    if input_api.tbr:
+    if input_api.tbr and not affects_owners:
       return [output_api.PresubmitNotifyResult(
           '--tbr was specified, skipping OWNERS check')]
     needed = 'LGTM from an OWNER'
@@ -852,14 +864,12 @@ def CheckOwners(input_api, output_api, source_file_filter=None):
             'This is a dry run, but these failures would be reported on ' +
             'commit:\n' + text)
     else:
-      return [output_api.PresubmitError("OWNERS check failed: this change has "
-          "no Rietveld issue number, so we can't check it for approvals.")]
+      return [output_api.PresubmitError(
+          'OWNERS check failed: this CL has no Gerrit change number, '
+          'so we can\'t check it for approvals.')]
   else:
     needed = 'OWNER reviewers'
     output_fn = output_api.PresubmitNotifyResult
-
-  affected_files = set([f.LocalPath() for f in
-      input_api.change.AffectedFiles(file_filter=source_file_filter)])
 
   owners_db = input_api.owners_db
   owners_db.override_files = input_api.change.OriginalOwnersFiles()
@@ -870,24 +880,22 @@ def CheckOwners(input_api, output_api, source_file_filter=None):
 
   owner_email = owner_email or input_api.change.author_email
 
-  if owner_email:
-    reviewers_plus_owner = set([owner_email]).union(reviewers)
-    missing_files = owners_db.files_not_covered_by(affected_files,
-        reviewers_plus_owner)
-  else:
-    missing_files = owners_db.files_not_covered_by(affected_files, reviewers)
+  finder = input_api.owners_finder(
+      affected_files, input_api.change.RepositoryRoot(),
+      owner_email, reviewers, fopen=file, os_path=input_api.os_path,
+      email_postfix='', disable_color=True,
+      override_files=input_api.change.OriginalOwnersFiles())
+  missing_files = finder.unreviewed_files
 
   if missing_files:
     output_list = [
         output_fn('Missing %s for these files:\n    %s' %
                   (needed, '\n    '.join(sorted(missing_files))))]
+    if input_api.tbr and affects_owners:
+      output_list.append(output_fn('The CL affects an OWNERS file, so TBR will '
+                                   'be ignored.'))
     if not input_api.is_committing:
       suggested_owners = owners_db.reviewers_for(missing_files, owner_email)
-      finder = input_api.owners_finder(
-          missing_files, input_api.change.RepositoryRoot(),
-          owner_email, fopen=file, os_path=input_api.os_path,
-          email_postfix='', disable_color=True,
-          override_files=input_api.change.OriginalOwnersFiles())
       owners_with_comments = []
       def RecordComments(text):
         owners_with_comments.append(finder.print_indent() + text)
@@ -903,65 +911,8 @@ def CheckOwners(input_api, output_api, source_file_filter=None):
     return [output_fn('Missing LGTM from someone other than %s' % owner_email)]
   return []
 
+
 def GetCodereviewOwnerAndReviewers(input_api, email_regexp, approval_needed):
-  """Return the owner and reviewers of a change, if any.
-
-  If approval_needed is True, only reviewers who have approved the change
-  will be returned.
-  """
-  # Rietveld is default.
-  func = _RietveldOwnerAndReviewers
-  if input_api.gerrit:
-    func = _GerritOwnerAndReviewers
-  return func(input_api, email_regexp, approval_needed)
-
-
-def _GetRietveldIssueProps(input_api, messages):
-  """Gets the issue properties from rietveld."""
-  issue = input_api.change.issue
-  if issue and input_api.rietveld:
-    return input_api.rietveld.get_issue_properties(
-        issue=int(issue), messages=messages)
-
-
-def _ReviewersFromChange(change):
-  """Return the reviewers specified in the |change|, if any."""
-  reviewers = set()
-  reviewers.update(change.ReviewersFromDescription())
-  reviewers.update(change.TBRsFromDescription())
-
-  # Drop reviewers that aren't specified in email address format.
-  return set(reviewer for reviewer in reviewers if '@' in reviewer)
-
-
-def _match_reviewer_email(r, owner_email, email_regexp):
-  return email_regexp.match(r) and r != owner_email
-
-def _RietveldOwnerAndReviewers(input_api, email_regexp, approval_needed=False):
-  """Return the owner and reviewers of a change, if any.
-
-  If approval_needed is True, only reviewers who have approved the change
-  will be returned.
-  """
-  issue_props = _GetRietveldIssueProps(input_api, True)
-  if not issue_props:
-    return None, (set() if approval_needed else
-                  _ReviewersFromChange(input_api.change))
-
-  if not approval_needed:
-    return issue_props['owner_email'], set(issue_props['reviewers'])
-
-  owner_email = issue_props['owner_email']
-
-  messages = issue_props.get('messages', [])
-  approvers = set(
-      m['sender'] for m in messages
-      if m.get('approval') and _match_reviewer_email(m['sender'], owner_email,
-                                                     email_regexp))
-  return owner_email, approvers
-
-
-def _GerritOwnerAndReviewers(input_api, email_regexp, approval_needed=False):
   """Return the owner and reviewers of a change, if any.
 
   If approval_needed is True, only reviewers who have approved the change
@@ -979,6 +930,20 @@ def _GerritOwnerAndReviewers(input_api, email_regexp, approval_needed=False):
   input_api.logging.debug('owner: %s; approvals given by: %s',
                           owner_email, ', '.join(sorted(reviewers)))
   return owner_email, reviewers
+
+
+def _ReviewersFromChange(change):
+  """Return the reviewers specified in the |change|, if any."""
+  reviewers = set()
+  reviewers.update(change.ReviewersFromDescription())
+  reviewers.update(change.TBRsFromDescription())
+
+  # Drop reviewers that aren't specified in email address format.
+  return set(reviewer for reviewer in reviewers if '@' in reviewer)
+
+
+def _match_reviewer_email(r, owner_email, email_regexp):
+  return email_regexp.match(r) and r != owner_email
 
 
 def CheckSingletonInHeaders(input_api, output_api, source_file_filter=None):
@@ -1057,6 +1022,10 @@ def PanProjectChecks(input_api, output_api,
         print "  %s took a long time: %dms" % (snapshot_memory[1], delta_ms)
     snapshot_memory[:] = (dt2, msg)
 
+  snapshot("checking owners files format")
+  results.extend(input_api.canned_checks.CheckOwnersFormat(
+      input_api, output_api))
+
   if owners_check:
     snapshot("checking owners")
     results.extend(input_api.canned_checks.CheckOwners(
@@ -1091,12 +1060,21 @@ def PanProjectChecks(input_api, output_api,
   return results
 
 
-def CheckPatchFormatted(input_api, output_api, check_js=False):
+def CheckPatchFormatted(
+    input_api, output_api, check_js=False, check_python=False,
+    result_factory=None):
+  result_factory = result_factory or output_api.PresubmitPromptWarning
   import git_cl
-  cmd = ['-C', input_api.change.RepositoryRoot(),
-         'cl', 'format', '--dry-run', '--presubmit']
+
+  display_args = []
   if check_js:
-    cmd.append('--js')
+    display_args.append('--js')
+  if check_python:
+    # --python requires --full
+    display_args.extend(['--python', '--full'])
+
+  cmd = ['-C', input_api.change.RepositoryRoot(),
+         'cl', 'format', '--dry-run', '--presubmit'] + display_args
   presubmit_subdir = input_api.os_path.relpath(
       input_api.PresubmitLocalPath(), input_api.change.RepositoryRoot())
   if presubmit_subdir.startswith('..') or presubmit_subdir == '.':
@@ -1112,10 +1090,11 @@ def CheckPatchFormatted(input_api, output_api, check_js=False):
       short_path = presubmit_subdir
     else:
       short_path = input_api.basename(input_api.change.RepositoryRoot())
-    return [output_api.PresubmitPromptWarning(
+    display_args.append(presubmit_subdir)
+    return [result_factory(
       'The %s directory requires source formatting. '
-      'Please run: git cl format %s%s' %
-      (short_path, '--js ' if check_js else '', presubmit_subdir))]
+      'Please run: git cl format %s' %
+      (short_path, ' '.join(display_args)))]
   # As this is just a warning, ignore all other errors if the user
   # happens to have a broken clang-format, doesn't use git, etc etc.
   return []
@@ -1165,15 +1144,22 @@ def CheckCIPDManifest(input_api, output_api, path=None, content=None):
   if path:
     assert content is None, 'Cannot provide both "path" and "content".'
     cmd += ['-ensure-file', path]
+    name = 'Check CIPD manifest %r' % path
   elif content:
     assert path is None, 'Cannot provide both "path" and "content".'
     cmd += ['-ensure-file=-']
     kwargs['stdin'] = content
+    # quick and dirty parser to extract checked packages.
+    packages = [
+      l.split()[0] for l in (ll.strip() for ll in content.splitlines())
+      if ' ' in l and not l.startswith('$')
+    ]
+    name = 'Check CIPD packages from string: %r' % (packages,)
   else:
     raise Exception('Exactly one of "path" or "content" must be provided.')
 
   return input_api.Command(
-      'Check CIPD manifest',
+      name,
       cmd,
       kwargs,
       output_api.PresubmitError)
@@ -1195,6 +1181,29 @@ def CheckCIPDPackages(input_api, output_api, platforms, packages):
   return CheckCIPDManifest(input_api, output_api, content='\n'.join(manifest))
 
 
+def CheckCIPDClientDigests(input_api, output_api, client_version_file):
+  """Verifies that *.digests file was correctly regenerated.
+
+  <client_version_file>.digests file contains pinned hashes of the CIPD client.
+  It is consulted during CIPD client bootstrap and self-update. It should be
+  regenerated each time CIPD client version file changes.
+
+  Args:
+    client_version_file (str): Path to a text file with CIPD client version.
+  """
+  cmd = [
+    'cipd' if not input_api.is_windows else 'cipd.bat',
+    'selfupdate-roll', '-check', '-version-file', client_version_file,
+  ]
+  if input_api.verbose:
+    cmd += ['-log-level', 'debug']
+  return input_api.Command(
+      'Check CIPD client_version_file.digests file',
+      cmd,
+      {'shell': True} if input_api.is_windows else {},  # to resolve cipd.bat
+      output_api.PresubmitError)
+
+
 def CheckVPythonSpec(input_api, output_api, file_filter=None):
   """Validates any changed .vpython files with vpython verification tool.
 
@@ -1210,7 +1219,7 @@ def CheckVPythonSpec(input_api, output_api, file_filter=None):
     A list of input_api.Command objects containing verification commands.
   """
   file_filter = file_filter or (lambda f: f.LocalPath().endswith('.vpython'))
-  affected_files = input_api.AffectedFiles(file_filter=file_filter)
+  affected_files = input_api.AffectedTestableFiles(file_filter=file_filter)
   affected_files = map(lambda f: f.AbsoluteLocalPath(), affected_files)
 
   commands = []
@@ -1228,6 +1237,7 @@ def CheckChangedLUCIConfigs(input_api, output_api):
   import collections
   import base64
   import json
+  import logging
   import urllib2
 
   import auth
@@ -1236,13 +1246,16 @@ def CheckChangedLUCIConfigs(input_api, output_api):
   LUCI_CONFIG_HOST_NAME = 'luci-config.appspot.com'
 
   cl = git_cl.Changelist()
-  remote, remote_branch = cl.GetRemoteBranch()
-  if remote_branch.startswith('refs/remotes/%s/' % remote):
-    remote_branch = remote_branch.replace(
-        'refs/remotes/%s/' % remote, 'refs/heads/', 1)
-  if remote_branch.startswith('refs/remotes/branch-heads/'):
-    remote_branch = remote_branch.replace(
-        'refs/remotes/branch-heads/', 'refs/branch-heads/', 1)
+  if input_api.change.issue and input_api.gerrit:
+    remote_branch = input_api.gerrit.GetDestRef(input_api.change.issue)
+  else:
+    remote, remote_branch = cl.GetRemoteBranch()
+    if remote_branch.startswith('refs/remotes/%s/' % remote):
+      remote_branch = remote_branch.replace(
+          'refs/remotes/%s/' % remote, 'refs/heads/', 1)
+    if remote_branch.startswith('refs/remotes/branch-heads/'):
+      remote_branch = remote_branch.replace(
+          'refs/remotes/branch-heads/', 'refs/branch-heads/', 1)
 
   remote_host_url = cl.GetRemoteUrl()
   if not remote_host_url:
@@ -1279,6 +1292,7 @@ def CheckChangedLUCIConfigs(input_api, output_api):
   if not config_sets:
     return [output_api.PresubmitWarning('No config_sets were returned')]
   loc_pref = '%s/+/%s/' % (remote_host_url, remote_branch)
+  logging.debug('Derived location prefix: %s', loc_pref)
   dir_to_config_set = {
     '%s/' % cs['location'][len(loc_pref):].rstrip('/'): cs['config_set']
     for cs in config_sets
@@ -1289,6 +1303,7 @@ def CheckChangedLUCIConfigs(input_api, output_api):
   for f in input_api.AffectedFiles():
     # windows
     file_path = f.LocalPath().replace(_os.sep, '/')
+    logging.debug('Affected file path: %s', file_path)
     for dr, cs in dir_to_config_set.iteritems():
       if dr == '/' or file_path.startswith(dr):
         cs_to_files[cs].append({

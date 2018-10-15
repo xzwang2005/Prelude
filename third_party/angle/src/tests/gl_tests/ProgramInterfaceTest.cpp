@@ -6,6 +6,7 @@
 
 // ProgramInterfaceTest: Tests of program interfaces.
 
+#include "common/string_utils.h"
 #include "test_utils/ANGLETest.h"
 #include "test_utils/gl_raii.h"
 
@@ -31,15 +32,6 @@ class ProgramInterfaceTestES31 : public ANGLETest
 // Tests glGetProgramResourceIndex.
 TEST_P(ProgramInterfaceTestES31, GetResourceIndex)
 {
-    const std::string &vertexShaderSource =
-        "#version 310 es\n"
-        "precision highp float;\n"
-        "in highp vec4 position;\n"
-        "void main()\n"
-        "{\n"
-        "    gl_Position = position;\n"
-        "}";
-
     const std::string &fragmentShaderSource =
         "#version 310 es\n"
         "precision highp float;\n"
@@ -50,9 +42,10 @@ TEST_P(ProgramInterfaceTestES31, GetResourceIndex)
         "    oColor = color;\n"
         "}";
 
-    ANGLE_GL_PROGRAM(program, vertexShaderSource, fragmentShaderSource);
+    ANGLE_GL_PROGRAM(program, essl31_shaders::vs::Simple(), fragmentShaderSource);
 
-    GLuint index = glGetProgramResourceIndex(program, GL_PROGRAM_INPUT, "position");
+    GLuint index =
+        glGetProgramResourceIndex(program, GL_PROGRAM_INPUT, essl31_shaders::PositionAttrib());
     EXPECT_GL_NO_ERROR();
     EXPECT_NE(GL_INVALID_INDEX, index);
 
@@ -75,15 +68,6 @@ TEST_P(ProgramInterfaceTestES31, GetResourceIndex)
 // Tests glGetProgramResourceName.
 TEST_P(ProgramInterfaceTestES31, GetResourceName)
 {
-    const std::string &vertexShaderSource =
-        "#version 310 es\n"
-        "precision highp float;\n"
-        "in highp vec4 position;\n"
-        "void main()\n"
-        "{\n"
-        "    gl_Position = position;\n"
-        "}";
-
     const std::string &fragmentShaderSource =
         "#version 310 es\n"
         "precision highp float;\n"
@@ -94,9 +78,10 @@ TEST_P(ProgramInterfaceTestES31, GetResourceName)
         "    oColor[0] = color;\n"
         "}";
 
-    ANGLE_GL_PROGRAM(program, vertexShaderSource, fragmentShaderSource);
+    ANGLE_GL_PROGRAM(program, essl31_shaders::vs::Simple(), fragmentShaderSource);
 
-    GLuint index = glGetProgramResourceIndex(program, GL_PROGRAM_INPUT, "position");
+    GLuint index =
+        glGetProgramResourceIndex(program, GL_PROGRAM_INPUT, essl31_shaders::PositionAttrib());
     EXPECT_GL_NO_ERROR();
     EXPECT_NE(GL_INVALID_INDEX, index);
 
@@ -104,13 +89,13 @@ TEST_P(ProgramInterfaceTestES31, GetResourceName)
     GLsizei length;
     glGetProgramResourceName(program, GL_PROGRAM_INPUT, index, sizeof(name), &length, name);
     EXPECT_GL_NO_ERROR();
-    EXPECT_EQ(8, length);
-    EXPECT_EQ("position", std::string(name));
+    EXPECT_EQ(static_cast<int>(strlen(essl31_shaders::PositionAttrib())), length);
+    EXPECT_EQ(essl31_shaders::PositionAttrib(), std::string(name));
 
     glGetProgramResourceName(program, GL_PROGRAM_INPUT, index, 4, &length, name);
     EXPECT_GL_NO_ERROR();
     EXPECT_EQ(3, length);
-    EXPECT_EQ("pos", std::string(name));
+    EXPECT_TRUE(angle::BeginsWith(essl31_shaders::PositionAttrib(), name));
 
     glGetProgramResourceName(program, GL_PROGRAM_INPUT, index, -1, &length, name);
     EXPECT_GL_ERROR(GL_INVALID_VALUE);
@@ -268,15 +253,6 @@ TEST_P(ProgramInterfaceTestES31, GetResource)
 // Tests glGetProgramInterfaceiv.
 TEST_P(ProgramInterfaceTestES31, GetProgramInterface)
 {
-    const std::string &vertexShaderSource =
-        "#version 310 es\n"
-        "precision highp float;\n"
-        "in highp vec4 position;\n"
-        "void main()\n"
-        "{\n"
-        "    gl_Position = position;\n"
-        "}";
-
     const std::string &fragmentShaderSource =
         "#version 310 es\n"
         "precision highp float;\n"
@@ -286,12 +262,20 @@ TEST_P(ProgramInterfaceTestES31, GetProgramInterface)
         "    vec4 mem0;\n"
         "    vec4 mem1;\n"
         "} instance;\n"
+        "layout(std430) buffer shaderStorageBlock1 {\n"
+        "    vec3 target;\n"
+        "};\n"
+        "layout(std430) buffer shaderStorageBlock2 {\n"
+        "    vec3 target;\n"
+        "} blockInstance2[1];\n"
         "void main()\n"
         "{\n"
         "    oColor = color;\n"
+        "    target = vec3(0, 0, 0);\n"
+        "    blockInstance2[0].target = vec3(1, 1, 1);\n"
         "}";
 
-    ANGLE_GL_PROGRAM(program, vertexShaderSource, fragmentShaderSource);
+    ANGLE_GL_PROGRAM(program, essl31_shaders::vs::Simple(), fragmentShaderSource);
 
     GLint num;
     glGetProgramInterfaceiv(program, GL_PROGRAM_INPUT, GL_ACTIVE_RESOURCES, &num);
@@ -300,7 +284,7 @@ TEST_P(ProgramInterfaceTestES31, GetProgramInterface)
 
     glGetProgramInterfaceiv(program, GL_PROGRAM_INPUT, GL_MAX_NAME_LENGTH, &num);
     EXPECT_GL_NO_ERROR();
-    EXPECT_EQ(9, num);
+    EXPECT_EQ(static_cast<GLint>(strlen(essl3_shaders::PositionAttrib())) + 1, num);
 
     glGetProgramInterfaceiv(program, GL_PROGRAM_INPUT, GL_MAX_NUM_ACTIVE_VARIABLES, &num);
     EXPECT_GL_ERROR(GL_INVALID_OPERATION);
@@ -338,6 +322,18 @@ TEST_P(ProgramInterfaceTestES31, GetProgramInterface)
 
     glGetProgramInterfaceiv(program, GL_UNIFORM, GL_MAX_NUM_ACTIVE_VARIABLES, &num);
     EXPECT_GL_ERROR(GL_INVALID_OPERATION);
+
+    glGetProgramInterfaceiv(program, GL_SHADER_STORAGE_BLOCK, GL_ACTIVE_RESOURCES, &num);
+    EXPECT_GL_NO_ERROR();
+    EXPECT_EQ(2, num);
+
+    glGetProgramInterfaceiv(program, GL_SHADER_STORAGE_BLOCK, GL_MAX_NAME_LENGTH, &num);
+    EXPECT_GL_NO_ERROR();
+    EXPECT_EQ(23, num);  // "shaderStorageBlock2[0]"
+
+    glGetProgramInterfaceiv(program, GL_SHADER_STORAGE_BLOCK, GL_MAX_NUM_ACTIVE_VARIABLES, &num);
+    EXPECT_GL_NO_ERROR();
+    EXPECT_EQ(1, num);
 }
 
 // Tests the resource property query for uniform can be done correctly.
@@ -660,10 +656,9 @@ TEST_P(ProgramInterfaceTestES31, GetBufferVariableProperties)
     EXPECT_EQ(14, params[5]);  // name_length
     EXPECT_LE(0, params[6]);   // offset
 
-    // TODO(jiajia.qin@intel.com): Enable them once the block member staticUse are implemented.
-    // EXPECT_EQ(1, params[7]);  // referenced_by_vertex_shader
-    // EXPECT_EQ(1, params[8]);  // referenced_by_fragment_shader
-    // EXPECT_EQ(0, params[9]);  // referenced_by_compute_shader
+    EXPECT_EQ(1, params[7]);  // referenced_by_vertex_shader
+    EXPECT_EQ(1, params[8]);  // referenced_by_fragment_shader
+    EXPECT_EQ(0, params[9]);  // referenced_by_compute_shader
 
     EXPECT_EQ(1, params[10]);  // top_level_array_size
     EXPECT_LE(0, params[11]);  // top_level_array_stride
@@ -691,10 +686,9 @@ TEST_P(ProgramInterfaceTestES31, GetBufferVariableProperties)
     EXPECT_EQ(8, params[5]);  // name_length
     EXPECT_LE(0, params[6]);  // offset
 
-    // TODO(jiajia.qin@intel.com): Enable them once the block member staticUse are implemented.
-    // EXPECT_EQ(1, params[7]);  // referenced_by_vertex_shader
-    // EXPECT_EQ(0, params[8]);  // referenced_by_fragment_shader
-    // EXPECT_EQ(0, params[9]);  // referenced_by_compute_shader
+    EXPECT_EQ(1, params[7]);  // referenced_by_vertex_shader
+    EXPECT_EQ(0, params[8]);  // referenced_by_fragment_shader
+    EXPECT_EQ(0, params[9]);  // referenced_by_compute_shader
 
     EXPECT_EQ(2, params[10]);   // top_level_array_size
     EXPECT_EQ(80, params[11]);  // top_level_array_stride
@@ -793,6 +787,109 @@ TEST_P(ProgramInterfaceTestES31, GetShaderStorageBlockProperties)
     EXPECT_GL_NO_ERROR();
     EXPECT_EQ(13, length);
     EXPECT_EQ("blockName1[0]", std::string(name));
+}
+
+// Tests transform feedback varying qeury works correctly.
+TEST_P(ProgramInterfaceTestES31, QueryTransformFeedbackVarying)
+{
+    const std::string &vertexShaderSource =
+        R"(#version 310 es
+
+        in vec3 position;\
+        out float outSingleType;
+        out vec2 outWholeArray[2];
+        out vec3 outArrayElements[16];
+        void main() {
+          outSingleType = 0.0;
+          outWholeArray[0] = vec2(position);
+          outArrayElements[7] = vec3(0, 0, 0);
+          outArrayElements[15] = position;
+          gl_Position = vec4(position, 1);
+        })";
+
+    const std::string &fragmentShaderSource =
+        R"(#version 310 es
+
+        precision mediump float;
+        out vec4 color;
+        in float outSingleType;
+        in vec2 outWholeArray[2];
+        in vec3 outArrayElements[16];
+        void main() {
+          color = vec4(0);
+        })";
+
+    std::vector<std::string> tfVaryings;
+    tfVaryings.push_back("outArrayElements[7]");
+    tfVaryings.push_back("outArrayElements[15]");
+    tfVaryings.push_back("outSingleType");
+    tfVaryings.push_back("outWholeArray");
+
+    GLuint program = CompileProgramWithTransformFeedback(vertexShaderSource, fragmentShaderSource,
+                                                         tfVaryings, GL_INTERLEAVED_ATTRIBS);
+    ASSERT_NE(0u, program);
+
+    GLint num;
+    glGetProgramInterfaceiv(program, GL_TRANSFORM_FEEDBACK_VARYING, GL_ACTIVE_RESOURCES, &num);
+    EXPECT_GL_NO_ERROR();
+    EXPECT_EQ(4, num);
+
+    glGetProgramInterfaceiv(program, GL_TRANSFORM_FEEDBACK_VARYING, GL_MAX_NAME_LENGTH, &num);
+    EXPECT_GL_NO_ERROR();
+    EXPECT_EQ(21, num);  // outArrayElements[15]
+
+    // GLES 3.10, Page 77:
+    // For TRANSFORM_FEEDBACK_VARYING, the active resource list will use the variable order
+    // specified in the most recent call to TransformFeedbackVaryings before the last call to
+    // LinkProgram.
+    GLuint index =
+        glGetProgramResourceIndex(program, GL_TRANSFORM_FEEDBACK_VARYING, "outArrayElements[7]");
+    EXPECT_GL_NO_ERROR();
+    EXPECT_EQ(0u, index);
+    index =
+        glGetProgramResourceIndex(program, GL_TRANSFORM_FEEDBACK_VARYING, "outArrayElements[15]");
+    EXPECT_GL_NO_ERROR();
+    EXPECT_EQ(1u, index);
+    index = glGetProgramResourceIndex(program, GL_TRANSFORM_FEEDBACK_VARYING, "outSingleType");
+    EXPECT_GL_NO_ERROR();
+    EXPECT_EQ(2u, index);
+    index = glGetProgramResourceIndex(program, GL_TRANSFORM_FEEDBACK_VARYING, "outWholeArray");
+    EXPECT_GL_NO_ERROR();
+    EXPECT_EQ(3u, index);
+
+    // GLES 3.10, Page 80:
+    // For TRANSFORM_FEEDBACK_VARYING resources, name must match one of the variables to be captured
+    // as specified by a previous call to TransformFeedbackVaryings. Otherwise, INVALID_INDEX is
+    // returned.
+    // If name does not match a resource as described above, the value INVALID_INDEX is returned,
+    // but no GL error is generated.
+    index = glGetProgramResourceIndex(program, GL_TRANSFORM_FEEDBACK_VARYING, "outWholeArray[0]");
+    EXPECT_GL_NO_ERROR();
+    EXPECT_EQ(GL_INVALID_INDEX, index);
+
+    GLenum props[]    = {GL_TYPE, GL_ARRAY_SIZE, GL_NAME_LENGTH};
+    GLsizei propCount = static_cast<GLsizei>(ArraySize(props));
+    GLint params[ArraySize(props)];
+    GLsizei length = 0;
+    // Query properties of 'outArrayElements[15]'.
+    glGetProgramResourceiv(program, GL_TRANSFORM_FEEDBACK_VARYING, 1, propCount, props, propCount,
+                           &length, params);
+    EXPECT_GL_NO_ERROR();
+    EXPECT_EQ(propCount, length);
+    EXPECT_EQ(GL_FLOAT_VEC3, params[0]);  // type
+    EXPECT_EQ(1, params[1]);              // array_size
+    EXPECT_EQ(21, params[2]);             // name_length
+
+    // Query properties of 'outWholeArray'.
+    glGetProgramResourceiv(program, GL_TRANSFORM_FEEDBACK_VARYING, 3, propCount, props, propCount,
+                           &length, params);
+    EXPECT_GL_NO_ERROR();
+    EXPECT_EQ(propCount, length);
+    EXPECT_EQ(GL_FLOAT_VEC2, params[0]);  // type
+    EXPECT_EQ(2, params[1]);              // array_size
+    EXPECT_EQ(14, params[2]);             // name_length
+
+    glDeleteProgram(program);
 }
 
 ANGLE_INSTANTIATE_TEST(ProgramInterfaceTestES31, ES31_OPENGL(), ES31_OPENGLES());

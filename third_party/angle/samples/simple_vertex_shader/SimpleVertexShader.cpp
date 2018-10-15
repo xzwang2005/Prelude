@@ -25,8 +25,8 @@
 class SimpleVertexShaderSample : public SampleApplication
 {
   public:
-    SimpleVertexShaderSample()
-        : SampleApplication("SimpleVertexShader", 1280, 720)
+    SimpleVertexShaderSample(int argc, char **argv)
+        : SampleApplication("SimpleVertexShader", argc, argv)
     {
     }
 
@@ -144,6 +144,6 @@ class SimpleVertexShaderSample : public SampleApplication
 
 int main(int argc, char **argv)
 {
-    SimpleVertexShaderSample app;
+    SimpleVertexShaderSample app(argc, argv);
     return app.run();
 }

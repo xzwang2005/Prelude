@@ -8,50 +8,6 @@
 // APIs to set memory read-write and read-only when required. Protected memory
 // should be set read-write for the minimum amount of time required.
 
-// Variables stored in protected memory must be global variables declared in the
-// PROTECTED_MEMORY_SECTION so they are set to read-only upon start-up.
-
-#ifndef BASE_MEMORY_PROTECTED_MEMORY_H_
-#define BASE_MEMORY_PROTECTED_MEMORY_H_
-
-#include "base/lazy_instance.h"
-#include "base/logging.h"
-#include "base/macros.h"
-#include "base/synchronization/lock.h"
-#include "build/build_config.h"
-
-#define PROTECTED_MEMORY_ENABLED 1
-
-#if defined(OS_LINUX)
-// Define the section read-only
-__asm__(".section protected_memory, \"a\"\n\t");
-#define PROTECTED_MEMORY_SECTION __attribute__((section("protected_memory")))
-
-// Explicitly mark these variables hidden so the symbols are local to the
-// currently built component. Otherwise they are created with global (external)
-// linkage and component builds would break because a single pair of these
-// symbols would override the rest.
-__attribute__((visibility("hidden"))) extern char __start_protected_memory;
-__attribute__((visibility("hidden"))) extern char __stop_protected_memory;
-
-#elif defined(OS_MACOSX) && !defined(OS_IOS)
-// The segment the section is in is defined read-only with a linker flag in
-// build/config/mac/BUILD.gn
-#define PROTECTED_MEMORY_SECTION \
-  __attribute__((section("PROTECTED_MEMORY, protected_memory")))
-extern char __start_protected_memory __asm(
-    "section$start$PROTECTED_MEMORY$protected_memory");
-extern char __stop_protected_memory __asm(
-    "section$end$PROTECTED_MEMORY$protected_memory");
-
-#else
-#undef PROTECTED_MEMORY_ENABLED
-#define PROTECTED_MEMORY_ENABLED 0
-#define PROTECTED_MEMORY_SECTION
-#endif
-
-namespace base {
-
 // Normally mutable variables are held in read-write memory and constant data
 // is held in read-only memory to ensure it is not accidentally overwritten.
 // In some cases we want to hold mutable variables in read-only memory, except
@@ -74,25 +30,93 @@ namespace base {
 // EXAMPLE:
 //
 //  struct Items { void* item1; };
-//  static PROTECTED_MEMORY_SECTION ProtectedMemory<Items> items;
+//  static PROTECTED_MEMORY_SECTION base::ProtectedMemory<Items> items;
 //  void InitializeItems() {
 //    // Explicitly set items read-write before writing to it.
-//    auto writer = AutoWritableMemory::Create(items);
+//    auto writer = base::AutoWritableMemory::Create(items);
 //    items->item1 = /* ... */;
 //    assert(items->item1 != nullptr);
 //    // items is set back to read-only on the destruction of writer
 //  }
 //
 //  using FnPtr = void (*)(void);
-//  PROTECTED_MEMORY_SECTION ProtectedMemory<FnPtr> fnPtr;
+//  PROTECTED_MEMORY_SECTION base::ProtectedMemory<FnPtr> fnPtr;
 //  FnPtr ResolveFnPtr(void) {
 //    // The Initializer nested class is a helper class for creating a static
 //    // initializer for a ProtectedMemory variable. It implicitly sets the
 //    // variable read-write during initialization.
-//    static ProtectedMemory<FnPtr>::Initializer(&fnPtr,
+//    static base::ProtectedMemory<FnPtr>::Initializer I(&fnPtr,
 //      reinterpret_cast<FnPtr>(dlsym(/* ... */)));
 //    return *fnPtr;
 //  }
+
+#ifndef BASE_MEMORY_PROTECTED_MEMORY_H_
+#define BASE_MEMORY_PROTECTED_MEMORY_H_
+
+#include "base/lazy_instance.h"
+#include "base/logging.h"
+#include "base/macros.h"
+#include "base/memory/protected_memory_buildflags.h"
+#include "base/synchronization/lock.h"
+#include "build/build_config.h"
+
+#define PROTECTED_MEMORY_ENABLED 1
+
+// Linking with lld is required to workaround crbug.com/792777.
+// TODO(vtsyrklevich): Remove once support for gold on Android/CrOs is dropped
+#if defined(OS_LINUX) && BUILDFLAG(USE_LLD)
+// Define the section read-only
+__asm__(".section protected_memory, \"a\"\n\t");
+#define PROTECTED_MEMORY_SECTION __attribute__((section("protected_memory")))
+
+// Explicitly mark these variables hidden so the symbols are local to the
+// currently built component. Otherwise they are created with global (external)
+// linkage and component builds would break because a single pair of these
+// symbols would override the rest.
+__attribute__((visibility("hidden"))) extern char __start_protected_memory;
+__attribute__((visibility("hidden"))) extern char __stop_protected_memory;
+
+#elif defined(OS_MACOSX) && !defined(OS_IOS)
+// The segment the section is in is defined read-only with a linker flag in
+// build/config/mac/BUILD.gn
+#define PROTECTED_MEMORY_SECTION \
+  __attribute__((section("PROTECTED_MEMORY, protected_memory")))
+extern char __start_protected_memory __asm(
+    "section$start$PROTECTED_MEMORY$protected_memory");
+extern char __stop_protected_memory __asm(
+    "section$end$PROTECTED_MEMORY$protected_memory");
+
+#elif defined(OS_WIN)
+// Define a read-write prot section. The $a, $mem, and $z 'sub-sections' are
+// merged alphabetically so $a and $z are used to define the start and end of
+// the protected memory section, and $mem holds protected variables.
+// (Note: Sections in Portable Executables are equivalent to segments in other
+// executable formats, so this section is mapped into its own pages.)
+#pragma section("prot$a", read, write)
+#pragma section("prot$mem", read, write)
+#pragma section("prot$z", read, write)
+
+// We want the protected memory section to be read-only, not read-write so we
+// instruct the linker to set the section read-only at link time. We do this
+// at link time instead of compile time, because defining the prot section
+// read-only would cause mis-compiles due to optimizations assuming that the
+// section contents are constant.
+#pragma comment(linker, "/SECTION:prot,R")
+
+__declspec(allocate("prot$a")) __declspec(selectany)
+char __start_protected_memory;
+__declspec(allocate("prot$z")) __declspec(selectany)
+char __stop_protected_memory;
+
+#define PROTECTED_MEMORY_SECTION __declspec(allocate("prot$mem"))
+
+#else
+#undef PROTECTED_MEMORY_ENABLED
+#define PROTECTED_MEMORY_ENABLED 0
+#define PROTECTED_MEMORY_SECTION
+#endif
+
+namespace base {
 
 template <typename T>
 class ProtectedMemory {

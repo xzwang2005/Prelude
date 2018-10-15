@@ -23,11 +23,6 @@ bool FakeSurfaceObserver::IsSurfaceDamaged(const SurfaceId& surface_id) const {
   return damaged_surfaces_.count(surface_id) > 0;
 }
 
-bool FakeSurfaceObserver::IsSurfaceSubtreeDamaged(
-    const SurfaceId& surface_id) const {
-  return surface_subtree_damaged_.count(surface_id) > 0;
-}
-
 bool FakeSurfaceObserver::OnSurfaceDamaged(const SurfaceId& surface_id,
                                            const BeginFrameAck& ack) {
   if (ack.has_damage)
@@ -36,16 +31,14 @@ bool FakeSurfaceObserver::OnSurfaceDamaged(const SurfaceId& surface_id,
   return ack.has_damage && damage_display_;
 }
 
-void FakeSurfaceObserver::OnSurfaceSubtreeDamaged(const SurfaceId& surface_id) {
-  surface_subtree_damaged_.insert(surface_id);
-}
-
 void FakeSurfaceObserver::OnFirstSurfaceActivation(
     const SurfaceInfo& surface_info) {
   last_created_surface_id_ = surface_info.id();
   last_surface_info_ = surface_info;
 }
 
-void FakeSurfaceObserver::OnSurfaceActivated(const SurfaceId& surface_id) {}
+void FakeSurfaceObserver::OnSurfaceActivated(
+    const SurfaceId& surface_id,
+    base::Optional<base::TimeDelta> duration) {}
 
 }  // namespace viz

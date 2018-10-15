@@ -5,6 +5,7 @@
 #include "base/threading/sequenced_task_runner_handle.h"
 
 #include <memory>
+#include <utility>
 
 #include "base/bind.h"
 #include "base/callback.h"
@@ -14,7 +15,7 @@
 #include "base/sequence_checker_impl.h"
 #include "base/sequenced_task_runner.h"
 #include "base/synchronization/waitable_event.h"
-#include "base/task_scheduler/post_task.h"
+#include "base/task/post_task.h"
 #include "base/test/scoped_task_environment.h"
 #include "base/test/test_simple_task_runner.h"
 #include "base/threading/thread_task_runner_handle.h"
@@ -40,7 +41,7 @@ class SequencedTaskRunnerHandleTest : public ::testing::Test {
     task_runner->PostTask(
         FROM_HERE,
         base::BindOnce(&SequencedTaskRunnerHandleTest::CheckValidSequence,
-                       base::Passed(&sequence_checker)));
+                       std::move(sequence_checker)));
   }
 
   static void CheckValidSequence(

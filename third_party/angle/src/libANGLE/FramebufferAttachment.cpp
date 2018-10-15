@@ -53,9 +53,7 @@ std::vector<Offset> FramebufferAttachment::GetDefaultViewportOffsetVector()
         FramebufferAttachment::kDefaultViewportOffsets, FramebufferAttachment::kDefaultNumViews);
 }
 
-FramebufferAttachment::Target::Target()
-    : mBinding(GL_NONE),
-      mTextureIndex(ImageIndex::MakeInvalid())
+FramebufferAttachment::Target::Target() : mBinding(GL_NONE), mTextureIndex()
 {
 }
 
@@ -231,31 +229,31 @@ const ImageIndex &FramebufferAttachment::getTextureImageIndex() const
     return mTarget.textureIndex();
 }
 
-GLenum FramebufferAttachment::cubeMapFace() const
+TextureTarget FramebufferAttachment::cubeMapFace() const
 {
     ASSERT(mType == GL_TEXTURE);
 
     const auto &index = mTarget.textureIndex();
-    return IsCubeMapTextureTarget(index.type) ? index.type : GL_NONE;
+    return index.getType() == TextureType::CubeMap ? index.getTarget() : TextureTarget::InvalidEnum;
 }
 
 GLint FramebufferAttachment::mipLevel() const
 {
     ASSERT(type() == GL_TEXTURE);
-    return mTarget.textureIndex().mipIndex;
+    return mTarget.textureIndex().getLevelIndex();
 }
 
 GLint FramebufferAttachment::layer() const
 {
     ASSERT(mType == GL_TEXTURE);
 
-    const auto &index = mTarget.textureIndex();
+    const gl::ImageIndex &index = mTarget.textureIndex();
+    return (index.has3DLayer() ? index.getLayerIndex() : 0);
+}
 
-    if (index.type == GL_TEXTURE_2D_ARRAY || index.type == GL_TEXTURE_3D)
-    {
-        return index.layerIndex;
-    }
-    return 0;
+bool FramebufferAttachment::isLayered() const
+{
+    return mTarget.textureIndex().isLayered();
 }
 
 GLsizei FramebufferAttachment::getNumViews() const
@@ -358,9 +356,14 @@ Error FramebufferAttachmentObject::getAttachmentRenderTarget(
     return getAttachmentImpl()->getAttachmentRenderTarget(context, binding, imageIndex, rtOut);
 }
 
-OnAttachmentDirtyChannel *FramebufferAttachmentObject::getDirtyChannel()
+void FramebufferAttachmentObject::onStorageChange(const gl::Context *context) const
 {
-    return &mDirtyChannel;
+    return getAttachmentImpl()->onStateChange(context, angle::SubjectMessage::STORAGE_CHANGED);
+}
+
+angle::Subject *FramebufferAttachmentObject::getSubject() const
+{
+    return getAttachmentImpl();
 }
 
 Error FramebufferAttachmentObject::initializeContents(const Context *context,
@@ -370,10 +373,15 @@ Error FramebufferAttachmentObject::initializeContents(const Context *context,
 
     // Because gl::Texture cannot support tracking individual layer dirtiness, we only handle
     // initializing entire mip levels for 2D array textures.
-    if (imageIndex.type == GL_TEXTURE_2D_ARRAY && imageIndex.hasLayer())
+    if (imageIndex.getType() == TextureType::_2DArray && imageIndex.hasLayer())
     {
-        ImageIndex fullMipIndex = imageIndex;
-        fullMipIndex.layerIndex = ImageIndex::ENTIRE_LEVEL;
+        ImageIndex fullMipIndex =
+            ImageIndex::Make2DArray(imageIndex.getLevelIndex(), ImageIndex::kEntireLevel);
+        return getAttachmentImpl()->initializeContents(context, fullMipIndex);
+    }
+    else if (imageIndex.getType() == TextureType::_2DMultisampleArray && imageIndex.hasLayer())
+    {
+        ImageIndex fullMipIndex = ImageIndex::Make2DMultisampleArray(ImageIndex::kEntireLevel);
         return getAttachmentImpl()->initializeContents(context, fullMipIndex);
     }
     else

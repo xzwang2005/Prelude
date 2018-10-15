@@ -13,6 +13,7 @@
 #include "base/json/json_writer.h"
 #include "base/logging.h"
 #include "base/memory/ptr_util.h"
+#include "base/numerics/ranges.h"
 #include "base/trace_event/trace_event.h"
 #include "cc/layers/nine_patch_layer.h"
 #include "cc/layers/picture_layer.h"
@@ -102,9 +103,6 @@ Layer::Layer()
       layer_grayscale_(0.0f),
       layer_inverted_(false),
       layer_blur_sigma_(0.0f),
-      layer_temperature_(0.0f),
-      layer_blue_scale_(1.0f),
-      layer_green_scale_(1.0f),
       layer_mask_(nullptr),
       layer_mask_back_link_(nullptr),
       zoom_(1),
@@ -115,7 +113,8 @@ Layer::Layer()
       device_scale_factor_(1.0f),
       cache_render_surface_requests_(0),
       deferred_paint_requests_(0),
-      trilinear_filtering_request_(0) {
+      trilinear_filtering_request_(0),
+      weak_ptr_factory_(this) {
   CreateCcLayer();
 }
 
@@ -132,9 +131,6 @@ Layer::Layer(LayerType type)
       layer_grayscale_(0.0f),
       layer_inverted_(false),
       layer_blur_sigma_(0.0f),
-      layer_temperature_(0.0f),
-      layer_blue_scale_(1.0f),
-      layer_green_scale_(1.0f),
       layer_mask_(nullptr),
       layer_mask_back_link_(nullptr),
       zoom_(1),
@@ -145,7 +141,8 @@ Layer::Layer(LayerType type)
       device_scale_factor_(1.0f),
       cache_render_surface_requests_(0),
       deferred_paint_requests_(0),
-      trilinear_filtering_request_(0) {
+      trilinear_filtering_request_(0),
+      weak_ptr_factory_(this) {
   CreateCcLayer();
 }
 
@@ -153,9 +150,8 @@ Layer::~Layer() {
   for (auto& observer : observer_list_)
     observer.LayerDestroyed(this);
 
-  // Destroying the animator may cause observers to use the layer (and
-  // indirectly the WebLayer). Destroy the animator first so that the WebLayer
-  // is still around.
+  // Destroying the animator may cause observers to use the layer. Destroy the
+  // animator first so that the layer is still around.
   SetAnimator(nullptr);
   if (compositor_)
     compositor_->SetRootLayer(nullptr);
@@ -181,7 +177,6 @@ std::unique_ptr<Layer> Layer::Clone() const {
   clone->SetBackgroundZoom(zoom_, zoom_inset_);
 
   // Filters.
-  clone->SetLayerTemperature(GetTargetTemperature());
   clone->SetLayerSaturation(layer_saturation_);
   clone->SetLayerBrightness(GetTargetBrightness());
   clone->SetLayerGrayscale(GetTargetGrayscale());
@@ -192,13 +187,16 @@ std::unique_ptr<Layer> Layer::Clone() const {
 
   // cc::Layer state.
   if (surface_layer_) {
-    if (surface_layer_->primary_surface_id().is_valid()) {
-      clone->SetShowPrimarySurface(surface_layer_->primary_surface_id(),
-                                   frame_size_in_dip_,
-                                   surface_layer_->surface_reference_factory());
-    }
-    if (surface_layer_->fallback_surface_id().is_valid())
-      clone->SetFallbackSurfaceId(surface_layer_->fallback_surface_id());
+    clone->SetShowPrimarySurface(
+        surface_layer_->primary_surface_id(), frame_size_in_dip_,
+        surface_layer_->background_color(),
+        surface_layer_->deadline_in_frames()
+            ? cc::DeadlinePolicy::UseSpecifiedDeadline(
+                  *surface_layer_->deadline_in_frames())
+            : cc::DeadlinePolicy::UseDefaultDeadline(),
+        surface_layer_->stretch_content_to_fill_bounds());
+    if (surface_layer_->fallback_surface_id())
+      clone->SetFallbackSurfaceId(*surface_layer_->fallback_surface_id());
   } else if (type_ == LAYER_SOLID_COLOR) {
     clone->SetColor(GetTargetColor());
   }
@@ -397,18 +395,6 @@ float Layer::GetCombinedOpacity() const {
   return opacity;
 }
 
-void Layer::SetLayerTemperature(float value) {
-  GetAnimator()->SetTemperature(value);
-}
-
-float Layer::GetTargetTemperature() const {
-  if (animator_ &&
-      animator_->IsAnimatingProperty(LayerAnimationElement::TEMPERATURE)) {
-    return animator_->GetTargetTemperature();
-  }
-  return layer_temperature();
-}
-
 void Layer::SetBackgroundBlur(float blur_sigma) {
   background_blur_sigma_ = blur_sigma;
 
@@ -463,12 +449,16 @@ void Layer::SetMaskLayer(Layer* layer_mask) {
          (!layer_mask->layer_mask_layer() && layer_mask->children().empty() &&
           !layer_mask->layer_mask_back_link_));
   DCHECK(!layer_mask_back_link_);
+  DCHECK(!layer_mask || layer_mask->type_ == LAYER_TEXTURED);
+  // Masks must be backed by a PictureLayer.
+  DCHECK(!layer_mask || layer_mask->content_layer_);
   // We need to de-reference the currently linked object so that no problem
   // arises if the mask layer gets deleted before this object.
   if (layer_mask_)
     layer_mask_->layer_mask_back_link_ = nullptr;
   layer_mask_ = layer_mask;
-  cc_layer_->SetMaskLayer(layer_mask ? layer_mask->cc_layer_ : nullptr);
+  cc_layer_->SetMaskLayer(layer_mask ? layer_mask->content_layer_.get()
+                                     : nullptr);
   // We need to reference the linked object so that it can properly break the
   // link to us when it gets deleted.
   if (layer_mask) {
@@ -488,6 +478,9 @@ void Layer::SetAlphaShape(std::unique_ptr<ShapeRects> shape) {
   alpha_shape_ = std::move(shape);
 
   SetLayerFilters();
+
+  if (delegate_)
+    delegate_->OnLayerAlphaShapeChanged();
 }
 
 void Layer::SetLayerFilters() {
@@ -499,15 +492,6 @@ void Layer::SetLayerFilters() {
   if (layer_grayscale_) {
     filters.Append(cc::FilterOperation::CreateGrayscaleFilter(
         layer_grayscale_));
-  }
-  if (layer_temperature_) {
-    float color_matrix[] = {
-        1.0f,               0.0f,              0.0f, 0.0f, 0.0f,
-        0.0f, layer_green_scale_,              0.0f, 0.0f, 0.0f,
-        0.0f,               0.0f, layer_blue_scale_, 0.0f, 0.0f,
-        0.0f,               0.0f,              0.0f, 1.0f, 0.0f
-    };
-    filters.Append(cc::FilterOperation::CreateColorMatrixFilter(color_matrix));
   }
   if (layer_inverted_)
     filters.Append(cc::FilterOperation::CreateInvertFilter(1.0));
@@ -650,7 +634,7 @@ void Layer::SwitchToLayer(scoped_refptr<cc::Layer> new_layer) {
     DCHECK(child->cc_layer_);
     cc_layer_->AddChild(child->cc_layer_);
   }
-  cc_layer_->SetLayerClient(this);
+  cc_layer_->SetLayerClient(weak_ptr_factory_.GetWeakPtr());
   cc_layer_->SetTransformOrigin(gfx::Point3F());
   cc_layer_->SetContentsOpaque(fills_bounds_opaquely_);
   cc_layer_->SetIsDrawable(type_ != LAYER_NOT_DRAWN);
@@ -662,9 +646,9 @@ void Layer::SwitchToLayer(scoped_refptr<cc::Layer> new_layer) {
 }
 
 void Layer::SwitchCCLayerForTest() {
-  scoped_refptr<cc::Layer> new_layer = cc::PictureLayer::Create(this);
+  scoped_refptr<cc::PictureLayer> new_layer = cc::PictureLayer::Create(this);
   SwitchToLayer(new_layer);
-  content_layer_ = new_layer;
+  content_layer_ = std::move(new_layer);
 }
 
 // Note: The code that sets this flag would be responsible to unset it on that
@@ -729,6 +713,19 @@ void Layer::RemoveTrilinearFilteringRequest() {
     cc_layer_->SetTrilinearFiltering(false);
 }
 
+bool Layer::StretchContentToFillBounds() const {
+  DCHECK(surface_layer_);
+  return surface_layer_->stretch_content_to_fill_bounds();
+}
+
+void Layer::SetSurfaceSize(gfx::Size surface_size_in_dip) {
+  DCHECK(surface_layer_);
+  if (frame_size_in_dip_ == surface_size_in_dip)
+    return;
+  frame_size_in_dip_ = surface_size_in_dip;
+  RecomputeDrawsContentAndUVRect();
+}
+
 void Layer::SetTransferableResource(
     const viz::TransferableResource& resource,
     std::unique_ptr<viz::SingleReleaseCallback> release_callback,
@@ -736,6 +733,7 @@ void Layer::SetTransferableResource(
   DCHECK(type_ == LAYER_TEXTURED || type_ == LAYER_SOLID_COLOR);
   DCHECK(!resource.mailbox_holder.mailbox.IsZero());
   DCHECK(release_callback);
+  DCHECK(!resource.is_software);
   if (!texture_layer_.get()) {
     scoped_refptr<cc::TextureLayer> new_layer =
         cc::TextureLayer::CreateForMailbox(this);
@@ -772,27 +770,32 @@ bool Layer::TextureFlipped() const {
   return texture_layer_->flipped();
 }
 
-void Layer::SetShowPrimarySurface(
-    const viz::SurfaceId& surface_id,
-    const gfx::Size& frame_size_in_dip,
-    scoped_refptr<viz::SurfaceReferenceFactory> ref_factory) {
+void Layer::SetShowPrimarySurface(const viz::SurfaceId& surface_id,
+                                  const gfx::Size& frame_size_in_dip,
+                                  SkColor default_background_color,
+                                  const cc::DeadlinePolicy& deadline_policy,
+                                  bool stretch_content_to_fill_bounds) {
   DCHECK(type_ == LAYER_TEXTURED || type_ == LAYER_SOLID_COLOR);
 
   if (!surface_layer_) {
-    scoped_refptr<cc::SurfaceLayer> new_layer =
-        cc::SurfaceLayer::Create(ref_factory);
+    scoped_refptr<cc::SurfaceLayer> new_layer = cc::SurfaceLayer::Create();
+    new_layer->SetSurfaceHitTestable(true);
     SwitchToLayer(new_layer);
     surface_layer_ = new_layer;
   }
 
-  surface_layer_->SetPrimarySurfaceId(surface_id);
+  surface_layer_->SetPrimarySurfaceId(surface_id, deadline_policy);
+  surface_layer_->SetBackgroundColor(default_background_color);
+  surface_layer_->SetStretchContentToFillBounds(stretch_content_to_fill_bounds);
 
   frame_size_in_dip_ = frame_size_in_dip;
   RecomputeDrawsContentAndUVRect();
 
-  for (const auto& mirror : mirrors_)
-    mirror->dest()->SetShowPrimarySurface(surface_id, frame_size_in_dip,
-                                          ref_factory);
+  for (const auto& mirror : mirrors_) {
+    mirror->dest()->SetShowPrimarySurface(
+        surface_id, frame_size_in_dip, default_background_color,
+        deadline_policy, stretch_content_to_fill_bounds);
+  }
 }
 
 void Layer::SetFallbackSurfaceId(const viz::SurfaceId& surface_id) {
@@ -812,8 +815,8 @@ const viz::SurfaceId* Layer::GetPrimarySurfaceId() const {
 }
 
 const viz::SurfaceId* Layer::GetFallbackSurfaceId() const {
-  if (surface_layer_)
-    return &surface_layer_->fallback_surface_id();
+  if (surface_layer_ && surface_layer_->fallback_surface_id())
+    return &surface_layer_->fallback_surface_id().value();
   return nullptr;
 }
 
@@ -981,15 +984,15 @@ gfx::ScrollOffset Layer::CurrentScrollOffset() const {
   const Compositor* compositor = GetCompositor();
   gfx::ScrollOffset offset;
   if (compositor &&
-      compositor->GetScrollOffsetForLayer(cc_layer_->id(), &offset))
+      compositor->GetScrollOffsetForLayer(cc_layer_->element_id(), &offset))
     return offset;
-  return cc_layer_->scroll_offset();
+  return cc_layer_->CurrentScrollOffset();
 }
 
 void Layer::SetScrollOffset(const gfx::ScrollOffset& offset) {
   Compositor* compositor = GetCompositor();
   bool scrolled_on_impl_side =
-      compositor && compositor->ScrollLayerTo(cc_layer_->id(), offset);
+      compositor && compositor->ScrollLayerTo(cc_layer_->element_id(), offset);
 
   if (!scrolled_on_impl_side)
     cc_layer_->SetScrollOffset(offset);
@@ -1036,6 +1039,7 @@ size_t Layer::GetApproximateUnsharedMemoryUsage() const {
 }
 
 bool Layer::PrepareTransferableResource(
+    cc::SharedBitmapIdRegistrar* bitmap_registar,
     viz::TransferableResource* resource,
     std::unique_ptr<viz::SingleReleaseCallback>* release_callback) {
   if (!transfer_release_callback_)
@@ -1045,29 +1049,14 @@ bool Layer::PrepareTransferableResource(
   return true;
 }
 
-class LayerDebugInfo : public base::trace_event::ConvertableToTraceFormat {
- public:
-  explicit LayerDebugInfo(const std::string& name) : name_(name) {}
-  ~LayerDebugInfo() override {}
-  void AppendAsTraceFormat(std::string* out) const override {
-    base::DictionaryValue dictionary;
-    dictionary.SetString("layer_name", name_);
-    std::string tmp;
-    base::JSONWriter::Write(dictionary, &tmp);
-    out->append(tmp);
-  }
-
- private:
-  std::string name_;
-};
-
-std::unique_ptr<base::trace_event::ConvertableToTraceFormat>
-Layer::TakeDebugInfo(cc::Layer* layer) {
-  return base::WrapUnique(new LayerDebugInfo(name_));
+std::unique_ptr<base::trace_event::TracedValue> Layer::TakeDebugInfo(
+    cc::Layer* layer) {
+  auto value = std::make_unique<base::trace_event::TracedValue>();
+  value->SetString("layer_name", name_);
+  return value;
 }
 
-void Layer::didUpdateMainThreadScrollingReasons() {}
-void Layer::didChangeScrollbarsHidden(bool) {}
+void Layer::DidChangeScrollbarsHiddenIfOverlay(bool) {}
 
 void Layer::CollectAnimators(
     std::vector<scoped_refptr<LayerAnimator>>* animators) {
@@ -1153,9 +1142,10 @@ void Layer::SetBoundsFromAnimation(const gfx::Rect& bounds,
 
 void Layer::SetTransformFromAnimation(const gfx::Transform& transform,
                                       PropertyChangeReason reason) {
+  const gfx::Transform old_transform = this->transform();
   cc_layer_->SetTransform(transform);
   if (delegate_)
-    delegate_->OnLayerTransformed(reason);
+    delegate_->OnLayerTransformed(old_transform, reason);
 }
 
 void Layer::SetOpacityFromAnimation(float opacity,
@@ -1193,18 +1183,6 @@ void Layer::SetColorFromAnimation(SkColor color, PropertyChangeReason reason) {
   SetFillsBoundsOpaquely(SkColorGetA(color) == 0xFF);
 }
 
-void Layer::SetTemperatureFromAnimation(float temperature,
-                                        PropertyChangeReason reason) {
-  layer_temperature_ = temperature;
-
-  // If we only tone down the blue scale, the screen will look very green so we
-  // also need to tone down the green, but with a less value compared to the
-  // blue scale to avoid making things look very red.
-  layer_blue_scale_ = 1.0f - temperature;
-  layer_green_scale_ = 1.0f - 0.3f * temperature;
-  SetLayerFilters();
-}
-
 void Layer::ScheduleDrawForAnimation() {
   ScheduleDraw();
 }
@@ -1234,15 +1212,10 @@ float Layer::GetGrayscaleForAnimation() const {
 }
 
 SkColor Layer::GetColorForAnimation() const {
-  // WebColor is equivalent to SkColor, per WebColor.h.
   // The NULL check is here since this is invoked regardless of whether we have
   // been configured as LAYER_SOLID_COLOR.
   return solid_color_layer_.get() ?
       solid_color_layer_->background_color() : SK_ColorBLACK;
-}
-
-float Layer::GetTemperatureFromAnimation() const {
-  return layer_temperature_;
 }
 
 float Layer::GetDeviceScaleFactor() const {
@@ -1291,7 +1264,7 @@ void Layer::CreateCcLayer() {
   cc_layer_->SetTransformOrigin(gfx::Point3F());
   cc_layer_->SetContentsOpaque(true);
   cc_layer_->SetIsDrawable(type_ != LAYER_NOT_DRAWN);
-  cc_layer_->SetLayerClient(this);
+  cc_layer_->SetLayerClient(weak_ptr_factory_.GetWeakPtr());
   cc_layer_->SetElementId(cc::ElementId(cc_layer_->id()));
   RecomputePosition();
 }

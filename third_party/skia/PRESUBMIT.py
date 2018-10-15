@@ -35,11 +35,6 @@ PUBLIC_API_OWNERS = (
     'hcm@google.com',
 )
 
-AUTO_COMMIT_BOTS = (
-    'update-docs@skia.org',
-    'update-skps@skia.org'
-)
-
 AUTHORS_FILE_NAME = 'AUTHORS'
 
 DOCS_PREVIEW_URL = 'https://skia.org/?cl='
@@ -60,6 +55,11 @@ PATH_PREFIX_TO_EXTRA_TRYBOTS = {
     # 'src/image/SkImage_Base.h': 'master5:pqr,stu;master1:abc1;master2:def',
 }
 
+SERVICE_ACCOUNT_SUFFIX = [
+    '@%s.iam.gserviceaccount.com' % project for project in [
+        'skia-buildbots.google.com', 'skia-swarming-bots', 'skia-public',
+        'skia-corp.google.com']]
+
 
 def _CheckChangeHasEol(input_api, output_api, source_file_filter=None):
   """Checks that files end with atleast one \n (LF)."""
@@ -79,9 +79,17 @@ def _CheckChangeHasEol(input_api, output_api, source_file_filter=None):
 
 def _PythonChecks(input_api, output_api):
   """Run checks on any modified Python files."""
-  pylint_disabled_files = (
-      'infra/bots/recipes.py',
-  )
+  blacklist = [
+      r'infra[\\\/]bots[\\\/]recipes.py',
+
+      # Blacklist DEPS. Those under third_party are already covered by
+      # input_api.DEFAULT_BLACK_LIST.
+      r'common[\\\/].*',
+      r'buildtools[\\\/].*',
+      r'.*[\\\/]\.recipe_deps[\\\/].*',
+  ]
+  blacklist.extend(input_api.DEFAULT_BLACK_LIST)
+
   pylint_disabled_warnings = (
       'F0401',  # Unable to import.
       'E0611',  # No name in module.
@@ -93,18 +101,33 @@ def _PythonChecks(input_api, output_api):
       'W0613',  # Unused argument.
       'W0105',  # String statement has no effect.
   )
-  # Run Pylint on only the modified python files. Unfortunately it still runs
-  # Pylint on the whole file instead of just the modified lines.
-  affected_python_files = []
-  for affected_file in input_api.AffectedSourceFiles(None):
-    affected_file_path = affected_file.LocalPath()
-    if affected_file_path.endswith('.py'):
-      if affected_file_path not in pylint_disabled_files:
-        affected_python_files.append(affected_file_path)
   return input_api.canned_checks.RunPylint(
       input_api, output_api,
       disabled_warnings=pylint_disabled_warnings,
-      white_list=affected_python_files)
+      black_list=blacklist)
+
+
+def _JsonChecks(input_api, output_api):
+  """Run checks on any modified json files."""
+  failing_files = []
+  for affected_file in input_api.AffectedFiles(None):
+    affected_file_path = affected_file.LocalPath()
+    is_json = affected_file_path.endswith('.json')
+    is_metadata = (affected_file_path.startswith('site/') and
+                   affected_file_path.endswith('/METADATA'))
+    if is_json or is_metadata:
+      try:
+        input_api.json.load(open(affected_file_path, 'r'))
+      except ValueError:
+        failing_files.append(affected_file_path)
+
+  results = []
+  if failing_files:
+    results.append(
+        output_api.PresubmitError(
+            'The following files contain invalid json:\n%s\n\n' %
+                '\n'.join(failing_files)))
+  return results
 
 
 def _IfDefChecks(input_api, output_api):
@@ -212,6 +235,18 @@ def _CheckGNFormatted(input_api, output_api):
   return results
 
 
+class _WarningsAsErrors():
+  def __init__(self, output_api):
+    self.output_api = output_api
+    self.old_warning = None
+  def __enter__(self):
+    self.old_warning = self.output_api.PresubmitPromptWarning
+    self.output_api.PresubmitPromptWarning = self.output_api.PresubmitError
+    return self.output_api
+  def __exit__(self, ex_type, ex_value, ex_traceback):
+    self.output_api.PresubmitPromptWarning = self.old_warning
+
+
 def _CommonChecks(input_api, output_api):
   """Presubmit checks common to upload and commit."""
   results = []
@@ -224,16 +259,15 @@ def _CommonChecks(input_api, output_api):
                        x.LocalPath().endswith('.c') or
                        x.LocalPath().endswith('.cc') or
                        x.LocalPath().endswith('.cpp'))
-  results.extend(
-      _CheckChangeHasEol(
-          input_api, output_api, source_file_filter=sources))
-  results.extend(
-      input_api.canned_checks.CheckChangeHasNoCR(
-          input_api, output_api, source_file_filter=sources))
-  results.extend(
-      input_api.canned_checks.CheckChangeHasNoStrayWhitespace(
-          input_api, output_api, source_file_filter=sources))
+  results.extend(_CheckChangeHasEol(
+      input_api, output_api, source_file_filter=sources))
+  with _WarningsAsErrors(output_api):
+    results.extend(input_api.canned_checks.CheckChangeHasNoCR(
+        input_api, output_api, source_file_filter=sources))
+    results.extend(input_api.canned_checks.CheckChangeHasNoStrayWhitespace(
+        input_api, output_api, source_file_filter=sources))
   results.extend(_PythonChecks(input_api, output_api))
+  results.extend(_JsonChecks(input_api, output_api))
   results.extend(_IfDefChecks(input_api, output_api))
   results.extend(_CopyrightChecks(input_api, output_api,
                                   source_file_filter=sources))
@@ -336,6 +370,12 @@ def _CheckOwnerIsInAuthorsFile(input_api, output_api):
     cr = CodeReview(input_api)
 
     owner_email = cr.GetOwnerEmail()
+
+    # Service accounts don't need to be in AUTHORS.
+    for suffix in SERVICE_ACCOUNT_SUFFIX:
+      if owner_email.endswith(suffix):
+        return results
+
     try:
       authors_content = ''
       for line in open(AUTHORS_FILE_NAME):
@@ -471,11 +511,12 @@ def PostUploadHook(cl, change, output_api):
 
   issue = cl.issue
   if issue:
-    # Skip PostUploadHooks for all auto-commit bots. New patchsets (caused
-    # due to PostUploadHooks) invalidates the CQ+2 vote from the
-    # "--use-commit-queue" flag to "git cl upload".
-    if cl.GetIssueOwner() in AUTO_COMMIT_BOTS:
-      return results
+    # Skip PostUploadHooks for all auto-commit service account bots. New
+    # patchsets (caused due to PostUploadHooks) invalidates the CQ+2 vote from
+    # the "--use-commit-queue" flag to "git cl upload".
+    for suffix in SERVICE_ACCOUNT_SUFFIX:
+      if cl.GetIssueOwner().endswith(suffix):
+        return results
 
     original_description_lines, footers = cl.GetDescriptionFooters()
     new_description_lines = list(original_description_lines)

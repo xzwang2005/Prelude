@@ -37,10 +37,9 @@ class RegExpCompiler;
 class RegExpNode;
 class RegExpTree;
 
-
-class RegExpVisitor BASE_EMBEDDED {
+class RegExpVisitor {
  public:
-  virtual ~RegExpVisitor() {}
+  virtual ~RegExpVisitor() = default;
 #define MAKE_CASE(Name) \
   virtual void* Visit##Name(RegExp##Name*, void* data) = 0;
   FOR_EACH_REG_EXP_TREE_TYPE(MAKE_CASE)
@@ -137,8 +136,7 @@ class CharacterRange {
   uc32 to_;
 };
 
-
-class CharacterSet final BASE_EMBEDDED {
+class CharacterSet final {
  public:
   explicit CharacterSet(uc16 standard_set_type)
       : ranges_(nullptr), standard_set_type_(standard_set_type) {}
@@ -159,8 +157,7 @@ class CharacterSet final BASE_EMBEDDED {
   uc16 standard_set_type_;
 };
 
-
-class TextElement final BASE_EMBEDDED {
+class TextElement final {
  public:
   enum TextType { ATOM, CHAR_CLASS };
 
@@ -198,7 +195,7 @@ class TextElement final BASE_EMBEDDED {
 class RegExpTree : public ZoneObject {
  public:
   static const int kInfinity = kMaxInt;
-  virtual ~RegExpTree() {}
+  virtual ~RegExpTree() = default;
   virtual void* Accept(RegExpVisitor* visitor, void* data) = 0;
   virtual RegExpNode* ToNode(RegExpCompiler* compiler,
                              RegExpNode* on_success) = 0;
@@ -306,11 +303,17 @@ class RegExpCharacterClass final : public RegExpTree {
   typedef base::Flags<Flag> CharacterClassFlags;
 
   RegExpCharacterClass(
-      ZoneList<CharacterRange>* ranges, JSRegExp::Flags flags,
+      Zone* zone, ZoneList<CharacterRange>* ranges, JSRegExp::Flags flags,
       CharacterClassFlags character_class_flags = CharacterClassFlags())
       : set_(ranges),
         flags_(flags),
-        character_class_flags_(character_class_flags) {}
+        character_class_flags_(character_class_flags) {
+    // Convert the empty set of ranges to the negated Everything() range.
+    if (ranges->is_empty()) {
+      ranges->Add(CharacterRange::Everything(), zone);
+      character_class_flags_ ^= NEGATED;
+    }
+  }
   RegExpCharacterClass(uc16 type, JSRegExp::Flags flags)
       : set_(type),
         flags_(flags),
@@ -352,7 +355,7 @@ class RegExpCharacterClass final : public RegExpTree {
  private:
   CharacterSet set_;
   const JSRegExp::Flags flags_;
-  const CharacterClassFlags character_class_flags_;
+  CharacterClassFlags character_class_flags_;
 };
 
 
@@ -574,7 +577,7 @@ class RegExpBackReference final : public RegExpTree {
 
 class RegExpEmpty final : public RegExpTree {
  public:
-  RegExpEmpty() {}
+  RegExpEmpty() = default;
   void* Accept(RegExpVisitor* visitor, void* data) override;
   RegExpNode* ToNode(RegExpCompiler* compiler, RegExpNode* on_success) override;
   RegExpEmpty* AsEmpty() override;

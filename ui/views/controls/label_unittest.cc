@@ -8,15 +8,13 @@
 
 #include "base/command_line.h"
 #include "base/i18n/rtl.h"
-#include "base/memory/ptr_util.h"
 #include "base/strings/utf_string_conversions.h"
-#include "base/test/scoped_feature_list.h"
 #include "build/build_config.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/accessibility/ax_node_data.h"
 #include "ui/base/clipboard/clipboard.h"
 #include "ui/base/l10n/l10n_util.h"
-#include "ui/base/ui_base_features.h"
+#include "ui/base/ui_base_switches.h"
 #include "ui/compositor/canvas_painter.h"
 #include "ui/events/base_event_utils.h"
 #include "ui/events/test/event_generator.h"
@@ -95,13 +93,6 @@ base::string16 GetClipboardText(ui::ClipboardType clipboard_type) {
   ui::Clipboard::GetForCurrentThread()->ReadText(clipboard_type,
                                                  &clipboard_text);
   return clipboard_text;
-}
-
-enum class SecondaryUiMode { NON_MD, MD };
-
-std::string SecondaryUiModeToString(
-    const ::testing::TestParamInfo<SecondaryUiMode>& info) {
-  return info.param == SecondaryUiMode::MD ? "MD" : "NonMD";
 }
 
 // Makes an RTL string by mapping 0..6 to [א,ב,ג,ד,ה,ו,ז].
@@ -190,10 +181,10 @@ class LabelSelectionTest : public LabelTest {
     return widget()->GetFocusManager()->GetFocusedView();
   }
 
-  void PerformMousePress(const gfx::Point& point, int extra_flags = 0) {
+  void PerformMousePress(const gfx::Point& point) {
     ui::MouseEvent pressed_event = ui::MouseEvent(
         ui::ET_MOUSE_PRESSED, point, point, ui::EventTimeForNow(),
-        ui::EF_LEFT_MOUSE_BUTTON, ui::EF_LEFT_MOUSE_BUTTON | extra_flags);
+        ui::EF_LEFT_MOUSE_BUTTON, ui::EF_LEFT_MOUSE_BUTTON);
     label()->OnMousePressed(pressed_event);
   }
 
@@ -204,8 +195,8 @@ class LabelSelectionTest : public LabelTest {
     label()->OnMouseReleased(released_event);
   }
 
-  void PerformClick(const gfx::Point& point, int extra_flags = 0) {
-    PerformMousePress(point, extra_flags);
+  void PerformClick(const gfx::Point& point) {
+    PerformMousePress(point);
     PerformMouseRelease(point);
   }
 
@@ -227,7 +218,7 @@ class LabelSelectionTest : public LabelTest {
         label()->GetRenderTextForSelectionController();
     const gfx::Range range(index, index + 1);
     const std::vector<gfx::Rect> bounds =
-        render_text->GetSubstringBoundsForTesting(range);
+        render_text->GetSubstringBounds(range);
     DCHECK_EQ(1u, bounds.size());
     const int mid_y = bounds[0].y() + bounds[0].height() / 2;
 
@@ -267,27 +258,6 @@ class LabelSelectionTest : public LabelTest {
   std::unique_ptr<ui::test::EventGenerator> event_generator_;
 
   DISALLOW_COPY_AND_ASSIGN(LabelSelectionTest);
-};
-
-// LabelTest harness that runs both with and without secondary UI set to MD.
-class MDLabelTest : public LabelTest,
-                    public ::testing::WithParamInterface<SecondaryUiMode> {
- public:
-  MDLabelTest() {}
-
-  // LabelTest:
-  void SetUp() override {
-    if (GetParam() == SecondaryUiMode::MD)
-      scoped_feature_list_.InitAndEnableFeature(features::kSecondaryUiMd);
-    else
-      scoped_feature_list_.InitAndDisableFeature(features::kSecondaryUiMd);
-    LabelTest::SetUp();
-  }
-
- private:
-  base::test::ScopedFeatureList scoped_feature_list_;
-
-  DISALLOW_COPY_AND_ASSIGN(MDLabelTest);
 };
 
 // Crashes on Linux only. http://crbug.com/612406
@@ -567,9 +537,11 @@ TEST_F(LabelTest, Accessibility) {
 
   ui::AXNodeData node_data;
   label()->GetAccessibleNodeData(&node_data);
-  EXPECT_EQ(ui::AX_ROLE_STATIC_TEXT, node_data.role);
-  EXPECT_EQ(label()->text(), node_data.GetString16Attribute(ui::AX_ATTR_NAME));
-  EXPECT_FALSE(node_data.HasIntAttribute(ui::AX_ATTR_RESTRICTION));
+  EXPECT_EQ(ax::mojom::Role::kStaticText, node_data.role);
+  EXPECT_EQ(label()->text(),
+            node_data.GetString16Attribute(ax::mojom::StringAttribute::kName));
+  EXPECT_FALSE(
+      node_data.HasIntAttribute(ax::mojom::IntAttribute::kRestriction));
 }
 
 TEST_F(LabelTest, TextChangeWithoutLayout) {
@@ -927,7 +899,7 @@ TEST_F(LabelTest, NoSchedulePaintInOnPaint) {
   EXPECT_EQ(count, label.schedule_paint_count());  // Unchanged.
 }
 
-TEST_P(MDLabelTest, FocusBounds) {
+TEST_F(LabelTest, FocusBounds) {
   label()->SetText(ASCIIToUTF16("Example"));
   Link concrete_link(ASCIIToUTF16("Example"));
   Label* link = &concrete_link;  // Allow LabelTest to call methods as friend.
@@ -953,16 +925,10 @@ TEST_P(MDLabelTest, FocusBounds) {
   gfx::Size normal_link_size = link->GetPreferredSize();
   link->SetFocusBehavior(View::FocusBehavior::ALWAYS);
   gfx::Size focusable_link_size = link->GetPreferredSize();
-  if (GetParam() == SecondaryUiMode::MD) {
-    // Everything should match under MD since underlines indicates focus.
-    EXPECT_EQ(normal_label_size, normal_link_size);
-    EXPECT_EQ(normal_link_size, focusable_link_size);
-  } else {
-    // Otherwise, links get bigger in order to paint the focus rectangle.
-    EXPECT_NE(normal_link_size, focusable_link_size);
-    EXPECT_GT(focusable_link_size.width(), normal_link_size.width());
-    EXPECT_GT(focusable_link_size.height(), normal_link_size.height());
-  }
+
+  // Everything should match since underlines indicates focus.
+  EXPECT_EQ(normal_label_size, normal_link_size);
+  EXPECT_EQ(normal_link_size, focusable_link_size);
 
   // Requesting focus doesn't change the preferred size since that would mess up
   // layout.
@@ -1086,7 +1052,7 @@ TEST_F(LabelSelectionTest, DoubleTripleClick) {
   EXPECT_TRUE(GetSelectedText().empty());
 
   // Double clicking should select the word under cursor.
-  PerformClick(GetCursorPoint(0), ui::EF_IS_DOUBLE_CLICK);
+  PerformClick(GetCursorPoint(0));
   EXPECT_STR_EQ("Label", GetSelectedText());
 
   // Triple clicking should select all the text.
@@ -1100,7 +1066,7 @@ TEST_F(LabelSelectionTest, DoubleTripleClick) {
   // Clicking at another location should clear the selection.
   PerformClick(GetCursorPoint(8));
   EXPECT_TRUE(GetSelectedText().empty());
-  PerformClick(GetCursorPoint(8), ui::EF_IS_DOUBLE_CLICK);
+  PerformClick(GetCursorPoint(8));
   EXPECT_STR_EQ("double", GetSelectedText());
 }
 
@@ -1296,7 +1262,7 @@ TEST_F(LabelSelectionTest, MouseDragWord) {
   ASSERT_TRUE(label()->SetSelectable(true));
 
   PerformClick(GetCursorPoint(8));
-  PerformMousePress(GetCursorPoint(8), ui::EF_IS_DOUBLE_CLICK);
+  PerformMousePress(GetCursorPoint(8));
   EXPECT_STR_EQ("drag", GetSelectedText());
 
   PerformMouseDragTo(GetCursorPoint(0));
@@ -1398,11 +1364,5 @@ TEST_F(LabelSelectionTest, ContextMenuContents) {
   EXPECT_FALSE(IsMenuCommandEnabled(IDS_APP_COPY));
   EXPECT_FALSE(IsMenuCommandEnabled(IDS_APP_SELECT_ALL));
 }
-
-INSTANTIATE_TEST_CASE_P(,
-                        MDLabelTest,
-                        ::testing::Values(SecondaryUiMode::MD,
-                                          SecondaryUiMode::NON_MD),
-                        &SecondaryUiModeToString);
 
 }  // namespace views

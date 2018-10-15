@@ -4,6 +4,7 @@
 
 #include "test/cctest/interpreter/interpreter-tester.h"
 
+#include "src/api-inl.h"
 #include "src/objects-inl.h"
 
 namespace v8 {
@@ -37,7 +38,7 @@ InterpreterTester::InterpreterTester(Isolate* isolate, const char* source,
     : InterpreterTester(isolate, source, MaybeHandle<BytecodeArray>(),
                         MaybeHandle<FeedbackMetadata>(), filter) {}
 
-InterpreterTester::~InterpreterTester() {}
+InterpreterTester::~InterpreterTester() = default;
 
 Local<Message> InterpreterTester::CheckThrowsReturnMessage() {
   TryCatch try_catch(reinterpret_cast<v8::Isolate*>(isolate_));

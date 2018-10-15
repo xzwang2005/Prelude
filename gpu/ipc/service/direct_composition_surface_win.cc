@@ -10,17 +10,17 @@
 
 #include "base/containers/circular_deque.h"
 #include "base/feature_list.h"
-#include "base/memory/ptr_util.h"
+#include "base/metrics/histogram_functions.h"
 #include "base/metrics/histogram_macros.h"
 #include "base/synchronization/waitable_event.h"
 #include "base/trace_event/trace_event.h"
 #include "base/win/scoped_handle.h"
 #include "base/win/windows_version.h"
 #include "gpu/command_buffer/service/feature_info.h"
+#include "gpu/config/gpu_finch_features.h"
 #include "gpu/ipc/service/direct_composition_child_surface_win.h"
 #include "gpu/ipc/service/gpu_channel_manager.h"
 #include "gpu/ipc/service/gpu_channel_manager_delegate.h"
-#include "gpu/ipc/service/switches.h"
 #include "ui/display/display_switches.h"
 #include "ui/gfx/color_space_win.h"
 #include "ui/gfx/geometry/size_conversions.h"
@@ -33,7 +33,7 @@
 #include "ui/gl/gl_image_dxgi.h"
 #include "ui/gl/gl_image_memory.h"
 #include "ui/gl/gl_surface_egl.h"
-#include "ui/gl/scoped_make_current.h"
+#include "ui/gl/gl_surface_presentation_helper.h"
 
 #ifndef EGL_ANGLE_flexible_surface_compatibility
 #define EGL_ANGLE_flexible_surface_compatibility 1
@@ -83,75 +83,196 @@ class PresentationHistory {
   DISALLOW_COPY_AND_ASSIGN(PresentationHistory);
 };
 
+class ScopedReleaseKeyedMutex {
+ public:
+  ScopedReleaseKeyedMutex(Microsoft::WRL::ComPtr<IDXGIKeyedMutex> keyed_mutex,
+                          UINT64 key)
+      : keyed_mutex_(keyed_mutex), key_(key) {
+    DCHECK(keyed_mutex);
+  }
+
+  ~ScopedReleaseKeyedMutex() {
+    HRESULT hr = keyed_mutex_->ReleaseSync(key_);
+    DCHECK(SUCCEEDED(hr));
+  }
+
+ private:
+  Microsoft::WRL::ComPtr<IDXGIKeyedMutex> keyed_mutex_;
+  UINT64 key_ = 0;
+
+  DISALLOW_COPY_AND_ASSIGN(ScopedReleaseKeyedMutex);
+};
+
+struct OverlaySupportInfo {
+  OverlayFormat overlay_format;
+  DXGI_FORMAT dxgi_format;
+  UINT flags;
+};
+
+bool g_overlay_support_initialized = false;
+
+// These indicate support for either NV12 or YUY2 overlays.
+bool g_supports_overlays = false;
+bool g_supports_scaled_overlays = true;
 gfx::Size g_overlay_monitor_size;
 
-bool g_supports_scaled_overlays = true;
+// Overridden when NV12 is supported, and kDirectCompositionPreferNV12Overlays
+// finch feature is enabled. Default value is set to YUY2 so that we use a valid
+// format for swap chains when forced to enable overlay code path but hardware
+// overlays are not supported.
+OverlayFormat g_overlay_format_used = OverlayFormat::kYUY2;
+DXGI_FORMAT g_overlay_dxgi_format_used = DXGI_FORMAT_YUY2;
 
-// This is the raw support info, which shouldn't depend on field trial state.
-bool HardwareSupportsOverlays() {
+// This is the raw support info, which shouldn't depend on field trial state, or
+// command line flags. Ordered by most preferred to least preferred format.
+OverlaySupportInfo g_overlay_support_info[] = {
+    {OverlayFormat::kNV12, DXGI_FORMAT_NV12, 0},
+    {OverlayFormat::kYUY2, DXGI_FORMAT_YUY2, 0},
+    {OverlayFormat::kBGRA, DXGI_FORMAT_B8G8R8A8_UNORM, 0},
+};
+
+void InitializeHardwareOverlaySupport() {
+  if (g_overlay_support_initialized)
+    return;
+
+  g_overlay_support_initialized = true;
+
   if (!gl::GLSurfaceEGL::IsDirectCompositionSupported())
-    return false;
+    return;
 
-  base::CommandLine* command_line = base::CommandLine::ForCurrentProcess();
-  if (command_line->HasSwitch(switches::kEnableDirectCompositionLayers))
-    return true;
-  if (command_line->HasSwitch(switches::kDisableDirectCompositionLayers))
-    return false;
-
-  // Before Windows 10 Anniversary Update (Redstone 1), overlay planes
-  // wouldn't be assigned to non-UWP apps.
+  // Before Windows 10 Anniversary Update (Redstone 1), overlay planes wouldn't
+  // be assigned to non-UWP apps.
   if (base::win::GetVersion() < base::win::VERSION_WIN10_RS1)
-    return false;
+    return;
 
   Microsoft::WRL::ComPtr<ID3D11Device> d3d11_device =
       gl::QueryD3D11DeviceObjectFromANGLE();
   if (!d3d11_device) {
-    DLOG(ERROR) << "Failing to create overlay swapchain because couldn't "
-                   "retrieve D3D11 device from ANGLE.";
-    return false;
+    DLOG(ERROR) << "Not using overlays because failed to retrieve D3D11 device "
+                   "from ANGLE";
+    return;
   }
+
+  // This can fail if the D3D device is "Microsoft Basic Display Adapter".
+  Microsoft::WRL::ComPtr<ID3D11VideoDevice> video_device;
+  if (FAILED(d3d11_device.CopyTo(video_device.GetAddressOf()))) {
+    DLOG(ERROR) << "Not using overlays because failed to retrieve video device "
+                   "from D3D11 device";
+    return;
+  }
+  DCHECK(video_device);
 
   Microsoft::WRL::ComPtr<IDXGIDevice> dxgi_device;
   d3d11_device.CopyTo(dxgi_device.GetAddressOf());
+  DCHECK(dxgi_device);
   Microsoft::WRL::ComPtr<IDXGIAdapter> dxgi_adapter;
   dxgi_device->GetAdapter(dxgi_adapter.GetAddressOf());
+  DCHECK(dxgi_adapter);
 
   unsigned int i = 0;
   while (true) {
     Microsoft::WRL::ComPtr<IDXGIOutput> output;
     if (FAILED(dxgi_adapter->EnumOutputs(i++, output.GetAddressOf())))
       break;
+    DCHECK(output);
     Microsoft::WRL::ComPtr<IDXGIOutput3> output3;
     if (FAILED(output.CopyTo(output3.GetAddressOf())))
       continue;
+    DCHECK(output3);
 
-    UINT flags = 0;
-    if (FAILED(output3->CheckOverlaySupport(DXGI_FORMAT_YUY2,
-                                            d3d11_device.Get(), &flags)))
-      continue;
-
-    UMA_HISTOGRAM_SPARSE_SLOWLY("GPU.DirectComposition.OverlaySupportFlags",
-                                flags);
-
-    // Some new Intel drivers only claim to support unscaled overlays, but
-    // scaled overlays still work. Even when scaled overlays aren't actually
-    // supported, presentation using the overlay path should be relatively
-    // efficient.
-    if (flags & (DXGI_OVERLAY_SUPPORT_FLAG_SCALING |
-                 DXGI_OVERLAY_SUPPORT_FLAG_DIRECT)) {
-      DXGI_OUTPUT_DESC monitor_desc = {};
-      if (FAILED(output3->GetDesc(&monitor_desc)))
+    for (auto& info : g_overlay_support_info) {
+      if (FAILED(output3->CheckOverlaySupport(
+              info.dxgi_format, d3d11_device.Get(), &info.flags))) {
         continue;
-      g_overlay_monitor_size =
-          gfx::Rect(monitor_desc.DesktopCoordinates).size();
-      g_supports_scaled_overlays =
-          !!(flags & DXGI_OVERLAY_SUPPORT_FLAG_SCALING);
-      return true;
+      }
+      // Formats are ordered by most preferred to least preferred. Don't choose
+      // a less preferred format, but keep going so that we can record overlay
+      // support for all formats in UMA.
+      if (g_supports_overlays)
+        continue;
+      // Don't use BGRA overlays in any case, but record support in UMA.
+      if (info.overlay_format == OverlayFormat::kBGRA)
+        continue;
+      // Overlays are supported for NV12 only if the feature flag to prefer NV12
+      // over YUY2 is enabled.
+      bool prefer_nv12 = base::FeatureList::IsEnabled(
+          features::kDirectCompositionPreferNV12Overlays);
+      if (info.overlay_format == OverlayFormat::kNV12 && !prefer_nv12)
+        continue;
+      // Some new Intel drivers only claim to support unscaled overlays, but
+      // scaled overlays still work. Even when scaled overlays aren't actually
+      // supported, presentation using the overlay path should be relatively
+      // efficient.
+      if (info.flags & (DXGI_OVERLAY_SUPPORT_FLAG_DIRECT |
+                        DXGI_OVERLAY_SUPPORT_FLAG_SCALING)) {
+        g_overlay_format_used = info.overlay_format;
+        g_overlay_dxgi_format_used = info.dxgi_format;
+
+        g_supports_overlays = true;
+        g_supports_scaled_overlays =
+            !!(info.flags & DXGI_OVERLAY_SUPPORT_FLAG_SCALING);
+
+        DXGI_OUTPUT_DESC monitor_desc = {};
+        if (SUCCEEDED(output3->GetDesc(&monitor_desc))) {
+          g_overlay_monitor_size =
+              gfx::Rect(monitor_desc.DesktopCoordinates).size();
+        }
+      }
     }
+    // Early out after the first output that reports overlay support. All
+    // outputs are expected to report the same overlay support according to
+    // Microsoft's WDDM documentation:
+    // https://docs.microsoft.com/en-us/windows-hardware/drivers/display/multiplane-overlay-hardware-requirements
+    // TODO(sunnyps): If the above is true, then we can only look at first
+    // output instead of iterating over all outputs.
+    if (g_supports_overlays)
+      break;
   }
-  return false;
+  for (const auto& info : g_overlay_support_info) {
+    const std::string kOverlaySupportFlagsUmaPrefix =
+        "GPU.DirectComposition.OverlaySupportFlags2.";
+    base::UmaHistogramSparse(kOverlaySupportFlagsUmaPrefix +
+                                 OverlayFormatToString(info.overlay_format),
+                             info.flags);
+  }
+  UMA_HISTOGRAM_ENUMERATION("GPU.DirectComposition.OverlayFormatUsed",
+                            g_overlay_format_used);
+  UMA_HISTOGRAM_BOOLEAN("GPU.DirectComposition.OverlaysSupported",
+                        g_supports_overlays);
 }
 
+bool CreateSurfaceHandleHelper(HANDLE* handle) {
+  using PFN_DCOMPOSITION_CREATE_SURFACE_HANDLE =
+      HRESULT(WINAPI*)(DWORD, SECURITY_ATTRIBUTES*, HANDLE*);
+  static PFN_DCOMPOSITION_CREATE_SURFACE_HANDLE create_surface_handle_function =
+      nullptr;
+
+  if (!create_surface_handle_function) {
+    HMODULE dcomp = ::GetModuleHandleA("dcomp.dll");
+    if (!dcomp) {
+      DLOG(ERROR) << "Failed to get handle for dcomp.dll";
+      return false;
+    }
+    create_surface_handle_function =
+        reinterpret_cast<PFN_DCOMPOSITION_CREATE_SURFACE_HANDLE>(
+            ::GetProcAddress(dcomp, "DCompositionCreateSurfaceHandle"));
+    if (!create_surface_handle_function) {
+      DLOG(ERROR)
+          << "Failed to get address for DCompositionCreateSurfaceHandle";
+      return false;
+    }
+  }
+
+  HRESULT hr = create_surface_handle_function(COMPOSITIONOBJECT_ALL_ACCESS,
+                                              nullptr, handle);
+  if (FAILED(hr)) {
+    DLOG(ERROR) << "DCompositionCreateSurfaceHandle failed with error "
+                << std::hex << hr;
+    return false;
+  }
+
+  return true;
+}
 }  // namespace
 
 class DCLayerTree {
@@ -166,7 +287,7 @@ class DCLayerTree {
   bool Initialize(HWND window);
   bool CommitAndClearPendingOverlays();
   bool ScheduleDCLayer(const ui::DCRendererLayerParams& params);
-  void InitializeVideoProcessor(const gfx::Size& input_size,
+  bool InitializeVideoProcessor(const gfx::Size& input_size,
                                 const gfx::Size& output_size);
 
   const Microsoft::WRL::ComPtr<ID3D11VideoProcessor>& video_processor() const {
@@ -209,11 +330,18 @@ class DCLayerTree {
   // These functions return true if the visual tree was changed.
   bool InitVisual(size_t i);
   bool UpdateVisualForVideo(VisualInfo* visual_info,
-                            const ui::DCRendererLayerParams& params);
+                            const ui::DCRendererLayerParams& params,
+                            bool* present_failed);
   bool UpdateVisualForBackbuffer(VisualInfo* visual_info,
                                  const ui::DCRendererLayerParams& params);
   bool UpdateVisualClip(VisualInfo* visual_info,
                         const ui::DCRendererLayerParams& params);
+
+  void CalculateVideoSwapChainParameters(
+      const ui::DCRendererLayerParams& params,
+      gfx::Rect* video_visual_bounds_rect,
+      gfx::Size* video_input_size,
+      gfx::Size* video_swap_chain_size) const;
 
   DirectCompositionSurfaceWin* surface_;
   std::vector<std::unique_ptr<ui::DCRendererLayerParams>> pending_overlays_;
@@ -241,45 +369,43 @@ class DCLayerTree {
 class DCLayerTree::SwapChainPresenter {
  public:
   SwapChainPresenter(DCLayerTree* surface,
-                     Microsoft::WRL::ComPtr<ID3D11Device> d3d11_device);
-
+                     Microsoft::WRL::ComPtr<ID3D11Device> d3d11_device,
+                     Microsoft::WRL::ComPtr<ID3D11VideoDevice> video_device,
+                     Microsoft::WRL::ComPtr<ID3D11VideoContext> video_context);
   ~SwapChainPresenter();
 
-  void PresentToSwapChain(const ui::DCRendererLayerParams& overlay);
+  bool PresentToSwapChain(const ui::DCRendererLayerParams& overlay,
+                          const gfx::Size& video_input_size,
+                          const gfx::Size& swap_chain_size);
 
-  float swap_chain_scale_x() const { return swap_chain_scale_x_; }
-  float swap_chain_scale_y() const { return swap_chain_scale_y_; }
   const Microsoft::WRL::ComPtr<IDXGISwapChain1>& swap_chain() const {
     return swap_chain_;
   }
 
  private:
-  using PFN_DCOMPOSITION_CREATE_SURFACE_HANDLE =
-      HRESULT(WINAPI*)(DWORD, SECURITY_ATTRIBUTES*, HANDLE*);
-
   bool UploadVideoImages(gl::GLImageMemory* y_image_memory,
                          gl::GLImageMemory* uv_image_memory);
   // Returns true if the video processor changed.
   bool InitializeVideoProcessor(const gfx::Size& in_size,
                                 const gfx::Size& out_size);
-  void ReallocateSwapChain(bool yuy2);
-  bool ShouldBeYUY2();
+  bool ReallocateSwapChain(bool yuv, bool protected_video);
+  bool ShouldUseYUVSwapChain();
+  bool VideoProcessorBlt(Microsoft::WRL::ComPtr<ID3D11Texture2D> input_texture,
+                         UINT input_level,
+                         Microsoft::WRL::ComPtr<IDXGIKeyedMutex> keyed_mutex,
+                         const gfx::Size& input_size,
+                         const gfx::ColorSpace& src_color_space);
 
   DCLayerTree* surface_;
-  PFN_DCOMPOSITION_CREATE_SURFACE_HANDLE create_surface_handle_function_;
 
   gfx::Size swap_chain_size_;
   gfx::Size processor_input_size_;
   gfx::Size processor_output_size_;
-  bool is_yuy2_swapchain_ = false;
-
-  // This is the scale from the swapchain size to the size of the contents
-  // onscreen.
-  float swap_chain_scale_x_ = 0.0f;
-  float swap_chain_scale_y_ = 0.0f;
+  bool is_yuv_swapchain_ = false;
+  bool is_protected_video_ = false;
 
   PresentationHistory presentation_history_;
-  bool failed_to_create_yuy2_swapchain_ = false;
+  bool failed_to_create_yuv_swapchain_ = false;
   int frames_since_color_space_change_ = 0;
 
   // These are the GLImages that were presented in the last frame.
@@ -303,32 +429,42 @@ class DCLayerTree::SwapChainPresenter {
 };
 
 bool DCLayerTree::Initialize(HWND window) {
-  d3d11_device_.CopyTo(video_device_.GetAddressOf());
+  // This can fail if the D3D device is "Microsoft Basic Display Adapter".
+  if (FAILED(d3d11_device_.CopyTo(video_device_.GetAddressOf()))) {
+    DLOG(ERROR) << "Failed to retrieve video device from D3D11 device";
+    return false;
+  }
+  DCHECK(video_device_);
+
   Microsoft::WRL::ComPtr<ID3D11DeviceContext> context;
   d3d11_device_->GetImmediateContext(context.GetAddressOf());
+  DCHECK(context);
   context.CopyTo(video_context_.GetAddressOf());
+  DCHECK(video_context_);
 
   Microsoft::WRL::ComPtr<IDCompositionDesktopDevice> desktop_device;
   dcomp_device_.CopyTo(desktop_device.GetAddressOf());
+  DCHECK(desktop_device);
 
   HRESULT hr = desktop_device->CreateTargetForHwnd(
       window, TRUE, dcomp_target_.GetAddressOf());
-  if (FAILED(hr))
+  if (FAILED(hr)) {
+    DLOG(ERROR) << "CreateTargetForHwnd failed with error " << std::hex << hr;
     return false;
+  }
 
-  hr = dcomp_device_->CreateVisual(root_visual_.GetAddressOf());
-  if (FAILED(hr))
-    return false;
-
+  dcomp_device_->CreateVisual(root_visual_.GetAddressOf());
+  DCHECK(root_visual_);
   dcomp_target_->SetRoot(root_visual_.Get());
+
   return true;
 }
 
-void DCLayerTree::InitializeVideoProcessor(const gfx::Size& input_size,
+bool DCLayerTree::InitializeVideoProcessor(const gfx::Size& input_size,
                                            const gfx::Size& output_size) {
-  if (SizeContains(video_input_size_, input_size) &&
+  if (video_processor_ && SizeContains(video_input_size_, input_size) &&
       SizeContains(video_output_size_, output_size))
-    return;
+    return true;
   video_input_size_ = input_size;
   video_output_size_ = output_size;
 
@@ -347,15 +483,23 @@ void DCLayerTree::InitializeVideoProcessor(const gfx::Size& input_size,
   desc.Usage = D3D11_VIDEO_USAGE_PLAYBACK_NORMAL;
   HRESULT hr = video_device_->CreateVideoProcessorEnumerator(
       &desc, video_processor_enumerator_.GetAddressOf());
-  CHECK(SUCCEEDED(hr));
+  if (FAILED(hr)) {
+    DLOG(ERROR) << "CreateVideoProcessorEnumerator failed with error "
+                << std::hex << hr;
+    return false;
+  }
 
   hr = video_device_->CreateVideoProcessor(video_processor_enumerator_.Get(), 0,
                                            video_processor_.GetAddressOf());
-  CHECK(SUCCEEDED(hr));
+  if (FAILED(hr)) {
+    DLOG(ERROR) << "CreateVideoProcessor failed with error " << std::hex << hr;
+    return false;
+  }
 
   // Auto stream processing (the default) can hurt power consumption.
   video_context_->VideoProcessorSetStreamAutoProcessingMode(
       video_processor_.Get(), 0, FALSE);
+  return true;
 }
 
 Microsoft::WRL::ComPtr<IDXGISwapChain1>
@@ -367,37 +511,37 @@ DCLayerTree::GetLayerSwapChainForTesting(size_t index) const {
 
 DCLayerTree::SwapChainPresenter::SwapChainPresenter(
     DCLayerTree* surface,
-    Microsoft::WRL::ComPtr<ID3D11Device> d3d11_device)
-    : surface_(surface), d3d11_device_(d3d11_device) {
-  d3d11_device_.CopyTo(video_device_.GetAddressOf());
-  Microsoft::WRL::ComPtr<ID3D11DeviceContext> context;
-  d3d11_device_->GetImmediateContext(context.GetAddressOf());
-  context.CopyTo(video_context_.GetAddressOf());
-  HMODULE dcomp = ::GetModuleHandleA("dcomp.dll");
-  CHECK(dcomp);
-  create_surface_handle_function_ =
-      reinterpret_cast<PFN_DCOMPOSITION_CREATE_SURFACE_HANDLE>(
-          GetProcAddress(dcomp, "DCompositionCreateSurfaceHandle"));
-  CHECK(create_surface_handle_function_);
-}
+    Microsoft::WRL::ComPtr<ID3D11Device> d3d11_device,
+    Microsoft::WRL::ComPtr<ID3D11VideoDevice> video_device,
+    Microsoft::WRL::ComPtr<ID3D11VideoContext> video_context)
+    : surface_(surface),
+      d3d11_device_(d3d11_device),
+      video_device_(video_device),
+      video_context_(video_context) {}
 
 DCLayerTree::SwapChainPresenter::~SwapChainPresenter() {}
 
-bool DCLayerTree::SwapChainPresenter::ShouldBeYUY2() {
-  // Start out as YUY2.
+bool DCLayerTree::SwapChainPresenter::ShouldUseYUVSwapChain() {
+  // Always prefer YUV swap chain for protected video for now.
+  // TODO(crbug.com/850799): Assess power/perf impact when protected video
+  // swap chain is composited by DWM.
+  if (is_protected_video_)
+    return true;
+
+  // Start out as YUV.
   if (!presentation_history_.valid())
     return true;
   int composition_count = presentation_history_.composed_count();
 
-  // It's more efficient to use a BGRA backbuffer instead of YUY2 if overlays
+  // It's more efficient to use a BGRA backbuffer instead of YUV if overlays
   // aren't being used, as otherwise DWM will use the video processor a second
   // time to convert it to BGRA before displaying it on screen.
 
-  if (is_yuy2_swapchain_) {
+  if (is_yuv_swapchain_) {
     // Switch to BGRA once 3/4 of presents are composed.
     return composition_count < (PresentationHistory::kPresentsToStore * 3 / 4);
   } else {
-    // Switch to YUY2 once 3/4 are using overlays (or unknown).
+    // Switch to YUV once 3/4 are using overlays (or unknown).
     return composition_count < (PresentationHistory::kPresentsToStore / 4);
   }
 }
@@ -411,7 +555,7 @@ bool DCLayerTree::SwapChainPresenter::UploadVideoImages(
       uv_image_size.width() != texture_size.width() / 2 ||
       y_image_memory->format() != gfx::BufferFormat::R_8 ||
       uv_image_memory->format() != gfx::BufferFormat::RG_88) {
-    DVLOG(ERROR) << "Invalid NV12 GLImageMemory properties.";
+    DLOG(ERROR) << "Invalid NV12 GLImageMemory properties.";
     return false;
   }
 
@@ -435,17 +579,25 @@ bool DCLayerTree::SwapChainPresenter::UploadVideoImages(
     Microsoft::WRL::ComPtr<ID3D11Texture2D> texture;
     HRESULT hr = d3d11_device_->CreateTexture2D(
         &desc, nullptr, staging_texture_.GetAddressOf());
-    CHECK(SUCCEEDED(hr)) << "Creating D3D11 video upload texture failed: "
-                         << std::hex << hr;
+    if (FAILED(hr)) {
+      DLOG(ERROR) << "Creating D3D11 video upload texture failed: " << std::hex
+                  << hr;
+      return false;
+    }
+    DCHECK(staging_texture_);
     staging_texture_size_ = texture_size;
   }
   Microsoft::WRL::ComPtr<ID3D11DeviceContext> context;
   d3d11_device_->GetImmediateContext(context.GetAddressOf());
+  DCHECK(context);
   D3D11_MAPPED_SUBRESOURCE mapped_resource;
   HRESULT hr = context->Map(staging_texture_.Get(), 0, D3D11_MAP_WRITE_DISCARD,
                             0, &mapped_resource);
-  CHECK(SUCCEEDED(hr)) << "Mapping D3D11 video upload texture failed: "
-                       << std::hex << hr;
+  if (FAILED(hr)) {
+    DLOG(ERROR) << "Mapping D3D11 video upload texture failed: " << std::hex
+                << hr;
+    return false;
+  }
 
   size_t dest_stride = mapped_resource.RowPitch;
   for (int y = 0; y < texture_size.height(); y++) {
@@ -469,8 +621,10 @@ bool DCLayerTree::SwapChainPresenter::UploadVideoImages(
   return true;
 }
 
-void DCLayerTree::SwapChainPresenter::PresentToSwapChain(
-    const ui::DCRendererLayerParams& params) {
+bool DCLayerTree::SwapChainPresenter::PresentToSwapChain(
+    const ui::DCRendererLayerParams& params,
+    const gfx::Size& video_input_size,
+    const gfx::Size& swap_chain_size) {
   gl::GLImageDXGIBase* image_dxgi =
       gl::GLImageDXGIBase::FromGLImage(params.image[0].get());
   gl::GLImageMemory* y_image_memory = nullptr;
@@ -483,28 +637,473 @@ void DCLayerTree::SwapChainPresenter::PresentToSwapChain(
   if (!image_dxgi && (!y_image_memory || !uv_image_memory)) {
     DLOG(ERROR) << "Video GLImages are missing";
     last_gl_images_.clear();
-    return;
+    return false;
   }
 
+  bool use_yuv_swapchain = ShouldUseYUVSwapChain();
+  bool first_present = false;
+  if (!swap_chain_ || swap_chain_size_ != swap_chain_size ||
+      is_protected_video_ != params.is_protected_video ||
+      ((use_yuv_swapchain != is_yuv_swapchain_) &&
+       !failed_to_create_yuv_swapchain_)) {
+    first_present = true;
+    swap_chain_size_ = swap_chain_size;
+    ReallocateSwapChain(use_yuv_swapchain, params.is_protected_video);
+  } else if (last_gl_images_ == params.image) {
+    // The swap chain is presenting the same images as last swap, which means
+    // that the images were never returned to the video decoder and should
+    // have the same contents as last time. It shouldn't need to be redrawn.
+    return true;
+  }
+
+  last_gl_images_ = params.image;
+
+  Microsoft::WRL::ComPtr<ID3D11Texture2D> input_texture;
+  UINT input_level;
+  Microsoft::WRL::ComPtr<IDXGIKeyedMutex> keyed_mutex;
+  if (image_dxgi) {
+    input_texture = image_dxgi->texture();
+    input_level = (UINT)image_dxgi->level();
+    if (!input_texture) {
+      DLOG(ERROR) << "Video image has no texture";
+      return false;
+    }
+    // Keyed mutex may not exist.
+    keyed_mutex = image_dxgi->keyed_mutex();
+    staging_texture_.Reset();
+  } else {
+    DCHECK(y_image_memory);
+    DCHECK(uv_image_memory);
+    if (!UploadVideoImages(y_image_memory, uv_image_memory))
+      return false;
+    DCHECK(staging_texture_);
+    input_texture = staging_texture_;
+    input_level = 0;
+  }
+
+  // TODO(sunnyps): Use correct color space for uploaded video frames.
+  gfx::ColorSpace src_color_space = gfx::ColorSpace::CreateREC709();
+  if (image_dxgi && image_dxgi->color_space().IsValid())
+    src_color_space = image_dxgi->color_space();
+
+  if (!VideoProcessorBlt(input_texture, input_level, keyed_mutex,
+                         video_input_size, src_color_space))
+    return false;
+
+  if (first_present) {
+    HRESULT hr = swap_chain_->Present(0, 0);
+    if (FAILED(hr)) {
+      DLOG(ERROR) << "Present failed with error " << std::hex << hr;
+      return false;
+    }
+
+    // DirectComposition can display black for a swapchain between the first
+    // and second time it's presented to - maybe the first Present can get
+    // lost somehow and it shows the wrong buffer. In that case copy the
+    // buffers so both have the correct contents, which seems to help. The
+    // first Present() after this needs to have SyncInterval > 0, or else the
+    // workaround doesn't help.
+    Microsoft::WRL::ComPtr<ID3D11Texture2D> dest_texture;
+    swap_chain_->GetBuffer(0, IID_PPV_ARGS(dest_texture.GetAddressOf()));
+    DCHECK(dest_texture);
+    Microsoft::WRL::ComPtr<ID3D11Texture2D> src_texture;
+    hr = swap_chain_->GetBuffer(1, IID_PPV_ARGS(src_texture.GetAddressOf()));
+    DCHECK(src_texture);
+    Microsoft::WRL::ComPtr<ID3D11DeviceContext> context;
+    d3d11_device_->GetImmediateContext(context.GetAddressOf());
+    DCHECK(context);
+    context->CopyResource(dest_texture.Get(), src_texture.Get());
+
+    // Additionally wait for the GPU to finish executing its commands, or
+    // there still may be a black flicker when presenting expensive content
+    // (e.g. 4k video).
+    Microsoft::WRL::ComPtr<IDXGIDevice2> dxgi_device2;
+    d3d11_device_.CopyTo(dxgi_device2.GetAddressOf());
+    DCHECK(dxgi_device2);
+    base::WaitableEvent event(base::WaitableEvent::ResetPolicy::AUTOMATIC,
+                              base::WaitableEvent::InitialState::NOT_SIGNALED);
+    hr = dxgi_device2->EnqueueSetEvent(event.handle());
+    DCHECK(SUCCEEDED(hr));
+    event.Wait();
+  }
+
+  HRESULT hr = swap_chain_->Present(1, 0);
+  if (FAILED(hr)) {
+    DLOG(ERROR) << "Present failed with error " << std::hex << hr;
+    return false;
+  }
+
+  UMA_HISTOGRAM_BOOLEAN("GPU.DirectComposition.SwapchainFormat",
+                        is_yuv_swapchain_);
+  frames_since_color_space_change_++;
+
+  Microsoft::WRL::ComPtr<IDXGISwapChainMedia> swap_chain_media;
+  if (SUCCEEDED(swap_chain_.CopyTo(swap_chain_media.GetAddressOf()))) {
+    DCHECK(swap_chain_media);
+    DXGI_FRAME_STATISTICS_MEDIA stats = {};
+    if (SUCCEEDED(swap_chain_media->GetFrameStatisticsMedia(&stats))) {
+      base::UmaHistogramSparse("GPU.DirectComposition.CompositionMode",
+                               stats.CompositionMode);
+      presentation_history_.AddSample(stats.CompositionMode);
+    }
+  }
+  return true;
+}
+
+bool DCLayerTree::SwapChainPresenter::InitializeVideoProcessor(
+    const gfx::Size& in_size,
+    const gfx::Size& out_size) {
+  if (video_processor_ && SizeContains(processor_input_size_, in_size) &&
+      SizeContains(processor_output_size_, out_size))
+    return true;
+  processor_input_size_ = in_size;
+  processor_output_size_ = out_size;
+
+  if (!surface_->InitializeVideoProcessor(in_size, out_size))
+    return false;
+
+  video_processor_enumerator_ = surface_->video_processor_enumerator();
+  video_processor_ = surface_->video_processor();
+  // out_view_ depends on video_processor_enumerator_, so ensure it's
+  // recreated if the enumerator is.
+  out_view_.Reset();
+  return true;
+}
+
+bool DCLayerTree::SwapChainPresenter::VideoProcessorBlt(
+    Microsoft::WRL::ComPtr<ID3D11Texture2D> input_texture,
+    UINT input_level,
+    Microsoft::WRL::ComPtr<IDXGIKeyedMutex> keyed_mutex,
+    const gfx::Size& input_size,
+    const gfx::ColorSpace& src_color_space) {
+  if (!InitializeVideoProcessor(input_size, swap_chain_size_))
+    return false;
+
+  if (!out_view_) {
+    Microsoft::WRL::ComPtr<ID3D11Texture2D> texture;
+    swap_chain_->GetBuffer(0, IID_PPV_ARGS(texture.GetAddressOf()));
+    D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC out_desc = {};
+    out_desc.ViewDimension = D3D11_VPOV_DIMENSION_TEXTURE2D;
+    out_desc.Texture2D.MipSlice = 0;
+    HRESULT hr = video_device_->CreateVideoProcessorOutputView(
+        texture.Get(), video_processor_enumerator_.Get(), &out_desc,
+        out_view_.GetAddressOf());
+    if (FAILED(hr)) {
+      DLOG(ERROR) << "CreateVideoProcessorOutputView failed with error "
+                  << std::hex << hr;
+      return false;
+    }
+  }
+
+  gfx::ColorSpace output_color_space =
+      is_yuv_swapchain_ ? src_color_space : gfx::ColorSpace::CreateSRGB();
+
+  if (base::FeatureList::IsEnabled(kFallbackBT709VideoToBT601) &&
+      (output_color_space == gfx::ColorSpace::CreateREC709())) {
+    output_color_space = gfx::ColorSpace::CreateREC601();
+  }
+
+  Microsoft::WRL::ComPtr<IDXGISwapChain3> swap_chain3;
+  Microsoft::WRL::ComPtr<ID3D11VideoContext1> context1;
+  if (SUCCEEDED(swap_chain_.CopyTo(swap_chain3.GetAddressOf())) &&
+      SUCCEEDED(video_context_.CopyTo(context1.GetAddressOf()))) {
+    DCHECK(swap_chain3);
+    DCHECK(context1);
+    // Set input color space.
+    context1->VideoProcessorSetStreamColorSpace1(
+        video_processor_.Get(), 0,
+        gfx::ColorSpaceWin::GetDXGIColorSpace(src_color_space));
+    // Set output color space.
+    DXGI_COLOR_SPACE_TYPE output_dxgi_color_space =
+        gfx::ColorSpaceWin::GetDXGIColorSpace(
+            output_color_space, is_yuv_swapchain_ /* force_yuv */);
+    if (SUCCEEDED(swap_chain3->SetColorSpace1(output_dxgi_color_space))) {
+      context1->VideoProcessorSetOutputColorSpace1(video_processor_.Get(),
+                                                   output_dxgi_color_space);
+    }
+  } else {
+    // This can't handle as many different types of color spaces, so use it
+    // only if ID3D11VideoContext1 isn't available.
+    D3D11_VIDEO_PROCESSOR_COLOR_SPACE src_d3d11_color_space =
+        gfx::ColorSpaceWin::GetD3D11ColorSpace(src_color_space);
+    video_context_->VideoProcessorSetStreamColorSpace(video_processor_.Get(), 0,
+                                                      &src_d3d11_color_space);
+    D3D11_VIDEO_PROCESSOR_COLOR_SPACE output_d3d11_color_space =
+        gfx::ColorSpaceWin::GetD3D11ColorSpace(output_color_space);
+    video_context_->VideoProcessorSetOutputColorSpace(
+        video_processor_.Get(), &output_d3d11_color_space);
+  }
+
+  {
+    base::Optional<ScopedReleaseKeyedMutex> release_keyed_mutex;
+    if (keyed_mutex) {
+      // The producer may still be using this texture for a short period of
+      // time, so wait long enough to hopefully avoid glitches. For example,
+      // all levels of the texture share the same keyed mutex, so if the
+      // hardware decoder acquired the mutex to decode into a different array
+      // level then it still may block here temporarily.
+      const int kMaxSyncTimeMs = 1000;
+      HRESULT hr = keyed_mutex->AcquireSync(0, kMaxSyncTimeMs);
+      if (FAILED(hr)) {
+        DLOG(ERROR) << "Error acquiring keyed mutex: " << std::hex << hr;
+        return false;
+      }
+      release_keyed_mutex.emplace(keyed_mutex, 0);
+    }
+
+    D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC in_desc = {};
+    in_desc.ViewDimension = D3D11_VPIV_DIMENSION_TEXTURE2D;
+    in_desc.Texture2D.ArraySlice = input_level;
+    Microsoft::WRL::ComPtr<ID3D11VideoProcessorInputView> in_view;
+    HRESULT hr = video_device_->CreateVideoProcessorInputView(
+        input_texture.Get(), video_processor_enumerator_.Get(), &in_desc,
+        in_view.GetAddressOf());
+    if (FAILED(hr)) {
+      DLOG(ERROR) << "CreateVideoProcessorInputView failed with error "
+                  << std::hex << hr;
+      return false;
+    }
+
+    D3D11_VIDEO_PROCESSOR_STREAM stream = {};
+    stream.Enable = true;
+    stream.OutputIndex = 0;
+    stream.InputFrameOrField = 0;
+    stream.PastFrames = 0;
+    stream.FutureFrames = 0;
+    stream.pInputSurface = in_view.Get();
+    RECT dest_rect = gfx::Rect(swap_chain_size_).ToRECT();
+    video_context_->VideoProcessorSetOutputTargetRect(video_processor_.Get(),
+                                                      TRUE, &dest_rect);
+    video_context_->VideoProcessorSetStreamDestRect(video_processor_.Get(), 0,
+                                                    TRUE, &dest_rect);
+    RECT source_rect = gfx::Rect(input_size).ToRECT();
+    video_context_->VideoProcessorSetStreamSourceRect(video_processor_.Get(), 0,
+                                                      TRUE, &source_rect);
+
+    hr = video_context_->VideoProcessorBlt(video_processor_.Get(),
+                                           out_view_.Get(), 0, 1, &stream);
+    if (FAILED(hr)) {
+      DLOG(ERROR) << "VideoProcessorBlt failed with error " << std::hex << hr;
+      return false;
+    }
+  }
+
+  return true;
+}
+
+bool DCLayerTree::SwapChainPresenter::ReallocateSwapChain(
+    bool use_yuv,
+    bool protected_video) {
+  TRACE_EVENT0("gpu", "DCLayerTree::SwapChainPresenter::ReallocateSwapChain");
+  swap_chain_.Reset();
+  out_view_.Reset();
+
+  Microsoft::WRL::ComPtr<IDXGIDevice> dxgi_device;
+  d3d11_device_.CopyTo(dxgi_device.GetAddressOf());
+  DCHECK(dxgi_device);
+  Microsoft::WRL::ComPtr<IDXGIAdapter> dxgi_adapter;
+  dxgi_device->GetAdapter(dxgi_adapter.GetAddressOf());
+  DCHECK(dxgi_adapter);
+  Microsoft::WRL::ComPtr<IDXGIFactoryMedia> media_factory;
+  dxgi_adapter->GetParent(IID_PPV_ARGS(media_factory.GetAddressOf()));
+  DCHECK(media_factory);
+
+  DXGI_SWAP_CHAIN_DESC1 desc = {};
+  DCHECK(!swap_chain_size_.IsEmpty());
+  desc.Width = swap_chain_size_.width();
+  desc.Height = swap_chain_size_.height();
+  desc.Format = g_overlay_dxgi_format_used;
+  desc.Stereo = FALSE;
+  desc.SampleDesc.Count = 1;
+  desc.BufferCount = 2;
+  desc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+  desc.Scaling = DXGI_SCALING_STRETCH;
+  desc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL;
+  desc.AlphaMode = DXGI_ALPHA_MODE_IGNORE;
+  desc.Flags =
+      DXGI_SWAP_CHAIN_FLAG_YUV_VIDEO | DXGI_SWAP_CHAIN_FLAG_FULLSCREEN_VIDEO;
+  if (protected_video) {
+    desc.Flags |= DXGI_SWAP_CHAIN_FLAG_HW_PROTECTED;
+    desc.Flags |= DXGI_SWAP_CHAIN_FLAG_DISPLAY_ONLY;
+  }
+
+  HANDLE handle;
+  if (!CreateSurfaceHandleHelper(&handle))
+    return false;
+
+  swap_chain_handle_.Set(handle);
+
+  if (is_yuv_swapchain_ != use_yuv) {
+    UMA_HISTOGRAM_COUNTS_1000(
+        "GPU.DirectComposition.FramesSinceColorSpaceChange",
+        frames_since_color_space_change_);
+  }
+
+  frames_since_color_space_change_ = 0;
+
+  is_yuv_swapchain_ = false;
+  // The composition surface handle isn't actually used, but
+  // CreateSwapChainForComposition can't create YUV swapchains.
+  if (use_yuv) {
+    HRESULT hr = media_factory->CreateSwapChainForCompositionSurfaceHandle(
+        d3d11_device_.Get(), swap_chain_handle_.Get(), &desc, nullptr,
+        swap_chain_.GetAddressOf());
+    is_yuv_swapchain_ = SUCCEEDED(hr);
+    failed_to_create_yuv_swapchain_ = !is_yuv_swapchain_;
+    if (FAILED(hr)) {
+      DLOG(ERROR) << "Failed to create "
+                  << OverlayFormatToString(g_overlay_format_used)
+                  << " swap chain with error " << std::hex << hr
+                  << ". Falling back to BGRA";
+    }
+  }
+
+  if (!is_yuv_swapchain_) {
+    desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    desc.Flags = 0;
+    if (protected_video) {
+      desc.Flags |= DXGI_SWAP_CHAIN_FLAG_HW_PROTECTED;
+      desc.Flags |= DXGI_SWAP_CHAIN_FLAG_DISPLAY_ONLY;
+    }
+    HRESULT hr = media_factory->CreateSwapChainForCompositionSurfaceHandle(
+        d3d11_device_.Get(), swap_chain_handle_.Get(), &desc, nullptr,
+        swap_chain_.GetAddressOf());
+    if (FAILED(hr)) {
+      DLOG(ERROR) << "Failed to create BGRA swap chain with error " << std::hex
+                  << hr;
+      return false;
+    }
+  }
+  is_protected_video_ = protected_video;
+  return true;
+}
+
+bool DCLayerTree::InitVisual(size_t i) {
+  DCHECK_GT(visual_info_.size(), i);
+  VisualInfo* visual_info = &visual_info_[i];
+  if (visual_info->content_visual)
+    return false;
+  DCHECK(!visual_info->clip_visual);
+  Microsoft::WRL::ComPtr<IDCompositionVisual2> visual;
+  dcomp_device_->CreateVisual(visual_info->clip_visual.GetAddressOf());
+  DCHECK(visual_info->clip_visual);
+  dcomp_device_->CreateVisual(visual.GetAddressOf());
+  DCHECK(visual);
+  visual_info->content_visual = visual;
+  visual_info->clip_visual->AddVisual(visual.Get(), FALSE, nullptr);
+  IDCompositionVisual2* last_visual =
+      (i > 0) ? visual_info_[i - 1].clip_visual.Get() : nullptr;
+  root_visual_->AddVisual(visual_info->clip_visual.Get(), TRUE, last_visual);
+  return true;
+}
+
+bool DCLayerTree::UpdateVisualForVideo(VisualInfo* visual_info,
+                                       const ui::DCRendererLayerParams& params,
+                                       bool* present_failed) {
+  *present_failed = false;
+  bool changed = false;
+  // This visual's content was a DC surface, but now it'll be a swap chain.
+  if (visual_info->surface) {
+    changed = true;
+    visual_info->surface.Reset();
+  }
+
+  gfx::Rect bounds_rect;
+  gfx::Size video_input_size;
+  gfx::Size swap_chain_size;
+
+  CalculateVideoSwapChainParameters(params, &bounds_rect, &video_input_size,
+                                    &swap_chain_size);
+
+  Microsoft::WRL::ComPtr<IDCompositionVisual2> dc_visual =
+      visual_info->content_visual;
+
+  // Do not create a SwapChainPresenter if swap chain size will be empty.
+  if (swap_chain_size.IsEmpty()) {
+    // This visual's content was a swap chain, but now it'll be empty.
+    if (visual_info->swap_chain) {
+      visual_info->swap_chain.Reset();
+      visual_info->swap_chain_presenter.reset();
+      dc_visual->SetContent(nullptr);
+      changed = true;
+    }
+    return changed;
+  }
+
+  if (!visual_info->swap_chain_presenter) {
+    visual_info->swap_chain_presenter = std::make_unique<SwapChainPresenter>(
+        this, d3d11_device_, video_device_, video_context_);
+  }
+
+  if (!visual_info->swap_chain_presenter->PresentToSwapChain(
+          params, video_input_size, swap_chain_size)) {
+    *present_failed = true;
+    return changed;
+  }
+
+  // This visual's content was a different swap chain.
+  if (visual_info->swap_chain !=
+      visual_info->swap_chain_presenter->swap_chain()) {
+    visual_info->swap_chain = visual_info->swap_chain_presenter->swap_chain();
+    dc_visual->SetContent(visual_info->swap_chain.Get());
+    changed = true;
+  }
+
+  // This is the scale from the swapchain size to the size of the contents
+  // onscreen.
+  float swap_chain_scale_x =
+      bounds_rect.width() * 1.0f / swap_chain_size.width();
+  float swap_chain_scale_y =
+      bounds_rect.height() * 1.0f / swap_chain_size.height();
+
+  // This visual's transform changed.
+  if (swap_chain_scale_x != visual_info->swap_chain_scale_x ||
+      swap_chain_scale_y != visual_info->swap_chain_scale_y ||
+      params.transform != visual_info->transform ||
+      bounds_rect != visual_info->bounds) {
+    visual_info->swap_chain_scale_x = swap_chain_scale_x;
+    visual_info->swap_chain_scale_y = swap_chain_scale_y;
+    visual_info->transform = params.transform;
+    visual_info->bounds = bounds_rect;
+
+    gfx::Transform final_transform = params.transform;
+    gfx::Transform scale_transform;
+    scale_transform.Scale(swap_chain_scale_x, swap_chain_scale_y);
+    final_transform.PreconcatTransform(scale_transform);
+    final_transform.Transpose();
+
+    dc_visual->SetOffsetX(bounds_rect.x());
+    dc_visual->SetOffsetY(bounds_rect.y());
+    Microsoft::WRL::ComPtr<IDCompositionMatrixTransform> dcomp_transform;
+    dcomp_device_->CreateMatrixTransform(dcomp_transform.GetAddressOf());
+    DCHECK(dcomp_transform);
+    D2D_MATRIX_3X2_F d2d_matrix = {{{final_transform.matrix().get(0, 0),
+                                     final_transform.matrix().get(0, 1),
+                                     final_transform.matrix().get(1, 0),
+                                     final_transform.matrix().get(1, 1),
+                                     final_transform.matrix().get(3, 0),
+                                     final_transform.matrix().get(3, 1)}}};
+    dcomp_transform->SetMatrix(d2d_matrix);
+    dc_visual->SetTransform(dcomp_transform.Get());
+    changed = true;
+  }
+  return changed;
+}
+
+void DCLayerTree::CalculateVideoSwapChainParameters(
+    const ui::DCRendererLayerParams& params,
+    gfx::Rect* video_visual_bounds_rect,
+    gfx::Size* video_input_size,
+    gfx::Size* video_swap_chain_size) const {
   // Swap chain size is the minimum of the on-screen size and the source
   // size so the video processor can do the minimal amount of work and
   // the overlay has to read the minimal amount of data.
   // DWM is also less likely to promote a surface to an overlay if it's
   // much larger than its area on-screen.
   gfx::Rect bounds_rect = params.rect;
-  gfx::Size ceiled_input_size = gfx::ToCeiledSize(params.contents_rect.size());
-  gfx::Size swap_chain_size = bounds_rect.size();
 
-  if (g_supports_scaled_overlays)
-    swap_chain_size.SetToMin(ceiled_input_size);
-
-  // YUY2 surfaces must have an even width.
-  if (swap_chain_size.width() % 2 == 1)
-    swap_chain_size.set_width(swap_chain_size.width() + 1);
-
-  InitializeVideoProcessor(ceiled_input_size, swap_chain_size);
-
-  if (surface_->workarounds().disable_larger_than_screen_overlays) {
+  if (workarounds().disable_larger_than_screen_overlays &&
+      !g_overlay_monitor_size.IsEmpty()) {
     // Because of the rounding when converting between pixels and DIPs, a
     // fullscreen video can become slightly larger than the monitor - e.g. on
     // a 3000x2000 monitor with a scale factor of 1.75 a 1920x1079 video can
@@ -531,391 +1130,19 @@ void DCLayerTree::SwapChainPresenter::PresentToSwapChain(
     }
   }
 
-  swap_chain_scale_x_ = bounds_rect.width() * 1.0f / swap_chain_size.width();
-  swap_chain_scale_y_ = bounds_rect.height() * 1.0f / swap_chain_size.height();
+  gfx::Size ceiled_input_size = gfx::ToCeiledSize(params.contents_rect.size());
+  gfx::Size swap_chain_size = bounds_rect.size();
 
-  bool yuy2_swapchain = ShouldBeYUY2();
-  bool first_present = false;
-  if (!swap_chain_ || swap_chain_size_ != swap_chain_size ||
-      ((yuy2_swapchain != is_yuy2_swapchain_) &&
-       !failed_to_create_yuy2_swapchain_)) {
-    first_present = true;
-    swap_chain_size_ = swap_chain_size;
-    swap_chain_.Reset();
-    ReallocateSwapChain(yuy2_swapchain);
-  } else if (last_gl_images_ == params.image) {
-    // The swap chain is presenting the same images as last swap, which means
-    // that the images were never returned to the video decoder and should
-    // have the same contents as last time. It shouldn't need to be redrawn.
-    return;
-  }
+  if (g_supports_scaled_overlays)
+    swap_chain_size.SetToMin(ceiled_input_size);
 
-  last_gl_images_ = params.image;
+  // YUV surfaces must have an even width.
+  if (swap_chain_size.width() % 2 == 1)
+    swap_chain_size.set_width(swap_chain_size.width() + 1);
 
-  Microsoft::WRL::ComPtr<ID3D11Texture2D> input_texture;
-  UINT input_level;
-  Microsoft::WRL::ComPtr<IDXGIKeyedMutex> keyed_mutex;
-  if (image_dxgi) {
-    input_texture = image_dxgi->texture();
-    input_level = (UINT)image_dxgi->level();
-    if (!input_texture)
-      return;
-    // Keyed mutex may not exist.
-    keyed_mutex = image_dxgi->keyed_mutex();
-    staging_texture_.Reset();
-  } else {
-    DCHECK(y_image_memory);
-    DCHECK(uv_image_memory);
-    if (!UploadVideoImages(y_image_memory, uv_image_memory))
-      return;
-    DCHECK(staging_texture_);
-    input_texture = staging_texture_;
-    input_level = 0;
-  }
-
-  if (!out_view_) {
-    Microsoft::WRL::ComPtr<ID3D11Texture2D> texture;
-    swap_chain_->GetBuffer(0, IID_PPV_ARGS(texture.GetAddressOf()));
-    D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC out_desc = {};
-    out_desc.ViewDimension = D3D11_VPOV_DIMENSION_TEXTURE2D;
-    out_desc.Texture2D.MipSlice = 0;
-    HRESULT hr = video_device_->CreateVideoProcessorOutputView(
-        texture.Get(), video_processor_enumerator_.Get(), &out_desc,
-        out_view_.GetAddressOf());
-    CHECK(SUCCEEDED(hr));
-  }
-
-  // TODO(jbauman): Use correct colorspace.
-  gfx::ColorSpace src_color_space = gfx::ColorSpace::CreateREC709();
-  if (image_dxgi && image_dxgi->color_space().IsValid()) {
-    src_color_space = image_dxgi->color_space();
-  }
-  Microsoft::WRL::ComPtr<ID3D11VideoContext1> context1;
-  if (SUCCEEDED(video_context_.CopyTo(context1.GetAddressOf()))) {
-    context1->VideoProcessorSetStreamColorSpace1(
-        video_processor_.Get(), 0,
-        gfx::ColorSpaceWin::GetDXGIColorSpace(src_color_space));
-  } else {
-    // This can't handle as many different types of color spaces, so use it
-    // only if ID3D11VideoContext1 isn't available.
-    D3D11_VIDEO_PROCESSOR_COLOR_SPACE color_space =
-        gfx::ColorSpaceWin::GetD3D11ColorSpace(src_color_space);
-    video_context_->VideoProcessorSetStreamColorSpace(video_processor_.Get(), 0,
-                                                      &color_space);
-  }
-
-  gfx::ColorSpace output_color_space =
-      is_yuy2_swapchain_ ? src_color_space : gfx::ColorSpace::CreateSRGB();
-  if (base::FeatureList::IsEnabled(kFallbackBT709VideoToBT601) &&
-      (output_color_space == gfx::ColorSpace::CreateREC709())) {
-    output_color_space = gfx::ColorSpace::CreateREC601();
-  }
-
-  Microsoft::WRL::ComPtr<IDXGISwapChain3> swap_chain3;
-  if (SUCCEEDED(swap_chain_.CopyTo(swap_chain3.GetAddressOf()))) {
-    DXGI_COLOR_SPACE_TYPE color_space =
-        gfx::ColorSpaceWin::GetDXGIColorSpace(output_color_space);
-    if (is_yuy2_swapchain_) {
-      // Swapchains with YUY2 textures can't have RGB color spaces.
-      switch (color_space) {
-        case DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709:
-        case DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709:
-          color_space = DXGI_COLOR_SPACE_YCBCR_FULL_G22_LEFT_P709;
-          break;
-
-        case DXGI_COLOR_SPACE_RGB_STUDIO_G22_NONE_P709:
-          color_space = DXGI_COLOR_SPACE_YCBCR_STUDIO_G22_LEFT_P709;
-          break;
-
-        case DXGI_COLOR_SPACE_RGB_STUDIO_G22_NONE_P2020:
-          color_space = DXGI_COLOR_SPACE_YCBCR_STUDIO_G22_LEFT_P2020;
-          break;
-
-        case DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020:
-        case DXGI_COLOR_SPACE_RGB_STUDIO_G2084_NONE_P2020:
-          color_space = DXGI_COLOR_SPACE_YCBCR_STUDIO_G2084_LEFT_P2020;
-          break;
-
-        case DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P2020:
-          color_space = DXGI_COLOR_SPACE_YCBCR_FULL_G22_LEFT_P2020;
-          break;
-
-        default:
-          break;
-      }
-    }
-    HRESULT hr = swap_chain3->SetColorSpace1(color_space);
-
-    if (SUCCEEDED(hr)) {
-      if (context1) {
-        context1->VideoProcessorSetOutputColorSpace1(video_processor_.Get(),
-                                                     color_space);
-      } else {
-        D3D11_VIDEO_PROCESSOR_COLOR_SPACE d3d11_color_space =
-            gfx::ColorSpaceWin::GetD3D11ColorSpace(output_color_space);
-        video_context_->VideoProcessorSetOutputColorSpace(
-            video_processor_.Get(), &d3d11_color_space);
-      }
-    }
-  }
-
-  {
-    if (keyed_mutex) {
-      // The producer may still be using this texture for a short period of
-      // time, so wait long enough to hopefully avoid glitches. For example,
-      // all levels of the texture share the same keyed mutex, so if the
-      // hardware decoder acquired the mutex to decode into a different array
-      // level then it still may block here temporarily.
-      const int kMaxSyncTimeMs = 1000;
-      HRESULT hr = keyed_mutex->AcquireSync(0, kMaxSyncTimeMs);
-      if (FAILED(hr)) {
-        DLOG(ERROR) << "Error acquiring keyed mutex: " << std::hex << hr;
-        return;
-      }
-    }
-    D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC in_desc = {};
-    in_desc.ViewDimension = D3D11_VPIV_DIMENSION_TEXTURE2D;
-    in_desc.Texture2D.ArraySlice = input_level;
-    Microsoft::WRL::ComPtr<ID3D11VideoProcessorInputView> in_view;
-    HRESULT hr = video_device_->CreateVideoProcessorInputView(
-        input_texture.Get(), video_processor_enumerator_.Get(), &in_desc,
-        in_view.GetAddressOf());
-    CHECK(SUCCEEDED(hr));
-
-    D3D11_VIDEO_PROCESSOR_STREAM stream = {};
-    stream.Enable = true;
-    stream.OutputIndex = 0;
-    stream.InputFrameOrField = 0;
-    stream.PastFrames = 0;
-    stream.FutureFrames = 0;
-    stream.pInputSurface = in_view.Get();
-    RECT dest_rect = gfx::Rect(swap_chain_size).ToRECT();
-    video_context_->VideoProcessorSetOutputTargetRect(video_processor_.Get(),
-                                                      TRUE, &dest_rect);
-    video_context_->VideoProcessorSetStreamDestRect(video_processor_.Get(), 0,
-                                                    TRUE, &dest_rect);
-    RECT source_rect = gfx::Rect(ceiled_input_size).ToRECT();
-    video_context_->VideoProcessorSetStreamSourceRect(video_processor_.Get(), 0,
-                                                      TRUE, &source_rect);
-
-    hr = video_context_->VideoProcessorBlt(video_processor_.Get(),
-                                           out_view_.Get(), 0, 1, &stream);
-    CHECK(SUCCEEDED(hr));
-    if (keyed_mutex) {
-      HRESULT hr = keyed_mutex->ReleaseSync(0);
-      DCHECK(SUCCEEDED(hr));
-    }
-  }
-
-  if (first_present) {
-    swap_chain_->Present(0, 0);
-
-    // DirectComposition can display black for a swapchain between the first
-    // and second time it's presented to - maybe the first Present can get
-    // lost somehow and it shows the wrong buffer. In that case copy the
-    // buffers so both have the correct contents, which seems to help. The
-    // first Present() after this needs to have SyncInterval > 0, or else the
-    // workaround doesn't help.
-    Microsoft::WRL::ComPtr<ID3D11Texture2D> dest_texture;
-    HRESULT hr =
-        swap_chain_->GetBuffer(0, IID_PPV_ARGS(dest_texture.GetAddressOf()));
-    DCHECK(SUCCEEDED(hr));
-    Microsoft::WRL::ComPtr<ID3D11Texture2D> src_texture;
-    hr = swap_chain_->GetBuffer(1, IID_PPV_ARGS(src_texture.GetAddressOf()));
-    DCHECK(SUCCEEDED(hr));
-    Microsoft::WRL::ComPtr<ID3D11DeviceContext> context;
-    d3d11_device_->GetImmediateContext(context.GetAddressOf());
-    context->CopyResource(dest_texture.Get(), src_texture.Get());
-
-    // Additionally wait for the GPU to finish executing its commands, or
-    // there still may be a black flicker when presenting expensive content
-    // (e.g. 4k video).
-    Microsoft::WRL::ComPtr<IDXGIDevice2> dxgi_device2;
-    hr = d3d11_device_.CopyTo(dxgi_device2.GetAddressOf());
-    DCHECK(SUCCEEDED(hr));
-    base::WaitableEvent event(base::WaitableEvent::ResetPolicy::AUTOMATIC,
-                              base::WaitableEvent::InitialState::NOT_SIGNALED);
-    dxgi_device2->EnqueueSetEvent(event.handle());
-    event.Wait();
-  }
-
-  swap_chain_->Present(1, 0);
-
-  UMA_HISTOGRAM_BOOLEAN("GPU.DirectComposition.SwapchainFormat",
-                        is_yuy2_swapchain_);
-  frames_since_color_space_change_++;
-
-  Microsoft::WRL::ComPtr<IDXGISwapChainMedia> swap_chain_media;
-  if (SUCCEEDED(swap_chain_.CopyTo(swap_chain_media.GetAddressOf()))) {
-    DXGI_FRAME_STATISTICS_MEDIA stats = {};
-    if (SUCCEEDED(swap_chain_media->GetFrameStatisticsMedia(&stats))) {
-      UMA_HISTOGRAM_SPARSE_SLOWLY("GPU.DirectComposition.CompositionMode",
-                                  stats.CompositionMode);
-      presentation_history_.AddSample(stats.CompositionMode);
-    }
-  }
-}
-
-bool DCLayerTree::SwapChainPresenter::InitializeVideoProcessor(
-    const gfx::Size& in_size,
-    const gfx::Size& out_size) {
-  if (video_processor_ && SizeContains(processor_input_size_, in_size) &&
-      SizeContains(processor_output_size_, out_size))
-    return false;
-  processor_input_size_ = in_size;
-  processor_output_size_ = out_size;
-  surface_->InitializeVideoProcessor(in_size, out_size);
-
-  video_processor_enumerator_ = surface_->video_processor_enumerator();
-  video_processor_ = surface_->video_processor();
-  // out_view_ depends on video_processor_enumerator_, so ensure it's
-  // recreated if the enumerator is.
-  out_view_.Reset();
-  return true;
-}
-
-void DCLayerTree::SwapChainPresenter::ReallocateSwapChain(bool yuy2) {
-  TRACE_EVENT0("gpu", "DCLayerTree::SwapChainPresenter::ReallocateSwapChain");
-  DCHECK(!swap_chain_);
-
-  Microsoft::WRL::ComPtr<IDXGIDevice> dxgi_device;
-  d3d11_device_.CopyTo(dxgi_device.GetAddressOf());
-  Microsoft::WRL::ComPtr<IDXGIAdapter> dxgi_adapter;
-  dxgi_device->GetAdapter(dxgi_adapter.GetAddressOf());
-  Microsoft::WRL::ComPtr<IDXGIFactory2> dxgi_factory;
-  dxgi_adapter->GetParent(IID_PPV_ARGS(dxgi_factory.GetAddressOf()));
-
-  Microsoft::WRL::ComPtr<IDXGIFactoryMedia> media_factory;
-  dxgi_factory.CopyTo(media_factory.GetAddressOf());
-  DXGI_SWAP_CHAIN_DESC1 desc = {};
-  desc.Width = swap_chain_size_.width();
-  desc.Height = swap_chain_size_.height();
-  desc.Format = DXGI_FORMAT_YUY2;
-  desc.Stereo = FALSE;
-  desc.SampleDesc.Count = 1;
-  desc.BufferCount = 2;
-  desc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
-  desc.Scaling = DXGI_SCALING_STRETCH;
-  desc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL;
-  desc.AlphaMode = DXGI_ALPHA_MODE_IGNORE;
-  desc.Flags =
-      DXGI_SWAP_CHAIN_FLAG_YUV_VIDEO | DXGI_SWAP_CHAIN_FLAG_FULLSCREEN_VIDEO;
-
-  HANDLE handle;
-  create_surface_handle_function_(COMPOSITIONOBJECT_ALL_ACCESS, nullptr,
-                                  &handle);
-  swap_chain_handle_.Set(handle);
-
-  if (is_yuy2_swapchain_ != yuy2) {
-    UMA_HISTOGRAM_COUNTS_1000(
-        "GPU.DirectComposition.FramesSinceColorSpaceChange",
-        frames_since_color_space_change_);
-  }
-
-  frames_since_color_space_change_ = 0;
-
-  is_yuy2_swapchain_ = false;
-  // The composition surface handle isn't actually used, but
-  // CreateSwapChainForComposition can't create YUY2 swapchains.
-  HRESULT hr = E_FAIL;
-  if (yuy2) {
-    hr = media_factory->CreateSwapChainForCompositionSurfaceHandle(
-        d3d11_device_.Get(), swap_chain_handle_.Get(), &desc, nullptr,
-        swap_chain_.GetAddressOf());
-    is_yuy2_swapchain_ = SUCCEEDED(hr);
-    failed_to_create_yuy2_swapchain_ = !is_yuy2_swapchain_;
-  }
-
-  if (!is_yuy2_swapchain_) {
-    if (yuy2) {
-      DLOG(ERROR) << "YUY2 creation failed with " << std::hex << hr
-                  << ". Falling back to BGRA";
-    }
-    desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
-    desc.Flags = 0;
-    hr = media_factory->CreateSwapChainForCompositionSurfaceHandle(
-        d3d11_device_.Get(), swap_chain_handle_.Get(), &desc, nullptr,
-        swap_chain_.GetAddressOf());
-    CHECK(SUCCEEDED(hr));
-  }
-  out_view_.Reset();
-}
-
-bool DCLayerTree::InitVisual(size_t i) {
-  DCHECK_GT(visual_info_.size(), i);
-  VisualInfo* visual_info = &visual_info_[i];
-  if (visual_info->content_visual)
-    return false;
-  DCHECK(!visual_info->clip_visual);
-  Microsoft::WRL::ComPtr<IDCompositionVisual2> visual;
-  dcomp_device_->CreateVisual(visual_info->clip_visual.GetAddressOf());
-  dcomp_device_->CreateVisual(visual.GetAddressOf());
-  visual_info->content_visual = visual;
-  visual_info->clip_visual->AddVisual(visual.Get(), FALSE, nullptr);
-
-  IDCompositionVisual2* last_visual =
-      (i > 0) ? visual_info_[i - 1].clip_visual.Get() : nullptr;
-  root_visual_->AddVisual(visual_info->clip_visual.Get(), TRUE, last_visual);
-  return true;
-}
-
-bool DCLayerTree::UpdateVisualForVideo(
-    VisualInfo* visual_info,
-    const ui::DCRendererLayerParams& params) {
-  Microsoft::WRL::ComPtr<IDCompositionVisual2> dc_visual =
-      visual_info->content_visual;
-
-  bool changed = false;
-  gfx::Rect bounds_rect = params.rect;
-  visual_info->surface.Reset();
-  if (!visual_info->swap_chain_presenter) {
-    visual_info->swap_chain_presenter =
-        std::make_unique<SwapChainPresenter>(this, d3d11_device_);
-  }
-  visual_info->swap_chain_presenter->PresentToSwapChain(params);
-  if (visual_info->swap_chain !=
-      visual_info->swap_chain_presenter->swap_chain()) {
-    visual_info->swap_chain = visual_info->swap_chain_presenter->swap_chain();
-    dc_visual->SetContent(visual_info->swap_chain.Get());
-    changed = true;
-  }
-
-  if (visual_info->swap_chain_presenter->swap_chain_scale_x() !=
-          visual_info->swap_chain_scale_x ||
-      visual_info->swap_chain_presenter->swap_chain_scale_y() !=
-          visual_info->swap_chain_scale_y ||
-      params.transform != visual_info->transform ||
-      visual_info->bounds != bounds_rect) {
-    visual_info->swap_chain_scale_x =
-        visual_info->swap_chain_presenter->swap_chain_scale_x();
-    visual_info->swap_chain_scale_y =
-        visual_info->swap_chain_presenter->swap_chain_scale_y();
-    visual_info->transform = params.transform;
-    visual_info->bounds = bounds_rect;
-
-    gfx::Transform final_transform = params.transform;
-    gfx::Transform scale_transform;
-    scale_transform.Scale(
-        visual_info->swap_chain_presenter->swap_chain_scale_x(),
-        visual_info->swap_chain_presenter->swap_chain_scale_y());
-    final_transform.PreconcatTransform(scale_transform);
-    final_transform.Transpose();
-
-    dc_visual->SetOffsetX(bounds_rect.x());
-    dc_visual->SetOffsetY(bounds_rect.y());
-    Microsoft::WRL::ComPtr<IDCompositionMatrixTransform> dcomp_transform;
-    dcomp_device_->CreateMatrixTransform(dcomp_transform.GetAddressOf());
-    D2D_MATRIX_3X2_F d2d_matrix = {{{final_transform.matrix().get(0, 0),
-                                     final_transform.matrix().get(0, 1),
-                                     final_transform.matrix().get(1, 0),
-                                     final_transform.matrix().get(1, 1),
-                                     final_transform.matrix().get(3, 0),
-                                     final_transform.matrix().get(3, 1)}}};
-    dcomp_transform->SetMatrix(d2d_matrix);
-    dc_visual->SetTransform(dcomp_transform.Get());
-    changed = true;
-  }
-  return changed;
+  *video_visual_bounds_rect = bounds_rect;
+  *video_input_size = ceiled_input_size;
+  *video_swap_chain_size = swap_chain_size;
 }
 
 bool DCLayerTree::UpdateVisualForBackbuffer(
@@ -970,6 +1197,7 @@ bool DCLayerTree::UpdateVisualClip(VisualInfo* visual_info,
     if (params.is_clipped) {
       Microsoft::WRL::ComPtr<IDCompositionRectangleClip> clip;
       dcomp_device_->CreateRectangleClip(clip.GetAddressOf());
+      DCHECK(clip);
       gfx::Rect offset_clip = params.clip_rect;
       clip->SetLeft(offset_clip.x());
       clip->SetRight(offset_clip.right());
@@ -995,7 +1223,7 @@ bool DCLayerTree::CommitAndClearPendingOverlays() {
       false, gfx::Rect(), 0, gfx::Transform(),
       std::vector<scoped_refptr<gl::GLImage>>(),
       gfx::RectF(gfx::SizeF(surface_size)), gfx::Rect(surface_size), 0, 0, 1.0,
-      0));
+      0, false));
 
   // TODO(jbauman): Reuse swapchains that are switched between overlays and
   // underlays.
@@ -1024,19 +1252,23 @@ bool DCLayerTree::CommitAndClearPendingOverlays() {
     VisualInfo* visual_info = &visual_info_[i];
 
     changed |= InitVisual(i);
-    if (params.image.size() >= 1 && params.image[0]) {
-      changed |= UpdateVisualForVideo(visual_info, params);
-    } else if (params.image.empty()) {
+    if (params.image.empty()) {
       changed |= UpdateVisualForBackbuffer(visual_info, params);
     } else {
-      CHECK(false);
+      bool present_failed = false;
+      changed |= UpdateVisualForVideo(visual_info, params, &present_failed);
+      if (present_failed)
+        return false;
     }
     changed |= UpdateVisualClip(visual_info, params);
   }
 
   if (changed) {
     HRESULT hr = dcomp_device_->Commit();
-    CHECK(SUCCEEDED(hr));
+    if (FAILED(hr)) {
+      DLOG(ERROR) << "Commit failed with error " << std::hex << hr;
+      return false;
+    }
   }
 
   pending_overlays_.clear();
@@ -1064,20 +1296,39 @@ DirectCompositionSurfaceWin::~DirectCompositionSurfaceWin() {
 
 // static
 bool DirectCompositionSurfaceWin::AreOverlaysSupported() {
-  static bool initialized;
-  static bool overlays_supported;
-  if (initialized)
-    return overlays_supported;
+  InitializeHardwareOverlaySupport();
 
-  initialized = true;
+  base::CommandLine* command_line = base::CommandLine::ForCurrentProcess();
+  if (command_line->HasSwitch(switches::kDisableDirectCompositionLayers))
+    return false;
+  if (command_line->HasSwitch(switches::kEnableDirectCompositionLayers))
+    return true;
 
-  overlays_supported =
-      HardwareSupportsOverlays() &&
-      base::FeatureList::IsEnabled(switches::kDirectCompositionOverlays);
+  return base::FeatureList::IsEnabled(features::kDirectCompositionOverlays) &&
+         g_supports_overlays;
+}
 
-  UMA_HISTOGRAM_BOOLEAN("GPU.DirectComposition.OverlaysSupported",
-                        overlays_supported);
-  return overlays_supported;
+// static
+OverlayCapabilities DirectCompositionSurfaceWin::GetOverlayCapabilities() {
+  InitializeHardwareOverlaySupport();
+
+  OverlayCapabilities capabilities;
+  for (const auto& info : g_overlay_support_info) {
+    if (info.flags) {
+      OverlayCapability cap;
+      cap.format = info.overlay_format;
+      cap.is_scaling_supported =
+          !!(info.flags & DXGI_OVERLAY_SUPPORT_FLAG_SCALING);
+      capabilities.push_back(cap);
+    }
+  }
+
+  return capabilities;
+}
+
+// static
+void DirectCompositionSurfaceWin::EnableScaledOverlaysForTesting() {
+  g_supports_scaled_overlays = true;
 }
 
 // static
@@ -1131,8 +1382,8 @@ bool DirectCompositionSurfaceWin::IsHDRSupported() {
         continue;
       }
 
-      UMA_HISTOGRAM_SPARSE_SLOWLY("GPU.Output.ColorSpace", desc.ColorSpace);
-      UMA_HISTOGRAM_SPARSE_SLOWLY("GPU.Output.MaxLuminance", desc.MaxLuminance);
+      base::UmaHistogramSparse("GPU.Output.ColorSpace", desc.ColorSpace);
+      base::UmaHistogramSparse("GPU.Output.MaxLuminance", desc.MaxLuminance);
 
       if (desc.ColorSpace == DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020) {
         hdr_monitor_found = true;
@@ -1142,6 +1393,61 @@ bool DirectCompositionSurfaceWin::IsHDRSupported() {
 
   UMA_HISTOGRAM_BOOLEAN("GPU.Output.HDR", hdr_monitor_found);
   return hdr_monitor_found;
+}
+
+// static
+bool DirectCompositionSurfaceWin::IsSwapChainTearingSupported() {
+  static bool initialized = false;
+  static bool supported = false;
+
+  if (initialized)
+    return supported;
+
+  initialized = true;
+
+  // Swap chain tearing is used only if vsync is disabled explicitly.
+  if (!base::CommandLine::ForCurrentProcess()->HasSwitch(
+          switches::kDisableGpuVsync))
+    return false;
+
+  // Swap chain tearing is supported only on Windows 10 Anniversary Edition
+  // (Redstone 1) and above.
+  if (base::win::GetVersion() < base::win::VERSION_WIN10_RS1)
+    return false;
+
+  Microsoft::WRL::ComPtr<ID3D11Device> d3d11_device =
+      gl::QueryD3D11DeviceObjectFromANGLE();
+  if (!d3d11_device) {
+    DLOG(ERROR) << "Not using swap chain tearing because failed to retrieve "
+                   "D3D11 device from ANGLE";
+    return false;
+  }
+  Microsoft::WRL::ComPtr<IDXGIDevice> dxgi_device;
+  d3d11_device.CopyTo(dxgi_device.GetAddressOf());
+  DCHECK(dxgi_device);
+  Microsoft::WRL::ComPtr<IDXGIAdapter> dxgi_adapter;
+  dxgi_device->GetAdapter(dxgi_adapter.GetAddressOf());
+  DCHECK(dxgi_adapter);
+  Microsoft::WRL::ComPtr<IDXGIFactory5> dxgi_factory;
+  if (FAILED(
+          dxgi_adapter->GetParent(IID_PPV_ARGS(dxgi_factory.GetAddressOf())))) {
+    DLOG(ERROR) << "Not using swap chain tearing because failed to retrieve "
+                   "IDXGIFactory5 interface";
+    return false;
+  }
+
+  // BOOL instead of bool because we want a well defined sized type.
+  BOOL present_allow_tearing = FALSE;
+  DCHECK(dxgi_factory);
+  if (FAILED(dxgi_factory->CheckFeatureSupport(
+          DXGI_FEATURE_PRESENT_ALLOW_TEARING, &present_allow_tearing,
+          sizeof(present_allow_tearing)))) {
+    DLOG(ERROR)
+        << "Not using swap chain tearing because CheckFeatureSupport failed";
+    return false;
+  }
+  supported = !!present_allow_tearing;
+  return supported;
 }
 
 bool DirectCompositionSurfaceWin::InitializeNativeWindow() {
@@ -1155,9 +1461,17 @@ bool DirectCompositionSurfaceWin::InitializeNativeWindow() {
 
 bool DirectCompositionSurfaceWin::Initialize(gl::GLSurfaceFormat format) {
   d3d11_device_ = gl::QueryD3D11DeviceObjectFromANGLE();
-  dcomp_device_ = gl::QueryDirectCompositionDevice(d3d11_device_);
-  if (!dcomp_device_)
+  if (!d3d11_device_) {
+    DLOG(ERROR) << "Failed to retrieve D3D11 device from ANGLE";
     return false;
+  }
+
+  dcomp_device_ = gl::QueryDirectCompositionDevice(d3d11_device_);
+  if (!dcomp_device_) {
+    DLOG(ERROR)
+        << "Failed to retrieve direct compostion device from D3D11 device";
+    return false;
+  }
 
   EGLDisplay display = GetDisplay();
   if (!window_) {
@@ -1182,15 +1496,21 @@ bool DirectCompositionSurfaceWin::Initialize(gl::GLSurfaceFormat format) {
   default_surface_ =
       eglCreatePbufferSurface(display, GetConfig(), &pbuffer_attribs[0]);
   if (!default_surface_) {
-    LOG(ERROR) << "eglCreatePbufferSurface failed with error "
-               << ui::GetLastEGLErrorString();
+    DLOG(ERROR) << "eglCreatePbufferSurface failed with error "
+                << ui::GetLastEGLErrorString();
     return false;
   }
 
-  return RecreateRootSurface();
+  if (!RecreateRootSurface())
+    return false;
+
+  presentation_helper_ =
+      std::make_unique<gl::GLSurfacePresentationHelper>(vsync_provider_.get());
+  return true;
 }
 
 void DirectCompositionSurfaceWin::Destroy() {
+  presentation_helper_ = nullptr;
   if (default_surface_) {
     if (!eglDestroySurface(GetDisplay(), default_surface_)) {
       DLOG(ERROR) << "eglDestroySurface failed with error "
@@ -1231,20 +1551,31 @@ bool DirectCompositionSurfaceWin::Resize(const gfx::Size& size,
   size_ = size;
   is_hdr_ = is_hdr;
   has_alpha_ = has_alpha;
-  ui::ScopedReleaseCurrent release_current(this);
   return RecreateRootSurface();
 }
 
 gfx::SwapResult DirectCompositionSurfaceWin::SwapBuffers(
     const PresentationCallback& callback) {
-  {
-    ui::ScopedReleaseCurrent release_current(this);
-    root_surface_->SwapBuffers(callback);
+  gl::GLSurfacePresentationHelper::ScopedSwapBuffers scoped_swap_buffers(
+      presentation_helper_.get(), callback);
 
-    layer_tree_->CommitAndClearPendingOverlays();
-  }
   child_window_.ClearInvalidContents();
-  return gfx::SwapResult::SWAP_ACK;
+
+  bool succeeded = true;
+
+  if (root_surface_->SwapBuffers(PresentationCallback()) ==
+      gfx::SwapResult::SWAP_FAILED)
+    succeeded = false;
+
+  if (!layer_tree_->CommitAndClearPendingOverlays())
+    succeeded = false;
+
+  UMA_HISTOGRAM_BOOLEAN("GPU.DirectComposition.SwapBuffersResult", succeeded);
+
+  auto swap_result =
+      succeeded ? gfx::SwapResult::SWAP_ACK : gfx::SwapResult::SWAP_FAILED;
+  scoped_swap_buffers.set_result(swap_result);
+  return swap_result;
 }
 
 gfx::SwapResult DirectCompositionSurfaceWin::PostSubBuffer(
@@ -1262,6 +1593,12 @@ gfx::VSyncProvider* DirectCompositionSurfaceWin::GetVSyncProvider() {
   return vsync_provider_.get();
 }
 
+void DirectCompositionSurfaceWin::SetVSyncEnabled(bool enabled) {
+  vsync_enabled_ = enabled;
+  if (root_surface_)
+    root_surface_->SetVSyncEnabled(enabled);
+}
+
 bool DirectCompositionSurfaceWin::ScheduleDCLayer(
     const ui::DCRendererLayerParams& params) {
   return layer_tree_->ScheduleDCLayer(params);
@@ -1270,13 +1607,15 @@ bool DirectCompositionSurfaceWin::ScheduleDCLayer(
 bool DirectCompositionSurfaceWin::SetEnableDCLayers(bool enable) {
   if (enable_dc_layers_ == enable)
     return true;
-  ui::ScopedReleaseCurrent release_current(this);
   enable_dc_layers_ = enable;
   return RecreateRootSurface();
 }
 
-
 bool DirectCompositionSurfaceWin::FlipsVertically() const {
+  return true;
+}
+
+bool DirectCompositionSurfaceWin::SupportsPresentationCallback() {
   return true;
 }
 
@@ -1285,6 +1624,8 @@ bool DirectCompositionSurfaceWin::SupportsPostSubBuffer() {
 }
 
 bool DirectCompositionSurfaceWin::OnMakeCurrent(gl::GLContext* context) {
+  if (presentation_helper_)
+    presentation_helper_->OnMakeCurrent(context, this);
   if (root_surface_)
     return root_surface_->OnMakeCurrent(context);
   return true;
@@ -1296,6 +1637,16 @@ bool DirectCompositionSurfaceWin::SupportsDCLayers() const {
 
 bool DirectCompositionSurfaceWin::UseOverlaysForVideo() const {
   return AreOverlaysSupported();
+}
+
+bool DirectCompositionSurfaceWin::SupportsProtectedVideo() const {
+  if (!AreOverlaysSupported())
+    return false;
+
+  // TODO: Check the gpu driver date (or a function) which we know this new
+  // support is enabled.
+
+  return true;
 }
 
 bool DirectCompositionSurfaceWin::SetDrawRectangle(const gfx::Rect& rectangle) {
@@ -1310,14 +1661,11 @@ gfx::Vector2d DirectCompositionSurfaceWin::GetDrawOffset() const {
   return gfx::Vector2d();
 }
 
-void DirectCompositionSurfaceWin::WaitForSnapshotRendering() {
-  DCHECK(gl::GLContext::GetCurrent()->IsCurrent(this));
-  glFinish();
-}
-
 bool DirectCompositionSurfaceWin::RecreateRootSurface() {
   root_surface_ = new DirectCompositionChildSurfaceWin(
-      size_, is_hdr_, has_alpha_, enable_dc_layers_);
+      size_, is_hdr_, has_alpha_, enable_dc_layers_,
+      IsSwapChainTearingSupported());
+  root_surface_->SetVSyncEnabled(vsync_enabled_);
   return root_surface_->Initialize();
 }
 

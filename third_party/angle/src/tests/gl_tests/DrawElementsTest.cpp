@@ -74,14 +74,7 @@ TEST_P(DrawElementsTest, ClientSideNullptrArrayZeroCount)
         "    gl_Position = vec4(a_pos, 1.0);\n"
         "}\n";
 
-    const std::string &frag =
-        "precision highp float;\n"
-        "void main()\n"
-        "{\n"
-        "    gl_FragColor = vec4(1.0);\n"
-        "}\n";
-
-    ANGLE_GL_PROGRAM(program, vert, frag);
+    ANGLE_GL_PROGRAM(program, vert, essl1_shaders::fs::Blue());
 
     GLint posLocation = glGetAttribLocation(program.get(), "a_pos");
     ASSERT_NE(-1, posLocation);
@@ -98,9 +91,12 @@ TEST_P(DrawElementsTest, ClientSideNullptrArrayZeroCount)
     glEnableVertexAttribArray(posLocation);
     ASSERT_GL_NO_ERROR();
 
+    // "If drawElements is called with a count greater than zero, and no WebGLBuffer is bound to the
+    // ELEMENT_ARRAY_BUFFER binding point, an INVALID_OPERATION error is generated."
     glDrawElements(GL_TRIANGLES, 1, GL_UNSIGNED_BYTE, nullptr);
     EXPECT_GL_ERROR(GL_INVALID_OPERATION);
 
+    // count == 0 so it's fine to have no element array buffer bound.
     glDrawElements(GL_TRIANGLES, 0, GL_UNSIGNED_BYTE, nullptr);
     ASSERT_GL_NO_ERROR();
 }
@@ -273,14 +269,7 @@ TEST_P(DrawElementsTest, DrawElementsTypeAlignment)
         "    gl_Position = vec4(a_pos, 1.0);\n"
         "}\n";
 
-    const std::string &frag =
-        "precision highp float;\n"
-        "void main()\n"
-        "{\n"
-        "    gl_FragColor = vec4(1.0);\n"
-        "}\n";
-
-    ANGLE_GL_PROGRAM(program, vert, frag);
+    ANGLE_GL_PROGRAM(program, vert, essl1_shaders::fs::Blue());
 
     GLint posLocation = glGetAttribLocation(program, "a_pos");
     ASSERT_NE(-1, posLocation);

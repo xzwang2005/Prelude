@@ -1304,8 +1304,6 @@ static int mkv_write_track(AVFormatContext *s, MatroskaMuxContext *mkv,
         if(   st->avg_frame_rate.num > 0 && st->avg_frame_rate.den > 0
            && av_cmp_q(av_inv_q(st->avg_frame_rate), st->time_base) > 0)
             put_ebml_uint(pb, MATROSKA_ID_TRACKDEFAULTDURATION, 1000000000LL * st->avg_frame_rate.den / st->avg_frame_rate.num);
-        else
-            put_ebml_uint(pb, MATROSKA_ID_TRACKDEFAULTDURATION, 1000000000LL * st->time_base.num / st->time_base.den);
 
         if (!native_id &&
             ff_codec_get_tag(ff_codec_movvideo_tags, par->codec_id) &&
@@ -1860,17 +1858,6 @@ static int mkv_write_header(AVFormatContext *s)
         version = 4;
 
     for (i = 0; i < s->nb_streams; i++) {
-        if (s->streams[i]->codecpar->codec_id == AV_CODEC_ID_ATRAC3 ||
-            s->streams[i]->codecpar->codec_id == AV_CODEC_ID_COOK ||
-            s->streams[i]->codecpar->codec_id == AV_CODEC_ID_RA_288 ||
-            s->streams[i]->codecpar->codec_id == AV_CODEC_ID_SIPR ||
-            s->streams[i]->codecpar->codec_id == AV_CODEC_ID_RV10 ||
-            s->streams[i]->codecpar->codec_id == AV_CODEC_ID_RV20) {
-            av_log(s, AV_LOG_ERROR,
-                   "The Matroska muxer does not yet support muxing %s\n",
-                   avcodec_get_name(s->streams[i]->codecpar->codec_id));
-            return AVERROR_PATCHWELCOME;
-        }
         if (s->streams[i]->codecpar->codec_id == AV_CODEC_ID_OPUS ||
             av_dict_get(s->streams[i]->metadata, "stereo_mode", NULL, 0) ||
             av_dict_get(s->streams[i]->metadata, "alpha_mode", NULL, 0))
@@ -1976,6 +1963,10 @@ static int mkv_write_header(AVFormatContext *s)
     // initialize stream_duration fields
     mkv->stream_durations = av_mallocz(s->nb_streams * sizeof(int64_t));
     mkv->stream_duration_offsets = av_mallocz(s->nb_streams * sizeof(int64_t));
+    if (!mkv->stream_durations || !mkv->stream_duration_offsets) {
+        ret = AVERROR(ENOMEM);
+        goto fail;
+    }
 
     ret = mkv_write_tracks(s);
     if (ret < 0)
@@ -2008,6 +1999,8 @@ static int mkv_write_header(AVFormatContext *s)
     }
     if ((pb->seekable & AVIO_SEEKABLE_NORMAL) && mkv->reserve_cues_space) {
         mkv->cues_pos = avio_tell(pb);
+        if (mkv->reserve_cues_space == 1)
+            mkv->reserve_cues_space++;
         put_ebml_void(pb, mkv->reserve_cues_space);
     }
 
@@ -2648,6 +2641,27 @@ static int mkv_query_codec(enum AVCodecID codec_id, int std_compliance)
 static int mkv_init(struct AVFormatContext *s)
 {
     int i;
+
+    if (s->nb_streams > MAX_TRACKS) {
+        av_log(s, AV_LOG_ERROR,
+               "At most %d streams are supported for muxing in Matroska\n",
+               MAX_TRACKS);
+        return AVERROR(EINVAL);
+    }
+
+    for (i = 0; i < s->nb_streams; i++) {
+        if (s->streams[i]->codecpar->codec_id == AV_CODEC_ID_ATRAC3 ||
+            s->streams[i]->codecpar->codec_id == AV_CODEC_ID_COOK ||
+            s->streams[i]->codecpar->codec_id == AV_CODEC_ID_RA_288 ||
+            s->streams[i]->codecpar->codec_id == AV_CODEC_ID_SIPR ||
+            s->streams[i]->codecpar->codec_id == AV_CODEC_ID_RV10 ||
+            s->streams[i]->codecpar->codec_id == AV_CODEC_ID_RV20) {
+            av_log(s, AV_LOG_ERROR,
+                   "The Matroska muxer does not yet support muxing %s\n",
+                   avcodec_get_name(s->streams[i]->codecpar->codec_id));
+            return AVERROR_PATCHWELCOME;
+        }
+    }
 
     if (s->avoid_negative_ts < 0) {
         s->avoid_negative_ts = 1;

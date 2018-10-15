@@ -10,14 +10,12 @@
 #define GrGLCaps_DEFINED
 
 #include <functional>
-
 #include "GrCaps.h"
 #include "GrGLStencilAttachment.h"
 #include "GrSwizzle.h"
 #include "SkChecksum.h"
 #include "SkTHash.h"
 #include "SkTArray.h"
-#include "../private/GrGLSL.h"
 
 class GrGLContextInfo;
 class GrGLRenderTarget;
@@ -112,26 +110,19 @@ public:
     GrGLCaps(const GrContextOptions& contextOptions, const GrGLContextInfo& ctxInfo,
              const GrGLInterface* glInterface);
 
-    int getSampleCount(int requestedCount, GrPixelConfig config) const override;
-
     bool isConfigTexturable(GrPixelConfig config) const override {
         return SkToBool(fConfigTable[config].fFlags & ConfigInfo::kTextureable_Flag);
     }
 
-    bool isConfigRenderable(GrPixelConfig config, bool withMSAA) const override {
-        if (withMSAA) {
-            return SkToBool(fConfigTable[config].fFlags & ConfigInfo::kRenderableWithMSAA_Flag);
-        } else {
-            return SkToBool(fConfigTable[config].fFlags & ConfigInfo::kRenderable_Flag);
-        }
-    }
+    int getRenderTargetSampleCount(int requestedCount, GrPixelConfig config) const override;
+    int maxRenderTargetSampleCount(GrPixelConfig config) const override;
 
     bool isConfigCopyable(GrPixelConfig config) const override {
         // In GL we have three ways to be able to copy. CopyTexImage, blit, and draw. CopyTexImage
         // requires the src to be an FBO attachment, blit requires both src and dst to be FBO
         // attachments, and draw requires the dst to be an FBO attachment. Thus to copy from and to
-        // the same config, we need that config to be renderable so we can attach it to an FBO.
-        return this->isConfigRenderable(config, false);
+        // the same config, we need that config to be bindable to an FBO.
+        return this->canConfigBeFBOColorAttachment(config);
     }
 
     bool canConfigBeFBOColorAttachment(GrPixelConfig config) const {
@@ -140,10 +131,6 @@ public:
 
     bool isConfigTexSupportEnabled(GrPixelConfig config) const {
         return SkToBool(fConfigTable[config].fFlags & ConfigInfo::kCanUseTexStorage_Flag);
-    }
-
-    bool canUseConfigWithTexelBuffer(GrPixelConfig config) const {
-        return SkToBool(fConfigTable[config].fFlags & ConfigInfo::kCanUseWithTexelBuffer_Flag);
     }
 
     /** Returns the mapping between GrPixelConfig components and GL internal format components. */
@@ -162,7 +149,8 @@ public:
     bool getReadPixelsFormat(GrPixelConfig surfaceConfig, GrPixelConfig externalConfig,
                              GrGLenum* externalFormat, GrGLenum* externalType) const;
 
-    bool getRenderbufferFormat(GrPixelConfig config, GrGLenum* internalFormat) const;
+    void getRenderbufferFormat(GrPixelConfig config, GrGLenum* internalFormat) const;
+    void getSizedInternalFormat(GrPixelConfig config, GrGLenum* internalFormat) const;
 
     /** The format to use read/write a texture as an image in a shader */
     GrGLenum getImageFormat(GrPixelConfig config) const {
@@ -215,7 +203,7 @@ public:
      * using isConfigVerifiedColorAttachment().
      */
     void markConfigAsValidColorAttachment(GrPixelConfig config) {
-        fConfigTable[config].fFlags |= ConfigInfo::kVerifiedColorAttachment_Flag;
+        fConfigTable[config].fVerifiedColorAttachment = true;
     }
 
     /**
@@ -223,7 +211,7 @@ public:
      * attachment.
      */
     bool isConfigVerifiedColorAttachment(GrPixelConfig config) const {
-        return SkToBool(fConfigTable[config].fFlags & ConfigInfo::kVerifiedColorAttachment_Flag);
+        return fConfigTable[config].fVerifiedColorAttachment;
     }
 
     /**
@@ -288,9 +276,6 @@ public:
     /// Is there support for texture parameter GL_TEXTURE_USAGE
     bool textureUsageSupport() const { return fTextureUsageSupport; }
 
-    /// Is there support for GL_RED and GL_R8
-    bool textureRedSupport() const { return fTextureRedSupport; }
-
     /// Is GL_ALPHA8 renderable
     bool alpha8IsRenderable() const { return fAlpha8IsRenderable; }
 
@@ -299,9 +284,6 @@ public:
 
     /// Is there support for Vertex Array Objects?
     bool vertexArrayObjectSupport() const { return fVertexArrayObjectSupport; }
-
-    /// Is there support for GL_EXT_direct_state_access?
-    bool directStateAccessSupport() const { return fDirectStateAccessSupport; }
 
     /// Is there support for GL_KHR_debug?
     bool debugSupport() const { return fDebugSupport; }
@@ -329,6 +311,10 @@ public:
     /// Use indices or vertices in CPU arrays rather than VBOs for dynamic content.
     bool useNonVBOVertexAndIndexDynamicData() const { return fUseNonVBOVertexAndIndexDynamicData; }
 
+    bool surfaceSupportsWritePixels(const GrSurface*) const override;
+    bool surfaceSupportsReadPixels(const GrSurface*) const override;
+    GrColorType supportedReadPixelsColorType(GrPixelConfig, GrColorType) const override;
+
     /// Does ReadPixels support reading readConfig pixels from a FBO that is surfaceConfig?
     bool readPixelsSupported(GrPixelConfig surfaceConfig,
                              GrPixelConfig readConfig,
@@ -352,8 +338,6 @@ public:
 
     bool doManualMipmapping() const { return fDoManualMipmapping; }
 
-    bool srgbDecodeDisableAffectsMipmaps() const { return fSRGBDecodeDisableAffectsMipmaps; }
-
     void onDumpJSON(SkJSONWriter*) const override;
 
     bool rgba8888PixelsOpsAreSlow() const { return fRGBA8888PixelsOpsAreSlow; }
@@ -361,6 +345,8 @@ public:
     bool rgbaToBgraReadbackConversionsAreSlow() const {
         return fRGBAToBGRAReadbackConversionsAreSlow;
     }
+
+    bool useBufferDataNullHint() const { return fUseBufferDataNullHint; }
 
     // Certain Intel GPUs on Mac fail to clear if the glClearColor is made up of only 1s and 0s.
     bool clearToBoundaryValuesIsBroken() const { return fClearToBoundaryValuesIsBroken; }
@@ -399,6 +385,17 @@ public:
         return fRequiresCullFaceEnableDisableWhenDrawingLinesAfterNonLines;
     }
 
+    // Intel Skylake instanced draws get corrupted if we mix them with normal ones. Adding a flush
+    // in between seems to resolve this.
+    bool requiresFlushBetweenNonAndInstancedDraws() const {
+        return fRequiresFlushBetweenNonAndInstancedDraws;
+    }
+
+    // Some Adreno drivers refuse to ReadPixels from an MSAA buffer that has stencil attached.
+    bool detachStencilFromMSAABuffersBeforeReadPixels() const {
+        return fDetachStencilFromMSAABuffersBeforeReadPixels;
+    }
+
     // Returns the observed maximum number of instances the driver can handle in a single call to
     // glDrawArraysInstanced without crashing, or 'pendingInstanceCount' if this
     // workaround is not necessary.
@@ -408,19 +405,49 @@ public:
                                                          : pendingInstanceCount;
     }
 
-    bool initDescForDstCopy(const GrRenderTargetProxy* src, GrSurfaceDesc* desc,
+    bool canCopyTexSubImage(GrPixelConfig dstConfig, bool dstHasMSAARenderBuffer,
+                            bool dstIsTextureable, bool dstIsGLTexture2D,
+                            GrSurfaceOrigin dstOrigin,
+                            GrPixelConfig srcConfig, bool srcHasMSAARenderBuffer,
+                            bool srcIsTextureable, bool srcIsGLTexture2D,
+                            GrSurfaceOrigin srcOrigin) const;
+    bool canCopyAsBlit(GrPixelConfig dstConfig, int dstSampleCnt,
+                       bool dstIsTextureable, bool dstIsGLTexture2D,
+                       GrSurfaceOrigin dstOrigin,
+                       GrPixelConfig srcConfig, int srcSampleCnt,
+                       bool srcIsTextureable, bool srcIsGLTexture2D,
+                       GrSurfaceOrigin srcOrigin, const SkRect& srcBounds,
+                       const SkIRect& srcRect, const SkIPoint& dstPoint) const;
+    bool canCopyAsDraw(GrPixelConfig dstConfig, bool srcIsTextureable) const;
+
+    bool canCopySurface(const GrSurfaceProxy* dst, const GrSurfaceProxy* src,
+                        const SkIRect& srcRect, const SkIPoint& dstPoint) const override;
+
+    bool initDescForDstCopy(const GrRenderTargetProxy* src, GrSurfaceDesc* desc, GrSurfaceOrigin*,
                             bool* rectsMustMatch, bool* disallowSubrect) const override;
 
     bool programBinarySupport() const {
         return fProgramBinarySupport;
     }
 
+    bool validateBackendTexture(const GrBackendTexture&, SkColorType,
+                                GrPixelConfig*) const override;
+    bool validateBackendRenderTarget(const GrBackendRenderTarget&, SkColorType,
+                                     GrPixelConfig*) const override;
+
+    bool getConfigFromBackendFormat(const GrBackendFormat&, SkColorType,
+                                    GrPixelConfig*) const override;
+
+#if GR_TEST_UTILS
+    GrGLStandard standard() const { return fStandard; }
+#endif
+
 private:
     enum ExternalFormatUsage {
         kTexImage_ExternalFormatUsage,
-        kOther_ExternalFormatUsage,
+        kReadPixels_ExternalFormatUsage,
 
-        kLast_ExternalFormatUsage = kOther_ExternalFormatUsage
+        kLast_ExternalFormatUsage = kReadPixels_ExternalFormatUsage
     };
     static const int kExternalFormatUsageCnt = kLast_ExternalFormatUsage + 1;
     bool getExternalFormat(GrPixelConfig surfaceConfig, GrPixelConfig memoryConfig,
@@ -431,7 +458,16 @@ private:
     void initGLSL(const GrGLContextInfo&, const GrGLInterface*);
     bool hasPathRenderingSupport(const GrGLContextInfo&, const GrGLInterface*);
 
+    void applyDriverCorrectnessWorkarounds(const GrGLContextInfo&, const GrContextOptions&,
+                                           GrShaderCaps*);
+
     void onApplyOptionsOverrides(const GrContextOptions& options) override;
+
+#ifdef GR_TEST_UTILS
+    GrBackendFormat onCreateFormatFromBackendTexture(const GrBackendTexture&) const override;
+#endif
+
+    bool onIsWindowRectanglesSupportedForRT(const GrBackendRenderTarget&) const override;
 
     void initFSAASupport(const GrContextOptions& contextOptions, const GrGLContextInfo&,
                          const GrGLInterface*);
@@ -457,11 +493,9 @@ private:
     bool fPackRowLengthSupport : 1;
     bool fPackFlipYSupport : 1;
     bool fTextureUsageSupport : 1;
-    bool fTextureRedSupport : 1;
     bool fAlpha8IsRenderable: 1;
     bool fImagingSupport  : 1;
     bool fVertexArrayObjectSupport : 1;
-    bool fDirectStateAccessSupport : 1;
     bool fDebugSupport : 1;
     bool fES2CompatibilitySupport : 1;
     bool fDrawInstancedSupport : 1;
@@ -479,26 +513,29 @@ private:
     bool fTextureSwizzleSupport : 1;
     bool fMipMapLevelAndLodControlSupport : 1;
     bool fRGBAToBGRAReadbackConversionsAreSlow : 1;
-    bool fDoManualMipmapping : 1;
-    bool fSRGBDecodeDisableAffectsMipmaps : 1;
-    bool fClearToBoundaryValuesIsBroken : 1;
+    bool fUseBufferDataNullHint                : 1;
     bool fClearTextureSupport : 1;
+    bool fProgramBinarySupport : 1;
+
+    // Driver workarounds
+    bool fDoManualMipmapping : 1;
+    bool fClearToBoundaryValuesIsBroken : 1;
     bool fDrawArraysBaseVertexIsBroken : 1;
     bool fUseDrawToClearColor : 1;
     bool fUseDrawToClearStencilClip : 1;
     bool fDisallowTexSubImageForUnormConfigTexturesEverBoundToFBO : 1;
     bool fUseDrawInsteadOfAllRenderTargetWrites : 1;
     bool fRequiresCullFaceEnableDisableWhenDrawingLinesAfterNonLines : 1;
-    bool fProgramBinarySupport : 1;
+    bool fRequiresFlushBetweenNonAndInstancedDraws : 1;
+    bool fDetachStencilFromMSAABuffersBeforeReadPixels : 1;
+    int fMaxInstancesPerDrawArraysWithoutCrashing;
 
     uint32_t fBlitFramebufferFlags;
-    int fMaxInstancesPerDrawArraysWithoutCrashing;
 
     /** Number type of the components (with out considering number of bits.) */
     enum FormatType {
         kNormalizedFixedPoint_FormatType,
         kFloat_FormatType,
-        kInteger_FormatType,
     };
 
     struct ReadPixelsFormat {
@@ -554,17 +591,19 @@ private:
         SkTDArray<int> fColorSampleCounts;
 
         enum {
-            kVerifiedColorAttachment_Flag = 0x1,
-            kTextureable_Flag             = 0x2,
-            kRenderable_Flag              = 0x4,
-            kRenderableWithMSAA_Flag      = 0x8,
+            kTextureable_Flag             = 0x1,
+            kRenderable_Flag              = 0x2,
+            kRenderableWithMSAA_Flag      = 0x4,
             /** kFBOColorAttachment means that even if the config cannot be a GrRenderTarget, we can
                 still attach it to a FBO for blitting or reading pixels. */
-            kFBOColorAttachment_Flag      = 0x10,
-            kCanUseTexStorage_Flag        = 0x20,
-            kCanUseWithTexelBuffer_Flag   = 0x40,
+            kFBOColorAttachment_Flag      = 0x8,
+            kCanUseTexStorage_Flag        = 0x10,
         };
         uint32_t fFlags;
+
+        // verification of color attachment validity is done while flushing. Although only ever
+        // used in the (sole) rendering thread it can cause races if it is glommed into fFlags.
+        bool fVerifiedColorAttachment = false;
 
         GrSwizzle fSwizzle;
     };

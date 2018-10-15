@@ -4,6 +4,7 @@
 
 #include "ui/gl/init/gl_factory.h"
 
+#include <algorithm>
 #include <string>
 #include <vector>
 
@@ -21,10 +22,27 @@ namespace {
 bool InitializeGLOneOffHelper(bool init_extensions) {
   DCHECK_EQ(kGLImplementationNone, GetGLImplementation());
 
-  std::vector<GLImplementation> allowed_impls = GetAllowedGLImplementations();
-  DCHECK(!allowed_impls.empty());
-
   const base::CommandLine* cmd = base::CommandLine::ForCurrentProcess();
+  std::string requested_implementation_name =
+      cmd->GetSwitchValueASCII(switches::kUseGL);
+  if (requested_implementation_name == kGLImplementationDisabledName) {
+    gl::SetGLImplementation(gl::kGLImplementationDisabled);
+    return true;
+  }
+
+  std::vector<GLImplementation> allowed_impls = GetAllowedGLImplementations();
+
+  if (cmd->HasSwitch(switches::kDisableES3GLContext)) {
+    auto iter = std::find(allowed_impls.begin(), allowed_impls.end(),
+                          kGLImplementationDesktopGLCoreProfile);
+    if (iter != allowed_impls.end())
+      allowed_impls.erase(iter);
+  }
+
+  if (allowed_impls.empty()) {
+    LOG(ERROR) << "List of allowed GL implementations is empty.";
+    return false;
+  }
 
   // The default implementation is always the first one in list.
   GLImplementation impl = allowed_impls[0];
@@ -32,8 +50,6 @@ bool InitializeGLOneOffHelper(bool init_extensions) {
   if (cmd->HasSwitch(switches::kOverrideUseSoftwareGLForTests)) {
     impl = GetSoftwareGLImplementation();
   } else if (cmd->HasSwitch(switches::kUseGL)) {
-    std::string requested_implementation_name =
-        cmd->GetSwitchValueASCII(switches::kUseGL);
     if (requested_implementation_name == "any") {
       fallback_to_software_gl = true;
     } else if ((requested_implementation_name ==

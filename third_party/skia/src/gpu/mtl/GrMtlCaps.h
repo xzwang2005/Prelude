@@ -24,20 +24,15 @@ public:
     GrMtlCaps(const GrContextOptions& contextOptions, id<MTLDevice> device,
               MTLFeatureSet featureSet);
 
-    int getSampleCount(int requestedCount, GrPixelConfig config) const override;
-
     bool isConfigTexturable(GrPixelConfig config) const override {
         return SkToBool(fConfigTable[config].fFlags & ConfigInfo::kTextureable_Flag);
     }
 
-    bool isConfigRenderable(GrPixelConfig config, bool withMSAA) const override {
-        if (withMSAA) {
-            return SkToBool(fConfigTable[config].fFlags & ConfigInfo::kRenderable_Flag) &&
-                   SkToBool(fConfigTable[config].fFlags & ConfigInfo::kMSAA_Flag);
-        } else {
-            return SkToBool(fConfigTable[config].fFlags & ConfigInfo::kRenderable_Flag);
-        }
-    }
+    int getRenderTargetSampleCount(int requestedCount, GrPixelConfig) const override;
+    int maxRenderTargetSampleCount(GrPixelConfig) const override;
+
+    bool surfaceSupportsWritePixels(const GrSurface*) const override { return true; }
+    bool surfaceSupportsReadPixels(const GrSurface*) const override { return true; }
 
     bool isConfigCopyable(GrPixelConfig config) const override {
         return true;
@@ -51,8 +46,36 @@ public:
         return fPreferedStencilFormat;
     }
 #endif
-    bool initDescForDstCopy(const GrRenderTargetProxy* src, GrSurfaceDesc* desc,
+    bool canCopyAsBlit(GrPixelConfig dstConfig, int dstSampleCount, GrSurfaceOrigin dstOrigin,
+                       GrPixelConfig srcConfig, int srcSampleCount, GrSurfaceOrigin srcOrigin,
+                       const SkIRect& srcRect, const SkIPoint& dstPoint,
+                       bool areDstSrcSameObj) const;
+
+    bool canCopyAsDraw(GrPixelConfig dstConfig, bool dstIsRenderable,
+                       GrPixelConfig srcConfig, bool srcIsTextureable) const;
+
+    bool canCopyAsDrawThenBlit(GrPixelConfig dstConfig, GrPixelConfig srcConfig,
+                               bool srcIsTextureable) const;
+
+    bool canCopySurface(const GrSurfaceProxy* dst, const GrSurfaceProxy* src,
+                        const SkIRect& srcRect, const SkIPoint& dstPoint) const override;
+
+    bool initDescForDstCopy(const GrRenderTargetProxy* src, GrSurfaceDesc* desc, GrSurfaceOrigin*,
                             bool* rectsMustMatch, bool* disallowSubrect) const override {
+        return false;
+    }
+
+    bool validateBackendTexture(const GrBackendTexture&, SkColorType,
+                                GrPixelConfig*) const override {
+        return false;
+    }
+    bool validateBackendRenderTarget(const GrBackendRenderTarget&, SkColorType,
+                                     GrPixelConfig*) const override {
+        return false;
+    }
+
+    bool getConfigFromBackendFormat(const GrBackendFormat&, SkColorType,
+                                    GrPixelConfig*) const override {
         return false;
     }
 
@@ -61,7 +84,11 @@ private:
 
     void initGrCaps(const id<MTLDevice> device);
     void initShaderCaps();
-    void initSampleCount();
+
+#ifdef GR_TEST_UTILS
+    GrBackendFormat onCreateFormatFromBackendTexture(const GrBackendTexture&) const override;
+#endif
+
     void initConfigTable();
 
     struct ConfigInfo {
@@ -73,8 +100,9 @@ private:
             kMSAA_Flag        = 0x4,
             kResolve_Flag     = 0x8,
         };
+        // TODO: Put kMSAA_Flag back when MSAA is implemented
         static const uint16_t kAllFlags = kTextureable_Flag | kRenderable_Flag |
-                                          kMSAA_Flag | kResolve_Flag;
+                                          /*kMSAA_Flag |*/ kResolve_Flag;
 
         uint16_t fFlags;
     };

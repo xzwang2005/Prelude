@@ -7,6 +7,10 @@ expression: (function* foo() { yield 1 })
     result : {
         internalProperties : [
             [0] : {
+                name : [[StableObjectId]]
+                value : <StablectObjectId>
+            }
+            [1] : {
                 name : [[FunctionLocation]]
                 value : {
                     description : Object
@@ -19,14 +23,14 @@ expression: (function* foo() { yield 1 })
                     }
                 }
             }
-            [1] : {
+            [2] : {
                 name : [[IsGenerator]]
                 value : {
                     type : boolean
                     value : true
                 }
             }
-            [2] : {
+            [3] : {
                 name : [[Scopes]]
                 value : {
                     className : Array
@@ -47,6 +51,10 @@ expression: (function foo() {})
     result : {
         internalProperties : [
             [0] : {
+                name : [[StableObjectId]]
+                value : <StablectObjectId>
+            }
+            [1] : {
                 name : [[FunctionLocation]]
                 value : {
                     description : Object
@@ -59,7 +67,7 @@ expression: (function foo() {})
                     }
                 }
             }
-            [1] : {
+            [2] : {
                 name : [[Scopes]]
                 value : {
                     className : Array
@@ -87,6 +95,10 @@ expression: new Number(239)
                     value : 239
                 }
             }
+            [1] : {
+                name : [[StableObjectId]]
+                value : <StablectObjectId>
+            }
         ]
     }
 }
@@ -101,6 +113,10 @@ expression: new Boolean(false)
                     type : boolean
                     value : false
                 }
+            }
+            [1] : {
+                name : [[StableObjectId]]
+                value : <StablectObjectId>
             }
         ]
     }
@@ -117,6 +133,10 @@ expression: new String('abc')
                     value : abc
                 }
             }
+            [1] : {
+                name : [[StableObjectId]]
+                value : <StablectObjectId>
+            }
         ]
     }
 }
@@ -132,6 +152,30 @@ expression: Object(Symbol(42))
                     objectId : <objectId>
                     type : symbol
                 }
+            }
+            [1] : {
+                name : [[StableObjectId]]
+                value : <StablectObjectId>
+            }
+        ]
+    }
+}
+expression: Object(BigInt(2))
+{
+    id : <messageId>
+    result : {
+        internalProperties : [
+            [0] : {
+                name : [[PrimitiveValue]]
+                value : {
+                    description : 2n
+                    type : bigint
+                    unserializableValue : 2n
+                }
+            }
+            [1] : {
+                name : [[StableObjectId]]
+                value : <StablectObjectId>
             }
         ]
     }
@@ -158,6 +202,10 @@ expression: Promise.resolve(42)
                     value : 42
                 }
             }
+            [2] : {
+                name : [[StableObjectId]]
+                value : <StablectObjectId>
+            }
         ]
     }
 }
@@ -178,6 +226,10 @@ expression: new Promise(() => undefined)
                 value : {
                     type : undefined
                 }
+            }
+            [2] : {
+                name : [[StableObjectId]]
+                value : <StablectObjectId>
             }
         ]
     }
@@ -215,6 +267,10 @@ expression: gen1
                 }
             }
             [3] : {
+                name : [[StableObjectId]]
+                value : <StablectObjectId>
+            }
+            [4] : {
                 name : [[GeneratorLocation]]
                 value : {
                     description : Object
@@ -227,7 +283,7 @@ expression: gen1
                     }
                 }
             }
-            [4] : {
+            [5] : {
                 name : [[Scopes]]
                 value : {
                     className : Array
@@ -271,6 +327,10 @@ expression: gen1.next();gen1
                 }
             }
             [3] : {
+                name : [[StableObjectId]]
+                value : <StablectObjectId>
+            }
+            [4] : {
                 name : [[GeneratorLocation]]
                 value : {
                     description : Object
@@ -283,7 +343,7 @@ expression: gen1.next();gen1
                     }
                 }
             }
-            [4] : {
+            [5] : {
                 name : [[Scopes]]
                 value : {
                     className : Array
@@ -327,6 +387,10 @@ expression: gen1.next();gen1
                 }
             }
             [3] : {
+                name : [[StableObjectId]]
+                value : <StablectObjectId>
+            }
+            [4] : {
                 name : [[GeneratorLocation]]
                 value : {
                     description : Object
@@ -375,6 +439,10 @@ expression: gen2
                 }
             }
             [3] : {
+                name : [[StableObjectId]]
+                value : <StablectObjectId>
+            }
+            [4] : {
                 name : [[GeneratorLocation]]
                 value : {
                     description : Object
@@ -387,7 +455,7 @@ expression: gen2
                     }
                 }
             }
-            [4] : {
+            [5] : {
                 name : [[Scopes]]
                 value : {
                     className : Array
@@ -431,6 +499,10 @@ expression: gen2.next();gen2
                 }
             }
             [3] : {
+                name : [[StableObjectId]]
+                value : <StablectObjectId>
+            }
+            [4] : {
                 name : [[GeneratorLocation]]
                 value : {
                     description : Object
@@ -443,7 +515,7 @@ expression: gen2.next();gen2
                     }
                 }
             }
-            [4] : {
+            [5] : {
                 name : [[Scopes]]
                 value : {
                     className : Array
@@ -487,6 +559,10 @@ expression: gen2.next();gen2
                 }
             }
             [3] : {
+                name : [[StableObjectId]]
+                value : <StablectObjectId>
+            }
+            [4] : {
                 name : [[GeneratorLocation]]
                 value : {
                     description : Object
@@ -532,6 +608,10 @@ expression: (new Map([[1,2]])).entries()
                 }
             }
             [3] : {
+                name : [[StableObjectId]]
+                value : <StablectObjectId>
+            }
+            [4] : {
                 name : [[Entries]]
                 value : {
                     className : Array
@@ -572,6 +652,10 @@ expression: (new Set([[1,2]])).entries()
                 }
             }
             [3] : {
+                name : [[StableObjectId]]
+                value : <StablectObjectId>
+            }
+            [4] : {
                 name : [[Entries]]
                 value : {
                     className : Array

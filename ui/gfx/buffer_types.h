@@ -5,6 +5,8 @@
 #ifndef UI_GFX_BUFFER_TYPES_H_
 #define UI_GFX_BUFFER_TYPES_H_
 
+#include <tuple>
+
 namespace gfx {
 
 // The format needs to be taken into account when mapping a buffer into the
@@ -24,6 +26,7 @@ enum class BufferFormat {
   RGBA_8888,
   BGRX_8888,
   BGRX_1010102,
+  RGBX_1010102,
   BGRA_8888,
   RGBA_F16,
   YVU_420,
@@ -48,6 +51,7 @@ enum class BufferUsage {
   SCANOUT,
   // SCANOUT_CAMERA_READ_WRITE implies CPU_READ_WRITE.
   SCANOUT_CAMERA_READ_WRITE,
+  CAMERA_AND_CPU_READ_WRITE,
   SCANOUT_CPU_READ_WRITE,
   SCANOUT_VDA_WRITE,
   GPU_READ_CPU_READ_WRITE,
@@ -56,6 +60,20 @@ enum class BufferUsage {
   GPU_READ_CPU_READ_WRITE_PERSISTENT,
 
   LAST = GPU_READ_CPU_READ_WRITE_PERSISTENT
+};
+
+struct BufferUsageAndFormat {
+  BufferUsageAndFormat()
+      : usage(BufferUsage::GPU_READ), format(BufferFormat::RGBA_8888) {}
+  BufferUsageAndFormat(BufferUsage usage, BufferFormat format)
+      : usage(usage), format(format) {}
+
+  bool operator==(const BufferUsageAndFormat& other) const {
+    return std::tie(usage, format) == std::tie(other.usage, other.format);
+  }
+
+  BufferUsage usage;
+  BufferFormat format;
 };
 
 }  // namespace gfx

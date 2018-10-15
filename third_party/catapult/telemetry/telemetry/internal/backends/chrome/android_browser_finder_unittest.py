@@ -3,13 +3,18 @@
 # found in the LICENSE file.
 
 import os
+import posixpath
 import unittest
 
 import mock
 from pyfakefs import fake_filesystem_unittest
+from py_utils import tempfile_ext
 
 from telemetry.core import android_platform
+from telemetry.core import exceptions
+from telemetry import decorators
 from telemetry.internal.backends.chrome import android_browser_finder
+from telemetry.internal.browser import browser_finder
 from telemetry.internal.platform import android_platform_backend
 from telemetry.internal.util import binary_manager
 from telemetry.testing import options_for_unittests
@@ -34,9 +39,12 @@ class AndroidBrowserFinderTest(fake_filesystem_unittest.TestCase):
     self._get_package_name_mock = self._get_package_name_patcher.start()
     self.fake_platform = mock.Mock(spec=android_platform.AndroidPlatform)
     self.fake_platform.CanLaunchApplication.return_value = True
-    self.fake_platform._platform_backend = mock.create_autospec(
-        android_platform_backend, spec_set=True)
-    self.fake_platform.GetOSVersionName.return_value = 'L23ds5'
+    self.fake_platform._platform_backend = mock.Mock(
+        spec=android_platform_backend.AndroidPlatformBackend)
+    device = self.fake_platform._platform_backend.device
+    device.build_description = 'some L device'
+    device.build_version_sdk = 'L23ds5'
+    self.fake_platform.GetOSVersionName.return_value = device.build_version_sdk
     self.fake_platform.GetArchName.return_value = 'armeabi-v7a'
     # The android_browser_finder converts the os version name to 'k' or 'l'
     self.expected_reference_build = FakeFetchPath(
@@ -54,8 +62,6 @@ class AndroidBrowserFinderTest(fake_filesystem_unittest.TestCase):
     self.assertEqual([], possible_browsers)
 
   def testCanLaunchAlwaysTrueReturnsAllExceptExactAndReference(self):
-    if not self.finder_options.chrome_root:
-      self.skipTest('--chrome-root is not specified, skip the test')
     all_types = set(
         android_browser_finder.FindAllBrowserTypes(self.finder_options))
     expected_types = all_types - set(('exact', 'reference'))
@@ -66,8 +72,6 @@ class AndroidBrowserFinderTest(fake_filesystem_unittest.TestCase):
         set([b.browser_type for b in possible_browsers]))
 
   def testCanLaunchAlwaysTrueReturnsAllExceptExact(self):
-    if not self.finder_options.chrome_root:
-      self.skipTest('--chrome-root is not specified, skip the test')
     self.fs.CreateFile(self.expected_reference_build)
     all_types = set(
         android_browser_finder.FindAllBrowserTypes(self.finder_options))
@@ -79,8 +83,6 @@ class AndroidBrowserFinderTest(fake_filesystem_unittest.TestCase):
         set([b.browser_type for b in possible_browsers]))
 
   def testCanLaunchAlwaysTrueWithExactApkReturnsAll(self):
-    if not self.finder_options.chrome_root:
-      self.skipTest('--chrome-root is not specified, skip the test')
     self.fs.CreateFile(
         '/foo/ContentShell.apk')
     self.fs.CreateFile(self.expected_reference_build)
@@ -113,20 +115,17 @@ class AndroidBrowserFinderTest(fake_filesystem_unittest.TestCase):
                       android_browser_finder._FindAllPossibleBrowsers,
                       self.finder_options, self.fake_platform)
 
-  def testNoErrorWithUnrecognizedApkName(self):
-    if not self.finder_options.chrome_root:
-      self.skipTest('--chrome-root is not specified, skip the test')
+  def testErrorWithUnrecognizedApkName(self):
     self.fs.CreateFile(
         '/foo/unknown.apk')
     self.finder_options.browser_executable = '/foo/unknown.apk'
+    self._get_package_name_mock.return_value = 'org.foo.bar'
 
-    possible_browsers = android_browser_finder._FindAllPossibleBrowsers(
-        self.finder_options, self.fake_platform)
-    self.assertNotIn('exact', [b.browser_type for b in possible_browsers])
+    with self.assertRaises(exceptions.UnknownPackageError):
+      android_browser_finder._FindAllPossibleBrowsers(
+          self.finder_options, self.fake_platform)
 
   def testCanLaunchExactWithUnrecognizedApkNameButKnownPackageName(self):
-    if not self.finder_options.chrome_root:
-      self.skipTest('--chrome-root is not specified, skip the test')
     self.fs.CreateFile(
         '/foo/MyFooBrowser.apk')
     self._get_package_name_mock.return_value = 'org.chromium.chrome'
@@ -137,15 +136,11 @@ class AndroidBrowserFinderTest(fake_filesystem_unittest.TestCase):
     self.assertIn('exact', [b.browser_type for b in possible_browsers])
 
   def testNoErrorWithMissingReferenceBuild(self):
-    if not self.finder_options.chrome_root:
-      self.skipTest('--chrome-root is not specified, skip the test')
     possible_browsers = android_browser_finder._FindAllPossibleBrowsers(
         self.finder_options, self.fake_platform)
     self.assertNotIn('reference', [b.browser_type for b in possible_browsers])
 
   def testNoErrorWithReferenceBuildCloudStorageError(self):
-    if not self.finder_options.chrome_root:
-      self.skipTest('--chrome-root is not specified, skip the test')
     with mock.patch(
         'telemetry.internal.backends.chrome.android_browser_finder.binary_manager.FetchPath',  # pylint: disable=line-too-long
         side_effect=binary_manager.CloudStorageError):
@@ -154,20 +149,16 @@ class AndroidBrowserFinderTest(fake_filesystem_unittest.TestCase):
     self.assertNotIn('reference', [b.browser_type for b in possible_browsers])
 
   def testNoErrorWithReferenceBuildNoPathFoundError(self):
-    if not self.finder_options.chrome_root:
-      self.skipTest('--chrome-root is not specified, skip the test')
     self._fetch_path_mock.side_effect = binary_manager.NoPathFoundError
     possible_browsers = android_browser_finder._FindAllPossibleBrowsers(
         self.finder_options, self.fake_platform)
     self.assertNotIn('reference', [b.browser_type for b in possible_browsers])
 
 
-class FakePossibleBrowser(object):
-  def __init__(self, LastModificationTime):
-    self._last_modification_time = LastModificationTime
-
-  def LastModificationTime(self):
-    return self._last_modification_time
+def _MockPossibleBrowser(modified_at):
+  m = mock.Mock(spec=android_browser_finder.PossibleAndroidBrowser)
+  m.last_modification_time = modified_at
+  return m
 
 
 class SelectDefaultBrowserTest(unittest.TestCase):
@@ -175,17 +166,116 @@ class SelectDefaultBrowserTest(unittest.TestCase):
     self.assertIsNone(android_browser_finder.SelectDefaultBrowser([]))
 
   def testSinglePossibleReturnsSame(self):
-    possible_browsers = [FakePossibleBrowser(LastModificationTime=1)]
+    possible_browsers = [_MockPossibleBrowser(modified_at=1)]
     self.assertIs(
         possible_browsers[0],
         android_browser_finder.SelectDefaultBrowser(possible_browsers))
 
   def testListGivesNewest(self):
     possible_browsers = [
-        FakePossibleBrowser(LastModificationTime=2),
-        FakePossibleBrowser(LastModificationTime=3),  # newest
-        FakePossibleBrowser(LastModificationTime=1),
+        _MockPossibleBrowser(modified_at=2),
+        _MockPossibleBrowser(modified_at=3),  # newest
+        _MockPossibleBrowser(modified_at=1),
         ]
     self.assertIs(
         possible_browsers[1],
         android_browser_finder.SelectDefaultBrowser(possible_browsers))
+
+
+class SetUpProfileBrowserTest(unittest.TestCase):
+
+  @decorators.Enabled('android')
+  def testPushEmptyProfile(self):
+    finder_options = options_for_unittests.GetCopy()
+    finder_options.browser_options.profile_dir = None
+    browser_to_create = browser_finder.FindBrowser(finder_options)
+
+    try:
+      # SetUpEnvironment will call RemoveProfile on the device, due to the fact
+      # that there is no input profile directory in BrowserOptions.
+      browser_to_create.SetUpEnvironment(finder_options.browser_options)
+
+      profile_dir = browser_to_create.profile_directory
+      device = browser_to_create._platform_backend.device
+
+       # "lib" is created after installing the browser, and pushing / removing
+       # the profile should never modify it.
+      profile_paths = device.ListDirectory(profile_dir)
+      expected_paths = ['lib']
+      self.assertEqual(expected_paths, profile_paths)
+
+    finally:
+      browser_to_create.CleanUpEnvironment()
+
+  @decorators.Enabled('android')
+  def testPushDefaultProfileDir(self):
+    # Add a few files and directories to a temp directory, and ensure they are
+    # copied to the device.
+    with tempfile_ext.NamedTemporaryDirectory() as tempdir:
+      foo_path = os.path.join(tempdir, 'foo')
+      with open(foo_path, 'w') as f:
+        f.write('foo_data')
+
+      bar_path = os.path.join(tempdir, 'path', 'to', 'bar')
+      os.makedirs(os.path.dirname(bar_path))
+      with open(bar_path, 'w') as f:
+        f.write('bar_data')
+
+      expected_profile_paths = ['foo', posixpath.join('path', 'to', 'bar')]
+
+      finder_options = options_for_unittests.GetCopy()
+      finder_options.browser_options.profile_dir = tempdir
+      browser_to_create = browser_finder.FindBrowser(finder_options)
+
+      # SetUpEnvironment will end up calling PushProfile
+      try:
+        browser_to_create.SetUpEnvironment(finder_options.browser_options)
+
+        profile_dir = browser_to_create.profile_directory
+        device = browser_to_create._platform_backend.device
+
+        absolute_expected_profile_paths = [
+            posixpath.join(profile_dir, path)
+            for path in expected_profile_paths]
+        device = browser_to_create._platform_backend.device
+        self.assertTrue(device.PathExists(absolute_expected_profile_paths),
+                        absolute_expected_profile_paths)
+      finally:
+        browser_to_create.CleanUpEnvironment()
+
+  @decorators.Enabled('android')
+  def testPushDefaultProfileFiles(self):
+    # Add a few files and directories to a temp directory, and ensure they are
+    # copied to the device.
+    with tempfile_ext.NamedTemporaryDirectory() as tempdir:
+      foo_path = os.path.join(tempdir, 'foo')
+      with open(foo_path, 'w') as f:
+        f.write('foo_data')
+
+      bar_path = os.path.join(tempdir, 'path', 'to', 'bar')
+      os.makedirs(os.path.dirname(bar_path))
+      with open(bar_path, 'w') as f:
+        f.write('bar_data')
+
+      finder_options = options_for_unittests.GetCopy()
+      finder_options.browser_options.profile_files_to_copy = [
+          (foo_path, 'foo'),
+          (bar_path, posixpath.join('path', 'to', 'bar'))]
+      browser_to_create = browser_finder.FindBrowser(finder_options)
+
+      # SetUpEnvironment will end up calling PushProfile
+      try:
+        browser_to_create.SetUpEnvironment(finder_options.browser_options)
+
+        profile_dir = browser_to_create.profile_directory
+        device = browser_to_create._platform_backend.device
+
+        absolute_expected_profile_paths = [
+            posixpath.join(profile_dir, path)
+            for _, path
+            in finder_options.browser_options.profile_files_to_copy]
+        device = browser_to_create._platform_backend.device
+        self.assertTrue(device.PathExists(absolute_expected_profile_paths),
+                        absolute_expected_profile_paths)
+      finally:
+        browser_to_create.CleanUpEnvironment()

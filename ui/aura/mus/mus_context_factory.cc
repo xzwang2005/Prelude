@@ -5,12 +5,11 @@
 #include "ui/aura/mus/mus_context_factory.h"
 
 #include "base/command_line.h"
-#include "base/memory/ptr_util.h"
 #include "cc/base/switches.h"
+#include "cc/mojo_embedder/async_layer_tree_frame_sink.h"
 #include "components/viz/common/gpu/context_provider.h"
-#include "components/viz/common/resources/buffer_to_texture_target_map.h"
 #include "components/viz/host/renderer_settings_creation.h"
-#include "services/ui/public/cpp/gpu/gpu.h"
+#include "services/ws/public/cpp/gpu/gpu.h"
 #include "ui/aura/mus/window_port_mus.h"
 #include "ui/aura/window_tree_host.h"
 #include "ui/compositor/compositor_switches.h"
@@ -20,12 +19,8 @@
 
 namespace aura {
 
-MusContextFactory::MusContextFactory(ui::Gpu* gpu)
-    : gpu_(gpu),
-      resource_settings_(
-          // TODO(sad): http://crbug.com/675431
-          viz::CreateResourceSettings(viz::BufferUsageAndFormatList())),
-      weak_ptr_factory_(this) {}
+MusContextFactory::MusContextFactory(ws::Gpu* gpu)
+    : gpu_(gpu), weak_ptr_factory_(this) {}
 
 MusContextFactory::~MusContextFactory() {}
 
@@ -56,8 +51,8 @@ void MusContextFactory::OnEstablishedGpuChannel(
 void MusContextFactory::CreateLayerTreeFrameSink(
     base::WeakPtr<ui::Compositor> compositor) {
   gpu_->EstablishGpuChannel(
-      base::Bind(&MusContextFactory::OnEstablishedGpuChannel,
-                 weak_ptr_factory_.GetWeakPtr(), compositor));
+      base::BindOnce(&MusContextFactory::OnEstablishedGpuChannel,
+                     weak_ptr_factory_.GetWeakPtr(), compositor));
 }
 
 scoped_refptr<viz::ContextProvider>
@@ -90,8 +85,10 @@ cc::TaskGraphRunner* MusContextFactory::GetTaskGraphRunner() {
   return raster_thread_helper_.task_graph_runner();
 }
 
-const viz::ResourceSettings& MusContextFactory::GetResourceSettings() const {
-  return resource_settings_;
+bool MusContextFactory::SyncTokensRequiredForDisplayCompositor() {
+  // The display compositor is out-of-process, so must be using a different
+  // context from the UI compositor, and requires synchronization between them.
+  return true;
 }
 
 }  // namespace aura

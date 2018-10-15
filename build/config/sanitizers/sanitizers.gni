@@ -4,6 +4,7 @@
 
 import("//build/config/chrome_build.gni")
 import("//build/config/chromecast_build.gni")
+import("//build/config/coverage/coverage.gni")
 import("//build/toolchain/toolchain.gni")
 
 declare_args() {
@@ -32,6 +33,9 @@ declare_args() {
   # Compile for Undefined Behaviour Sanitizer's vptr checks.
   is_ubsan_vptr = false
 
+  # Compile with SafeStack shadow stack support.
+  is_safestack = false
+
   # Track where uninitialized memory originates from. From fastest to slowest:
   # 0 - no tracking, 1 - track only the initial allocation site, 2 - track the
   # chain of stores leading from allocation site to use site.
@@ -45,11 +49,6 @@ declare_args() {
   # Use dynamic libraries instrumented by one of the sanitizers instead of the
   # standard system libraries. Set this flag to build the libraries from source.
   use_locally_built_instrumented_libraries = false
-
-  # Enable building with SyzyAsan which can find certain types of memory
-  # errors. Only works on Windows. See
-  # https://github.com/google/syzygy/wiki/SyzyASanHowTo
-  is_syzyasan = false
 
   # Compile with Control Flow Integrity to protect virtual calls and casts.
   # See http://clang.llvm.org/docs/ControlFlowIntegrity.html
@@ -66,7 +65,8 @@ declare_args() {
   # Enable checks for indirect function calls via a function pointer.
   # TODO(pcc): remove this when we're ready to add these checks by default.
   # https://crbug.com/701919
-  use_cfi_icall = false
+  use_cfi_icall = target_os == "linux" && !is_chromeos && target_cpu == "x64" &&
+                  is_official_build
 
   # Print detailed diagnostics when Control Flow Integrity detects a violation.
   use_cfi_diag = false
@@ -94,19 +94,19 @@ declare_args() {
   # Not for client use.
   disable_libfuzzer = false
 
+  # Optimize for coverage guided fuzzing (balance between speed and number of
+  # branches). Can be also used to remove non-determinism and other issues.
+  optimize_for_fuzzing = false
+
   # Value for -fsanitize-coverage flag. Setting this causes
   # use_sanitizer_coverage to be enabled.
-  # Default value when unset and use_afl=true or use_libfuzzer=true:
+  # This flag is not used for libFuzzer (use_libfuzzer=true). Instead, we use:
+  #     -fsanitize=fuzzer-no-link
+  # Default value when unset and use_afl=true:
   #     trace-pc-guard
   # Default value when unset and use_sanitizer_coverage=true:
   #     trace-pc-guard,indirect-calls
   sanitizer_coverage_flags = ""
-
-  # Keep symbol level when building with sanitizers. When sanitizers are
-  # enabled, the default is to compile with the minimum debug info level
-  # necessary, overriding any other symbol level arguments that may be set.
-  # Setting this to true prevents this.
-  sanitizer_keep_symbols = false
 }
 
 # Disable sanitizers for non-default toolchains.
@@ -115,7 +115,6 @@ if (current_toolchain != default_toolchain) {
   is_cfi = false
   is_lsan = false
   is_msan = false
-  is_syzyasan = false
   is_tsan = false
   is_ubsan = false
   is_ubsan_null = false
@@ -134,13 +133,18 @@ if (current_toolchain != default_toolchain) {
   use_sanitizer_coverage = false
 }
 
+# Whether we are doing a fuzzer build. Normally this should be checked instead
+# of checking "use_libfuzzer || use_afl" because often developers forget to
+# check for "use_afl".
+use_fuzzing_engine = use_libfuzzer || use_afl
+
 # Args that are in turn dependent on other args must be in a separate
 # declare_args block. User overrides are only applied at the end of a
 # declare_args block.
 declare_args() {
-  # Enable -fsanitize-coverage.
   use_sanitizer_coverage =
-      use_libfuzzer || use_afl || sanitizer_coverage_flags != ""
+      !use_clang_coverage &&
+      (use_fuzzing_engine || sanitizer_coverage_flags != "")
 
   # Detect overflow/underflow for global objects.
   #
@@ -148,29 +152,27 @@ declare_args() {
   asan_globals = !is_mac
 }
 
-if ((use_afl || use_libfuzzer) && sanitizer_coverage_flags == "") {
+if (use_fuzzing_engine && sanitizer_coverage_flags == "") {
   sanitizer_coverage_flags = "trace-pc-guard"
 } else if (use_sanitizer_coverage && sanitizer_coverage_flags == "") {
   sanitizer_coverage_flags = "trace-pc-guard,indirect-calls"
 }
 
-# Whether we are linking against a sanitizer runtime library. Among other
-# things, this changes the default symbol level and other settings in order to
-# prepare to create stack traces "live" using the sanitizer runtime.
+# Whether we are linking against a debugging sanitizer runtime library. Among
+# other things, this changes the default symbol level and other settings in
+# order to prepare to create stack traces "live" using the sanitizer runtime.
 using_sanitizer =
     is_asan || is_lsan || is_tsan || is_msan || is_ubsan || is_ubsan_null ||
     is_ubsan_vptr || is_ubsan_security || use_sanitizer_coverage || use_cfi_diag
-
-# Whether we are doing a fuzzer build. Normally this should be checked instead
-# of checking "use_libfuzzer || use_afl" because often developers forget to
-# check for "use_afl".
-use_fuzzing_engine = use_libfuzzer || use_afl
 
 assert(!using_sanitizer || is_clang,
        "Sanitizers (is_*san) require setting is_clang = true in 'gn args'")
 
 assert(!is_cfi || is_clang,
        "is_cfi requires setting is_clang = true in 'gn args'")
+
+assert(!is_safestack || is_clang,
+       "is_safestack requires setting is_clang = true in 'gn args'")
 
 prebuilt_instrumented_libraries_available =
     is_msan && (msan_track_origins == 0 || msan_track_origins == 2)
@@ -204,6 +206,8 @@ assert(!is_debug || !(is_msan || is_ubsan || is_ubsan_null || is_ubsan_vptr),
 
 assert(!is_msan || (is_linux && current_cpu == "x64"),
        "MSan currently only works on 64-bit Linux and ChromeOS builds.")
+
+assert(!is_lsan || is_asan, "is_lsan = true requires is_asan = true also.")
 
 # ASAN build on Windows is not working in debug mode. Intercepting memory
 # allocation functions is hard on Windows and not yet implemented in LLVM.

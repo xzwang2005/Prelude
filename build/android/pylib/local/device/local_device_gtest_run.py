@@ -44,8 +44,6 @@ _EXTRA_TEST = (
 _EXTRA_TEST_LIST = (
     'org.chromium.native_test.NativeTestInstrumentationTestRunner'
         '.TestList')
-_EXTRA_UBSAN_OPTIONS = (
-    'org.chromium.native_test.NativeTest.UBSAN_OPTIONS')
 
 _MAX_SHARD_SIZE = 256
 _SECONDS_TO_NANOS = int(1e9)
@@ -53,11 +51,13 @@ _SECONDS_TO_NANOS = int(1e9)
 # The amount of time a test executable may run before it gets killed.
 _TEST_TIMEOUT_SECONDS = 30*60
 
+# Tests that use SpawnedTestServer must run the LocalTestServerSpawner on the
+# host machine.
 # TODO(jbudorick): Move this up to the test instance if the net test server is
 # handled outside of the APK for the remote_device environment.
 _SUITE_REQUIRES_TEST_SERVER_SPAWNER = [
   'components_browsertests', 'content_unittests', 'content_browsertests',
-  'net_unittests', 'unit_tests'
+  'net_unittests', 'services_unittests', 'unit_tests'
 ]
 
 # No-op context manager. If we used Python 3, we could change this to
@@ -152,6 +152,7 @@ class _ApkDelegate(object):
       extras[gtest_test_instance.EXTRA_SHARD_NANO_TIMEOUT] = int(
           kwargs['timeout'] * _SECONDS_TO_NANOS)
 
+    # pylint: disable=redefined-variable-type
     command_line_file = _NullContextManager()
     if flags:
       if len(flags) > _MAX_INLINE_FLAGS_LENGTH:
@@ -169,13 +170,11 @@ class _ApkDelegate(object):
         extras[_EXTRA_TEST_LIST] = test_list_file.name
       else:
         extras[_EXTRA_TEST] = test[0]
+    # pylint: enable=redefined-variable-type
 
     stdout_file = device_temp_file.DeviceTempFile(
         device.adb, dir=device.GetExternalStoragePath(), suffix='.gtest_out')
     extras[_EXTRA_STDOUT_FILE] = stdout_file.name
-
-    if self._tool != 'asan':
-      extras[_EXTRA_UBSAN_OPTIONS] = constants.UBSAN_OPTIONS
 
     if self._wait_for_java_debugger:
       cmd = ['am', 'set-debug-app', '-w', self._package]
@@ -286,11 +285,13 @@ class LocalDeviceGtestRun(local_device_test_run.LocalDeviceTestRun):
     assert isinstance(test_instance, gtest_test_instance.GtestTestInstance)
     super(LocalDeviceGtestRun, self).__init__(env, test_instance)
 
+    # pylint: disable=redefined-variable-type
     if self._test_instance.apk:
       self._delegate = _ApkDelegate(self._test_instance, env.tool)
     elif self._test_instance.exe_dist_dir:
       self._delegate = _ExeDelegate(self, self._test_instance.exe_dist_dir,
                                     self._env.tool)
+    # pylint: enable=redefined-variable-type
     self._crashes = set()
     self._servers = collections.defaultdict(list)
 
@@ -396,11 +397,19 @@ class LocalDeviceGtestRun(local_device_test_run.LocalDeviceTestRun):
       retries = 1
       if self._test_instance.wait_for_java_debugger:
         timeout = None
+
+      flags = list(self._test_instance.flags)
+      flags.append('--gtest_list_tests')
+
       # TODO(crbug.com/726880): Remove retries when no longer necessary.
       for i in range(0, retries+1):
+        logging.info('flags:')
+        for f in flags:
+          logging.info('  %s', f)
+
         raw_test_list = crash_handler.RetryOnSystemCrash(
             lambda d: self._delegate.Run(
-                None, d, flags='--gtest_list_tests', timeout=timeout),
+                None, d, flags=' '.join(flags), timeout=timeout),
             device=dev)
         tests = gtest_test_instance.ParseGTestListTests(raw_test_list)
         if not tests:
@@ -469,54 +478,73 @@ class LocalDeviceGtestRun(local_device_test_run.LocalDeviceTestRun):
           device_temp_file.NamedDeviceTemporaryDirectory(
               adb=device.adb, dir='/sdcard/'),
           self._test_instance.gs_test_artifacts_bucket) as test_artifacts_dir:
+        with (contextlib_ext.Optional(
+            device_temp_file.DeviceTempFile(
+                adb=device.adb, dir=self._delegate.ResultsDirectory(device)),
+            self._test_instance.isolated_script_test_perf_output)
+            ) as isolated_script_test_perf_output:
 
-        flags = list(self._test_instance.flags)
-        if self._test_instance.enable_xml_result_parsing:
-          flags.append('--gtest_output=xml:%s' % device_tmp_results_file.name)
+          flags = list(self._test_instance.flags)
+          if self._test_instance.enable_xml_result_parsing:
+            flags.append('--gtest_output=xml:%s' % device_tmp_results_file.name)
 
-        if self._test_instance.gs_test_artifacts_bucket:
-          flags.append('--test_artifacts_dir=%s' % test_artifacts_dir.name)
+          if self._test_instance.gs_test_artifacts_bucket:
+            flags.append('--test_artifacts_dir=%s' % test_artifacts_dir.name)
 
-        logging.info('flags:')
-        for f in flags:
-          logging.info('  %s', f)
+          if self._test_instance.isolated_script_test_perf_output:
+            flags.append('--isolated_script_test_perf_output=%s'
+                         % isolated_script_test_perf_output.name)
 
-        stream_name = 'logcat_%s_%s_%s' % (
-            hash(tuple(test)),
-            time.strftime('%Y%m%dT%H%M%S-UTC', time.gmtime()),
-            device.serial)
+          logging.info('flags:')
+          for f in flags:
+            logging.info('  %s', f)
 
-        with self._env.output_manager.ArchivedTempfile(
-            stream_name, 'logcat') as logcat_file:
-          with logcat_monitor.LogcatMonitor(
-              device.adb,
-              filter_specs=local_device_environment.LOGCAT_FILTERS,
-              output_file=logcat_file.name) as logmon:
-            with contextlib_ext.Optional(
-                trace_event.trace(str(test)),
-                self._env.trace_output):
-              output = self._delegate.Run(
-                  test, device, flags=' '.join(flags),
-                  timeout=timeout, retries=0)
-          logmon.Close()
+          stream_name = 'logcat_%s_%s_%s' % (
+              hash(tuple(test)),
+              time.strftime('%Y%m%dT%H%M%S-UTC', time.gmtime()),
+              device.serial)
 
-        if logcat_file.Link():
-          logging.info('Logcat saved to %s', logcat_file.Link())
+          with self._env.output_manager.ArchivedTempfile(
+              stream_name, 'logcat') as logcat_file:
+            with logcat_monitor.LogcatMonitor(
+                device.adb,
+                filter_specs=local_device_environment.LOGCAT_FILTERS,
+                output_file=logcat_file.name) as logmon:
+              with contextlib_ext.Optional(
+                  trace_event.trace(str(test)),
+                  self._env.trace_output):
+                output = self._delegate.Run(
+                    test, device, flags=' '.join(flags),
+                    timeout=timeout, retries=0)
+            logmon.Close()
 
-        if self._test_instance.enable_xml_result_parsing:
-          try:
-            gtest_xml = device.ReadFile(
-                device_tmp_results_file.name,
-                as_root=True)
-          except device_errors.CommandFailedError as e:
-            logging.warning(
-                'Failed to pull gtest results XML file %s: %s',
-                device_tmp_results_file.name,
-                str(e))
-            gtest_xml = None
+          if logcat_file.Link():
+            logging.info('Logcat saved to %s', logcat_file.Link())
 
-        test_artifacts_url = self._UploadTestArtifacts(device,
-                                                       test_artifacts_dir)
+          if self._test_instance.enable_xml_result_parsing:
+            try:
+              gtest_xml = device.ReadFile(
+                  device_tmp_results_file.name,
+                  as_root=True)
+            except device_errors.CommandFailedError as e:
+              logging.warning(
+                  'Failed to pull gtest results XML file %s: %s',
+                  device_tmp_results_file.name,
+                  str(e))
+              gtest_xml = None
+
+          if self._test_instance.isolated_script_test_perf_output:
+            try:
+              device.PullFile(
+                  isolated_script_test_perf_output.name,
+                  self._test_instance.isolated_script_test_perf_output)
+            except device_errors.CommandFailedError as e:
+              logging.warning(
+                  'Failed to pull chartjson results %s: %s',
+                  isolated_script_test_perf_output.name, str(e))
+
+          test_artifacts_url = self._UploadTestArtifacts(device,
+                                                         test_artifacts_dir)
 
     for s in self._servers[str(device)]:
       s.Reset()

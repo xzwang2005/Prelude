@@ -11,13 +11,15 @@
 #include "base/macros.h"
 #include "base/run_loop.h"
 #include "base/strings/string_number_conversions.h"
-#include "base/test/histogram_tester.h"
+#include "base/test/metrics/histogram_tester.h"
 #include "base/threading/thread_checker.h"
 #include "base/values.h"
 #include "net/base/network_change_notifier.h"
 #include "net/nqe/effective_connection_type.h"
+#include "net/nqe/network_id.h"
 #include "net/nqe/network_quality_estimator_test_util.h"
 #include "net/nqe/network_quality_store.h"
+#include "net/test/test_with_scoped_task_environment.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace net {
@@ -73,7 +75,9 @@ class TestPrefDelegate : public NetworkQualitiesPrefsManager::PrefDelegate {
   DISALLOW_COPY_AND_ASSIGN(TestPrefDelegate);
 };
 
-TEST(NetworkQualitiesPrefManager, Write) {
+using NetworkQualitiesPrefManager = TestWithScopedTaskEnvironment;
+
+TEST_F(NetworkQualitiesPrefManager, Write) {
   // Force set the ECT to Slow 2G so that the ECT does not match the default
   // ECT for the current connection type. This forces the prefs to be written
   // for the current connection.
@@ -118,7 +122,70 @@ TEST(NetworkQualitiesPrefManager, Write) {
   manager.ShutdownOnPrefSequence();
 }
 
-TEST(NetworkQualitiesPrefManager, WriteAndReadWithMultipleNetworkIDs) {
+TEST_F(NetworkQualitiesPrefManager, WriteWhenMatchingExpectedECT) {
+  // Force set the ECT to Slow 2G so that the ECT does not match the default
+  // ECT for the current connection type. This forces the prefs to be written
+  // for the current connection.
+  std::map<std::string, std::string> variation_params;
+  variation_params["force_effective_connection_type"] = "Slow-2G";
+  TestNetworkQualityEstimator estimator(variation_params);
+
+  std::unique_ptr<TestPrefDelegate> prefs_delegate(new TestPrefDelegate());
+  TestPrefDelegate* prefs_delegate_ptr = prefs_delegate.get();
+
+  NetworkQualitiesPrefsManager manager(std::move(prefs_delegate));
+  manager.InitializeOnNetworkThread(&estimator);
+  base::RunLoop().RunUntilIdle();
+
+  // Prefs must be read at when NetworkQualitiesPrefsManager is constructed.
+  EXPECT_EQ(1u, prefs_delegate_ptr->read_count());
+
+  const nqe::internal::NetworkID network_id(
+      NetworkChangeNotifier::ConnectionType::CONNECTION_4G, "test", INT32_MIN);
+
+  estimator.SimulateNetworkChange(network_id.type, network_id.id);
+  EXPECT_EQ(1u, prefs_delegate_ptr->write_count());
+  // Network quality generated from the default observation must be written.
+  base::RunLoop().RunUntilIdle();
+  EXPECT_EQ(3u, prefs_delegate_ptr->write_count());
+
+  estimator.set_recent_effective_connection_type(EFFECTIVE_CONNECTION_TYPE_2G);
+  // Run a request so that effective connection type is recomputed, and
+  // observers are notified of change in the network quality.
+  estimator.RunOneRequest();
+  base::RunLoop().RunUntilIdle();
+  EXPECT_EQ(4u, prefs_delegate_ptr->write_count());
+
+  estimator.set_recent_effective_connection_type(EFFECTIVE_CONNECTION_TYPE_3G);
+  // Run a request so that effective connection type is recomputed, and
+  // observers are notified of change in the network quality..
+  estimator.RunOneRequest();
+  base::RunLoop().RunUntilIdle();
+  EXPECT_EQ(5u, prefs_delegate_ptr->write_count());
+
+  // Prefs should not be read again.
+  EXPECT_EQ(1u, prefs_delegate_ptr->read_count());
+
+  EXPECT_EQ(2u, manager.ForceReadPrefsForTesting().size());
+  EXPECT_EQ(EFFECTIVE_CONNECTION_TYPE_3G,
+            manager.ForceReadPrefsForTesting()
+                .find(network_id)
+                ->second.effective_connection_type());
+
+  estimator.set_recent_effective_connection_type(EFFECTIVE_CONNECTION_TYPE_4G);
+  estimator.RunOneRequest();
+  base::RunLoop().RunUntilIdle();
+
+  // Network Quality should be persisted to disk even if it matches the typical
+  // quality of the network. See crbug.com/890859.
+  EXPECT_EQ(2u, manager.ForceReadPrefsForTesting().size());
+  EXPECT_EQ(1u, manager.ForceReadPrefsForTesting().count(network_id));
+  EXPECT_EQ(6u, prefs_delegate_ptr->write_count());
+
+  manager.ShutdownOnPrefSequence();
+}
+
+TEST_F(NetworkQualitiesPrefManager, WriteAndReadWithMultipleNetworkIDs) {
   static const size_t kMaxCacheSize = 20u;
 
   // Force set the ECT to Slow 2G so that the ECT does not match the default
@@ -195,7 +262,7 @@ TEST(NetworkQualitiesPrefManager, WriteAndReadWithMultipleNetworkIDs) {
 }
 
 // Verifies that the prefs are cleared correctly.
-TEST(NetworkQualitiesPrefManager, ClearPrefs) {
+TEST_F(NetworkQualitiesPrefManager, ClearPrefs) {
   // Force set the ECT to Slow 2G so that the ECT does not match the default
   // ECT for the current connection type. This forces the prefs to be written
   // for the current connection.

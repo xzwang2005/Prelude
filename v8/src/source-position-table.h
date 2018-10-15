@@ -42,6 +42,7 @@ class V8_EXPORT_PRIVATE SourcePositionTableBuilder {
                    bool is_statement);
 
   Handle<ByteArray> ToSourcePositionTable(Isolate* isolate);
+  OwnedVector<byte> ToSourcePositionTableVector();
 
  private:
   void AddEntry(const PositionTableEntry& entry);
@@ -64,7 +65,7 @@ class V8_EXPORT_PRIVATE SourcePositionTableIterator {
     PositionTableEntry position_;
   };
 
-  // We expose two flavours of the iterator, depending on the argument passed
+  // We expose three flavours of the iterator, depending on the argument passed
   // to the constructor:
 
   // Handlified iterator allows allocation, but it needs a handle (and thus
@@ -75,6 +76,10 @@ class V8_EXPORT_PRIVATE SourcePositionTableIterator {
   // allocation during its lifetime. This is useful if there is no handle
   // scope around.
   explicit SourcePositionTableIterator(ByteArray* byte_array);
+
+  // Handle-safe iterator based on an a vector located outside the garbage
+  // collected heap, allows allocation during its lifetime.
+  explicit SourcePositionTableIterator(Vector<const byte> bytes);
 
   void Advance();
 
@@ -102,7 +107,7 @@ class V8_EXPORT_PRIVATE SourcePositionTableIterator {
  private:
   static const int kDone = -1;
 
-  ByteArray* raw_table_ = nullptr;
+  Vector<const byte> raw_table_;
   Handle<ByteArray> table_;
   int index_ = 0;
   PositionTableEntry current_;

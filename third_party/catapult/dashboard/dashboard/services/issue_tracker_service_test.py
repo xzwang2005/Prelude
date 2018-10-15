@@ -121,6 +121,7 @@ class IssueTrackerServiceTest(testing_common.TestCase):
             'labels': [],
             'components': [],
             'status': 'Assigned',
+            'projectId': 'chromium',
             'owner': {'name': 'someone@chromium.org'},
             'cc': [{'name': 'somebody@chromium.org'},
                    {'name': 'nobody@chromium.org'}],
@@ -139,9 +140,22 @@ class IssueTrackerServiceTest(testing_common.TestCase):
             'labels': [],
             'components': [],
             'status': 'Untriaged',
+            'projectId': 'chromium',
             'cc': [{'name': 'somebody@chromium.org'},
                    {'name': 'nobody@chromium.org'}],
         })
+
+  def testMakeCommentRequest_UserCantOwn_RetryMakeCommentRequest(self):
+    service = issue_tracker_service.IssueTrackerService(mock.MagicMock())
+    error_content = {
+
+        'error': {'message': 'Issue owner must be a project member',
+                  'code': 400}
+    }
+    service._ExecuteRequest = mock.Mock(side_effect=errors.HttpError(
+        mock.Mock(return_value={'status': 404}), json.dumps(error_content)))
+    service.AddBugComment(12345, 'The comment', owner=['test@chromium.org'])
+    self.assertEqual(2, service._ExecuteRequest.call_count)
 
   def testMakeCommentRequest_UserDoesNotExist_RetryMakeCommentRequest(self):
     service = issue_tracker_service.IssueTrackerService(mock.MagicMock())
@@ -151,7 +165,7 @@ class IssueTrackerServiceTest(testing_common.TestCase):
     }
     service._ExecuteRequest = mock.Mock(side_effect=errors.HttpError(
         mock.Mock(return_value={'status': 404}), json.dumps(error_content)))
-    service.AddBugComment(12345, 'The comment', cc_list='test@chromium.org',
+    service.AddBugComment(12345, 'The comment', cc_list=['test@chromium.org'],
                           owner=['test@chromium.org'])
     self.assertEqual(2, service._ExecuteRequest.call_count)
 

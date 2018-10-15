@@ -9,6 +9,7 @@
 #include "src/heap/mark-compact.h"
 #include "src/heap/objects-visiting-inl.h"
 #include "src/heap/remembered-set.h"
+#include "src/objects/js-collection-inl.h"
 
 namespace v8 {
 namespace internal {
@@ -25,30 +26,11 @@ MarkingVisitor<fixed_array_mode, retaining_path_mode,
 template <FixedArrayVisitationMode fixed_array_mode,
           TraceRetainingPathMode retaining_path_mode, typename MarkingState>
 int MarkingVisitor<fixed_array_mode, retaining_path_mode,
-                   MarkingState>::VisitAllocationSite(Map* map,
-                                                      AllocationSite* object) {
-  int size = AllocationSite::BodyDescriptorWeak::SizeOf(map, object);
-  AllocationSite::BodyDescriptorWeak::IterateBody(object, size, this);
-  return size;
-}
-
-template <FixedArrayVisitationMode fixed_array_mode,
-          TraceRetainingPathMode retaining_path_mode, typename MarkingState>
-int MarkingVisitor<fixed_array_mode, retaining_path_mode,
                    MarkingState>::VisitBytecodeArray(Map* map,
                                                      BytecodeArray* array) {
   int size = BytecodeArray::BodyDescriptor::SizeOf(map, array);
-  BytecodeArray::BodyDescriptor::IterateBody(array, size, this);
+  BytecodeArray::BodyDescriptor::IterateBody(map, array, size, this);
   array->MakeOlder();
-  return size;
-}
-
-template <FixedArrayVisitationMode fixed_array_mode,
-          TraceRetainingPathMode retaining_path_mode, typename MarkingState>
-int MarkingVisitor<fixed_array_mode, retaining_path_mode, MarkingState>::
-    VisitCodeDataContainer(Map* map, CodeDataContainer* object) {
-  int size = CodeDataContainer::BodyDescriptorWeak::SizeOf(map, object);
-  CodeDataContainer::BodyDescriptorWeak::IterateBody(object, size, this);
   return size;
 }
 
@@ -64,53 +46,85 @@ int MarkingVisitor<fixed_array_mode, retaining_path_mode,
 
 template <FixedArrayVisitationMode fixed_array_mode,
           TraceRetainingPathMode retaining_path_mode, typename MarkingState>
-int MarkingVisitor<fixed_array_mode, retaining_path_mode,
-                   MarkingState>::VisitJSApiObject(Map* map, JSObject* object) {
+template <typename T>
+V8_INLINE int
+MarkingVisitor<fixed_array_mode, retaining_path_mode,
+               MarkingState>::VisitEmbedderTracingSubclass(Map* map,
+                                                           T* object) {
   if (heap_->local_embedder_heap_tracer()->InUse()) {
-    DCHECK(object->IsJSObject());
     heap_->TracePossibleWrapper(object);
   }
-  int size = JSObject::BodyDescriptor::SizeOf(map, object);
-  JSObject::BodyDescriptor::IterateBody(object, size, this);
+  int size = T::BodyDescriptor::SizeOf(map, object);
+  T::BodyDescriptor::IterateBody(map, object, size, this);
   return size;
 }
 
 template <FixedArrayVisitationMode fixed_array_mode,
           TraceRetainingPathMode retaining_path_mode, typename MarkingState>
 int MarkingVisitor<fixed_array_mode, retaining_path_mode,
-                   MarkingState>::VisitJSFunction(Map* map,
-                                                  JSFunction* object) {
-  int size = JSFunction::BodyDescriptorWeak::SizeOf(map, object);
-  JSFunction::BodyDescriptorWeak::IterateBody(object, size, this);
-  return size;
+                   MarkingState>::VisitJSApiObject(Map* map, JSObject* object) {
+  return VisitEmbedderTracingSubclass(map, object);
+}
+
+template <FixedArrayVisitationMode fixed_array_mode,
+          TraceRetainingPathMode retaining_path_mode, typename MarkingState>
+int MarkingVisitor<fixed_array_mode, retaining_path_mode,
+                   MarkingState>::VisitJSArrayBuffer(Map* map,
+                                                     JSArrayBuffer* object) {
+  return VisitEmbedderTracingSubclass(map, object);
+}
+
+template <FixedArrayVisitationMode fixed_array_mode,
+          TraceRetainingPathMode retaining_path_mode, typename MarkingState>
+int MarkingVisitor<fixed_array_mode, retaining_path_mode,
+                   MarkingState>::VisitJSDataView(Map* map,
+                                                  JSDataView* object) {
+  return VisitEmbedderTracingSubclass(map, object);
+}
+
+template <FixedArrayVisitationMode fixed_array_mode,
+          TraceRetainingPathMode retaining_path_mode, typename MarkingState>
+int MarkingVisitor<fixed_array_mode, retaining_path_mode,
+                   MarkingState>::VisitJSTypedArray(Map* map,
+                                                    JSTypedArray* object) {
+  return VisitEmbedderTracingSubclass(map, object);
 }
 
 template <FixedArrayVisitationMode fixed_array_mode,
           TraceRetainingPathMode retaining_path_mode, typename MarkingState>
 int MarkingVisitor<fixed_array_mode, retaining_path_mode, MarkingState>::
-    VisitJSWeakCollection(Map* map, JSWeakCollection* weak_collection) {
-  // Enqueue weak collection in linked list of encountered weak collections.
-  if (weak_collection->next() == heap_->undefined_value()) {
-    weak_collection->set_next(heap_->encountered_weak_collections());
-    heap_->set_encountered_weak_collections(weak_collection);
+    VisitEphemeronHashTable(Map* map, EphemeronHashTable* table) {
+  collector_->AddEphemeronHashTable(table);
+
+  for (int i = 0; i < table->Capacity(); i++) {
+    Object** key_slot =
+        table->RawFieldOfElementAt(EphemeronHashTable::EntryToIndex(i));
+    HeapObject* key = HeapObject::cast(table->KeyAt(i));
+    collector_->RecordSlot(table, key_slot, key);
+
+    Object** value_slot =
+        table->RawFieldOfElementAt(EphemeronHashTable::EntryToValueIndex(i));
+
+    if (marking_state()->IsBlackOrGrey(key)) {
+      VisitPointer(table, value_slot);
+
+    } else {
+      Object* value_obj = *value_slot;
+
+      if (value_obj->IsHeapObject()) {
+        HeapObject* value = HeapObject::cast(value_obj);
+        collector_->RecordSlot(table, value_slot, value);
+
+        // Revisit ephemerons with both key and value unreachable at end
+        // of concurrent marking cycle.
+        if (marking_state()->IsWhite(value)) {
+          collector_->AddEphemeron(key, value);
+        }
+      }
+    }
   }
 
-  // Skip visiting the backing hash table containing the mappings and the
-  // pointer to the other enqueued weak collections, both are post-processed.
-  int size = JSWeakCollection::BodyDescriptorWeak::SizeOf(map, weak_collection);
-  JSWeakCollection::BodyDescriptorWeak::IterateBody(weak_collection, size,
-                                                    this);
-
-  // Partially initialized weak collection is enqueued, but table is ignored.
-  if (!weak_collection->table()->IsHashTable()) return size;
-
-  // Mark the backing hash table without pushing it on the marking stack.
-  Object** slot =
-      HeapObject::RawField(weak_collection, JSWeakCollection::kTableOffset);
-  HeapObject* obj = HeapObject::cast(*slot);
-  collector_->RecordSlot(weak_collection, slot, obj);
-  MarkObjectWithoutPush(weak_collection, obj);
-  return size;
+  return table->SizeFromMap(map);
 }
 
 template <FixedArrayVisitationMode fixed_array_mode,
@@ -119,23 +133,12 @@ int MarkingVisitor<fixed_array_mode, retaining_path_mode,
                    MarkingState>::VisitMap(Map* map, Map* object) {
   // When map collection is enabled we have to mark through map's transitions
   // and back pointers in a special way to make these links weak.
+  int size = Map::BodyDescriptor::SizeOf(map, object);
   if (object->CanTransition()) {
     MarkMapContents(object);
   } else {
-    VisitPointers(object,
-                  HeapObject::RawField(object, Map::kPointerFieldsBeginOffset),
-                  HeapObject::RawField(object, Map::kPointerFieldsEndOffset));
+    Map::BodyDescriptor::IterateBody(map, object, size, this);
   }
-  return Map::BodyDescriptor::SizeOf(map, object);
-}
-
-template <FixedArrayVisitationMode fixed_array_mode,
-          TraceRetainingPathMode retaining_path_mode, typename MarkingState>
-int MarkingVisitor<fixed_array_mode, retaining_path_mode,
-                   MarkingState>::VisitNativeContext(Map* map,
-                                                     Context* context) {
-  int size = Context::BodyDescriptorWeak::SizeOf(map, context);
-  Context::BodyDescriptorWeak::IterateBody(context, size, this);
   return size;
 }
 
@@ -145,33 +148,9 @@ int MarkingVisitor<fixed_array_mode, retaining_path_mode,
                    MarkingState>::VisitTransitionArray(Map* map,
                                                        TransitionArray* array) {
   int size = TransitionArray::BodyDescriptor::SizeOf(map, array);
-  TransitionArray::BodyDescriptor::IterateBody(array, size, this);
+  TransitionArray::BodyDescriptor::IterateBody(map, array, size, this);
   collector_->AddTransitionArray(array);
   return size;
-}
-
-template <FixedArrayVisitationMode fixed_array_mode,
-          TraceRetainingPathMode retaining_path_mode, typename MarkingState>
-int MarkingVisitor<fixed_array_mode, retaining_path_mode,
-                   MarkingState>::VisitWeakCell(Map* map, WeakCell* weak_cell) {
-  // Enqueue weak cell in linked list of encountered weak collections.
-  // We can ignore weak cells with cleared values because they will always
-  // contain smi zero.
-  if (!weak_cell->cleared()) {
-    HeapObject* value = HeapObject::cast(weak_cell->value());
-    if (marking_state()->IsBlackOrGrey(value)) {
-      // Weak cells with live values are directly processed here to reduce
-      // the processing time of weak cells during the main GC pause.
-      Object** slot = HeapObject::RawField(weak_cell, WeakCell::kValueOffset);
-      collector_->RecordSlot(weak_cell, slot, *slot);
-    } else {
-      // If we do not know about liveness of values of weak cells, we have to
-      // process them when we know the liveness of the whole transitive
-      // closure.
-      collector_->AddWeakCell(weak_cell);
-    }
-  }
-  return WeakCell::BodyDescriptor::SizeOf(map, weak_cell);
 }
 
 template <FixedArrayVisitationMode fixed_array_mode,
@@ -187,9 +166,46 @@ void MarkingVisitor<fixed_array_mode, retaining_path_mode,
 template <FixedArrayVisitationMode fixed_array_mode,
           TraceRetainingPathMode retaining_path_mode, typename MarkingState>
 void MarkingVisitor<fixed_array_mode, retaining_path_mode,
+                    MarkingState>::VisitPointer(HeapObject* host,
+                                                MaybeObject** p) {
+  HeapObject* target_object;
+  if ((*p)->GetHeapObjectIfStrong(&target_object)) {
+    collector_->RecordSlot(host, reinterpret_cast<HeapObjectReference**>(p),
+                           target_object);
+    MarkObject(host, target_object);
+  } else if ((*p)->GetHeapObjectIfWeak(&target_object)) {
+    if (marking_state()->IsBlackOrGrey(target_object)) {
+      // Weak references with live values are directly processed here to reduce
+      // the processing time of weak cells during the main GC pause.
+      collector_->RecordSlot(host, reinterpret_cast<HeapObjectReference**>(p),
+                             target_object);
+    } else {
+      // If we do not know about liveness of values of weak cells, we have to
+      // process them when we know the liveness of the whole transitive
+      // closure.
+      collector_->AddWeakReference(host,
+                                   reinterpret_cast<HeapObjectReference**>(p));
+    }
+  }
+}
+
+template <FixedArrayVisitationMode fixed_array_mode,
+          TraceRetainingPathMode retaining_path_mode, typename MarkingState>
+void MarkingVisitor<fixed_array_mode, retaining_path_mode,
                     MarkingState>::VisitPointers(HeapObject* host,
                                                  Object** start, Object** end) {
   for (Object** p = start; p < end; p++) {
+    VisitPointer(host, p);
+  }
+}
+
+template <FixedArrayVisitationMode fixed_array_mode,
+          TraceRetainingPathMode retaining_path_mode, typename MarkingState>
+void MarkingVisitor<fixed_array_mode, retaining_path_mode,
+                    MarkingState>::VisitPointers(HeapObject* host,
+                                                 MaybeObject** start,
+                                                 MaybeObject** end) {
+  for (MaybeObject** p = start; p < end; p++) {
     VisitPointer(host, p);
   }
 }
@@ -204,6 +220,8 @@ void MarkingVisitor<fixed_array_mode, retaining_path_mode,
   collector_->RecordRelocSlot(host, rinfo, object);
   if (!host->IsWeakObject(object)) {
     MarkObject(host, object);
+  } else if (!marking_state()->IsBlackOrGrey(object)) {
+    collector_->AddWeakObjectInCode(object, host);
   }
 }
 
@@ -212,7 +230,7 @@ template <FixedArrayVisitationMode fixed_array_mode,
 void MarkingVisitor<fixed_array_mode, retaining_path_mode,
                     MarkingState>::VisitCodeTarget(Code* host,
                                                    RelocInfo* rinfo) {
-  DCHECK(RelocInfo::IsCodeTarget(rinfo->rmode()));
+  DCHECK(RelocInfo::IsCodeTargetMode(rinfo->rmode()));
   Code* target = Code::GetCodeFromTargetAddress(rinfo->target_address());
   collector_->RecordRelocSlot(host, rinfo, target);
   MarkObject(host, target);
@@ -288,7 +306,7 @@ int MarkingVisitor<fixed_array_mode, retaining_path_mode, MarkingState>::
       }
     }
   } else {
-    FixedArray::BodyDescriptor::IterateBody(object, object_size, this);
+    FixedArray::BodyDescriptor::IterateBody(map, object, object_size, this);
   }
   return object_size;
 }
@@ -320,8 +338,8 @@ void MarkingVisitor<fixed_array_mode, retaining_path_mode,
   // Mark the pointer fields of the Map. Since the transitions array has
   // been marked already, it is fine that one of these fields contains a
   // pointer to it.
-  VisitPointers(map, HeapObject::RawField(map, Map::kPointerFieldsBeginOffset),
-                HeapObject::RawField(map, Map::kPointerFieldsEndOffset));
+  Map::BodyDescriptor::IterateBody(
+      map->map(), map, Map::BodyDescriptor::SizeOf(map->map(), map), this);
 }
 
 void MarkCompactCollector::MarkObject(HeapObject* host, HeapObject* obj) {
@@ -342,6 +360,16 @@ void MarkCompactCollector::MarkRootObject(Root root, HeapObject* obj) {
   }
 }
 
+#ifdef ENABLE_MINOR_MC
+
+void MinorMarkCompactCollector::MarkRootObject(HeapObject* obj) {
+  if (Heap::InNewSpace(obj) && non_atomic_marking_state_.WhiteToGrey(obj)) {
+    worklist_->Push(kMainThread, obj);
+  }
+}
+
+#endif
+
 void MarkCompactCollector::MarkExternallyReferencedObject(HeapObject* obj) {
   if (marking_state()->WhiteToGrey(obj)) {
     marking_worklist()->Push(obj);
@@ -352,7 +380,13 @@ void MarkCompactCollector::MarkExternallyReferencedObject(HeapObject* obj) {
 }
 
 void MarkCompactCollector::RecordSlot(HeapObject* object, Object** slot,
-                                      Object* target) {
+                                      HeapObject* target) {
+  RecordSlot(object, reinterpret_cast<HeapObjectReference**>(slot), target);
+}
+
+void MarkCompactCollector::RecordSlot(HeapObject* object,
+                                      HeapObjectReference** slot,
+                                      HeapObject* target) {
   Page* target_page = Page::FromAddress(reinterpret_cast<Address>(target));
   Page* source_page = Page::FromAddress(reinterpret_cast<Address>(object));
   if (target_page->IsEvacuationCandidate<AccessMode::ATOMIC>() &&
@@ -366,9 +400,11 @@ template <LiveObjectIterationMode mode>
 LiveObjectRange<mode>::iterator::iterator(MemoryChunk* chunk, Bitmap* bitmap,
                                           Address start)
     : chunk_(chunk),
-      one_word_filler_map_(chunk->heap()->one_pointer_filler_map()),
-      two_word_filler_map_(chunk->heap()->two_pointer_filler_map()),
-      free_space_map_(chunk->heap()->free_space_map()),
+      one_word_filler_map_(
+          ReadOnlyRoots(chunk->heap()).one_pointer_filler_map()),
+      two_word_filler_map_(
+          ReadOnlyRoots(chunk->heap()).two_pointer_filler_map()),
+      free_space_map_(ReadOnlyRoots(chunk->heap()).free_space_map()),
       it_(chunk, bitmap) {
   it_.Advance(Bitmap::IndexToCell(
       Bitmap::CellAlignIndex(chunk_->AddressToMarkbitIndex(start))));
@@ -511,6 +547,8 @@ template <LiveObjectIterationMode mode>
 typename LiveObjectRange<mode>::iterator LiveObjectRange<mode>::end() {
   return iterator(chunk_, bitmap_, end_);
 }
+
+Isolate* MarkCompactCollectorBase::isolate() { return heap()->isolate(); }
 
 }  // namespace internal
 }  // namespace v8

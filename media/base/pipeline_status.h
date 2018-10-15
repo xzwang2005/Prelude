@@ -60,18 +60,30 @@ enum PipelineStatus {
 
 typedef base::Callback<void(PipelineStatus)> PipelineStatusCB;
 
-struct PipelineStatistics {
-  uint64_t audio_bytes_decoded = 0;
-  uint64_t video_bytes_decoded = 0;
-  uint32_t video_frames_decoded = 0;
-  uint32_t video_frames_dropped = 0;
-  uint32_t video_frames_decoded_power_efficient = 0;
+struct MEDIA_EXPORT PipelineStatistics {
+  PipelineStatistics();
+  PipelineStatistics(const PipelineStatistics& other);
+  ~PipelineStatistics();
+
+  uint64_t audio_bytes_decoded = 0u;
+  uint64_t video_bytes_decoded = 0u;
+  uint32_t video_frames_decoded = 0u;
+  uint32_t video_frames_dropped = 0u;
+  uint32_t video_frames_decoded_power_efficient = 0u;
 
   int64_t audio_memory_usage = 0;
   int64_t video_memory_usage = 0;
+
   base::TimeDelta video_keyframe_distance_average = kNoTimestamp;
+
   // NOTE: frame duration should reflect changes to playback rate.
   base::TimeDelta video_frame_duration_average = kNoTimestamp;
+
+  // Name of the audio or video decoder (if present). Note: Keep these fields at
+  // the end of the structure, if you move them you need to also update the test
+  // ProtoUtilsTest::PipelineStatisticsConversion.
+  std::string video_decoder_name;
+  std::string audio_decoder_name;
 
   // NOTE: always update operator== implementation in pipeline_status.cc when
   // adding a field to this struct. Leave this comment at the end.
@@ -84,7 +96,7 @@ MEDIA_EXPORT bool operator!=(const PipelineStatistics& first,
 
 // Used for updating pipeline statistics; the passed value should be a delta
 // of all attributes since the last update.
-typedef base::Callback<void(const PipelineStatistics&)> StatisticsCB;
+using StatisticsCB = base::RepeatingCallback<void(const PipelineStatistics&)>;
 
 }  // namespace media
 

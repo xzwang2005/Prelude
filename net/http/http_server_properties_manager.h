@@ -11,6 +11,7 @@
 #include <string>
 #include <vector>
 
+#include "base/callback.h"
 #include "base/compiler_specific.h"
 #include "base/gtest_prod_util.h"
 #include "base/macros.h"
@@ -51,13 +52,17 @@ class NET_EXPORT HttpServerPropertiesManager : public HttpServerProperties {
     // Returns nullptr if the pref system has no data for the server properties.
     virtual const base::DictionaryValue* GetServerProperties() const = 0;
 
-    // Sets the server properties to the given value.
-    virtual void SetServerProperties(const base::DictionaryValue& value) = 0;
+    // Sets the server properties to the given value. If |callback| is
+    // non-empty, flushes data to persistent storage and invokes |callback|
+    // asynchronously when complete.
+    virtual void SetServerProperties(const base::DictionaryValue& value,
+                                     base::OnceClosure callback) = 0;
 
     // Starts listening for external storage changes. There will only be one
     // callback active at a time. The first time the |callback| is invoked is
     // expected to mean the initial pref store values have been loaded.
-    virtual void StartListeningForUpdates(const base::Closure& callback) = 0;
+    virtual void StartListeningForUpdates(
+        const base::RepeatingClosure& callback) = 0;
   };
 
   // Create an instance of the HttpServerPropertiesManager.
@@ -71,7 +76,7 @@ class NET_EXPORT HttpServerPropertiesManager : public HttpServerProperties {
   // be used.
   HttpServerPropertiesManager(std::unique_ptr<PrefDelegate> pref_delegate,
                               NetLog* net_log,
-                              base::TickClock* clock = nullptr);
+                              const base::TickClock* clock = nullptr);
 
   ~HttpServerPropertiesManager() override;
 
@@ -83,7 +88,7 @@ class NET_EXPORT HttpServerPropertiesManager : public HttpServerProperties {
   // HttpServerProperties methods:
   // ----------------------------------
 
-  void Clear() override;
+  void Clear(base::OnceClosure callback) override;
   bool SupportsRequestPriority(const url::SchemeHostPort& server) override;
   bool GetSupportsSpdy(const url::SchemeHostPort& server) override;
   void SetSupportsSpdy(const url::SchemeHostPort& server,
@@ -101,11 +106,13 @@ class NET_EXPORT HttpServerPropertiesManager : public HttpServerProperties {
       const url::SchemeHostPort& origin,
       const AlternativeService& alternative_service,
       base::Time expiration,
-      const QuicTransportVersionVector& advertised_versions) override;
+      const quic::QuicTransportVersionVector& advertised_versions) override;
   bool SetAlternativeServices(const url::SchemeHostPort& origin,
                               const AlternativeServiceInfoVector&
                                   alternative_service_info_vector) override;
   void MarkAlternativeServiceBroken(
+      const AlternativeService& alternative_service) override;
+  void MarkAlternativeServiceBrokenUntilDefaultNetworkChanges(
       const AlternativeService& alternative_service) override;
   void MarkAlternativeServiceRecentlyBroken(
       const AlternativeService& alternative_service) override;
@@ -115,6 +122,7 @@ class NET_EXPORT HttpServerPropertiesManager : public HttpServerProperties {
       const AlternativeService& alternative_service) override;
   void ConfirmAlternativeService(
       const AlternativeService& alternative_service) override;
+  bool OnDefaultNetworkChanged() override;
   const AlternativeServiceMap& alternative_service_map() const override;
   std::unique_ptr<base::Value> GetAlternativeServiceInfoAsValue()
       const override;
@@ -126,9 +134,10 @@ class NET_EXPORT HttpServerPropertiesManager : public HttpServerProperties {
   const ServerNetworkStats* GetServerNetworkStats(
       const url::SchemeHostPort& server) override;
   const ServerNetworkStatsMap& server_network_stats_map() const override;
-  bool SetQuicServerInfo(const QuicServerId& server_id,
+  bool SetQuicServerInfo(const quic::QuicServerId& server_id,
                          const std::string& server_info) override;
-  const std::string* GetQuicServerInfo(const QuicServerId& server_id) override;
+  const std::string* GetQuicServerInfo(
+      const quic::QuicServerId& server_id) override;
   const QuicServerInfoMap& quic_server_info_map() const override;
   size_t max_server_configs_stored_in_properties() const override;
   void SetMaxServerConfigsStoredInProperties(
@@ -160,7 +169,9 @@ class NET_EXPORT HttpServerPropertiesManager : public HttpServerProperties {
     DETECTED_CORRUPTED_PREFS = 12,
     SET_QUIC_SERVER_INFO = 13,
     CLEAR_SERVER_NETWORK_STATS = 14,
-    NUM_LOCATIONS = 15,
+    MARK_ALTERNATIVE_SERVICE_BROKEN_UNTIL_DEFAULT_NETWORK_CHANGES = 15,
+    ON_DEFAULT_NETWORK_CHANGED = 16,
+    NUM_LOCATIONS = 17,
   };
 
   // --------------------
@@ -182,8 +193,9 @@ class NET_EXPORT HttpServerPropertiesManager : public HttpServerProperties {
   void ScheduleUpdatePrefs(Location location);
 
   // Update prefs::kHttpServerProperties in preferences with the cached data
-  // from |http_server_properties_impl_|.
-  void UpdatePrefsFromCache();
+  // from |http_server_properties_impl_|. Invokes |callback| when changes have
+  // been committed, if non-null.
+  void UpdatePrefsFromCache(base::OnceClosure callback);
 
  private:
   FRIEND_TEST_ALL_PREFIXES(HttpServerPropertiesManagerTest,
@@ -261,7 +273,7 @@ class NET_EXPORT HttpServerPropertiesManager : public HttpServerProperties {
   // result of them being changed by the changes just made by this class.
   bool setting_prefs_ = false;
 
-  base::TickClock* clock_;  // Unowned
+  const base::TickClock* clock_;  // Unowned
 
   // Set to true once the initial prefs have been loaded.
   bool is_initialized_ = false;

@@ -2,10 +2,11 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "ui/views/event_monitor.h"
+
 #include "base/macros.h"
 #include "ui/events/test/event_generator.h"
 #include "ui/events/test/test_event_handler.h"
-#include "ui/views/event_monitor.h"
 #include "ui/views/test/widget_test.h"
 
 namespace views {
@@ -45,8 +46,8 @@ class EventMonitorTest : public WidgetTest {
 };
 
 TEST_F(EventMonitorTest, ShouldReceiveAppEventsWhileInstalled) {
-  std::unique_ptr<EventMonitor> monitor(
-      EventMonitor::CreateApplicationMonitor(&handler_));
+  std::unique_ptr<EventMonitor> monitor(EventMonitor::CreateApplicationMonitor(
+      &handler_, widget_->GetNativeWindow()));
 
   generator_->ClickLeftButton();
   EXPECT_EQ(2, handler_.num_mouse_events());
@@ -78,6 +79,57 @@ TEST_F(EventMonitorTest, ShouldNotReceiveEventsFromOtherWindow) {
 
   monitor.reset();
   widget2->CloseNow();
+}
+
+namespace {
+class DeleteOtherOnEventHandler : public ui::EventHandler {
+ public:
+  explicit DeleteOtherOnEventHandler(gfx::NativeWindow context) {
+    monitor_ = EventMonitor::CreateApplicationMonitor(this, context);
+  }
+
+  bool DidDelete() const { return !handler_to_delete_; }
+
+  void set_monitor_to_delete(
+      std::unique_ptr<DeleteOtherOnEventHandler> handler_to_delete) {
+    handler_to_delete_ = std::move(handler_to_delete);
+  }
+
+  // EventHandler::
+  void OnMouseEvent(ui::MouseEvent* event) override {
+    handler_to_delete_ = nullptr;
+  }
+
+ private:
+  std::unique_ptr<EventMonitor> monitor_;
+  std::unique_ptr<DeleteOtherOnEventHandler> handler_to_delete_;
+
+  DISALLOW_COPY_AND_ASSIGN(DeleteOtherOnEventHandler);
+};
+}  // namespace
+
+// Ensure correct behavior when an event monitor is removed while iterating
+// over the OS-controlled observer list.
+TEST_F(EventMonitorTest, TwoMonitors) {
+  auto deleter =
+      std::make_unique<DeleteOtherOnEventHandler>(widget_->GetNativeWindow());
+  deleter->set_monitor_to_delete(
+      std::make_unique<DeleteOtherOnEventHandler>(widget_->GetNativeWindow()));
+
+  EXPECT_FALSE(deleter->DidDelete());
+  generator_->PressLeftButton();
+  EXPECT_TRUE(deleter->DidDelete());
+
+  // Now try setting up observers in the alternate order.
+  auto deletee =
+      std::make_unique<DeleteOtherOnEventHandler>(widget_->GetNativeWindow());
+  deleter =
+      std::make_unique<DeleteOtherOnEventHandler>(widget_->GetNativeWindow());
+  deleter->set_monitor_to_delete(std::move(deletee));
+
+  EXPECT_FALSE(deleter->DidDelete());
+  generator_->ReleaseLeftButton();
+  EXPECT_TRUE(deleter->DidDelete());
 }
 
 }  // namespace test

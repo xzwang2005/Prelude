@@ -3,4 +3,21 @@
 # found in the LICENSE file.
 
 [
+['system == macos and asan', {
+  # BUG(820416).
+  'BitsDeathTest*': [SKIP],
+  'LiveRangeUnitTest*': [SKIP],
+  'LoggingDeathTest*': [SKIP],
+  'LoggingTest.CompareClassTypes': [SKIP],
+  'LoggingTest.CompareWithDifferentSignedness': [SKIP],
+  'LoggingTest.CompareWithReferenceType': [SKIP],
+  'RandomNumberGenerator.NextSampleInvalidParam': [SKIP],
+  'RandomNumberGenerator.NextSampleSlowInvalidParam1': [SKIP],
+  'RandomNumberGenerator.NextSampleSlowInvalidParam2': [SKIP],
+}],  # 'system == macos and asan'
+
+['(arch == arm or arch == mips) and not simulator_run', {
+  # Uses too much memory.
+  'Parameterized/WasmCodeManagerTest.GrowingVsFixedModule/Fixed': [SKIP]
+}],  # '(arch == arm or arch == mips) and not simulator_run'
 ]

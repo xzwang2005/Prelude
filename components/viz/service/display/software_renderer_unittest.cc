@@ -7,16 +7,16 @@
 #include <stdint.h>
 
 #include "base/bind.h"
-#include "base/memory/ptr_util.h"
+#include "base/bind_helpers.h"
+#include "base/memory/shared_memory.h"
 #include "base/run_loop.h"
 #include "cc/test/animation_test_common.h"
-#include "cc/test/fake_output_surface.h"
 #include "cc/test/fake_output_surface_client.h"
-#include "cc/test/fake_resource_provider.h"
 #include "cc/test/geometry_test_utils.h"
 #include "cc/test/pixel_test_utils.h"
 #include "cc/test/render_pass_test_utils.h"
-#include "cc/test/test_shared_bitmap_manager.h"
+#include "cc/test/resource_provider_test_utils.h"
+#include "components/viz/client/client_resource_provider.h"
 #include "components/viz/common/frame_sinks/copy_output_request.h"
 #include "components/viz/common/frame_sinks/copy_output_result.h"
 #include "components/viz/common/quads/compositor_frame_metadata.h"
@@ -24,7 +24,12 @@
 #include "components/viz/common/quads/render_pass_draw_quad.h"
 #include "components/viz/common/quads/solid_color_draw_quad.h"
 #include "components/viz/common/quads/tile_draw_quad.h"
+#include "components/viz/common/resources/bitmap_allocation.h"
+#include "components/viz/common/resources/shared_bitmap.h"
+#include "components/viz/service/display/display_resource_provider.h"
 #include "components/viz/service/display/software_output_device.h"
+#include "components/viz/test/fake_output_surface.h"
+#include "components/viz/test/test_shared_bitmap_manager.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/skia/include/core/SkCanvas.h"
@@ -38,25 +43,57 @@ class SoftwareRendererTest : public testing::Test {
  public:
   void InitializeRenderer(
       std::unique_ptr<SoftwareOutputDevice> software_output_device) {
-    output_surface_ = cc::FakeOutputSurface::CreateSoftware(
-        std::move(software_output_device));
+    output_surface_ =
+        FakeOutputSurface::CreateSoftware(std::move(software_output_device));
     output_surface_->BindToClient(&output_surface_client_);
 
-    shared_bitmap_manager_ = std::make_unique<cc::TestSharedBitmapManager>();
-    resource_provider_ =
-        cc::FakeResourceProvider::CreateDisplayResourceProvider(
-            nullptr, shared_bitmap_manager_.get());
+    shared_bitmap_manager_ = std::make_unique<TestSharedBitmapManager>();
+    resource_provider_ = std::make_unique<DisplayResourceProvider>(
+        DisplayResourceProvider::kSoftware, nullptr,
+        shared_bitmap_manager_.get());
     renderer_ = std::make_unique<SoftwareRenderer>(
         &settings_, output_surface_.get(), resource_provider());
     renderer_->Initialize();
     renderer_->SetVisible(true);
+
+    child_resource_provider_ = std::make_unique<ClientResourceProvider>(true);
   }
 
-  cc::DisplayResourceProvider* resource_provider() const {
+  void TearDown() override {
+    if (child_resource_provider_)
+      child_resource_provider_->ShutdownAndReleaseAllResources();
+    child_resource_provider_ = nullptr;
+  }
+
+  DisplayResourceProvider* resource_provider() const {
     return resource_provider_.get();
   }
 
+  ClientResourceProvider* child_resource_provider() const {
+    return child_resource_provider_.get();
+  }
+
   SoftwareRenderer* renderer() const { return renderer_.get(); }
+
+  ResourceId AllocateAndFillSoftwareResource(const gfx::Size& size,
+                                             const SkBitmap& source) {
+    std::unique_ptr<base::SharedMemory> shm =
+        bitmap_allocation::AllocateMappedBitmap(size, RGBA_8888);
+    SkImageInfo info = SkImageInfo::MakeN32Premul(size.width(), size.height());
+    source.readPixels(info, shm->memory(), info.minRowBytes(), 0, 0);
+
+    // Registers the SharedBitmapId in the display compositor.
+    SharedBitmapId shared_bitmap_id = SharedBitmap::GenerateId();
+    shared_bitmap_manager_->ChildAllocatedSharedBitmap(
+        bitmap_allocation::DuplicateAndCloseMappedBitmap(shm.get(), size,
+                                                         RGBA_8888),
+        shared_bitmap_id);
+
+    // Makes a resource id that refers to the registered SharedBitmapId.
+    return child_resource_provider_->ImportResource(
+        TransferableResource::MakeSoftware(shared_bitmap_id, size, RGBA_8888),
+        SingleReleaseCallback::Create(base::DoNothing()));
+  }
 
   std::unique_ptr<SkBitmap> DrawAndCopyOutput(RenderPassList* list,
                                               float device_scale_factor,
@@ -87,9 +124,10 @@ class SoftwareRendererTest : public testing::Test {
  protected:
   RendererSettings settings_;
   cc::FakeOutputSurfaceClient output_surface_client_;
-  std::unique_ptr<cc::FakeOutputSurface> output_surface_;
+  std::unique_ptr<FakeOutputSurface> output_surface_;
   std::unique_ptr<SharedBitmapManager> shared_bitmap_manager_;
-  std::unique_ptr<cc::DisplayResourceProvider> resource_provider_;
+  std::unique_ptr<DisplayResourceProvider> resource_provider_;
+  std::unique_ptr<ClientResourceProvider> child_resource_provider_;
   std::unique_ptr<SoftwareRenderer> renderer_;
 };
 
@@ -147,11 +185,6 @@ TEST_F(SoftwareRendererTest, TileQuad) {
   bool needs_blending = false;
   InitializeRenderer(std::make_unique<SoftwareOutputDevice>());
 
-  ResourceId resource_yellow = resource_provider()->CreateResource(
-      outer_size, ResourceTextureHint::kDefault, RGBA_8888, gfx::ColorSpace());
-  ResourceId resource_cyan = resource_provider()->CreateResource(
-      inner_size, ResourceTextureHint::kDefault, RGBA_8888, gfx::ColorSpace());
-
   SkBitmap yellow_tile;
   yellow_tile.allocN32Pixels(outer_size.width(), outer_size.height());
   yellow_tile.eraseColor(SK_ColorYELLOW);
@@ -160,11 +193,18 @@ TEST_F(SoftwareRendererTest, TileQuad) {
   cyan_tile.allocN32Pixels(inner_size.width(), inner_size.height());
   cyan_tile.eraseColor(SK_ColorCYAN);
 
-  resource_provider()->CopyToResource(
-      resource_yellow, static_cast<uint8_t*>(yellow_tile.getPixels()),
-      outer_size);
-  resource_provider()->CopyToResource(
-      resource_cyan, static_cast<uint8_t*>(cyan_tile.getPixels()), inner_size);
+  ResourceId resource_yellow =
+      this->AllocateAndFillSoftwareResource(outer_size, yellow_tile);
+  ResourceId resource_cyan =
+      this->AllocateAndFillSoftwareResource(inner_size, cyan_tile);
+
+  // Transfer resources to the parent, and get the resource map.
+  std::unordered_map<ResourceId, ResourceId> resource_map =
+      cc::SendResourceAndGetChildToParentMap(
+          {resource_yellow, resource_cyan}, resource_provider(),
+          child_resource_provider(), nullptr);
+  ResourceId mapped_resource_yellow = resource_map[resource_yellow];
+  ResourceId mapped_resource_cyan = resource_map[resource_cyan];
 
   gfx::Rect root_rect = outer_rect;
 
@@ -179,12 +219,12 @@ TEST_F(SoftwareRendererTest, TileQuad) {
                             0);
   auto* inner_quad = root_render_pass->CreateAndAppendDrawQuad<TileDrawQuad>();
   inner_quad->SetNew(shared_quad_state, inner_rect, inner_rect, needs_blending,
-                     resource_cyan, gfx::RectF(gfx::SizeF(inner_size)),
-                     inner_size, false, false, false);
+                     mapped_resource_cyan, gfx::RectF(gfx::SizeF(inner_size)),
+                     inner_size, false, false, false, false);
   auto* outer_quad = root_render_pass->CreateAndAppendDrawQuad<TileDrawQuad>();
   outer_quad->SetNew(shared_quad_state, outer_rect, outer_rect, needs_blending,
-                     resource_yellow, gfx::RectF(gfx::SizeF(outer_size)),
-                     outer_size, false, false, false);
+                     mapped_resource_yellow, gfx::RectF(gfx::SizeF(outer_size)),
+                     outer_size, false, false, false, false);
 
   RenderPassList list;
   list.push_back(std::move(root_render_pass));
@@ -211,9 +251,6 @@ TEST_F(SoftwareRendererTest, TileQuadVisibleRect) {
   visible_rect.Inset(1, 2, 3, 4);
   InitializeRenderer(std::make_unique<SoftwareOutputDevice>());
 
-  ResourceId resource_cyan = resource_provider()->CreateResource(
-      tile_size, ResourceTextureHint::kDefault, RGBA_8888, gfx::ColorSpace());
-
   SkBitmap cyan_tile;  // The lowest five rows are yellow.
   cyan_tile.allocN32Pixels(tile_size.width(), tile_size.height());
   cyan_tile.eraseColor(SK_ColorCYAN);
@@ -221,11 +258,17 @@ TEST_F(SoftwareRendererTest, TileQuadVisibleRect) {
                                         tile_rect.width(), tile_rect.bottom()),
                       SK_ColorYELLOW);
 
-  resource_provider()->CopyToResource(
-      resource_cyan, static_cast<uint8_t*>(cyan_tile.getPixels()), tile_size);
+  ResourceId resource_cyan =
+      AllocateAndFillSoftwareResource(tile_size, cyan_tile);
+
+  // Transfer resources to the parent, and get the resource map.
+  std::unordered_map<ResourceId, ResourceId> resource_map =
+      cc::SendResourceAndGetChildToParentMap(
+          {resource_cyan}, resource_provider(), child_resource_provider(),
+          nullptr);
+  ResourceId mapped_resource_cyan = resource_map[resource_cyan];
 
   gfx::Rect root_rect(tile_size);
-
   int root_render_pass_id = 1;
   std::unique_ptr<RenderPass> root_render_pass = RenderPass::Create();
   root_render_pass->SetNew(root_render_pass_id, root_rect, root_rect,
@@ -236,8 +279,8 @@ TEST_F(SoftwareRendererTest, TileQuadVisibleRect) {
                             false, true, 1.0, SkBlendMode::kSrcOver, 0);
   auto* quad = root_render_pass->CreateAndAppendDrawQuad<TileDrawQuad>();
   quad->SetNew(shared_quad_state, tile_rect, tile_rect, needs_blending,
-               resource_cyan, gfx::RectF(gfx::SizeF(tile_size)), tile_size,
-               false, false, false);
+               mapped_resource_cyan, gfx::RectF(gfx::SizeF(tile_size)),
+               tile_size, false, false, false, false);
   quad->visible_rect = visible_rect;
 
   RenderPassList list;

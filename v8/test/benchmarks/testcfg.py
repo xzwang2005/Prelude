@@ -34,29 +34,13 @@ from testrunner.local import testsuite
 from testrunner.objects import testcase
 
 
-class BenchmarksVariantGenerator(testsuite.VariantGenerator):
-  # Both --noopt and --stressopt are very slow. Add TF but without
-  # always opt to match the way the benchmarks are run for performance
-  # testing.
-  def FilterVariantsByTest(self, testcase):
-    outcomes = self.suite.GetStatusFileOutcomes(testcase)
-    if statusfile.OnlyStandardVariant(outcomes):
-      return self.standard_variant
-    return self.fast_variants
+class TestSuite(testsuite.TestSuite):
+  def __init__(self, *args, **kwargs):
+    super(TestSuite, self).__init__(*args, **kwargs)
+    self.testroot = os.path.join(self.root, "data")
 
-  def GetFlagSets(self, testcase, variant):
-    return testsuite.FAST_VARIANT_FLAGS[variant]
-
-
-class BenchmarksTestSuite(testsuite.TestSuite):
-
-  def __init__(self, name, root):
-    super(BenchmarksTestSuite, self).__init__(name, root)
-    self.testroot = os.path.join(root, "data")
-
-  def ListTests(self, context):
-    tests = []
-    for test in [
+  def ListTests(self):
+    tests = map(self._create_test, [
         "kraken/ai-astar",
         "kraken/audio-beat-detection",
         "kraken/audio-dft",
@@ -113,40 +97,41 @@ class BenchmarksTestSuite(testsuite.TestSuite):
         "sunspider/string-fasta",
         "sunspider/string-tagcloud",
         "sunspider/string-unpack-code",
-        "sunspider/string-validate-input"]:
-      tests.append(testcase.TestCase(self, test))
+        "sunspider/string-validate-input",
+    ])
     return tests
 
-  def GetParametersForTestCase(self, testcase, context):
+  def _test_class(self):
+    return TestCase
+
+
+class TestCase(testcase.D8TestCase):
+  def _get_files_params(self):
+    path = self.path
+    testroot = self.suite.testroot
     files = []
-    if testcase.path.startswith("kraken"):
-      files.append(os.path.join(self.testroot, "%s-data.js" % testcase.path))
-      files.append(os.path.join(self.testroot, "%s.js" % testcase.path))
-    elif testcase.path.startswith("octane"):
-      files.append(os.path.join(self.testroot, "octane/base.js"))
-      files.append(os.path.join(self.testroot, "%s.js" % testcase.path))
-      if testcase.path.startswith("octane/gbemu"):
-        files.append(os.path.join(self.testroot, "octane/gbemu-part2.js"))
-      elif testcase.path.startswith("octane/typescript"):
-        files.append(os.path.join(self.testroot,
+    if path.startswith("kraken"):
+      files.append(os.path.join(testroot, "%s-data.js" % path))
+      files.append(os.path.join(testroot, "%s.js" % path))
+    elif path.startswith("octane"):
+      files.append(os.path.join(testroot, "octane/base.js"))
+      files.append(os.path.join(testroot, "%s.js" % path))
+      if path.startswith("octane/gbemu"):
+        files.append(os.path.join(testroot, "octane/gbemu-part2.js"))
+      elif path.startswith("octane/typescript"):
+        files.append(os.path.join(testroot,
                                   "octane/typescript-compiler.js"))
-        files.append(os.path.join(self.testroot, "octane/typescript-input.js"))
-      elif testcase.path.startswith("octane/zlib"):
-        files.append(os.path.join(self.testroot, "octane/zlib-data.js"))
+        files.append(os.path.join(testroot, "octane/typescript-input.js"))
+      elif path.startswith("octane/zlib"):
+        files.append(os.path.join(testroot, "octane/zlib-data.js"))
       files += ["-e", "BenchmarkSuite.RunSuites({});"]
-    elif testcase.path.startswith("sunspider"):
-      files.append(os.path.join(self.testroot, "%s.js" % testcase.path))
+    elif path.startswith("sunspider"):
+      files.append(os.path.join(testroot, "%s.js" % path))
+    return files
 
-    return files, testcase.flags + context.mode_flags, {}
-
-  def GetSourceForTest(self, testcase):
-    filename = os.path.join(self.testroot, testcase.path + ".js")
-    with open(filename) as f:
-      return f.read()
-
-  def _VariantGeneratorFactory(self):
-    return BenchmarksVariantGenerator
+  def _get_source_path(self):
+    return os.path.join(self.suite.testroot, self.path + self._get_suffix())
 
 
-def GetSuite(name, root):
-  return BenchmarksTestSuite(name, root)
+def GetSuite(*args, **kwargs):
+  return TestSuite(*args, **kwargs)

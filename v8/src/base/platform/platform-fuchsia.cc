@@ -19,6 +19,8 @@ uint32_t GetProtectionFromMemoryPermission(OS::MemoryPermission access) {
   switch (access) {
     case OS::MemoryPermission::kNoAccess:
       return 0;  // no permissions
+    case OS::MemoryPermission::kRead:
+      return ZX_VM_FLAG_PERM_READ;
     case OS::MemoryPermission::kReadWrite:
       return ZX_VM_FLAG_PERM_READ | ZX_VM_FLAG_PERM_WRITE;
     case OS::MemoryPermission::kReadWriteExecute:
@@ -55,8 +57,8 @@ void* OS::Allocate(void* address, size_t size, size_t alignment,
                          strlen(kVirtualMemoryName));
   uintptr_t reservation;
   uint32_t prot = GetProtectionFromMemoryPermission(access);
-  zx_status_t status = zx_vmar_map(zx_vmar_root_self(), 0, vmo, 0, request_size,
-                                   prot, &reservation);
+  zx_status_t status = zx_vmar_map(zx_vmar_root_self(), prot, 0, vmo, 0,
+                                   request_size, &reservation);
   // Either the vmo is now referenced by the vmar, or we failed and are bailing,
   // so close the vmo either way.
   zx_handle_close(vmo);
@@ -65,7 +67,8 @@ void* OS::Allocate(void* address, size_t size, size_t alignment,
   }
 
   uint8_t* base = reinterpret_cast<uint8_t*>(reservation);
-  uint8_t* aligned_base = RoundUp(base, alignment);
+  uint8_t* aligned_base = reinterpret_cast<uint8_t*>(
+      RoundUp(reinterpret_cast<uintptr_t>(base), alignment));
 
   // Unmap extra memory reserved before and after the desired block.
   if (aligned_base != base) {
@@ -112,9 +115,8 @@ bool OS::SetPermissions(void* address, size_t size, MemoryPermission access) {
   DCHECK_EQ(0, reinterpret_cast<uintptr_t>(address) % CommitPageSize());
   DCHECK_EQ(0, size % CommitPageSize());
   uint32_t prot = GetProtectionFromMemoryPermission(access);
-  return zx_vmar_protect(zx_vmar_root_self(),
-                         reinterpret_cast<uintptr_t>(address), size,
-                         prot) == ZX_OK;
+  return zx_vmar_protect(zx_vmar_root_self(), prot,
+                         reinterpret_cast<uintptr_t>(address), size) == ZX_OK;
 }
 
 // static
@@ -124,12 +126,27 @@ bool OS::HasLazyCommits() {
 }
 
 std::vector<OS::SharedLibraryAddress> OS::GetSharedLibraryAddresses() {
-  CHECK(false);  // TODO(scottmg): Port, https://crbug.com/731217.
-  return std::vector<SharedLibraryAddress>();
+  UNREACHABLE();  // TODO(scottmg): Port, https://crbug.com/731217.
 }
 
 void OS::SignalCodeMovingGC() {
-  CHECK(false);  // TODO(scottmg): Port, https://crbug.com/731217.
+  UNREACHABLE();  // TODO(scottmg): Port, https://crbug.com/731217.
+}
+
+int OS::GetUserTime(uint32_t* secs, uint32_t* usecs) {
+  const auto kNanosPerMicrosecond = 1000ULL;
+  const auto kMicrosPerSecond = 1000000ULL;
+  const zx_time_t nanos_since_thread_started = zx_clock_get(ZX_CLOCK_THREAD);
+
+  // First convert to microseconds, rounding up.
+  const uint64_t micros_since_thread_started =
+      (nanos_since_thread_started + kNanosPerMicrosecond - 1ULL) /
+      kNanosPerMicrosecond;
+
+  *secs = static_cast<uint32_t>(micros_since_thread_started / kMicrosPerSecond);
+  *usecs =
+      static_cast<uint32_t>(micros_since_thread_started % kMicrosPerSecond);
+  return 0;
 }
 
 }  // namespace base

@@ -2,8 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifndef V8_INVALIDATED_SLOTS_INL_H
-#define V8_INVALIDATED_SLOTS_INL_H
+#ifndef V8_HEAP_INVALIDATED_SLOTS_INL_H_
+#define V8_HEAP_INVALIDATED_SLOTS_INL_H_
 
 #include <map>
 
@@ -47,6 +47,7 @@ bool InvalidatedSlotsFilter::IsValid(Address slot) {
   // Ask the object if the slot is valid.
   if (invalidated_object_ == nullptr) {
     invalidated_object_ = HeapObject::FromAddress(invalidated_start_);
+    DCHECK(!invalidated_object_->IsFiller());
     invalidated_object_size_ =
         invalidated_object_->SizeFromMap(invalidated_object_->map());
   }
@@ -56,15 +57,12 @@ bool InvalidatedSlotsFilter::IsValid(Address slot) {
             static_cast<int>(invalidated_end_ - invalidated_start_));
 
   if (offset >= invalidated_object_size_) {
-    // A new object could have been allocated during evacuation in the free
-    // space outside the object. Since objects are not invalidated in GC pause
-    // we can return true here.
-    return true;
+    return slots_in_free_space_are_valid_;
   }
-  return invalidated_object_->IsValidSlot(offset);
+  return invalidated_object_->IsValidSlot(invalidated_object_->map(), offset);
 }
 
 }  // namespace internal
 }  // namespace v8
 
-#endif  // V8_INVALIDATED_SLOTS_INL_H
+#endif  // V8_HEAP_INVALIDATED_SLOTS_INL_H_

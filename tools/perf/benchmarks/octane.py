@@ -117,7 +117,7 @@ class _OctaneMeasurement(legacy_page_test.LegacyPageTest):
                            'benchmark collection.'))
 
 
-@benchmark.Owner(emails=['hablich@chromium.org'])
+@benchmark.Info(emails=['hablich@chromium.org'])
 class Octane(perf_benchmark.PerfBenchmark):
   """Google's Octane JavaScript benchmark.
 
@@ -139,11 +139,3 @@ class Octane(perf_benchmark.PerfBenchmark):
         ps, ps.base_dir, make_javascript_deterministic=False,
         name='http://chromium.github.io/octane/index.html?auto=1'))
     return ps
-
-  def GetExpectations(self):
-    class StoryExpectations(story.expectations.StoryExpectations):
-      def SetExpectations(self):
-        self.DisableStory(
-            'http://chromium.github.io/octane/index.html?auto=1',
-            [story.expectations.ANDROID_ONE], 'http://crbug.com/764875')
-    return StoryExpectations()

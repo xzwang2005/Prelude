@@ -48,87 +48,59 @@ class ScopedMinimumFontSizeCallback {
 int ScopedMinimumFontSizeCallback::minimum_size_ = 0;
 #endif  // defined(OS_WIN)
 
-#if defined(OS_ANDROID)
-#define MAYBE_LoadArial DISABLED_LoadArial
-#else
-#define MAYBE_LoadArial LoadArial
-#endif
-TEST_F(FontTest, MAYBE_LoadArial) {
-  Font cf("Arial", 16);
+TEST_F(FontTest, LoadArial) {
+  Font cf(kTestFontName, 16);
 #if defined(OS_WIN) || defined(OS_MACOSX) || defined(OS_IOS)
   EXPECT_TRUE(cf.GetNativeFont());
 #endif
   EXPECT_EQ(cf.GetStyle(), Font::NORMAL);
   EXPECT_EQ(cf.GetFontSize(), 16);
-  EXPECT_EQ(cf.GetFontName(), "Arial");
-  EXPECT_EQ("arial", base::ToLowerASCII(cf.GetActualFontNameForTesting()));
+  EXPECT_EQ(cf.GetFontName(), kTestFontName);
+  EXPECT_EQ(base::ToLowerASCII(kTestFontName),
+            base::ToLowerASCII(cf.GetActualFontNameForTesting()));
 }
 
-#if defined(OS_ANDROID)
-#define MAYBE_LoadArialBold DISABLED_LoadArialBold
-#else
-#define MAYBE_LoadArialBold LoadArialBold
-#endif
-TEST_F(FontTest, MAYBE_LoadArialBold) {
-  Font cf("Arial", 16);
+TEST_F(FontTest, LoadArialBold) {
+  Font cf(kTestFontName, 16);
   Font bold(cf.Derive(0, Font::NORMAL, Font::Weight::BOLD));
 #if defined(OS_WIN) || defined(OS_MACOSX) || defined(OS_IOS)
   EXPECT_TRUE(bold.GetNativeFont());
 #endif
   EXPECT_EQ(bold.GetStyle(), Font::NORMAL);
   EXPECT_EQ(bold.GetWeight(), Font::Weight::BOLD);
-  EXPECT_EQ("arial", base::ToLowerASCII(cf.GetActualFontNameForTesting()));
+  EXPECT_EQ(base::ToLowerASCII(kTestFontName),
+            base::ToLowerASCII(cf.GetActualFontNameForTesting()));
 }
 
-#if defined(OS_ANDROID)
-#define MAYBE_Ascent DISABLED_Ascent
-#else
-#define MAYBE_Ascent Ascent
-#endif
-TEST_F(FontTest, MAYBE_Ascent) {
-  Font cf("Arial", 16);
+TEST_F(FontTest, Ascent) {
+  Font cf(kTestFontName, 16);
   EXPECT_GT(cf.GetBaseline(), 2);
   EXPECT_LE(cf.GetBaseline(), 22);
 }
 
-#if defined(OS_ANDROID)
-#define MAYBE_Height DISABLED_Height
-#else
-#define MAYBE_Height Height
-#endif
-TEST_F(FontTest, MAYBE_Height) {
-  Font cf("Arial", 16);
+TEST_F(FontTest, Height) {
+  Font cf(kTestFontName, 16);
   EXPECT_GE(cf.GetHeight(), 16);
   // TODO(akalin): Figure out why height is so large on Linux.
   EXPECT_LE(cf.GetHeight(), 26);
 }
 
-#if defined(OS_ANDROID)
-#define MAYBE_CapHeight DISABLED_CapHeight
-#else
-#define MAYBE_CapHeight CapHeight
-#endif
-TEST_F(FontTest, MAYBE_CapHeight) {
-  Font cf("Arial", 16);
+TEST_F(FontTest, CapHeight) {
+  Font cf(kTestFontName, 16);
   EXPECT_GT(cf.GetCapHeight(), 0);
   EXPECT_GT(cf.GetCapHeight(), cf.GetHeight() / 2);
   EXPECT_LT(cf.GetCapHeight(), cf.GetBaseline());
 }
 
-#if defined(OS_ANDROID)
-#define MAYBE_AvgWidths DISABLED_AvgWidths
-#else
-#define MAYBE_AvgWidths AvgWidths
-#endif
-TEST_F(FontTest, MAYBE_AvgWidths) {
-  Font cf("Arial", 16);
+TEST_F(FontTest, AvgWidths) {
+  Font cf(kTestFontName, 16);
   EXPECT_EQ(cf.GetExpectedTextWidth(0), 0);
   EXPECT_GT(cf.GetExpectedTextWidth(1), cf.GetExpectedTextWidth(0));
   EXPECT_GT(cf.GetExpectedTextWidth(2), cf.GetExpectedTextWidth(1));
   EXPECT_GT(cf.GetExpectedTextWidth(3), cf.GetExpectedTextWidth(2));
 }
 
-#if defined(OS_WIN) || defined(OS_ANDROID)
+#if defined(OS_WIN)
 #define MAYBE_GetActualFontNameForTesting DISABLED_GetActualFontNameForTesting
 #else
 #define MAYBE_GetActualFontNameForTesting GetActualFontNameForTesting
@@ -140,8 +112,9 @@ TEST_F(FontTest, MAYBE_AvgWidths) {
 // fonts may be installed but still need enabling in Font Book.app.
 // http://crbug.com/347429
 TEST_F(FontTest, MAYBE_GetActualFontNameForTesting) {
-  Font arial("Arial", 16);
-  EXPECT_EQ("arial", base::ToLowerASCII(arial.GetActualFontNameForTesting()))
+  Font arial(kTestFontName, 16);
+  EXPECT_EQ(base::ToLowerASCII(kTestFontName),
+            base::ToLowerASCII(arial.GetActualFontNameForTesting()))
       << "********\n"
       << "Your test environment seems to be missing Arial font, which is "
       << "needed for unittests.  Check if Arial font is installed.\n"
@@ -162,14 +135,8 @@ TEST_F(FontTest, MAYBE_GetActualFontNameForTesting) {
             base::ToLowerASCII(fallback_font.GetActualFontNameForTesting()));
 }
 
-#if defined(OS_ANDROID)
-// https://crbug.com/642010
-#define MAYBE_DeriveFont DISABLED_DeriveFont
-#else
-#define MAYBE_DeriveFont DeriveFont
-#endif
-TEST_F(FontTest, MAYBE_DeriveFont) {
-  Font cf("Arial", 8);
+TEST_F(FontTest, DeriveFont) {
+  Font cf(kTestFontName, 8);
   const int kSizeDelta = 2;
   Font cf_underlined =
       cf.Derive(0, cf.GetStyle() | gfx::Font::UNDERLINE, cf.GetWeight());
@@ -183,7 +150,7 @@ TEST_F(FontTest, MAYBE_DeriveFont) {
 
 #if defined(OS_WIN)
 TEST_F(FontTest, DeriveResizesIfSizeTooSmall) {
-  Font cf("Arial", 8);
+  Font cf(kTestFontName, 8);
   // The minimum font size is set to 5 in browser_main.cc.
   ScopedMinimumFontSizeCallback minimum_size(5);
 
@@ -192,7 +159,7 @@ TEST_F(FontTest, DeriveResizesIfSizeTooSmall) {
 }
 
 TEST_F(FontTest, DeriveKeepsOriginalSizeIfHeightOk) {
-  Font cf("Arial", 8);
+  Font cf(kTestFontName, 8);
   // The minimum font size is set to 5 in browser_main.cc.
   ScopedMinimumFontSizeCallback minimum_size(5);
 

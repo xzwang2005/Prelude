@@ -27,6 +27,12 @@
 #include "src/base/timezone-cache.h"
 #include "src/base/utils/random-number-generator.h"
 
+#include <VersionHelpers.h>
+
+#if defined(_MSC_VER)
+#include <crtdbg.h>  // NOLINT
+#endif               // defined(_MSC_VER)
+
 // Extra functions for MinGW. Most of these are the _s functions which are in
 // the Microsoft Visual Studio C++ CRT.
 #ifdef __MINGW32__
@@ -111,7 +117,7 @@ class WindowsTimezoneCache : public TimezoneCache {
 
   const char* LocalTimezone(double time) override;
 
-  double LocalTimeOffset() override;
+  double LocalTimeOffset(double time, bool is_utc) override;
 
   double DaylightSavingsOffset(double time) override;
 
@@ -462,7 +468,9 @@ const char* WindowsTimezoneCache::LocalTimezone(double time) {
 
 // Returns the local time offset in milliseconds east of UTC without
 // taking daylight savings time into account.
-double WindowsTimezoneCache::LocalTimeOffset() {
+double WindowsTimezoneCache::LocalTimeOffset(double time_ms, bool is_utc) {
+  // Ignore is_utc and time_ms for now. That way, the behavior wouldn't
+  // change with icu_timezone_data disabled.
   // Use current time, rounded to the millisecond.
   Win32Time t(OS::TimeCurrentMillis());
   // Time::LocalOffset inlcudes any daylight savings offset, so subtract it.
@@ -493,6 +501,13 @@ int OS::GetCurrentThreadId() {
   return static_cast<int>(::GetCurrentThreadId());
 }
 
+void OS::ExitProcess(int exit_code) {
+  // Use TerminateProcess avoid races between isolate threads and
+  // static destructors.
+  fflush(stdout);
+  fflush(stderr);
+  TerminateProcess(GetCurrentProcess(), exit_code);
+}
 
 // ----------------------------------------------------------------------------
 // Win32 console output.
@@ -674,8 +689,15 @@ void OS::StrNCpy(char* dest, int length, const char* src, size_t n) {
 #undef _TRUNCATE
 #undef STRUNCATE
 
-// The allocation alignment is the guaranteed alignment for
-// VirtualAlloc'ed blocks of memory.
+static LazyInstance<RandomNumberGenerator>::type
+    platform_random_number_generator = LAZY_INSTANCE_INITIALIZER;
+static LazyMutex rng_mutex = LAZY_MUTEX_INITIALIZER;
+
+void OS::Initialize(bool hard_abort, const char* const gc_fake_mmap) {
+  g_hard_abort = hard_abort;
+}
+
+// static
 size_t OS::AllocatePageSize() {
   static size_t allocate_alignment = 0;
   if (allocate_alignment == 0) {
@@ -686,6 +708,7 @@ size_t OS::AllocatePageSize() {
   return allocate_alignment;
 }
 
+// static
 size_t OS::CommitPageSize() {
   static size_t page_size = 0;
   if (page_size == 0) {
@@ -697,17 +720,15 @@ size_t OS::CommitPageSize() {
   return page_size;
 }
 
-static LazyInstance<RandomNumberGenerator>::type
-    platform_random_number_generator = LAZY_INSTANCE_INITIALIZER;
-
-void OS::Initialize(int64_t random_seed, bool hard_abort,
-                    const char* const gc_fake_mmap) {
-  if (random_seed) {
-    platform_random_number_generator.Pointer()->SetSeed(random_seed);
+// static
+void OS::SetRandomMmapSeed(int64_t seed) {
+  if (seed) {
+    LockGuard<Mutex> guard(rng_mutex.Pointer());
+    platform_random_number_generator.Pointer()->SetSeed(seed);
   }
-  g_hard_abort = hard_abort;
 }
 
+// static
 void* OS::GetRandomMmapAddr() {
 // The address range used to randomize RWX allocations in OS::Allocate
 // Try not to map pages into the default range that windows loads DLLs
@@ -722,8 +743,11 @@ void* OS::GetRandomMmapAddr() {
   static const uintptr_t kAllocationRandomAddressMax = 0x3FFF0000;
 #endif
   uintptr_t address;
-  platform_random_number_generator.Pointer()->NextBytes(&address,
-                                                        sizeof(address));
+  {
+    LockGuard<Mutex> guard(rng_mutex.Pointer());
+    platform_random_number_generator.Pointer()->NextBytes(&address,
+                                                          sizeof(address));
+  }
   address <<= kPageSizeBits;
   address += kAllocationRandomAddressMin;
   address &= kAllocationRandomAddressMax;
@@ -736,11 +760,17 @@ DWORD GetProtectionFromMemoryPermission(OS::MemoryPermission access) {
   switch (access) {
     case OS::MemoryPermission::kNoAccess:
       return PAGE_NOACCESS;
+    case OS::MemoryPermission::kRead:
+      return PAGE_READONLY;
     case OS::MemoryPermission::kReadWrite:
       return PAGE_READWRITE;
     case OS::MemoryPermission::kReadWriteExecute:
+      if (IsWindows10OrGreater())
+        return PAGE_EXECUTE_READWRITE | PAGE_TARGETS_INVALID;
       return PAGE_EXECUTE_READWRITE;
     case OS::MemoryPermission::kReadExecute:
+      if (IsWindows10OrGreater())
+        return PAGE_EXECUTE_READ | PAGE_TARGETS_INVALID;
       return PAGE_EXECUTE_READ;
   }
   UNREACHABLE();
@@ -781,44 +811,55 @@ void* OS::Allocate(void* address, size_t size, size_t alignment,
   DCHECK_EQ(0, alignment % page_size);
   DCHECK_LE(page_size, alignment);
   address = AlignedAddress(address, alignment);
-  // Add the maximum misalignment so we are guaranteed an aligned base address.
-  size_t padded_size = size + (alignment - page_size);
 
   DWORD flags = (access == OS::MemoryPermission::kNoAccess)
                     ? MEM_RESERVE
                     : MEM_RESERVE | MEM_COMMIT;
   DWORD protect = GetProtectionFromMemoryPermission(access);
 
+  // First, try an exact size aligned allocation.
+  uint8_t* base = RandomizedVirtualAlloc(size, flags, protect, address);
+  if (base == nullptr) return nullptr;  // Can't allocate, we're OOM.
+
+  // If address is suitably aligned, we're done.
+  uint8_t* aligned_base = reinterpret_cast<uint8_t*>(
+      RoundUp(reinterpret_cast<uintptr_t>(base), alignment));
+  if (base == aligned_base) return reinterpret_cast<void*>(base);
+
+  // Otherwise, free it and try a larger allocation.
+  CHECK(Free(base, size));
+
+  // Clear the hint. It's unlikely we can allocate at this address.
+  address = nullptr;
+
+  // Add the maximum misalignment so we are guaranteed an aligned base address
+  // in the allocated region.
+  size_t padded_size = size + (alignment - page_size);
   const int kMaxAttempts = 3;
-  uint8_t* base = nullptr;
-  uint8_t* aligned_base = nullptr;
+  aligned_base = nullptr;
   for (int i = 0; i < kMaxAttempts; ++i) {
     base = RandomizedVirtualAlloc(padded_size, flags, protect, address);
-    // If we can't allocate, we're OOM.
-    if (base == nullptr) break;
-    aligned_base = RoundUp(base, alignment);
-    // If address is suitably aligned, we're done.
-    if (base == aligned_base) break;
-    // Try to trim the unaligned prefix by freeing the entire padded allocation
-    // and then calling VirtualAlloc at the aligned_base.
+    if (base == nullptr) return nullptr;  // Can't allocate, we're OOM.
+
+    // Try to trim the allocation by freeing the padded allocation and then
+    // calling VirtualAlloc at the aligned base.
     CHECK(Free(base, padded_size));
+    aligned_base = reinterpret_cast<uint8_t*>(
+        RoundUp(reinterpret_cast<uintptr_t>(base), alignment));
     base = reinterpret_cast<uint8_t*>(
         VirtualAlloc(aligned_base, size, flags, protect));
     // We might not get the reduced allocation due to a race. In that case,
     // base will be nullptr.
     if (base != nullptr) break;
-    // Clear the hint. It's unlikely we can allocate at this address.
-    address = nullptr;
   }
-  DCHECK_EQ(base, aligned_base);
+  DCHECK_IMPLIES(base, base == aligned_base);
   return reinterpret_cast<void*>(base);
 }
 
 // static
 bool OS::Free(void* address, const size_t size) {
   DCHECK_EQ(0, reinterpret_cast<uintptr_t>(address) % AllocatePageSize());
-  // TODO(bbudge) Add DCHECK_EQ(0, size % AllocatePageSize()) when callers
-  // pass the correct size on Windows.
+  DCHECK_EQ(0, size % AllocatePageSize());
   USE(size);
   return VirtualFree(address, 0, MEM_RELEASE) != 0;
 }
@@ -853,6 +894,10 @@ void OS::Sleep(TimeDelta interval) {
 
 
 void OS::Abort() {
+  // Before aborting, make sure to flush output buffers.
+  fflush(stdout);
+  fflush(stderr);
+
   if (g_hard_abort) {
     V8_IMMEDIATE_CRASH();
   }
@@ -1216,6 +1261,24 @@ int OS::ActivationFrameAlignment() {
   return 8;  // Floating-point math runs faster with 8-byte alignment.
 #endif
 }
+
+#if (defined(_WIN32) || defined(_WIN64))
+void EnsureConsoleOutputWin32() {
+  UINT new_flags =
+      SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX;
+  UINT existing_flags = SetErrorMode(new_flags);
+  SetErrorMode(existing_flags | new_flags);
+#if defined(_MSC_VER)
+  _CrtSetReportMode(_CRT_WARN, _CRTDBG_MODE_DEBUG | _CRTDBG_MODE_FILE);
+  _CrtSetReportFile(_CRT_WARN, _CRTDBG_FILE_STDERR);
+  _CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_DEBUG | _CRTDBG_MODE_FILE);
+  _CrtSetReportFile(_CRT_ASSERT, _CRTDBG_FILE_STDERR);
+  _CrtSetReportMode(_CRT_ERROR, _CRTDBG_MODE_DEBUG | _CRTDBG_MODE_FILE);
+  _CrtSetReportFile(_CRT_ERROR, _CRTDBG_FILE_STDERR);
+  _set_error_mode(_OUT_TO_STDERR);
+#endif  // defined(_MSC_VER)
+}
+#endif  // (defined(_WIN32) || defined(_WIN64))
 
 // ----------------------------------------------------------------------------
 // Win32 thread support.

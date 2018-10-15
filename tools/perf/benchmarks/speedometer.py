@@ -95,7 +95,7 @@ class SpeedometerMeasurement(legacy_page_test.LegacyPageTest):
     keychain_metric.KeychainMetric().AddResults(tab, results)
 
 
-@benchmark.Owner(emails=['hablich@chromium.org'])
+@benchmark.Info(emails=['hablich@chromium.org'])
 class Speedometer(perf_benchmark.PerfBenchmark):
   test = SpeedometerMeasurement
 
@@ -114,14 +114,8 @@ class Speedometer(perf_benchmark.PerfBenchmark):
         name='http://browserbench.org/Speedometer/'))
     return ps
 
-  def GetExpectations(self):
-    class StoryExpectations(story.expectations.StoryExpectations):
-      def SetExpectations(self):
-        pass # http://browserbench.org/Speedometer/ not disabled.
-    return StoryExpectations()
 
-
-@benchmark.Owner(emails=['hablich@chromium.org'])
+@benchmark.Info(emails=['hablich@chromium.org'])
 class V8SpeedometerFuture(Speedometer):
   """Speedometer benchmark with the V8 flag --future.
 

@@ -30,6 +30,8 @@
 
 #include "src/inspector/v8-runtime-agent-impl.h"
 
+#include <inttypes.h>
+
 #include "src/debug/debug-interface.h"
 #include "src/inspector/injected-script.h"
 #include "src/inspector/inspected-context.h"
@@ -52,6 +54,7 @@ namespace V8RuntimeAgentImplState {
 static const char customObjectFormatterEnabled[] =
     "customObjectFormatterEnabled";
 static const char runtimeEnabled[] = "runtimeEnabled";
+static const char bindings[] = "bindings";
 };
 
 using protocol::Runtime::RemoteObject;
@@ -133,6 +136,9 @@ void innerCallFunctionOn(
 
   if (silent) scope.ignoreExceptionsAndMuteConsole();
   if (userGesture) scope.pretendUserGesture();
+
+  // Temporarily enable allow evals for inspector.
+  scope.allowCodeGenerationFromStrings();
 
   v8::MaybeLocal<v8::Value> maybeFunctionValue;
   v8::Local<v8::Script> functionScript;
@@ -220,14 +226,15 @@ V8RuntimeAgentImpl::V8RuntimeAgentImpl(
       m_inspector(session->inspector()),
       m_enabled(false) {}
 
-V8RuntimeAgentImpl::~V8RuntimeAgentImpl() {}
+V8RuntimeAgentImpl::~V8RuntimeAgentImpl() = default;
 
 void V8RuntimeAgentImpl::evaluate(
     const String16& expression, Maybe<String16> objectGroup,
     Maybe<bool> includeCommandLineAPI, Maybe<bool> silent,
     Maybe<int> executionContextId, Maybe<bool> returnByValue,
     Maybe<bool> generatePreview, Maybe<bool> userGesture,
-    Maybe<bool> awaitPromise, std::unique_ptr<EvaluateCallback> callback) {
+    Maybe<bool> awaitPromise, Maybe<bool> throwOnSideEffect,
+    Maybe<double> timeout, std::unique_ptr<EvaluateCallback> callback) {
   TRACE_EVENT0(TRACE_DISABLED_BY_DEFAULT("devtools.timeline"),
                "EvaluateScript");
   int contextId = 0;
@@ -250,20 +257,24 @@ void V8RuntimeAgentImpl::evaluate(
 
   if (includeCommandLineAPI.fromMaybe(false)) scope.installCommandLineAPI();
 
-  bool evalIsDisabled = !scope.context()->IsCodeGenerationFromStringsAllowed();
   // Temporarily enable allow evals for inspector.
-  if (evalIsDisabled) scope.context()->AllowCodeGenerationFromStrings(true);
-
+  scope.allowCodeGenerationFromStrings();
   v8::MaybeLocal<v8::Value> maybeResultValue;
-  v8::Local<v8::Script> script;
-  if (m_inspector->compileScript(scope.context(), expression, String16())
-          .ToLocal(&script)) {
+  {
+    V8InspectorImpl::EvaluateScope evaluateScope(m_inspector->isolate());
+    if (timeout.isJust()) {
+      response = evaluateScope.setTimeout(timeout.fromJust() / 1000.0);
+      if (!response.isSuccess()) {
+        callback->sendFailure(response);
+        return;
+      }
+    }
     v8::MicrotasksScope microtasksScope(m_inspector->isolate(),
                                         v8::MicrotasksScope::kRunMicrotasks);
-    maybeResultValue = script->Run(scope.context());
-  }
-
-  if (evalIsDisabled) scope.context()->AllowCodeGenerationFromStrings(false);
+    maybeResultValue = v8::debug::EvaluateGlobal(
+        m_inspector->isolate(), toV8String(m_inspector->isolate(), expression),
+        throwOnSideEffect.fromMaybe(false));
+  }  // Run microtasks before returning result.
 
   // Re-initialize after running client's code, as it could have destroyed
   // context or session.
@@ -415,7 +426,8 @@ Response V8RuntimeAgentImpl::getProperties(
     if (!response.isSuccess()) return response;
     propertiesProtocolArray->addItem(
         InternalPropertyDescriptor::create()
-            .setName(toProtocolString(name.As<v8::String>()))
+            .setName(
+                toProtocolString(m_inspector->isolate(), name.As<v8::String>()))
             .setValue(std::move(wrappedValue))
             .build());
   }
@@ -447,6 +459,14 @@ Response V8RuntimeAgentImpl::setCustomObjectFormatterEnabled(bool enabled) {
                       enabled);
   if (!m_enabled) return Response::Error("Runtime agent is not enabled");
   m_session->setCustomObjectFormatterEnabled(enabled);
+  return Response::OK();
+}
+
+Response V8RuntimeAgentImpl::setMaxCallStackSizeToCapture(int size) {
+  if (size < 0) {
+    return Response::Error("maxCallStackSizeToCapture should be non-negative");
+  }
+  V8StackTraceImpl::maxCallStackSizeToCapture = size;
   return Response::OK();
 }
 
@@ -572,7 +592,7 @@ void V8RuntimeAgentImpl::runScript(
 }
 
 Response V8RuntimeAgentImpl::queryObjects(
-    const String16& prototypeObjectId,
+    const String16& prototypeObjectId, Maybe<String16> objectGroup,
     std::unique_ptr<protocol::Runtime::RemoteObject>* objects) {
   InjectedScript::ObjectScope scope(m_session, prototypeObjectId);
   Response response = scope.initialize();
@@ -583,7 +603,8 @@ Response V8RuntimeAgentImpl::queryObjects(
   v8::Local<v8::Array> resultArray = m_inspector->debugger()->queryObjects(
       scope.context(), v8::Local<v8::Object>::Cast(scope.object()));
   return scope.injectedScript()->wrapObject(
-      resultArray, scope.objectGroupName(), false, false, objects);
+      resultArray, objectGroup.fromMaybe(scope.objectGroupName()), false, false,
+      objects);
 }
 
 Response V8RuntimeAgentImpl::globalLexicalScopeNames(
@@ -602,9 +623,129 @@ Response V8RuntimeAgentImpl::globalLexicalScopeNames(
   v8::debug::GlobalLexicalScopeNames(scope.context(), &names);
   *outNames = protocol::Array<String16>::create();
   for (size_t i = 0; i < names.Size(); ++i) {
-    (*outNames)->addItem(toProtocolString(names.Get(i)));
+    (*outNames)->addItem(
+        toProtocolString(m_inspector->isolate(), names.Get(i)));
   }
   return Response::OK();
+}
+
+Response V8RuntimeAgentImpl::getIsolateId(String16* outIsolateId) {
+  char buf[40];
+  std::snprintf(buf, sizeof(buf), "%" PRIx64, m_inspector->isolateId());
+  *outIsolateId = buf;
+  return Response::OK();
+}
+
+Response V8RuntimeAgentImpl::getHeapUsage(double* out_usedSize,
+                                          double* out_totalSize) {
+  v8::HeapStatistics stats;
+  m_inspector->isolate()->GetHeapStatistics(&stats);
+  *out_usedSize = stats.used_heap_size();
+  *out_totalSize = stats.total_heap_size();
+  return Response::OK();
+}
+
+void V8RuntimeAgentImpl::terminateExecution(
+    std::unique_ptr<TerminateExecutionCallback> callback) {
+  m_inspector->debugger()->terminateExecution(std::move(callback));
+}
+
+Response V8RuntimeAgentImpl::addBinding(const String16& name,
+                                        Maybe<int> executionContextId) {
+  if (!m_state->getObject(V8RuntimeAgentImplState::bindings)) {
+    m_state->setObject(V8RuntimeAgentImplState::bindings,
+                       protocol::DictionaryValue::create());
+  }
+  protocol::DictionaryValue* bindings =
+      m_state->getObject(V8RuntimeAgentImplState::bindings);
+  if (bindings->booleanProperty(name, false)) return Response::OK();
+  if (executionContextId.isJust()) {
+    int contextId = executionContextId.fromJust();
+    InspectedContext* context =
+        m_inspector->getContext(m_session->contextGroupId(), contextId);
+    if (!context) {
+      return Response::Error(
+          "Cannot find execution context with given executionContextId");
+    }
+    addBinding(context, name);
+    // false means that we should not add this binding later.
+    bindings->setBoolean(name, false);
+    return Response::OK();
+  }
+  bindings->setBoolean(name, true);
+  m_inspector->forEachContext(
+      m_session->contextGroupId(),
+      [&name, this](InspectedContext* context) { addBinding(context, name); });
+  return Response::OK();
+}
+
+void V8RuntimeAgentImpl::bindingCallback(
+    const v8::FunctionCallbackInfo<v8::Value>& info) {
+  v8::Isolate* isolate = info.GetIsolate();
+  if (info.Length() != 1 || !info[0]->IsString()) {
+    info.GetIsolate()->ThrowException(toV8String(
+        isolate, "Invalid arguments: should be exactly one string."));
+    return;
+  }
+  V8InspectorImpl* inspector =
+      static_cast<V8InspectorImpl*>(v8::debug::GetInspector(isolate));
+  int contextId = InspectedContext::contextId(isolate->GetCurrentContext());
+  int contextGroupId = inspector->contextGroupId(contextId);
+
+  String16 name =
+      toProtocolString(isolate, v8::Local<v8::String>::Cast(info.Data()));
+  String16 payload =
+      toProtocolString(isolate, v8::Local<v8::String>::Cast(info[0]));
+
+  inspector->forEachSession(
+      contextGroupId,
+      [&name, &payload, &contextId](V8InspectorSessionImpl* session) {
+        session->runtimeAgent()->bindingCalled(name, payload, contextId);
+      });
+}
+
+void V8RuntimeAgentImpl::addBinding(InspectedContext* context,
+                                    const String16& name) {
+  v8::HandleScope handles(m_inspector->isolate());
+  v8::Local<v8::Context> localContext = context->context();
+  v8::Local<v8::Object> global = localContext->Global();
+  v8::Local<v8::String> v8Name = toV8String(m_inspector->isolate(), name);
+  v8::Local<v8::Value> functionValue;
+  v8::MicrotasksScope microtasks(m_inspector->isolate(),
+                                 v8::MicrotasksScope::kDoNotRunMicrotasks);
+  if (v8::Function::New(localContext, bindingCallback, v8Name)
+          .ToLocal(&functionValue)) {
+    v8::Maybe<bool> success = global->Set(localContext, v8Name, functionValue);
+    USE(success);
+  }
+}
+
+Response V8RuntimeAgentImpl::removeBinding(const String16& name) {
+  protocol::DictionaryValue* bindings =
+      m_state->getObject(V8RuntimeAgentImplState::bindings);
+  if (!bindings) return Response::OK();
+  bindings->remove(name);
+  return Response::OK();
+}
+
+void V8RuntimeAgentImpl::bindingCalled(const String16& name,
+                                       const String16& payload,
+                                       int executionContextId) {
+  protocol::DictionaryValue* bindings =
+      m_state->getObject(V8RuntimeAgentImplState::bindings);
+  if (!bindings || !bindings->get(name)) return;
+  m_frontend.bindingCalled(name, payload, executionContextId);
+}
+
+void V8RuntimeAgentImpl::addBindings(InspectedContext* context) {
+  if (!m_enabled) return;
+  protocol::DictionaryValue* bindings =
+      m_state->getObject(V8RuntimeAgentImplState::bindings);
+  if (!bindings) return;
+  for (size_t i = 0; i < bindings->size(); ++i) {
+    if (!bindings->at(i).second) continue;
+    addBinding(context, bindings->at(i).first);
+  }
 }
 
 void V8RuntimeAgentImpl::restore() {
@@ -615,6 +756,10 @@ void V8RuntimeAgentImpl::restore() {
   if (m_state->booleanProperty(
           V8RuntimeAgentImplState::customObjectFormatterEnabled, false))
     m_session->setCustomObjectFormatterEnabled(true);
+
+  m_inspector->forEachContext(
+      m_session->contextGroupId(),
+      [this](InspectedContext* context) { addBindings(context); });
 }
 
 Response V8RuntimeAgentImpl::enable() {
@@ -637,11 +782,15 @@ Response V8RuntimeAgentImpl::disable() {
   if (!m_enabled) return Response::OK();
   m_enabled = false;
   m_state->setBoolean(V8RuntimeAgentImplState::runtimeEnabled, false);
+  m_state->remove(V8RuntimeAgentImplState::bindings);
   m_inspector->disableStackCapturingIfNeeded();
   m_session->setCustomObjectFormatterEnabled(false);
   reset();
   m_inspector->client()->endEnsureAllContextsInGroup(
       m_session->contextGroupId());
+  if (m_session->debuggerAgent() && !m_session->debuggerAgent()->enabled()) {
+    m_session->debuggerAgent()->setAsyncCallStackDepth(0);
+  }
   return Response::OK();
 }
 
@@ -698,5 +847,4 @@ bool V8RuntimeAgentImpl::reportMessage(V8ConsoleMessage* message,
   m_frontend.flush();
   return m_inspector->hasConsoleMessageStorage(m_session->contextGroupId());
 }
-
 }  // namespace v8_inspector

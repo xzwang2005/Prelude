@@ -786,7 +786,7 @@ SkSwizzler* SkSwizzler::CreateSwizzler(const SkEncodedInfo& encodedInfo,
     RowProc fastProc = nullptr;
     RowProc proc = nullptr;
     int srcBPP;
-    const int dstBPP = SkColorTypeBytesPerPixel(dstInfo.colorType());
+    const int dstBPP = dstInfo.bytesPerPixel();
     if (skipFormatConversion) {
         switch (encodedInfo.color()) {
             case SkEncodedInfo::kGray_Color:
@@ -890,6 +890,7 @@ SkSwizzler* SkSwizzler::CreateSwizzler(const SkEncodedInfo& encodedInfo,
                         return nullptr;
                 }
                 break;
+            case SkEncodedInfo::kXAlpha_Color:
             case SkEncodedInfo::kGrayAlpha_Color:
                 switch (dstInfo.colorType()) {
                     case kRGBA_8888_SkColorType:
@@ -963,6 +964,10 @@ SkSwizzler* SkSwizzler::CreateSwizzler(const SkEncodedInfo& encodedInfo,
                         return nullptr;
                 }
                 break;
+            case SkEncodedInfo::k565_Color:
+                // Treat 565 exactly like RGB (since it's still encoded as 8 bits per component).
+                // We just mark as 565 when we have a hint that there are only 5/6/5 "significant"
+                // bits in each channel.
             case SkEncodedInfo::kRGB_Color:
                 switch (dstInfo.colorType()) {
                     case kRGBA_8888_SkColorType:

@@ -19,12 +19,12 @@
 #include "base/win/object_watcher.h"
 #include "base/win/scoped_handle.h"
 #include "net/base/address_family.h"
-#include "net/base/completion_callback.h"
+#include "net/base/completion_once_callback.h"
+#include "net/base/datagram_buffer.h"
 #include "net/base/io_buffer.h"
 #include "net/base/ip_endpoint.h"
 #include "net/base/net_export.h"
 #include "net/base/network_change_notifier.h"
-#include "net/base/rand_callback.h"
 #include "net/log/net_log_with_source.h"
 #include "net/socket/datagram_socket.h"
 #include "net/socket/diff_serv_code_point.h"
@@ -35,11 +35,11 @@ namespace net {
 class IPAddress;
 class NetLog;
 struct NetLogSource;
+class SocketTag;
 
 class NET_EXPORT UDPSocketWin : public base::win::ObjectWatcher::Delegate {
  public:
   UDPSocketWin(DatagramSocket::BindType bind_type,
-               const RandIntCallback& rand_int_cb,
                net::NetLog* net_log,
                const net::NetLogSource& source);
   ~UDPSocketWin() override;
@@ -83,17 +83,15 @@ class NET_EXPORT UDPSocketWin : public base::win::ObjectWatcher::Delegate {
   // Reads from the socket.
   // Only usable from the client-side of a UDP socket, after the socket
   // has been connected.
-  int Read(IOBuffer* buf, int buf_len, const CompletionCallback& callback);
+  int Read(IOBuffer* buf, int buf_len, CompletionOnceCallback callback);
 
   // Writes to the socket.
   // Only usable from the client-side of a UDP socket, after the socket
   // has been connected.
-  // TODO(crbug.com/656607): Remove default value.
   int Write(IOBuffer* buf,
             int buf_len,
-            const CompletionCallback& callback,
-            const NetworkTrafficAnnotationTag& traffic_annotation =
-                NO_TRAFFIC_ANNOTATION_BUG_656607);
+            CompletionOnceCallback callback,
+            const NetworkTrafficAnnotationTag& traffic_annotation);
 
   // Reads from a socket and receive sender address information.
   // |buf| is the buffer to read data into.
@@ -108,7 +106,7 @@ class NET_EXPORT UDPSocketWin : public base::win::ObjectWatcher::Delegate {
   int RecvFrom(IOBuffer* buf,
                int buf_len,
                IPEndPoint* address,
-               const CompletionCallback& callback);
+               CompletionOnceCallback callback);
 
   // Sends to a socket with a particular destination.
   // |buf| is the buffer to send.
@@ -121,7 +119,7 @@ class NET_EXPORT UDPSocketWin : public base::win::ObjectWatcher::Delegate {
   int SendTo(IOBuffer* buf,
              int buf_len,
              const IPEndPoint& address,
-             const CompletionCallback& callback);
+             CompletionOnceCallback callback);
 
   // Sets the receive buffer size (in bytes) for the socket.
   // Returns a net error code.
@@ -137,6 +135,9 @@ class NET_EXPORT UDPSocketWin : public base::win::ObjectWatcher::Delegate {
   // code if there was a problem, but the socket will still be usable. Can not
   // return ERR_IO_PENDING.
   int SetDoNotFragment();
+
+  // This is a no-op on Windows.
+  void SetMsgConfirm(bool confirm);
 
   // Returns true if the socket is already connected or bound.
   bool is_connected() const { return is_connected_; }
@@ -206,6 +207,26 @@ class NET_EXPORT UDPSocketWin : public base::win::ObjectWatcher::Delegate {
   // to switch to non-blocking IO.
   void UseNonBlockingIO();
 
+  void SetWriteAsyncEnabled(bool enabled);
+  bool WriteAsyncEnabled();
+  void SetMaxPacketSize(size_t max_packet_size);
+  void SetWriteMultiCoreEnabled(bool enabled);
+  void SetSendmmsgEnabled(bool enabled);
+  void SetWriteBatchingActive(bool active);
+
+  int WriteAsync(DatagramBuffers buffers,
+                 CompletionOnceCallback callback,
+                 const NetworkTrafficAnnotationTag& traffic_annotation);
+  int WriteAsync(const char* buffer,
+                 size_t buf_len,
+                 CompletionOnceCallback callback,
+                 const NetworkTrafficAnnotationTag& traffic_annotation);
+
+  DatagramBuffers GetUnwrittenBuffers();
+
+  // Apply |tag| to this socket.
+  void ApplySocketTag(const SocketTag& tag);
+
  private:
   enum SocketOptions {
     SOCKET_OPTION_MULTICAST_LOOP = 1 << 0
@@ -237,7 +258,7 @@ class NET_EXPORT UDPSocketWin : public base::win::ObjectWatcher::Delegate {
   int SendToOrWrite(IOBuffer* buf,
                     int buf_len,
                     const IPEndPoint* address,
-                    const CompletionCallback& callback);
+                    CompletionOnceCallback callback);
 
   int InternalConnect(const IPEndPoint& address);
 
@@ -283,9 +304,6 @@ class NET_EXPORT UDPSocketWin : public base::win::ObjectWatcher::Delegate {
   // UDPClientSocket, since UDPServerSocket provides Bind.
   DatagramSocket::BindType bind_type_;
 
-  // PRNG function for generating port numbers.
-  RandIntCallback rand_int_cb_;
-
   // These are mutable since they're just cached copies to make
   // GetPeerAddress/GetLocalAddress smarter.
   mutable std::unique_ptr<IPEndPoint> local_address_;
@@ -319,10 +337,10 @@ class NET_EXPORT UDPSocketWin : public base::win::ObjectWatcher::Delegate {
   std::unique_ptr<IPEndPoint> send_to_address_;
 
   // External callback; called when read is complete.
-  CompletionCallback read_callback_;
+  CompletionOnceCallback read_callback_;
 
   // External callback; called when write is complete.
-  CompletionCallback write_callback_;
+  CompletionOnceCallback write_callback_;
 
   NetLogWithSource net_log_;
 

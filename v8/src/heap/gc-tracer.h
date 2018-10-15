@@ -31,6 +31,11 @@ enum ScavengeSpeedMode { kForAllObjects, kForSurvivedObjects };
   TRACE_EVENT0(TRACE_DISABLED_BY_DEFAULT("v8.gc"),             \
                GCTracer::Scope::Name(gc_tracer_scope_id))
 
+#define TRACE_BACKGROUND_GC(tracer, scope_id)                   \
+  GCTracer::BackgroundScope background_scope(tracer, scope_id); \
+  TRACE_EVENT0(TRACE_DISABLED_BY_DEFAULT("v8.gc"),              \
+               GCTracer::BackgroundScope::Name(scope_id))
+
 // GCTracer collects and prints ONE line after each garbage collector
 // invocation IFF --trace_gc is used.
 class V8_EXPORT_PRIVATE GCTracer {
@@ -74,6 +79,8 @@ class V8_EXPORT_PRIVATE GCTracer {
       LAST_GENERAL_BACKGROUND_SCOPE = BACKGROUND_UNMAPPER,
       FIRST_MC_BACKGROUND_SCOPE = MC_BACKGROUND_EVACUATE_COPY,
       LAST_MC_BACKGROUND_SCOPE = MC_BACKGROUND_SWEEPING,
+      FIRST_TOP_MC_SCOPE = MC_CLEAR,
+      LAST_TOP_MC_SCOPE = MC_SWEEP,
       FIRST_MINOR_GC_BACKGROUND_SCOPE = MINOR_MC_BACKGROUND_EVACUATE_COPY,
       LAST_MINOR_GC_BACKGROUND_SCOPE = SCAVENGER_BACKGROUND_SCAVENGE_PARALLEL
     };
@@ -108,6 +115,8 @@ class V8_EXPORT_PRIVATE GCTracer {
     };
     BackgroundScope(GCTracer* tracer, ScopeId scope);
     ~BackgroundScope();
+
+    static const char* Name(ScopeId id);
 
    private:
     GCTracer* tracer_;
@@ -293,6 +302,11 @@ class V8_EXPORT_PRIVATE GCTracer {
 
   void NotifyIncrementalMarkingStart();
 
+  // Returns average mutator utilization with respect to mark-compact
+  // garbage collections. This ignores scavenger.
+  double AverageMarkCompactMutatorUtilization() const;
+  double CurrentMarkCompactMutatorUtilization() const;
+
   V8_INLINE void AddScopeSample(Scope::ScopeId scope, double duration) {
     DCHECK(scope < Scope::NUMBER_OF_SCOPES);
     if (scope >= Scope::FIRST_INCREMENTAL_SCOPE &&
@@ -306,6 +320,8 @@ class V8_EXPORT_PRIVATE GCTracer {
 
   void AddBackgroundScopeSample(BackgroundScope::ScopeId scope, double duration,
                                 RuntimeCallCounter* runtime_call_counter);
+
+  void RecordGCPhasesHistograms(HistogramTimer* gc_timer);
 
  private:
   FRIEND_TEST(GCTracer, AverageSpeed);
@@ -321,6 +337,9 @@ class V8_EXPORT_PRIVATE GCTracer {
   FRIEND_TEST(GCTracerTest, IncrementalMarkingDetails);
   FRIEND_TEST(GCTracerTest, IncrementalScope);
   FRIEND_TEST(GCTracerTest, IncrementalMarkingSpeed);
+  FRIEND_TEST(GCTracerTest, MutatorUtilization);
+  FRIEND_TEST(GCTracerTest, RecordMarkCompactHistograms);
+  FRIEND_TEST(GCTracerTest, RecordScavengerHistograms);
 
   struct BackgroundCounter {
     double total_duration_ms;
@@ -337,6 +356,8 @@ class V8_EXPORT_PRIVATE GCTracer {
   void ResetForTesting();
   void ResetIncrementalMarkingCounters();
   void RecordIncrementalMarkingSpeed(size_t bytes, double duration);
+  void RecordMutatorUtilization(double mark_compactor_end_time,
+                                double mark_compactor_duration);
 
   // Print one detailed trace line in name=value format.
   // TODO(ernstm): Move to Heap.
@@ -407,6 +428,12 @@ class V8_EXPORT_PRIVATE GCTracer {
 
   // Counts how many tracers were started without stopping.
   int start_counter_;
+
+  // Used for computing average mutator utilization.
+  double average_mutator_duration_;
+  double average_mark_compact_duration_;
+  double current_mark_compact_mutator_utilization_;
+  double previous_mark_compact_end_time_;
 
   base::RingBuffer<BytesAndDuration> recorded_minor_gcs_total_;
   base::RingBuffer<BytesAndDuration> recorded_minor_gcs_survived_;

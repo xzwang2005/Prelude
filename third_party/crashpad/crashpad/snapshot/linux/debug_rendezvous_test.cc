@@ -27,9 +27,11 @@
 #include "build/build_config.h"
 #include "gtest/gtest.h"
 #include "snapshot/elf/elf_image_reader.h"
+#include "test/linux/fake_ptrace_connection.h"
 #include "test/multiprocess.h"
 #include "util/linux/address_types.h"
 #include "util/linux/auxiliary_vector.h"
+#include "util/linux/direct_ptrace_connection.h"
 #include "util/linux/memory_map.h"
 #include "util/process/process_memory_linux.h"
 #include "util/process/process_memory_range.h"
@@ -57,29 +59,30 @@ int AndroidRuntimeAPI() {
 }
 #endif  // OS_ANDROID
 
-void TestAgainstTarget(pid_t pid, bool is_64_bit) {
+void TestAgainstTarget(PtraceConnection* connection) {
   // Use ElfImageReader on the main executable which can tell us the debug
   // address. glibc declares the symbol _r_debug in link.h which we can use to
   // get the address, but Android does not.
   AuxiliaryVector aux;
-  ASSERT_TRUE(aux.Initialize(pid, is_64_bit));
+  ASSERT_TRUE(aux.Initialize(connection));
 
   LinuxVMAddress phdrs;
   ASSERT_TRUE(aux.GetValue(AT_PHDR, &phdrs));
 
   MemoryMap mappings;
-  ASSERT_TRUE(mappings.Initialize(pid));
+  ASSERT_TRUE(mappings.Initialize(connection));
 
   const MemoryMap::Mapping* phdr_mapping = mappings.FindMapping(phdrs);
   ASSERT_TRUE(phdr_mapping);
-  const MemoryMap::Mapping* exe_mapping =
-      mappings.FindFileMmapStart(*phdr_mapping);
-  LinuxVMAddress elf_address = exe_mapping->range.Base();
+  std::vector<const MemoryMap::Mapping*> exe_mappings =
+      mappings.FindFilePossibleMmapStarts(*phdr_mapping);
+  ASSERT_EQ(exe_mappings.size(), 1u);
+  LinuxVMAddress elf_address = exe_mappings[0]->range.Base();
 
   ProcessMemoryLinux memory;
-  ASSERT_TRUE(memory.Initialize(pid));
+  ASSERT_TRUE(memory.Initialize(connection->GetProcessID()));
   ProcessMemoryRange range;
-  ASSERT_TRUE(range.Initialize(&memory, is_64_bit));
+  ASSERT_TRUE(range.Initialize(&memory, connection->Is64Bit()));
 
   ElfImageReader exe_reader;
   ASSERT_TRUE(exe_reader.Initialize(range, elf_address));
@@ -107,7 +110,7 @@ void TestAgainstTarget(pid_t pid, bool is_64_bit) {
   // glibc's loader does not set the name for the executable.
   EXPECT_TRUE(debug.Executable()->name.empty());
   CheckedLinuxAddressRange exe_range(
-      is_64_bit, exe_reader.Address(), exe_reader.Size());
+      connection->Is64Bit(), exe_reader.Address(), exe_reader.Size());
   EXPECT_TRUE(exe_range.ContainsValue(debug.Executable()->dynamic_array));
 #endif  // OS_ANDROID
 
@@ -140,9 +143,24 @@ void TestAgainstTarget(pid_t pid, bool is_64_bit) {
         mappings.FindMapping(module.dynamic_array);
     ASSERT_TRUE(dyn_mapping);
 
-    const MemoryMap::Mapping* module_mapping =
-        mappings.FindFileMmapStart(*dyn_mapping);
-    ASSERT_TRUE(module_mapping);
+    std::vector<const MemoryMap::Mapping*> possible_mappings =
+        mappings.FindFilePossibleMmapStarts(*dyn_mapping);
+    ASSERT_GE(possible_mappings.size(), 1u);
+
+    std::unique_ptr<ElfImageReader> module_reader;
+    const MemoryMap::Mapping* module_mapping = nullptr;
+    for (const auto mapping : possible_mappings) {
+      auto parsed_module = std::make_unique<ElfImageReader>();
+      VMAddress dynamic_address;
+      if (parsed_module->Initialize(range, mapping->range.Base()) &&
+          parsed_module->GetDynamicArrayAddress(&dynamic_address) &&
+          dynamic_address == module.dynamic_array) {
+        module_reader = std::move(parsed_module);
+        module_mapping = mapping;
+        break;
+      }
+    }
+    ASSERT_TRUE(module_reader.get());
 
 #if defined(OS_ANDROID)
     EXPECT_FALSE(module.name.empty());
@@ -166,32 +184,26 @@ void TestAgainstTarget(pid_t pid, bool is_64_bit) {
         module.name);
 #endif  // OS_ANDROID
 
-    ElfImageReader module_reader;
-    ASSERT_TRUE(module_reader.Initialize(range, module_mapping->range.Base()));
-
     // Android's loader stops setting its own load bias after Android 4.4.4
     // (API 20) until Android 6.0 (API 23).
     if (is_android_loader && android_runtime_api > 20 &&
         android_runtime_api < 23) {
       EXPECT_EQ(module.load_bias, 0);
     } else {
-      EXPECT_EQ(module.load_bias, module_reader.GetLoadBias());
+      EXPECT_EQ(module.load_bias, module_reader->GetLoadBias());
     }
 
     CheckedLinuxAddressRange module_range(
-        is_64_bit, module_reader.Address(), module_reader.Size());
+        connection->Is64Bit(), module_reader->Address(), module_reader->Size());
     EXPECT_TRUE(module_range.ContainsValue(module.dynamic_array));
   }
 }
 
 TEST(DebugRendezvous, Self) {
-#if defined(ARCH_CPU_64_BITS)
-  constexpr bool is_64_bit = true;
-#else
-  constexpr bool is_64_bit = false;
-#endif
+  FakePtraceConnection connection;
+  ASSERT_TRUE(connection.Initialize(getpid()));
 
-  TestAgainstTarget(getpid(), is_64_bit);
+  TestAgainstTarget(&connection);
 }
 
 class ChildTest : public Multiprocess {
@@ -201,13 +213,10 @@ class ChildTest : public Multiprocess {
 
  private:
   void MultiprocessParent() {
-#if defined(ARCH_CPU_64_BITS)
-    constexpr bool is_64_bit = true;
-#else
-    constexpr bool is_64_bit = false;
-#endif
+    DirectPtraceConnection connection;
+    ASSERT_TRUE(connection.Initialize(ChildPID()));
 
-    TestAgainstTarget(ChildPID(), is_64_bit);
+    TestAgainstTarget(&connection);
   }
 
   void MultiprocessChild() { CheckedReadFileAtEOF(ReadPipeHandle()); }

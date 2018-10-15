@@ -5,6 +5,7 @@
  * found in the LICENSE file.
  */
 
+#include "ResourceFactory.h"
 #include "Resources.h"
 #include "SkBitmap.h"
 #include "SkCommandLineFlags.h"
@@ -18,6 +19,8 @@
 
 DEFINE_string2(resourcePath, i, "resources", "Directory with test resources: images, fonts, etc.");
 
+sk_sp<SkData> (*gResourceFactory)(const char*) = nullptr;
+
 SkString GetResourcePath(const char* resource) {
     return SkOSPath::Join(FLAGS_resourcePath[0], resource);
 }
@@ -25,7 +28,6 @@ SkString GetResourcePath(const char* resource) {
 void SetResourcePath(const char* resource) {
     FLAGS_resourcePath.set(0, resource);
 }
-
 
 bool DecodeDataToBitmap(sk_sp<SkData> data, SkBitmap* dst) {
     std::unique_ptr<SkImageGenerator> gen(SkImageGenerator::MakeFromEncoded(std::move(data)));
@@ -41,17 +43,18 @@ std::unique_ptr<SkStreamAsset> GetResourceAsStream(const char* resource) {
 }
 
 sk_sp<SkData> GetResourceAsData(const char* resource) {
-    auto data = SkData::MakeFromFileName(GetResourcePath(resource).c_str());
-    if (!data) {
-        SkDebugf("Resource \"%s\" not found.\n", resource);
+    if (sk_sp<SkData> data = gResourceFactory
+                           ? gResourceFactory(resource)
+                           : SkData::MakeFromFileName(GetResourcePath(resource).c_str())) {
+        return data;
     }
-    return data;
+    SkDebugf("Resource \"%s\" not found.\n", GetResourcePath(resource).c_str());
+    #ifdef SK_TOOLS_REQUIRE_RESOURCES
+    SK_ABORT("missing resource");
+    #endif
+    return nullptr;
 }
 
-sk_sp<SkTypeface> MakeResourceAsTypeface(const char* resource) {
-    std::unique_ptr<SkStreamAsset> stream(GetResourceAsStream(resource));
-    if (!stream) {
-        return nullptr;
-    }
-    return SkTypeface::MakeFromStream(stream.release());
+sk_sp<SkTypeface> MakeResourceAsTypeface(const char* resource, int ttcIndex) {
+    return SkTypeface::MakeFromStream(GetResourceAsStream(resource), ttcIndex);
 }

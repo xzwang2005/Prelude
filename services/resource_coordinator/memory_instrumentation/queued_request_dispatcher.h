@@ -7,10 +7,11 @@
 
 #include <map>
 #include <memory>
-#include <unordered_map>
 
+#include "base/containers/flat_map.h"
 #include "base/trace_event/memory_dump_request_args.h"
 #include "services/resource_coordinator/memory_instrumentation/coordinator_impl.h"
+#include "services/resource_coordinator/memory_instrumentation/graph.h"
 #include "services/resource_coordinator/memory_instrumentation/queued_request.h"
 
 namespace memory_instrumentation {
@@ -18,17 +19,20 @@ namespace memory_instrumentation {
 class QueuedRequestDispatcher {
  public:
   using OSMemDumpMap =
-      std::unordered_map<base::ProcessId,
-                         memory_instrumentation::mojom::RawOSMemDumpPtr>;
-  using RequestGlobalMemoryDumpInternalCallback = base::Callback<
+      base::flat_map<base::ProcessId,
+                     memory_instrumentation::mojom::RawOSMemDumpPtr>;
+  using RequestGlobalMemoryDumpInternalCallback = base::OnceCallback<
       void(bool, uint64_t, memory_instrumentation::mojom::GlobalMemoryDumpPtr)>;
-  using ChromeCallback = base::Callback<void(
+  using ChromeCallback = base::RepeatingCallback<void(
       mojom::ClientProcess*,
       bool,
       uint64_t,
       std::unique_ptr<base::trace_event::ProcessMemoryDump>)>;
   using OsCallback =
-      base::Callback<void(mojom::ClientProcess*, bool, OSMemDumpMap)>;
+      base::RepeatingCallback<void(mojom::ClientProcess*, bool, OSMemDumpMap)>;
+  using VmRegions =
+      base::flat_map<base::ProcessId,
+                     std::vector<memory_instrumentation::mojom::VmRegionPtr>>;
 
   struct ClientInfo {
     ClientInfo(mojom::ClientProcess* client,
@@ -53,6 +57,22 @@ class QueuedRequestDispatcher {
   // |tracing_observer| if the |request| requires it.
   static void Finalize(QueuedRequest* request,
                        TracingObserver* tracing_observer);
+
+  static void SetUpAndDispatchVmRegionRequest(
+      QueuedVmRegionRequest* request,
+      const std::vector<ClientInfo>& clients,
+      const std::vector<base::ProcessId>& desired_pids,
+      const OsCallback& os_callback);
+  static VmRegions FinalizeVmRegionRequest(QueuedVmRegionRequest* request);
+
+ private:
+  static bool AddChromeMemoryDumpToTrace(
+      const base::trace_event::MemoryDumpRequestArgs& args,
+      base::ProcessId pid,
+      const base::trace_event::ProcessMemoryDump& raw_chrome_dump,
+      const GlobalDumpGraph& global_graph,
+      const std::map<base::ProcessId, mojom::ProcessType>& pid_to_process_type,
+      TracingObserver* tracing_observer);
 };
 
 }  // namespace memory_instrumentation

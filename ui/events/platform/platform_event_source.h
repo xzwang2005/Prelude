@@ -15,7 +15,7 @@
 #include "base/macros.h"
 #include "base/observer_list.h"
 #include "ui/events/events_export.h"
-#include "ui/events/platform/platform_event_types.h"
+#include "ui/events/platform_event.h"
 
 namespace ui {
 
@@ -69,6 +69,9 @@ class EVENTS_EXPORT PlatformEventSource {
   static std::unique_ptr<PlatformEventSource> CreateDefault();
 
  protected:
+  typedef base::ObserverList<PlatformEventObserver>::Unchecked
+      PlatformEventObserverList;
+
   PlatformEventSource();
 
   // Dispatches |platform_event| to the dispatchers. If there is an override
@@ -77,6 +80,8 @@ class EVENTS_EXPORT PlatformEventSource {
   // returned value if the event-source should stop dispatching events at the
   // current message-loop iteration.
   virtual uint32_t DispatchEvent(PlatformEvent platform_event);
+
+  PlatformEventObserverList& observers() { return observers_; }
 
  private:
   friend class ScopedEventDispatcher;
@@ -92,7 +97,7 @@ class EVENTS_EXPORT PlatformEventSource {
   // of
   // dispatchers, so that adding/removing dispatchers during an event dispatch
   // is well-defined.
-  typedef base::ObserverList<PlatformEventDispatcher>
+  typedef base::ObserverList<PlatformEventDispatcher>::Unchecked
       PlatformEventDispatcherList;
   PlatformEventDispatcherList dispatchers_;
   PlatformEventDispatcher* overridden_dispatcher_;
@@ -101,7 +106,7 @@ class EVENTS_EXPORT PlatformEventSource {
   // reset and a previous override-dispatcher has been restored.
   bool overridden_dispatcher_restored_;
 
-  base::ObserverList<PlatformEventObserver> observers_;
+  PlatformEventObserverList observers_;
 
   DISALLOW_COPY_AND_ASSIGN(PlatformEventSource);
 };

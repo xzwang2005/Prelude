@@ -10,17 +10,16 @@ public_headers = [
 ]
 
 traits_headers =
-    [ "//media/mojo/interfaces/jpeg_decode_accelerator_typemap_traits.h" ]
+    [ "//media/mojo/interfaces/jpeg_decode_accelerator_mojom_traits.h" ]
 
 sources = [
-  "//media/mojo/interfaces/jpeg_decode_accelerator_typemap_traits.cc",
+  "//media/mojo/interfaces/jpeg_decode_accelerator_mojom_traits.cc",
 ]
 
 deps = [
   "//base",
   "//media",
   "//media/base/ipc",
-  "//mojo/common:struct_traits",
 ]
 
 type_mappings = [

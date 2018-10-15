@@ -5,13 +5,22 @@
  * found in the LICENSE file.
  */
 
-#include "Test.h"
+#include "SkTypes.h"
 
-#if SK_SUPPORT_GPU
-
-#include "GrSurfaceProxy.h"
+#include "GrContext.h"
+#include "GrContextFactory.h"
+#include "GrContextPriv.h"
+#include "GrProxyProvider.h"
+#include "GrSamplerState.h"
 #include "GrTextureProducer.h"
 #include "GrTextureProxy.h"
+#include "GrTypes.h"
+#include "GrTypesPriv.h"
+#include "SkRect.h"
+#include "SkRefCnt.h"
+#include "Test.h"
+
+#include <initializer_list>
 
 // For DetermineDomainMode (in the MDB world) we have 3 rects:
 //      1) the final instantiated backing storage (i.e., the actual GrTexture's extent)
@@ -109,7 +118,7 @@ private:
 
 };
 
-static sk_sp<GrTextureProxy> create_proxy(GrResourceProvider* resourceProvider,
+static sk_sp<GrTextureProxy> create_proxy(GrProxyProvider* proxyProvider,
                                           bool isPowerOfTwo,
                                           bool isExact,
                                           RectInfo* rect) {
@@ -117,7 +126,6 @@ static sk_sp<GrTextureProxy> create_proxy(GrResourceProvider* resourceProvider,
     SkBackingFit fit = isExact ? SkBackingFit::kExact : SkBackingFit::kApprox;
 
     GrSurfaceDesc desc;
-    desc.fOrigin = kTopLeft_GrSurfaceOrigin;
     desc.fWidth = size;
     desc.fHeight = size;
     desc.fConfig = kRGBA_8888_GrPixelConfig;
@@ -132,10 +140,7 @@ static sk_sp<GrTextureProxy> create_proxy(GrResourceProvider* resourceProvider,
               (isPowerOfTwo || isExact) ? RectInfo::kHard : RectInfo::kBad,
               name);
 
-    sk_sp<GrTextureProxy> proxy = GrSurfaceProxy::MakeDeferred(resourceProvider,
-                                                               desc, fit,
-                                                               SkBudgeted::kYes);
-    return proxy;
+    return proxyProvider->createProxy(desc, kTopLeft_GrSurfaceOrigin, fit, SkBudgeted::kYes);
 }
 
 static RectInfo::EdgeType compute_inset_edgetype(RectInfo::EdgeType previous,
@@ -308,7 +313,7 @@ static const SkRect* no_inset(const RectInfo& enclosing,
                          insetAmount, halfFilterWidth, 0, name);
 }
 
-static void proxy_test(skiatest::Reporter* reporter, GrResourceProvider* resourceProvider) {
+static void proxy_test(skiatest::Reporter* reporter, GrProxyProvider* proxyProvider) {
     GrTextureProducer_TestAccess::DomainMode actualMode, expectedMode;
     SkRect actualDomainRect;
 
@@ -327,7 +332,7 @@ static void proxy_test(skiatest::Reporter* reporter, GrResourceProvider* resourc
         for (auto isExact : { true, false }) {
             RectInfo outermost;
 
-            sk_sp<GrTextureProxy> proxy = create_proxy(resourceProvider, isPowerOfTwoSized,
+            sk_sp<GrTextureProxy> proxy = create_proxy(proxyProvider, isPowerOfTwoSized,
                                                        isExact, &outermost);
             SkASSERT(outermost.isHardOrBadAllAround());
 
@@ -381,7 +386,5 @@ static void proxy_test(skiatest::Reporter* reporter, GrResourceProvider* resourc
 DEF_GPUTEST_FOR_RENDERING_CONTEXTS(DetermineDomainModeTest, reporter, ctxInfo) {
     GrContext* context = ctxInfo.grContext();
 
-    proxy_test(reporter, context->resourceProvider());
+    proxy_test(reporter, context->contextPriv().proxyProvider());
 }
-
-#endif

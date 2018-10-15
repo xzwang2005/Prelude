@@ -15,17 +15,8 @@
 #include "components/prefs/pref_service.h"
 #include "components/prefs/pref_value_store.h"
 
-namespace {
-
-// Do-nothing default implementation.
-void DoNothingHandleReadError(PersistentPrefStore::PrefReadError error) {
-}
-
-}  // namespace
-
 PrefServiceFactory::PrefServiceFactory()
-    : read_error_callback_(base::Bind(&DoNothingHandleReadError)),
-      async_(false) {}
+    : read_error_callback_(base::DoNothing()), async_(false) {}
 
 PrefServiceFactory::~PrefServiceFactory() {}
 
@@ -33,11 +24,11 @@ void PrefServiceFactory::SetUserPrefsFile(
     const base::FilePath& prefs_file,
     base::SequencedTaskRunner* task_runner) {
   user_prefs_ =
-      base::MakeRefCounted<JsonPrefStore>(prefs_file, task_runner, nullptr);
+      base::MakeRefCounted<JsonPrefStore>(prefs_file, nullptr, task_runner);
 }
 
 std::unique_ptr<PrefService> PrefServiceFactory::Create(
-    PrefRegistry* pref_registry,
+    scoped_refptr<PrefRegistry> pref_registry,
     std::unique_ptr<PrefValueStore::Delegate> delegate) {
   auto pref_notifier = std::make_unique<PrefNotifierImpl>();
   auto pref_value_store = std::make_unique<PrefValueStore>(
@@ -47,5 +38,13 @@ std::unique_ptr<PrefService> PrefServiceFactory::Create(
       pref_notifier.get(), std::move(delegate));
   return std::make_unique<PrefService>(
       std::move(pref_notifier), std::move(pref_value_store), user_prefs_.get(),
-      pref_registry, read_error_callback_, async_);
+      std::move(pref_registry), read_error_callback_, async_);
+}
+
+void PrefServiceFactory::ChangePrefValueStore(
+    PrefService* pref_service,
+    std::unique_ptr<PrefValueStore::Delegate> delegate) {
+  pref_service->ChangePrefValueStore(
+      managed_prefs_.get(), supervised_user_prefs_.get(),
+      extension_prefs_.get(), recommended_prefs_.get(), std::move(delegate));
 }

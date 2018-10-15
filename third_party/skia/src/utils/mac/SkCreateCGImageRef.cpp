@@ -8,9 +8,11 @@
 #include "SkTypes.h"
 #if defined(SK_BUILD_FOR_MAC) || defined(SK_BUILD_FOR_IOS)
 
-#include "SkCGUtils.h"
 #include "SkBitmap.h"
+#include "SkCGUtils.h"
 #include "SkColorData.h"
+#include "SkMacros.h"
+#include "SkTo.h"
 
 static CGBitmapInfo ComputeCGAlphaInfo_RGBA(SkAlphaType at) {
     CGBitmapInfo info = kCGBitmapByteOrder32Big;
@@ -200,8 +202,8 @@ CGContextRef SkCreateCGContext(const SkPixmap& pmap) {
     return cg;
 }
 
-SK_API bool SkCopyPixelsFromCGImage(const SkImageInfo& info, size_t rowBytes, void* pixels,
-                                    CGImageRef image) {
+bool SkCopyPixelsFromCGImage(const SkImageInfo& info, size_t rowBytes, void* pixels,
+                             CGImageRef image) {
     CGBitmapInfo cg_bitmap_info = 0;
     size_t bitsPerComponent = 0;
     switch (info.colorType()) {

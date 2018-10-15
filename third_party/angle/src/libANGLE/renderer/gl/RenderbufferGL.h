@@ -19,6 +19,7 @@ class TextureCapsMap;
 namespace rx
 {
 
+class BlitGL;
 class FunctionsGL;
 class StateManagerGL;
 struct WorkaroundsGL;
@@ -26,9 +27,11 @@ struct WorkaroundsGL;
 class RenderbufferGL : public RenderbufferImpl
 {
   public:
-    RenderbufferGL(const FunctionsGL *functions,
+    RenderbufferGL(const gl::RenderbufferState &state,
+                   const FunctionsGL *functions,
                    const WorkaroundsGL &workarounds,
                    StateManagerGL *stateManager,
+                   BlitGL *blitter,
                    const gl::TextureCapsMap &textureCaps);
     ~RenderbufferGL() override;
 
@@ -47,14 +50,18 @@ class RenderbufferGL : public RenderbufferImpl
                                  const gl::ImageIndex &imageIndex) override;
 
     GLuint getRenderbufferID() const;
+    GLenum getNativeInternalFormat() const;
 
   private:
     const FunctionsGL *mFunctions;
     const WorkaroundsGL &mWorkarounds;
     StateManagerGL *mStateManager;
+    BlitGL *mBlitter;
     const gl::TextureCapsMap &mTextureCaps;
 
     GLuint mRenderbufferID;
+
+    GLenum mNativeInternalFormat;
 };
 
 }

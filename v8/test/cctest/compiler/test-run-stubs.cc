@@ -5,7 +5,6 @@
 #include "src/bootstrapper.h"
 #include "src/callable.h"
 #include "src/code-stubs.h"
-#include "src/compilation-info.h"
 #include "src/compiler/common-operator.h"
 #include "src/compiler/graph.h"
 #include "src/compiler/js-graph.h"
@@ -14,6 +13,8 @@
 #include "src/compiler/machine-operator.h"
 #include "src/compiler/pipeline.h"
 #include "src/objects-inl.h"
+#include "src/objects/js-array-inl.h"
+#include "src/optimized-compilation-info.h"
 #include "test/cctest/compiler/function-tester.h"
 
 namespace v8 {
@@ -22,14 +23,13 @@ namespace compiler {
 
 class StubTester {
  public:
-  StubTester(Isolate* isolate, Zone* zone, CodeStub* stub)
+  StubTester(Zone* zone, CodeStub* stub)
       : zone_(zone),
         info_(ArrayVector("test"), zone, Code::STUB),
         interface_descriptor_(stub->GetCallInterfaceDescriptor()),
         descriptor_(Linkage::GetStubCallDescriptor(
-            isolate, zone, interface_descriptor_,
-            stub->GetStackParameterCount(), CallDescriptor::kNoFlags,
-            Operator::kNoProperties)),
+            zone, interface_descriptor_, stub->GetStackParameterCount(),
+            CallDescriptor::kNoFlags, Operator::kNoProperties)),
         graph_(zone_),
         common_(zone_),
         tester_(InitializeFunctionTester(stub->GetCode()),
@@ -41,20 +41,22 @@ class StubTester {
         interface_descriptor_(
             Builtins::CallableFor(isolate, name).descriptor()),
         descriptor_(Linkage::GetStubCallDescriptor(
-            isolate, zone, interface_descriptor_,
+            zone, interface_descriptor_,
             interface_descriptor_.GetStackParameterCount(),
             CallDescriptor::kNoFlags, Operator::kNoProperties)),
         graph_(zone_),
         common_(zone_),
         tester_(InitializeFunctionTester(
-                    Handle<Code>(isolate->builtins()->builtin(name))),
+                    Handle<Code>(isolate->builtins()->builtin(name), isolate)),
                 GetParameterCountWithContext()) {}
 
   template <typename... Args>
   Handle<Object> Call(Args... args) {
     DCHECK_EQ(interface_descriptor_.GetParameterCount(), sizeof...(args));
     MaybeHandle<Object> result =
-        tester_.Call(args..., Handle<HeapObject>(tester_.function->context()))
+        tester_
+            .Call(args...,
+                  Handle<HeapObject>(tester_.function->context(), ft().isolate))
             .ToHandleChecked();
     return result.ToHandleChecked();
   }
@@ -93,7 +95,7 @@ class StubTester {
   }
 
   Zone* zone_;
-  CompilationInfo info_;
+  OptimizedCompilationInfo info_;
   CallInterfaceDescriptor interface_descriptor_;
   CallDescriptor* descriptor_;
   Graph graph_;

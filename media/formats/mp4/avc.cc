@@ -171,20 +171,21 @@ bool AVC::ConvertConfigToAnnexB(const AVCDecoderConfigurationRecord& avc_config,
   return true;
 }
 
-// Verifies AnnexB NALU order according to ISO/IEC 14496-10 Section 7.4.1.2.3
-bool AVC::IsValidAnnexB(const std::vector<uint8_t>& buffer,
-                        const std::vector<SubsampleEntry>& subsamples) {
-  return IsValidAnnexB(&buffer[0], buffer.size(), subsamples);
-}
-
-bool AVC::IsValidAnnexB(const uint8_t* buffer,
-                        size_t size,
-                        const std::vector<SubsampleEntry>& subsamples) {
+// static
+BitstreamConverter::AnalysisResult AVC::AnalyzeAnnexB(
+    const uint8_t* buffer,
+    size_t size,
+    const std::vector<SubsampleEntry>& subsamples) {
   DVLOG(3) << __func__;
   DCHECK(buffer);
 
-  if (size == 0)
-    return true;
+  BitstreamConverter::AnalysisResult result;
+  result.is_conformant = false;  // Will change if needed before return.
+
+  if (size == 0) {
+    result.is_conformant = true;
+    return result;
+  }
 
   H264Parser parser;
   parser.SetEncryptedStream(buffer, size, subsamples);
@@ -210,7 +211,7 @@ bool AVC::IsValidAnnexB(const uint8_t* buffer,
           case H264NALU::kAUD:
             if (order_state > kAUDAllowed) {
               DVLOG(1) << "Unexpected AUD in order_state " << order_state;
-              return false;
+              return result;
             }
             order_state = kBeforeFirstVCL;
             break;
@@ -226,7 +227,7 @@ bool AVC::IsValidAnnexB(const uint8_t* buffer,
             if (order_state > kBeforeFirstVCL) {
               DVLOG(1) << "Unexpected NALU type " << nalu.nal_unit_type
                        << " in order_state " << order_state;
-              return false;
+              return result;
             }
             order_state = kBeforeFirstVCL;
             break;
@@ -234,7 +235,7 @@ bool AVC::IsValidAnnexB(const uint8_t* buffer,
           case H264NALU::kSPSExt:
             if (last_nalu_type != H264NALU::kSPS) {
               DVLOG(1) << "SPS extension does not follow an SPS.";
-              return false;
+              return result;
             }
             break;
 
@@ -245,22 +246,26 @@ bool AVC::IsValidAnnexB(const uint8_t* buffer,
           case H264NALU::kIDRSlice:
             if (order_state > kAfterFirstVCL) {
               DVLOG(1) << "Unexpected VCL in order_state " << order_state;
-              return false;
+              return result;
             }
+
+            if (!result.is_keyframe.has_value())
+              result.is_keyframe = nalu.nal_unit_type == H264NALU::kIDRSlice;
+
             order_state = kAfterFirstVCL;
             break;
 
           case H264NALU::kCodedSliceAux:
             if (order_state != kAfterFirstVCL) {
               DVLOG(1) << "Unexpected extension in order_state " << order_state;
-              return false;
+              return result;
             }
             break;
 
           case H264NALU::kEOSeq:
             if (order_state != kAfterFirstVCL) {
               DVLOG(1) << "Unexpected EOSeq in order_state " << order_state;
-              return false;
+              return result;
             }
             order_state = kEOStreamAllowed;
             break;
@@ -268,7 +273,7 @@ bool AVC::IsValidAnnexB(const uint8_t* buffer,
           case H264NALU::kEOStream:
             if (order_state < kAfterFirstVCL) {
               DVLOG(1) << "Unexpected EOStream in order_state " << order_state;
-              return false;
+              return result;
             }
             order_state = kNoMoreDataAllowed;
             break;
@@ -279,7 +284,7 @@ bool AVC::IsValidAnnexB(const uint8_t* buffer,
                   order_state < kEOStreamAllowed)) {
               DVLOG(1) << "Unexpected NALU type " << nalu.nal_unit_type
                        << " in order_state " << order_state;
-              return false;
+              return result;
             }
             break;
 
@@ -289,25 +294,30 @@ bool AVC::IsValidAnnexB(const uint8_t* buffer,
                 order_state != kAfterFirstVCL) {
               DVLOG(1) << "Unexpected NALU type " << nalu.nal_unit_type
                        << " in order_state " << order_state;
-              return false;
+              return result;
             }
         }
         last_nalu_type = nalu.nal_unit_type;
         break;
 
       case H264Parser::kInvalidStream:
-        return false;
+        return result;
 
       case H264Parser::kUnsupportedStream:
         NOTREACHED() << "AdvanceToNextNALU() returned kUnsupportedStream!";
-        return false;
+        return result;
 
       case H264Parser::kEOStream:
         done = true;
     }
   }
 
-  return order_state >= kAfterFirstVCL;
+  if (order_state < kAfterFirstVCL)
+    return result;
+
+  result.is_conformant = true;
+  DCHECK(result.is_keyframe.has_value());
+  return result;
 }
 
 AVCBitstreamConverter::AVCBitstreamConverter(
@@ -343,14 +353,16 @@ bool AVCBitstreamConverter::ConvertFrame(
   return true;
 }
 
-bool AVCBitstreamConverter::IsValid(
+BitstreamConverter::AnalysisResult AVCBitstreamConverter::Analyze(
     std::vector<uint8_t>* frame_buf,
     std::vector<SubsampleEntry>* subsamples) const {
 #if BUILDFLAG(ENABLE_DOLBY_VISION_DEMUXING)
-  if (disable_validation_)
-    return true;
+  if (disable_validation_) {
+    BitstreamConverter::AnalysisResult result;
+    return result;
+  }
 #endif  // BUILDFLAG(ENABLE_DOLBY_VISION_DEMUXING)
-  return AVC::IsValidAnnexB(*frame_buf, *subsamples);
+  return AVC::AnalyzeAnnexB(frame_buf->data(), frame_buf->size(), *subsamples);
 }
 
 }  // namespace mp4

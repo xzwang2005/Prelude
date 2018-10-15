@@ -87,7 +87,7 @@ public class RecordHistogram {
 
     /**
      * Records a sample in a count histogram. This is the Java equivalent of the
-     * UMA_HISTOGRAM_COUNTS C++ macro.
+     * UMA_HISTOGRAM_COUNTS_1M C++ macro.
      * @param name name of the histogram
      * @param sample sample to be recorded, at least 1 and at most 999999
      */
@@ -178,11 +178,13 @@ public class RecordHistogram {
     /**
      * Records a sample in a histogram of times. Useful for recording short durations. This is the
      * Java equivalent of the UMA_HISTOGRAM_TIMES C++ macro.
+     * Note that histogram samples will always be converted to milliseconds when logged.
      * @param name name of the histogram
      * @param duration duration to be recorded
-     * @param timeUnit the unit of the duration argument
+     * @param timeUnit the unit of the duration argument (must be >= MILLISECONDS)
      */
     public static void recordTimesHistogram(String name, long duration, TimeUnit timeUnit) {
+        assertTimesHistogramSupportsUnit(timeUnit);
         recordCustomTimesHistogramMilliseconds(
                 name, timeUnit.toMillis(duration), 1, TimeUnit.SECONDS.toMillis(10), 50);
     }
@@ -190,11 +192,13 @@ public class RecordHistogram {
     /**
      * Records a sample in a histogram of times. Useful for recording medium durations. This is the
      * Java equivalent of the UMA_HISTOGRAM_MEDIUM_TIMES C++ macro.
+     * Note that histogram samples will always be converted to milliseconds when logged.
      * @param name name of the histogram
      * @param duration duration to be recorded
-     * @param timeUnit the unit of the duration argument
+     * @param timeUnit the unit of the duration argument (must be >= MILLISECONDS)
      */
     public static void recordMediumTimesHistogram(String name, long duration, TimeUnit timeUnit) {
+        assertTimesHistogramSupportsUnit(timeUnit);
         recordCustomTimesHistogramMilliseconds(
                 name, timeUnit.toMillis(duration), 10, TimeUnit.MINUTES.toMillis(3), 50);
     }
@@ -202,27 +206,45 @@ public class RecordHistogram {
     /**
      * Records a sample in a histogram of times. Useful for recording long durations. This is the
      * Java equivalent of the UMA_HISTOGRAM_LONG_TIMES C++ macro.
+     * Note that histogram samples will always be converted to milliseconds when logged.
      * @param name name of the histogram
      * @param duration duration to be recorded
-     * @param timeUnit the unit of the duration argument
+     * @param timeUnit the unit of the duration argument (must be >= MILLISECONDS)
      */
     public static void recordLongTimesHistogram(String name, long duration, TimeUnit timeUnit) {
+        assertTimesHistogramSupportsUnit(timeUnit);
         recordCustomTimesHistogramMilliseconds(
                 name, timeUnit.toMillis(duration), 1, TimeUnit.HOURS.toMillis(1), 50);
     }
 
     /**
+     * Records a sample in a histogram of times. Useful for recording long durations. This is the
+     * Java equivalent of the UMA_HISTOGRAM_LONG_TIMES_100 C++ macro.
+     * Note that histogram samples will always be converted to milliseconds when logged.
+     * @param name name of the histogram
+     * @param duration duration to be recorded
+     * @param timeUnit the unit of the duration argument (must be >= MILLISECONDS)
+     */
+    public static void recordLongTimesHistogram100(String name, long duration, TimeUnit timeUnit) {
+        assertTimesHistogramSupportsUnit(timeUnit);
+        recordCustomTimesHistogramMilliseconds(
+                name, timeUnit.toMillis(duration), 1, TimeUnit.HOURS.toMillis(1), 100);
+    }
+
+    /**
      * Records a sample in a histogram of times with custom buckets. This is the Java equivalent of
      * the UMA_HISTOGRAM_CUSTOM_TIMES C++ macro.
+     * Note that histogram samples will always be converted to milliseconds when logged.
      * @param name name of the histogram
      * @param duration duration to be recorded
      * @param min the minimum bucket value
      * @param max the maximum bucket value
-     * @param timeUnit the unit of the duration, min, and max arguments
+     * @param timeUnit the unit of the duration, min, and max arguments (must be >= MILLISECONDS)
      * @param numBuckets the number of buckets
      */
     public static void recordCustomTimesHistogram(
             String name, long duration, long min, long max, TimeUnit timeUnit, int numBuckets) {
+        assertTimesHistogramSupportsUnit(timeUnit);
         recordCustomTimesHistogramMilliseconds(name, timeUnit.toMillis(duration),
                 timeUnit.toMillis(min), timeUnit.toMillis(max), numBuckets);
     }
@@ -238,6 +260,17 @@ public class RecordHistogram {
      */
     public static void recordMemoryKBHistogram(String name, int sizeInKB) {
         recordCustomCountHistogram(name, sizeInKB, 1000, 500000, 50);
+    }
+
+    /**
+     * Asserts that the time unit is supported by TimesHistogram.
+     * @param timeUnit the unit, must be >= MILLISECONDS
+     */
+    /* package */ static void assertTimesHistogramSupportsUnit(TimeUnit timeUnit) {
+        // Use extra variable, or else 'git cl format' produces weird results.
+        boolean supported = timeUnit != TimeUnit.NANOSECONDS && timeUnit != TimeUnit.MICROSECONDS;
+        assert supported : "TimesHistogram doesn't support MICROSECOND and NANOSECONDS time units. "
+                           + "Consider using CountHistogram instead.";
     }
 
     private static int clampToInt(long value) {
@@ -256,6 +289,7 @@ public class RecordHistogram {
         // the native histograms API. Callers of these functions still pass longs because that's
         // the types returned by TimeUnit and System.currentTimeMillis() APIs, from which these
         // values come.
+        assert max == clampToInt(max);
         long result = nativeRecordCustomTimesHistogramMilliseconds(
                 name, key, clampToInt(duration), clampToInt(min), clampToInt(max), numBuckets);
         if (result != key) sCache.put(name, result);
@@ -280,14 +314,6 @@ public class RecordHistogram {
         return nativeGetHistogramTotalCountForTesting(name);
     }
 
-    /**
-     * Initializes the metrics system.
-     */
-    public static void initialize() {
-        if (sDisabledBy != null) return;
-        nativeInitialize();
-    }
-
     private static native long nativeRecordCustomTimesHistogramMilliseconds(
             String name, long key, int duration, int min, int max, int numBuckets);
 
@@ -302,5 +328,4 @@ public class RecordHistogram {
 
     private static native int nativeGetHistogramValueCountForTesting(String name, int sample);
     private static native int nativeGetHistogramTotalCountForTesting(String name);
-    private static native void nativeInitialize();
 }

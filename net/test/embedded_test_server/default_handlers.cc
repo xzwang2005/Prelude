@@ -30,6 +30,7 @@
 #include "base/time/time.h"
 #include "base/unguessable_token.h"
 #include "net/base/escape.h"
+#include "net/base/host_port_pair.h"
 #include "net/base/url_util.h"
 #include "net/filter/filter_source_stream_test_util.h"
 #include "net/test/embedded_test_server/http_request.h"
@@ -39,12 +40,6 @@
 namespace net {
 namespace test_server {
 namespace {
-
-const UnescapeRule::Type kUnescapeAll =
-    UnescapeRule::SPACES | UnescapeRule::PATH_SEPARATORS |
-    UnescapeRule::URL_SPECIAL_CHARS_EXCEPT_PATH_SEPARATORS |
-    UnescapeRule::SPOOFING_AND_CONTROL_CHARS |
-    UnescapeRule::REPLACE_PLUS_WITH_SPACE;
 
 const char kDefaultRealm[] = "testrealm";
 const char kDefaultPassword[] = "secret";
@@ -145,6 +140,9 @@ std::unique_ptr<HttpResponse> HandleEchoTitle(const HttpRequest& request) {
 
 // /echoall?QUERY
 // Responds with the list of QUERY and the request headers.
+//
+// Alternative form:
+// /echoall/nocache?QUERY prevents caching of the response.
 std::unique_ptr<HttpResponse> HandleEchoAll(const HttpRequest& request) {
   std::unique_ptr<BasicHttpResponse> http_response(new BasicHttpResponse);
 
@@ -172,6 +170,13 @@ std::unique_ptr<HttpResponse> HandleEchoAll(const HttpRequest& request) {
 
   http_response->set_content_type("text/html");
   http_response->set_content(body);
+
+  if (base::EndsWith(request.GetURL().path_piece(), "/nocache",
+                     base::CompareCase::SENSITIVE)) {
+    http_response->AddCustomHeader("Cache-Control",
+                                   "no-cache, no-store, must-revalidate");
+  }
+
   return std::move(http_response);
 }
 
@@ -231,7 +236,7 @@ std::unique_ptr<HttpResponse> HandleExpectAndSetCookie(
   if (request.headers.find("Cookie") != request.headers.end()) {
     received_cookies =
         base::SplitString(request.headers.at("Cookie"), ";",
-                          base::KEEP_WHITESPACE, base::SPLIT_WANT_ALL);
+                          base::TRIM_WHITESPACE, base::SPLIT_WANT_ALL);
   }
 
   bool got_all_expected = true;
@@ -252,8 +257,10 @@ std::unique_ptr<HttpResponse> HandleExpectAndSetCookie(
   http_response->set_content_type("text/html");
   if (got_all_expected) {
     for (const auto& cookie : query_list.at("set")) {
-      http_response->AddCustomHeader(
-          "Set-Cookie", net::UnescapeURLComponent(cookie, kUnescapeAll));
+      std::string unescaped_cookie;
+      UnescapeBinaryURLComponent(cookie, UnescapeRule::REPLACE_PLUS_WITH_SPACE,
+                                 &unescaped_cookie);
+      http_response->AddCustomHeader("Set-Cookie", unescaped_cookie);
     }
   }
 
@@ -379,7 +386,7 @@ std::unique_ptr<HttpResponse> HandleAuthBasic(const HttpRequest& request) {
       base::FilePath().AppendASCII(request.relative_url.substr(1));
   if (file_path.FinalExtension() == FILE_PATH_LITERAL("gif")) {
     base::FilePath server_root;
-    PathService::Get(base::DIR_SOURCE_ROOT, &server_root);
+    base::PathService::Get(base::DIR_SOURCE_ROOT, &server_root);
     base::FilePath gif_path = server_root.AppendASCII(kLogoPath);
     std::string gif_data;
     base::ReadFileToString(gif_path, &gif_data);
@@ -497,15 +504,16 @@ std::unique_ptr<HttpResponse> HandleAuthDigest(const HttpRequest& request) {
   return std::move(http_response);
 }
 
-// /server-redirect?URL
-// Returns a server-redirect (301) to URL.
-std::unique_ptr<HttpResponse> HandleServerRedirect(const HttpRequest& request) {
+// /server-redirect?URL (Also /server-redirect-xxx?URL)
+// Returns a server redirect to URL.
+std::unique_ptr<HttpResponse> HandleServerRedirect(HttpStatusCode redirect_code,
+                                                   const HttpRequest& request) {
   GURL request_url = request.GetURL();
-  std::string dest =
-      net::UnescapeURLComponent(request_url.query(), kUnescapeAll);
+  std::string dest;
+  UnescapeBinaryURLComponent(request_url.query(), &dest);
 
   std::unique_ptr<BasicHttpResponse> http_response(new BasicHttpResponse);
-  http_response->set_code(HTTP_MOVED_PERMANENTLY);
+  http_response->set_code(redirect_code);
   http_response->AddCustomHeader("Location", dest);
   http_response->set_content_type("text/html");
   http_response->set_content(base::StringPrintf(
@@ -522,9 +530,11 @@ std::unique_ptr<HttpResponse> HandleCrossSiteRedirect(
   if (!ShouldHandle(request, "/cross-site"))
     return nullptr;
 
-  std::string dest_all = net::UnescapeURLComponent(
+  std::string dest_all;
+  UnescapeBinaryURLComponent(
+
       request.relative_url.substr(std::string("/cross-site").size() + 1),
-      kUnescapeAll);
+      &dest_all);
 
   std::string dest;
   size_t delimiter = dest_all.find("/");
@@ -548,8 +558,8 @@ std::unique_ptr<HttpResponse> HandleCrossSiteRedirect(
 // Returns a meta redirect to URL.
 std::unique_ptr<HttpResponse> HandleClientRedirect(const HttpRequest& request) {
   GURL request_url = request.GetURL();
-  std::string dest =
-      net::UnescapeURLComponent(request_url.query(), kUnescapeAll);
+  std::string dest;
+  UnescapeBinaryURLComponent(request_url.query(), &dest);
 
   std::unique_ptr<BasicHttpResponse> http_response(new BasicHttpResponse);
   http_response->set_content_type("text/html");
@@ -571,24 +581,6 @@ std::unique_ptr<HttpResponse> HandleDefaultResponse(
   return std::move(http_response);
 }
 
-// Delays |delay| seconds before sending a response to the client.
-class DelayedHttpResponse : public BasicHttpResponse {
- public:
-  explicit DelayedHttpResponse(double delay) : delay_(delay) {}
-
-  void SendResponse(const SendBytesCallback& send,
-                    const SendCompleteCallback& done) override {
-    base::ThreadTaskRunnerHandle::Get()->PostDelayedTask(
-        FROM_HERE, base::Bind(send, ToResponseString(), done),
-        base::TimeDelta::FromSecondsD(delay_));
-  }
-
- private:
-  const double delay_;
-
-  DISALLOW_COPY_AND_ASSIGN(DelayedHttpResponse);
-};
-
 // /slow?N
 // Returns a response to the server delayed by N seconds.
 std::unique_ptr<HttpResponse> HandleSlowServer(const HttpRequest& request) {
@@ -599,7 +591,7 @@ std::unique_ptr<HttpResponse> HandleSlowServer(const HttpRequest& request) {
     delay = std::atof(request_url.query().c_str());
 
   std::unique_ptr<BasicHttpResponse> http_response(
-      new DelayedHttpResponse(delay));
+      new DelayedHttpResponse(base::TimeDelta::FromSecondsD(delay)));
   http_response->set_content_type("text/plain");
   http_response->set_content(base::StringPrintf("waited %.1f seconds", delay));
   return std::move(http_response);
@@ -630,7 +622,7 @@ class HungAfterHeadersHttpResponse : public HttpResponse {
 
   void SendResponse(const SendBytesCallback& send,
                     const SendCompleteCallback& done) override {
-    send.Run("HTTP/1.1 OK\r\n\r\n", base::Bind(&base::DoNothing));
+    send.Run("HTTP/1.1 OK\r\n\r\n", base::DoNothing());
   }
 
  private:
@@ -642,6 +634,43 @@ class HungAfterHeadersHttpResponse : public HttpResponse {
 std::unique_ptr<HttpResponse> HandleHungAfterHeadersResponse(
     const HttpRequest& request) {
   return std::make_unique<HungAfterHeadersHttpResponse>();
+}
+
+// /exabyte_response
+// A HttpResponse that is almost never ending (with an Exabyte content-length).
+class ExabyteResponse : public net::test_server::BasicHttpResponse {
+ public:
+  ExabyteResponse() {}
+
+  void SendResponse(
+      const net::test_server::SendBytesCallback& send,
+      const net::test_server::SendCompleteCallback& done) override {
+    // Use 10^18 bytes (exabyte) as the content length so that the client will
+    // be expecting data.
+    send.Run("HTTP/1.1 200 OK\r\nContent-Length:1000000000000000000\r\n\r\n",
+             base::BindRepeating(&ExabyteResponse::SendExabyte, send));
+  }
+
+ private:
+  // Keeps sending the word "echo" over and over again. It can go further to
+  // limit the response to exactly an exabyte, but it shouldn't be necessary
+  // for the purpose of testing.
+  static void SendExabyte(const net::test_server::SendBytesCallback& send) {
+    base::ThreadTaskRunnerHandle::Get()->PostTask(
+        FROM_HERE,
+        base::BindRepeating(
+            send, "echo",
+            base::BindRepeating(&ExabyteResponse::SendExabyte, send)));
+  }
+
+  DISALLOW_COPY_AND_ASSIGN(ExabyteResponse);
+};
+
+// /exabyte_response
+// Almost never ending response.
+std::unique_ptr<net::test_server::HttpResponse> HandleExabyteResponse(
+    const net::test_server::HttpRequest& request) {
+  return std::make_unique<ExabyteResponse>();
 }
 
 // /gzip-body?<body>
@@ -668,20 +697,38 @@ std::unique_ptr<HttpResponse> HandleGzipBody(const HttpRequest& request) {
   return std::move(http_response);
 }
 
+// /self.pac
+// Returns a response that is a PAC script making requests use the
+// EmbeddedTestServer itself as a proxy.
+std::unique_ptr<HttpResponse> HandleSelfPac(const HttpRequest& request) {
+  std::unique_ptr<BasicHttpResponse> http_response =
+      std::make_unique<BasicHttpResponse>();
+  http_response->set_content(base::StringPrintf(
+      "function FindProxyForURL(url, host) {\n"
+      "return 'PROXY %s';\n"
+      "}",
+      net::HostPortPair::FromURL(request.base_url).ToString().c_str()));
+  return std::move(http_response);
+}
+
 }  // anonymous namespace
 
-#define PREFIXED_HANDLER(prefix, handler) \
-  base::Bind(&HandlePrefixedRequest, prefix, base::Bind(handler))
+#define PREFIXED_HANDLER(prefix, handler)             \
+  base::BindRepeating(&HandlePrefixedRequest, prefix, \
+                      base::BindRepeating(handler))
+#define SERVER_REDIRECT_HANDLER(prefix, handler, status_code) \
+  base::BindRepeating(&HandlePrefixedRequest, prefix,         \
+                      base::BindRepeating(handler, status_code))
 
 void RegisterDefaultHandlers(EmbeddedTestServer* server) {
-  server->RegisterDefaultHandler(base::Bind(&HandleDefaultConnect));
+  server->RegisterDefaultHandler(base::BindRepeating(&HandleDefaultConnect));
 
   server->RegisterDefaultHandler(
       PREFIXED_HANDLER("/cachetime", &HandleCacheTime));
   server->RegisterDefaultHandler(
-      base::Bind(&HandleEchoHeader, "/echoheader", "no-cache"));
-  server->RegisterDefaultHandler(
-      base::Bind(&HandleEchoHeader, "/echoheadercache", "max-age=60000"));
+      base::BindRepeating(&HandleEchoHeader, "/echoheader", "no-cache"));
+  server->RegisterDefaultHandler(base::BindRepeating(
+      &HandleEchoHeader, "/echoheadercache", "max-age=60000"));
   server->RegisterDefaultHandler(PREFIXED_HANDLER("/echo", &HandleEcho));
   server->RegisterDefaultHandler(
       PREFIXED_HANDLER("/echotitle", &HandleEchoTitle));
@@ -703,9 +750,22 @@ void RegisterDefaultHandlers(EmbeddedTestServer* server) {
       PREFIXED_HANDLER("/auth-basic", &HandleAuthBasic));
   server->RegisterDefaultHandler(
       PREFIXED_HANDLER("/auth-digest", &HandleAuthDigest));
+
+  server->RegisterDefaultHandler(SERVER_REDIRECT_HANDLER(
+      "/server-redirect", &HandleServerRedirect, HTTP_MOVED_PERMANENTLY));
+  server->RegisterDefaultHandler(SERVER_REDIRECT_HANDLER(
+      "/server-redirect-301", &HandleServerRedirect, HTTP_MOVED_PERMANENTLY));
+  server->RegisterDefaultHandler(SERVER_REDIRECT_HANDLER(
+      "/server-redirect-302", &HandleServerRedirect, HTTP_FOUND));
+  server->RegisterDefaultHandler(SERVER_REDIRECT_HANDLER(
+      "/server-redirect-303", &HandleServerRedirect, HTTP_SEE_OTHER));
+  server->RegisterDefaultHandler(SERVER_REDIRECT_HANDLER(
+      "/server-redirect-307", &HandleServerRedirect, HTTP_TEMPORARY_REDIRECT));
+  server->RegisterDefaultHandler(SERVER_REDIRECT_HANDLER(
+      "/server-redirect-308", &HandleServerRedirect, HTTP_PERMANENT_REDIRECT));
+
   server->RegisterDefaultHandler(
-      PREFIXED_HANDLER("/server-redirect", &HandleServerRedirect));
-  server->RegisterDefaultHandler(base::Bind(&HandleCrossSiteRedirect, server));
+      base::BindRepeating(&HandleCrossSiteRedirect, server));
   server->RegisterDefaultHandler(
       PREFIXED_HANDLER("/client-redirect", &HandleClientRedirect));
   server->RegisterDefaultHandler(
@@ -716,7 +776,10 @@ void RegisterDefaultHandlers(EmbeddedTestServer* server) {
   server->RegisterDefaultHandler(
       PREFIXED_HANDLER("/hung-after-headers", &HandleHungAfterHeadersResponse));
   server->RegisterDefaultHandler(
+      PREFIXED_HANDLER("/exabyte_response", &HandleExabyteResponse));
+  server->RegisterDefaultHandler(
       PREFIXED_HANDLER("/gzip-body", &HandleGzipBody));
+  server->RegisterDefaultHandler(PREFIXED_HANDLER("/self.pac", &HandleSelfPac));
 
   // TODO(svaldez): HandleDownload
   // TODO(svaldez): HandleDownloadFinish

@@ -58,6 +58,9 @@ class VIZ_COMMON_EXPORT BeginFrameObserver {
   virtual const BeginFrameArgs& LastUsedBeginFrameArgs() const = 0;
 
   virtual void OnBeginFrameSourcePausedChanged(bool paused) = 0;
+
+  // Whether the observer also wants to receive animate_only BeginFrames.
+  virtual bool WantsAnimateOnlyBeginFrames() const = 0;
 };
 
 // Simple base class which implements a BeginFrameObserver which checks the
@@ -81,6 +84,7 @@ class VIZ_COMMON_EXPORT BeginFrameObserverBase : public BeginFrameObserver {
   // true.
   void OnBeginFrame(const BeginFrameArgs& args) override;
   const BeginFrameArgs& LastUsedBeginFrameArgs() const override;
+  bool WantsAnimateOnlyBeginFrames() const override;
 
  protected:
   // Return true if the given argument is (or will be) used.
@@ -90,6 +94,7 @@ class VIZ_COMMON_EXPORT BeginFrameObserverBase : public BeginFrameObserver {
 
   BeginFrameArgs last_begin_frame_args_;
   int64_t dropped_begin_frame_args_ = 0;
+  bool wants_animate_only_begin_frames_ = false;
 
  private:
   DISALLOW_COPY_AND_ASSIGN(BeginFrameObserverBase);
@@ -146,7 +151,7 @@ class VIZ_COMMON_EXPORT BeginFrameSource {
   // The higher 32 bits are used for a process restart id that changes if a
   // process allocating BeginFrameSources has been restarted. The lower 32 bits
   // are allocated from an atomic sequence.
-  uint64_t source_id_;
+  const uint64_t source_id_;
 
   DISALLOW_COPY_AND_ASSIGN(BeginFrameSource);
 };
@@ -170,8 +175,6 @@ class VIZ_COMMON_EXPORT SyntheticBeginFrameSource : public BeginFrameSource {
 
   virtual void OnUpdateVSyncParameters(base::TimeTicks timebase,
                                        base::TimeDelta interval) = 0;
-  // This overrides any past or future interval from updating vsync parameters.
-  virtual void SetAuthoritativeVSyncInterval(base::TimeDelta interval) = 0;
 };
 
 // A frame source which calls BeginFrame (at the next possible time) as soon as
@@ -193,7 +196,6 @@ class VIZ_COMMON_EXPORT BackToBackBeginFrameSource
   // SyntheticBeginFrameSource implementation.
   void OnUpdateVSyncParameters(base::TimeTicks timebase,
                                base::TimeDelta interval) override {}
-  void SetAuthoritativeVSyncInterval(base::TimeDelta interval) override {}
 
   // DelayBasedTimeSourceClient implementation.
   void OnTimerTick() override;
@@ -227,7 +229,6 @@ class VIZ_COMMON_EXPORT DelayBasedBeginFrameSource
   // SyntheticBeginFrameSource implementation.
   void OnUpdateVSyncParameters(base::TimeTicks timebase,
                                base::TimeDelta interval) override;
-  void SetAuthoritativeVSyncInterval(base::TimeDelta interval) override;
 
   // DelayBasedTimeSourceClient implementation.
   void OnTimerTick() override;
@@ -238,7 +239,6 @@ class VIZ_COMMON_EXPORT DelayBasedBeginFrameSource
   std::unique_ptr<DelayBasedTimeSource> time_source_;
   std::unordered_set<BeginFrameObserver*> observers_;
   base::TimeTicks last_timebase_;
-  base::TimeDelta authoritative_interval_;
   BeginFrameArgs last_begin_frame_args_;
   uint64_t next_sequence_number_;
 
@@ -257,8 +257,11 @@ class VIZ_COMMON_EXPORT ExternalBeginFrameSourceClient {
 // an observable BeginFrameSource.
 class VIZ_COMMON_EXPORT ExternalBeginFrameSource : public BeginFrameSource {
  public:
-  // Client lifetime must be preserved by owner past the lifetime of this class.
-  explicit ExternalBeginFrameSource(ExternalBeginFrameSourceClient* client);
+  // Client lifetime must be preserved by owner for the lifetime of the class.
+  // In order to allow derived classes to implement the client interface, no
+  // calls to |client| are made during construction / destruction.
+  explicit ExternalBeginFrameSource(ExternalBeginFrameSourceClient* client,
+                                    uint32_t restart_id = kNotRestartableId);
   ~ExternalBeginFrameSource() override;
 
   // BeginFrameSource implementation.

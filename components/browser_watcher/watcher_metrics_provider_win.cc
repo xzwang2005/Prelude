@@ -23,13 +23,13 @@
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_piece.h"
 #include "base/strings/utf_string_conversions.h"
-#include "base/task_scheduler/post_task.h"
-#include "base/task_scheduler/task_traits.h"
+#include "base/task/post_task.h"
+#include "base/task/task_traits.h"
 #include "base/win/registry.h"
 #include "components/browser_watcher/features.h"
 #include "components/browser_watcher/postmortem_report_collector.h"
 #include "components/browser_watcher/stability_paths.h"
-#include "components/browser_watcher/system_session_analyzer_win.h"
+#include "components/metrics/system_session_analyzer_win.h"
 #include "third_party/crashpad/crashpad/client/crash_report_database.h"
 
 namespace browser_watcher {
@@ -168,7 +168,7 @@ void LogCollectionInitStatus(CollectionInitializationStatus status) {
 // file I/O.
 scoped_refptr<base::TaskRunner> CreateBackgroundTaskRunner() {
   return base::CreateSequencedTaskRunnerWithTraits(
-      {base::MayBlock(), base::TaskPriority::BACKGROUND,
+      {base::MayBlock(), base::TaskPriority::BEST_EFFORT,
        base::TaskShutdownBehavior::SKIP_ON_SHUTDOWN});
 }
 
@@ -285,7 +285,7 @@ void WatcherMetricsProviderWin::CollectPostmortemReportsImpl() {
   LogCollectionInitStatus(INIT_SUCCESS);
 
   const size_t kSystemSessionsToInspect = 5U;
-  SystemSessionAnalyzer analyzer(kSystemSessionsToInspect);
+  metrics::SystemSessionAnalyzer analyzer(kSystemSessionsToInspect);
 
   if (should_collect) {
     base::string16 product_name, version_number, channel_name;

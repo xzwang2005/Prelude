@@ -12,6 +12,7 @@
 #include "base/macros.h"
 #include "base/time/time.h"
 #include "base/values.h"
+#include "build/build_config.h"
 #include "media/base/media_export.h"
 #include "media/base/video_rotation.h"
 
@@ -31,10 +32,6 @@ class MEDIA_EXPORT VideoFrameMetadata {
     // these keys.
     CAPTURE_BEGIN_TIME,
     CAPTURE_END_TIME,
-
-    // Some VideoFrames have an indication of the color space used.  Use
-    // GetInteger()/SetInteger() and ColorSpace enumeration.
-    COLOR_SPACE,
 
     // Indicates that this frame must be copied to a new texture before use,
     // rather than being used directly. Specifically this is required for
@@ -108,7 +105,7 @@ class MEDIA_EXPORT VideoFrameMetadata {
     // if ALLOW_OVERLAY is set.  However, it allows us to process the overlay
     // to see if it would have been promoted, if it were backed by a SurfaceView
     // instead.  This lets us figure out when SurfaceViews are appropriate.
-    SURFACE_TEXTURE,
+    TEXTURE_OWNER,
 
     // Android only: if set, then this frame's resource would like to be
     // notified about its promotability to an overlay.
@@ -118,8 +115,25 @@ class MEDIA_EXPORT VideoFrameMetadata {
     // rather than being composited into the framebuffer.
     REQUIRE_OVERLAY,
 
+    // Windows only: this video has protected content.
+    PROTECTED_VIDEO,
+
     // Whether this frame was decoded in a power efficient way.
     POWER_EFFICIENT,
+
+    // CompositorFrameMetadata variables associated with this frame. Used for
+    // remote debugging.
+    // Use Get/SetDouble() for these keys.
+    // TODO(crbug.com/832220): Use a customized dictionary value instead of
+    // using these keys directly.
+    DEVICE_SCALE_FACTOR,
+    PAGE_SCALE_FACTOR,
+    ROOT_SCROLL_OFFSET_X,
+    ROOT_SCROLL_OFFSET_Y,
+#if defined(OS_ANDROID)
+    TOP_CONTROLS_HEIGHT,
+    TOP_CONTROLS_SHOWN_RATIO,
+#endif
 
     NUM_KEYS
   };
@@ -158,7 +172,8 @@ class MEDIA_EXPORT VideoFrameMetadata {
 
   // For serialization.
   std::unique_ptr<base::DictionaryValue> CopyInternalValues() const;
-  void MergeInternalValuesFrom(const base::DictionaryValue& in);
+  void MergeInternalValuesFrom(const base::Value& in);
+  const base::Value& GetInternalValues() const { return dictionary_; };
 
   // Merges internal values from |metadata_source|.
   void MergeMetadataFrom(const VideoFrameMetadata* metadata_source);

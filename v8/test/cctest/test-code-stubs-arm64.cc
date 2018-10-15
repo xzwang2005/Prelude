@@ -32,11 +32,12 @@
 #include "src/arm64/macro-assembler-arm64-inl.h"
 #include "src/base/platform/platform.h"
 #include "src/code-stubs.h"
-#include "src/factory.h"
+#include "src/heap/factory.h"
 #include "src/macro-assembler.h"
 #include "src/simulator.h"
 #include "test/cctest/cctest.h"
 #include "test/cctest/test-code-stubs.h"
+#include "test/common/assembler-tester.h"
 
 namespace v8 {
 namespace internal {
@@ -53,14 +54,10 @@ ConvertDToIFunc MakeConvertDToIFuncTrampoline(Isolate* isolate,
   MacroAssembler masm(isolate, buffer, static_cast<int>(allocated),
                       v8::internal::CodeObjectRequired::kYes);
 
-  DoubleToIStub stub(isolate, destination_reg);
+  Handle<Code> code = BUILTIN_CODE(isolate, DoubleToI);
+  Address start = code->InstructionStart();
 
-  byte* start = stub.GetCode()->instruction_start();
-
-  __ SetStackPointer(csp);
   __ PushCalleeSavedRegisters();
-  __ Mov(jssp, csp);
-  __ SetStackPointer(jssp);
 
   MacroAssembler::PushPopQueue queue(&masm);
 
@@ -81,28 +78,42 @@ ConvertDToIFunc MakeConvertDToIFuncTrampoline(Isolate* isolate,
   queue.PushQueued();
 
   // Call through to the actual stub.
-  __ Call(start, RelocInfo::EXTERNAL_REFERENCE);
+  __ IndirectCall(start, RelocInfo::CODE_TARGET);
+  __ Peek(destination_reg, 0);
 
   __ Drop(2, kDoubleSize);
 
   // Make sure no registers have been unexpectedly clobbered.
   {
+    const RegisterConfiguration* config(RegisterConfiguration::Default());
+    int allocatable_register_count =
+        config->num_allocatable_general_registers();
     UseScratchRegisterScope temps(&masm);
     Register temp0 = temps.AcquireX();
     Register temp1 = temps.AcquireX();
-    for (--reg_num; reg_num >= 0; reg_num -= 2) {
-      if (RegisterConfiguration::Default()->IsAllocatableGeneralCode(reg_num)) {
-        Register reg0 = Register::from_code(reg_num);
-        Register reg1 = Register::from_code(reg_num - 1);
-        __ Pop(temp0, temp1);
-        if (!reg0.is(destination_reg)) {
-          __ Cmp(reg0, temp0);
-          __ Assert(eq, kRegisterWasClobbered);
-        }
-        if (!reg1.is(destination_reg)) {
-          __ Cmp(reg1, temp1);
-          __ Assert(eq, kRegisterWasClobbered);
-        }
+    for (int i = allocatable_register_count - 1; i > 0; i -= 2) {
+      int code0 = config->GetAllocatableGeneralCode(i);
+      int code1 = config->GetAllocatableGeneralCode(i - 1);
+      Register reg0 = Register::from_code(code0);
+      Register reg1 = Register::from_code(code1);
+      __ Pop(temp0, temp1);
+      if (!reg0.is(destination_reg)) {
+        __ Cmp(reg0, temp0);
+        __ Assert(eq, AbortReason::kRegisterWasClobbered);
+      }
+      if (!reg1.is(destination_reg)) {
+        __ Cmp(reg1, temp1);
+        __ Assert(eq, AbortReason::kRegisterWasClobbered);
+      }
+    }
+
+    if (allocatable_register_count % 2 != 0) {
+      int code = config->GetAllocatableGeneralCode(0);
+      Register reg = Register::from_code(code);
+      __ Pop(temp0, xzr);
+      if (!reg.is(destination_reg)) {
+        __ Cmp(reg, temp0);
+        __ Assert(eq, AbortReason::kRegisterWasClobbered);
       }
     }
   }
@@ -111,8 +122,6 @@ ConvertDToIFunc MakeConvertDToIFuncTrampoline(Isolate* isolate,
     __ Mov(x0, destination_reg);
 
   // Restore callee save registers.
-  __ Mov(csp, jssp);
-  __ SetStackPointer(csp);
   __ PopCalleeSavedRegisters();
 
   __ Ret();
@@ -120,7 +129,6 @@ ConvertDToIFunc MakeConvertDToIFuncTrampoline(Isolate* isolate,
   CodeDesc desc;
   masm.GetCode(isolate, &desc);
   MakeAssemblerBufferExecutable(buffer, allocated);
-  Assembler::FlushICache(isolate, buffer, allocated);
   return (reinterpret_cast<ConvertDToIFunc>(
       reinterpret_cast<intptr_t>(buffer)));
 }
@@ -136,12 +144,8 @@ static Isolate* GetIsolateFrom(LocalContext* context) {
 int32_t RunGeneratedCodeCallWrapper(ConvertDToIFunc func,
                                     double from) {
 #ifdef USE_SIMULATOR
-  Simulator::CallArgument args[] = {
-      Simulator::CallArgument(from),
-      Simulator::CallArgument::End()
-  };
-  return static_cast<int32_t>(Simulator::current(CcTest::i_isolate())
-                                  ->CallInt64(FUNCTION_ADDR(func), args));
+  return Simulator::current(CcTest::i_isolate())
+      ->Call<int32_t>(FUNCTION_ADDR(func), from);
 #else
   return (*func)(from);
 #endif

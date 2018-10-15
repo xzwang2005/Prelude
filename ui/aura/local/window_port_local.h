@@ -7,9 +7,10 @@
 
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
+#include "base/optional.h"
 #include "components/viz/common/surfaces/frame_sink_id.h"
 #include "components/viz/common/surfaces/parent_local_surface_id_allocator.h"
-#include "ui/aura/local/layer_tree_frame_sink_local.h"
+#include "components/viz/host/host_frame_sink_client.h"
 #include "ui/aura/window_port.h"
 #include "ui/base/property_data.h"
 #include "ui/gfx/geometry/size.h"
@@ -23,7 +24,8 @@ namespace aura {
 class Window;
 
 // WindowPort implementation for classic aura, e.g. not mus.
-class AURA_EXPORT WindowPortLocal : public WindowPort {
+class AURA_EXPORT WindowPortLocal : public WindowPort,
+                                    public viz::HostFrameSinkClient {
  public:
   explicit WindowPortLocal(Window* window);
   ~WindowPortLocal() override;
@@ -46,25 +48,32 @@ class AURA_EXPORT WindowPortLocal : public WindowPort {
                          int64_t old_value,
                          std::unique_ptr<ui::PropertyData> data) override;
   std::unique_ptr<cc::LayerTreeFrameSink> CreateLayerTreeFrameSink() override;
-  viz::SurfaceId GetSurfaceId() const override;
   void AllocateLocalSurfaceId() override;
+  bool IsLocalSurfaceIdAllocationSuppressed() const override;
+  viz::ScopedSurfaceIdAllocator GetSurfaceIdAllocator(
+      base::OnceCallback<void()> allocation_task) override;
+  void UpdateLocalSurfaceIdFromEmbeddedClient(
+      const viz::LocalSurfaceId& embedded_client_local_surface_id) override;
   const viz::LocalSurfaceId& GetLocalSurfaceId() override;
-  viz::FrameSinkId GetFrameSinkId() const override;
-  void OnWindowAddedToRootWindow() override;
-  void OnWillRemoveWindowFromRootWindow() override;
   void OnEventTargetingPolicyChanged() override;
   bool ShouldRestackTransientChildren() override;
 
+  // viz::HostFrameSinkClient:
+  void OnFirstSurfaceActivation(const viz::SurfaceInfo& surface_info) override;
+  void OnFrameTokenChanged(uint32_t frame_token) override;
+
  private:
-  void OnSurfaceChanged(const viz::SurfaceInfo& surface_info);
+  void UpdateLocalSurfaceId();
+  const viz::LocalSurfaceId& GetCurrentLocalSurfaceId() const;
+  bool IsEmbeddingExternalContent() const;
 
   Window* const window_;
-  viz::FrameSinkId frame_sink_id_;
   gfx::Size last_size_;
   float last_device_scale_factor_ = 1.0f;
-  viz::LocalSurfaceId local_surface_id_;
-  viz::ParentLocalSurfaceIdAllocator parent_local_surface_id_allocator_;
-  base::WeakPtr<aura::LayerTreeFrameSinkLocal> frame_sink_;
+  base::Optional<viz::ParentLocalSurfaceIdAllocator>
+      parent_local_surface_id_allocator_;
+  base::WeakPtr<cc::LayerTreeFrameSink> frame_sink_;
+  viz::FrameSinkId frame_sink_id_;
 
   base::WeakPtrFactory<WindowPortLocal> weak_factory_;
 

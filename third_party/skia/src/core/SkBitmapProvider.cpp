@@ -40,9 +40,9 @@ SkBitmapCacheDesc SkBitmapProvider::makeCacheDesc() const {
 }
 
 void SkBitmapProvider::notifyAddedToCache() const {
-    as_IB(fImage)->notifyAddedToCache();
+    as_IB(fImage)->notifyAddedToRasterCache();
 }
 
 bool SkBitmapProvider::asBitmap(SkBitmap* bm) const {
-    return as_IB(fImage)->getROPixels(bm, fDstColorSpace, SkImage::kAllow_CachingHint);
+    return as_IB(fImage)->getROPixels(bm, nullptr, SkImage::kAllow_CachingHint);
 }

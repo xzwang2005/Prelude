@@ -21,47 +21,6 @@ namespace internal {
 
 typedef TestWithIsolate HeapTest;
 
-double Round(double x) {
-  // Round to three digits.
-  return floor(x * 1000 + 0.5) / 1000;
-}
-
-
-void CheckEqualRounded(double expected, double actual) {
-  expected = Round(expected);
-  actual = Round(actual);
-  EXPECT_DOUBLE_EQ(expected, actual);
-}
-
-
-TEST(Heap, HeapGrowingFactor) {
-  CheckEqualRounded(Heap::kMaxHeapGrowingFactor,
-                    Heap::HeapGrowingFactor(34, 1, 4.0));
-  CheckEqualRounded(3.553, Heap::HeapGrowingFactor(45, 1, 4.0));
-  CheckEqualRounded(2.830, Heap::HeapGrowingFactor(50, 1, 4.0));
-  CheckEqualRounded(1.478, Heap::HeapGrowingFactor(100, 1, 4.0));
-  CheckEqualRounded(1.193, Heap::HeapGrowingFactor(200, 1, 4.0));
-  CheckEqualRounded(1.121, Heap::HeapGrowingFactor(300, 1, 4.0));
-  CheckEqualRounded(Heap::HeapGrowingFactor(300, 1, 4.0),
-                    Heap::HeapGrowingFactor(600, 2, 4.0));
-  CheckEqualRounded(Heap::kMinHeapGrowingFactor,
-                    Heap::HeapGrowingFactor(400, 1, 4.0));
-}
-
-TEST(Heap, MaxHeapGrowingFactor) {
-  CheckEqualRounded(
-      1.3, Heap::MaxHeapGrowingFactor(Heap::kMinOldGenerationSize * MB));
-  CheckEqualRounded(
-      1.600, Heap::MaxHeapGrowingFactor(Heap::kMaxOldGenerationSize / 2 * MB));
-  CheckEqualRounded(
-      1.999,
-      Heap::MaxHeapGrowingFactor(
-          (Heap::kMaxOldGenerationSize - Heap::kPointerMultiplier) * MB));
-  CheckEqualRounded(4.0,
-                    Heap::MaxHeapGrowingFactor(
-                        static_cast<size_t>(Heap::kMaxOldGenerationSize) * MB));
-}
-
 TEST(Heap, SemiSpaceSize) {
   const size_t KB = static_cast<size_t>(i::KB);
   const size_t MB = static_cast<size_t>(i::MB);
@@ -71,22 +30,6 @@ TEST(Heap, SemiSpaceSize) {
   ASSERT_EQ(2u * pm * MB, i::Heap::ComputeMaxSemiSpaceSize(1024u * MB) * KB);
   ASSERT_EQ(5u * pm * MB, i::Heap::ComputeMaxSemiSpaceSize(2024u * MB) * KB);
   ASSERT_EQ(8u * pm * MB, i::Heap::ComputeMaxSemiSpaceSize(4095u * MB) * KB);
-}
-
-TEST(Heap, OldGenerationSize) {
-  uint64_t configurations[][2] = {
-      {0, i::Heap::kMinOldGenerationSize},
-      {512, i::Heap::kMinOldGenerationSize},
-      {1 * i::GB, 256 * i::Heap::kPointerMultiplier},
-      {2 * static_cast<uint64_t>(i::GB), 512 * i::Heap::kPointerMultiplier},
-      {4 * static_cast<uint64_t>(i::GB), i::Heap::kMaxOldGenerationSize},
-      {8 * static_cast<uint64_t>(i::GB), i::Heap::kMaxOldGenerationSize}};
-
-  for (auto configuration : configurations) {
-    ASSERT_EQ(configuration[1],
-              static_cast<uint64_t>(
-                  i::Heap::ComputeMaxOldGenerationSize(configuration[0])));
-  }
 }
 
 TEST_F(HeapTest, ASLR) {
@@ -99,7 +42,7 @@ TEST_F(HeapTest, ASLR) {
   }
   if (hints.size() == 1) {
     EXPECT_TRUE((*hints.begin()) == nullptr);
-    EXPECT_TRUE(base::OS::GetRandomMmapAddr() == nullptr);
+    EXPECT_TRUE(i::GetRandomMmapAddr() == nullptr);
   } else {
     // It is unlikely that 1000 random samples will collide to less then 500
     // values.
@@ -114,6 +57,18 @@ TEST_F(HeapTest, ASLR) {
   }
 #endif  // V8_OS_MACOSX
 #endif  // V8_TARGET_ARCH_X64
+}
+
+TEST_F(HeapTest, ExternalLimitDefault) {
+  Heap* heap = i_isolate()->heap();
+  EXPECT_EQ(kExternalAllocationSoftLimit, heap->external_memory_limit_);
+}
+
+TEST_F(HeapTest, ExternalLimitStaysAboveDefaultForExplicitHandling) {
+  v8_isolate()->AdjustAmountOfExternalAllocatedMemory(+10 * MB);
+  v8_isolate()->AdjustAmountOfExternalAllocatedMemory(-10 * MB);
+  Heap* heap = i_isolate()->heap();
+  EXPECT_GE(heap->external_memory_limit_, kExternalAllocationSoftLimit);
 }
 
 }  // namespace internal

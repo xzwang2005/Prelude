@@ -6,6 +6,7 @@ from dashboard.common import histogram_helpers
 from dashboard.common import testing_common
 from tracing.value import histogram as histogram_module
 from tracing.value import histogram_set
+from tracing.value.diagnostics import generic_set
 from tracing.value.diagnostics import reserved_infos
 
 
@@ -23,7 +24,7 @@ class HistogramHelpersTest(testing_common.TestCase):
     histograms = histogram_set.HistogramSet([hist])
     histograms.AddSharedDiagnostic(
         reserved_infos.STORY_TAGS.name,
-        histogram_module.GenericSet(['foo', 'bar']))
+        generic_set.GenericSet(['foo', 'bar']))
     self.assertEqual('', histogram_helpers.GetTIRLabelFromHistogram(hist))
 
   def testGetTIRLabelFromHistogram_ValidTags_SortsByKey(self):
@@ -31,9 +32,62 @@ class HistogramHelpersTest(testing_common.TestCase):
     histograms = histogram_set.HistogramSet([hist])
     histograms.AddSharedDiagnostic(
         reserved_infos.STORY_TAGS.name,
-        histogram_module.GenericSet(
+        generic_set.GenericSet(
             ['z:last', 'ignore', 'a:first', 'me', 'm:middle']))
     self.assertEqual(
         'first_middle_last', histogram_helpers.GetTIRLabelFromHistogram(hist))
 
+  def testComputeTestPathWithStory(self):
+    hist = histogram_module.Histogram('hist', 'count')
+    histograms = histogram_set.HistogramSet([hist])
+    histograms.AddSharedDiagnostic(
+        reserved_infos.STORIES.name,
+        generic_set.GenericSet(['http://story']))
+    hist = histograms.GetFirstHistogram()
+    test_path = histogram_helpers.ComputeTestPath(hist)
+    self.assertEqual('hist/http___story', test_path)
 
+  def testComputeTestPathWithTIRLabel(self):
+    hist = histogram_module.Histogram('hist', 'count')
+    histograms = histogram_set.HistogramSet([hist])
+    histograms.AddSharedDiagnostic(
+        reserved_infos.STORIES.name,
+        generic_set.GenericSet(['http://story']))
+    histograms.AddSharedDiagnostic(
+        reserved_infos.STORY_TAGS.name,
+        generic_set.GenericSet(
+            ['group:media', 'ignored_tag', 'case:browse']))
+    hist = histograms.GetFirstHistogram()
+    test_path = histogram_helpers.ComputeTestPath(hist)
+    self.assertEqual(
+        'hist/browse_media/http___story', test_path)
+
+  def testComputeTestPathWithoutStory(self):
+    hist = histogram_module.Histogram('hist', 'count')
+    histograms = histogram_set.HistogramSet([hist])
+    hist = histograms.GetFirstHistogram()
+    test_path = histogram_helpers.ComputeTestPath(hist)
+    self.assertEqual('hist', test_path)
+
+  def testComputeTestPathWithIsRefWithoutStory(self):
+    hist = histogram_module.Histogram('hist', 'count')
+    histograms = histogram_set.HistogramSet([hist])
+    histograms.AddSharedDiagnostic(
+        reserved_infos.IS_REFERENCE_BUILD.name,
+        generic_set.GenericSet([True]))
+    hist = histograms.GetFirstHistogram()
+    test_path = histogram_helpers.ComputeTestPath(hist)
+    self.assertEqual('hist/ref', test_path)
+
+  def testComputeTestPathWithIsRefAndStory(self):
+    hist = histogram_module.Histogram('hist', 'count')
+    histograms = histogram_set.HistogramSet([hist])
+    histograms.AddSharedDiagnostic(
+        reserved_infos.STORIES.name,
+        generic_set.GenericSet(['http://story']))
+    histograms.AddSharedDiagnostic(
+        reserved_infos.IS_REFERENCE_BUILD.name,
+        generic_set.GenericSet([True]))
+    hist = histograms.GetFirstHistogram()
+    test_path = histogram_helpers.ComputeTestPath(hist)
+    self.assertEqual('hist/http___story_ref', test_path)

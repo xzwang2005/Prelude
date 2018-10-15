@@ -544,9 +544,29 @@ int ff_hevc_res_scale_sign_flag(HEVCContext *s, int idx);
 /**
  * Get the number of candidate references for the current frame.
  */
-int ff_hevc_frame_nb_refs(HEVCContext *s);
+int ff_hevc_frame_nb_refs(const HEVCContext *s);
 
 int ff_hevc_set_new_ref(HEVCContext *s, AVFrame **frame, int poc);
+
+static av_always_inline int ff_hevc_nal_is_nonref(enum HEVCNALUnitType type)
+{
+    switch (type) {
+    case HEVC_NAL_TRAIL_N:
+    case HEVC_NAL_TSA_N:
+    case HEVC_NAL_STSA_N:
+    case HEVC_NAL_RADL_N:
+    case HEVC_NAL_RASL_N:
+    case HEVC_NAL_VCL_N10:
+    case HEVC_NAL_VCL_N12:
+    case HEVC_NAL_VCL_N14:
+    case HEVC_NAL_BLA_N_LP:
+    case HEVC_NAL_IDR_N_LP:
+        return 1;
+        break;
+    default: break;
+    }
+    return 0;
+}
 
 /**
  * Find next frame in output order and put a reference to it in frame.

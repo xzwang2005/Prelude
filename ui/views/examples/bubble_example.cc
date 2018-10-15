@@ -7,7 +7,7 @@
 #include "base/macros.h"
 #include "base/strings/utf_string_conversions.h"
 #include "ui/gfx/geometry/insets.h"
-#include "ui/views/bubble/bubble_dialog_delegate.h"
+#include "ui/views/bubble/bubble_dialog_delegate_view.h"
 #include "ui/views/controls/button/label_button.h"
 #include "ui/views/controls/label.h"
 #include "ui/views/layout/box_layout.h"
@@ -59,7 +59,8 @@ class ExampleBubble : public BubbleDialogDelegateView {
   int GetDialogButtons() const override { return ui::DIALOG_BUTTON_NONE; }
 
   void Init() override {
-    SetLayoutManager(new BoxLayout(BoxLayout::kVertical, gfx::Insets(50)));
+    SetLayoutManager(
+        std::make_unique<BoxLayout>(BoxLayout::kVertical, gfx::Insets(50)));
     AddChildView(new Label(GetArrowName(arrow())));
   }
 
@@ -77,7 +78,7 @@ void BubbleExample::CreateExampleView(View* container) {
   PrintStatus("Click with optional modifiers: [Ctrl] for set_arrow(NONE), "
      "[Alt] for set_arrow(FLOAT), or [Shift] to reverse the arrow iteration.");
   container->SetLayoutManager(
-      new BoxLayout(BoxLayout::kHorizontal, gfx::Insets(), 10));
+      std::make_unique<BoxLayout>(BoxLayout::kHorizontal, gfx::Insets(), 10));
   no_shadow_ = new LabelButton(this, ASCIIToUTF16("No Shadow"));
   container->AddChildView(no_shadow_);
   no_shadow_opaque_ = new LabelButton(this, ASCIIToUTF16("Opaque Border"));
@@ -88,8 +89,6 @@ void BubbleExample::CreateExampleView(View* container) {
   container->AddChildView(small_shadow_);
   no_assets_ = new LabelButton(this, ASCIIToUTF16("No Assets"));
   container->AddChildView(no_assets_);
-  align_to_edge_ = new LabelButton(this, ASCIIToUTF16("Align To Edge"));
-  container->AddChildView(align_to_edge_);
   persistent_ = new LabelButton(this, ASCIIToUTF16("Persistent"));
   container->AddChildView(persistent_);
 }
@@ -122,8 +121,6 @@ void BubbleExample::ButtonPressed(Button* sender, const ui::Event& event) {
     bubble->set_close_on_deactivate(false);
 
   BubbleDialogDelegateView::CreateBubble(bubble);
-  if (sender == align_to_edge_)
-    bubble->SetAlignment(BubbleBorder::ALIGN_EDGE_TO_ANCHOR_EDGE);
 
   bubble->GetWidget()->Show();
 }

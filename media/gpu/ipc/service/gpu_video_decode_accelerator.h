@@ -73,7 +73,7 @@ class GpuVideoDecodeAccelerator
   void NotifyError(VideoDecodeAccelerator::Error error) override;
 
   // CommandBufferStub::DestructionObserver implementation.
-  void OnWillDestroyStub() override;
+  void OnWillDestroyStub(bool have_context) override;
 
   // Function to delegate sending to actual sender.
   bool Send(IPC::Message* message) override;
@@ -127,8 +127,8 @@ class GpuVideoDecodeAccelerator
   // Callback to bind a GLImage to a given texture id and target.
   BindGLImageCallback bind_image_cb_;
 
-  // Callback to return a WeakPtr to GLES2Decoder.
-  GetGLES2DecoderCallback get_gles2_decoder_cb_;
+  // Callback to return a ContextGroup*.
+  GetContextGroupCallback get_context_group_cb_;
 
   // The texture dimensions as requested by ProvidePictureBuffers().
   gfx::Size texture_dimensions_;

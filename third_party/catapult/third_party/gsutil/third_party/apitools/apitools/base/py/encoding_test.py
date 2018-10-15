@@ -1,13 +1,28 @@
+# -*- coding: utf-8 -*-
+# Copyright 2015 Google Inc.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 import base64
 import datetime
 import json
 import sys
 
-from protorpc import message_types
-from protorpc import messages
-from protorpc import util
 import unittest2
 
+from apitools.base.protorpclite import message_types
+from apitools.base.protorpclite import messages
+from apitools.base.protorpclite import util
 from apitools.base.py import encoding
 from apitools.base.py import exceptions
 from apitools.base.py import extra_types
@@ -27,18 +42,29 @@ class TimeMessage(messages.Message):
     timefield = message_types.DateTimeField(3)
 
 
-@encoding.MapUnrecognizedFields('additional_properties')
+@encoding.MapUnrecognizedFields('additionalProperties')
 class AdditionalPropertiesMessage(messages.Message):
 
     class AdditionalProperty(messages.Message):
         key = messages.StringField(1)
         value = messages.StringField(2)
 
-    additional_properties = messages.MessageField(
+    additionalProperties = messages.MessageField(
         'AdditionalProperty', 1, repeated=True)
 
 
-@encoding.MapUnrecognizedFields('additional_properties')
+@encoding.MapUnrecognizedFields('additionalProperties')
+class AdditionalIntPropertiesMessage(messages.Message):
+
+    class AdditionalProperty(messages.Message):
+        key = messages.StringField(1)
+        value = messages.IntegerField(2)
+
+    additionalProperties = messages.MessageField(
+        'AdditionalProperty', 1, repeated=True)
+
+
+@encoding.MapUnrecognizedFields('additionalProperties')
 class UnrecognizedEnumMessage(messages.Message):
 
     class ThisEnum(messages.Enum):
@@ -49,7 +75,7 @@ class UnrecognizedEnumMessage(messages.Message):
         key = messages.StringField(1)
         value = messages.EnumField('UnrecognizedEnumMessage.ThisEnum', 2)
 
-    additional_properties = messages.MessageField(
+    additionalProperties = messages.MessageField(
         AdditionalProperty, 1, repeated=True)
 
 
@@ -69,15 +95,58 @@ class MessageWithEnum(messages.Message):
     ignored_field = messages.EnumField(ThisEnum, 3)
 
 
-@encoding.MapUnrecognizedFields('additional_properties')
+@encoding.MapUnrecognizedFields('additionalProperties')
 class AdditionalMessagePropertiesMessage(messages.Message):
 
     class AdditionalProperty(messages.Message):
         key = messages.StringField(1)
         value = messages.MessageField(CompoundPropertyType, 2)
 
-    additional_properties = messages.MessageField(
+    additionalProperties = messages.MessageField(
         'AdditionalProperty', 1, repeated=True)
+
+
+@encoding.MapUnrecognizedFields('additionalProperties')
+class MapToMessageWithEnum(messages.Message):
+
+    class AdditionalProperty(messages.Message):
+        key = messages.StringField(1)
+        value = messages.MessageField(MessageWithEnum, 2)
+
+    additionalProperties = messages.MessageField(
+        'AdditionalProperty', 1, repeated=True)
+
+
+@encoding.MapUnrecognizedFields('additionalProperties')
+class NestedAdditionalPropertiesWithEnumMessage(messages.Message):
+
+    class AdditionalProperty(messages.Message):
+        key = messages.StringField(1)
+        value = messages.MessageField(
+            MapToMessageWithEnum, 2)
+
+    additionalProperties = messages.MessageField(
+        'AdditionalProperty', 1, repeated=True)
+
+
+@encoding.MapUnrecognizedFields('additionalProperties')
+class MapToBytesValue(messages.Message):
+    class AdditionalProperty(messages.Message):
+        key = messages.StringField(1)
+        value = messages.BytesField(2)
+
+    additionalProperties = messages.MessageField('AdditionalProperty', 1,
+                                                 repeated=True)
+
+
+@encoding.MapUnrecognizedFields('additionalProperties')
+class MapToDateTimeValue(messages.Message):
+    class AdditionalProperty(messages.Message):
+        key = messages.StringField(1)
+        value = message_types.DateTimeField(2)
+
+    additionalProperties = messages.MessageField('AdditionalProperty', 1,
+                                                 repeated=True)
 
 
 class HasNestedMessage(messages.Message):
@@ -102,15 +171,25 @@ class MessageWithRemappings(messages.Message):
     repeated_field = messages.StringField(5, repeated=True)
 
 
-@encoding.MapUnrecognizedFields('additional_properties')
+class MessageWithPackageAndRemappings(messages.Message):
+
+    class SomeEnum(messages.Enum):
+        enum_value = 1
+        second_value = 2
+
+    enum_field = messages.EnumField(SomeEnum, 1)
+    another_field = messages.StringField(2)
+
+
+@encoding.MapUnrecognizedFields('additionalProperties')
 class RepeatedJsonValueMessage(messages.Message):
 
     class AdditionalProperty(messages.Message):
         key = messages.StringField(1)
         value = messages.MessageField(extra_types.JsonValue, 2, repeated=True)
 
-    additional_properties = messages.MessageField('AdditionalProperty', 1,
-                                                  repeated=True)
+    additionalProperties = messages.MessageField('AdditionalProperty', 1,
+                                                 repeated=True)
 
 
 encoding.AddCustomJsonEnumMapping(MessageWithRemappings.SomeEnum,
@@ -132,6 +211,39 @@ class EncodingTest(unittest2.TestCase):
         msg.field = 'def'
         self.assertNotEqual(msg.field, new_msg.field)
 
+    def testCopyProtoMessageInvalidEnum(self):
+        json_msg = '{"field_one": "BAD_VALUE"}'
+        orig_msg = encoding.JsonToMessage(MessageWithEnum, json_msg)
+        new_msg = encoding.CopyProtoMessage(orig_msg)
+        for msg in (orig_msg, new_msg):
+            self.assertEqual(msg.all_unrecognized_fields(), ['field_one'])
+            self.assertEqual(
+                msg.get_unrecognized_field_info('field_one',
+                                                value_default=None),
+                ('BAD_VALUE', messages.Variant.ENUM))
+
+    def testCopyProtoMessageAdditionalProperties(self):
+        msg = AdditionalPropertiesMessage(additionalProperties=[
+            AdditionalPropertiesMessage.AdditionalProperty(
+                key='key', value='value')])
+        new_msg = encoding.CopyProtoMessage(msg)
+        self.assertEqual(len(new_msg.additionalProperties), 1)
+        self.assertEqual(new_msg.additionalProperties[0].key, 'key')
+        self.assertEqual(new_msg.additionalProperties[0].value, 'value')
+
+    def testCopyProtoMessageMappingInvalidEnum(self):
+        json_msg = '{"key_one": {"field_one": "BAD_VALUE"}}'
+        orig_msg = encoding.JsonToMessage(MapToMessageWithEnum, json_msg)
+        new_msg = encoding.CopyProtoMessage(orig_msg)
+        for msg in (orig_msg, new_msg):
+            self.assertEqual(
+                msg.additionalProperties[0].value.all_unrecognized_fields(),
+                ['field_one'])
+            self.assertEqual(
+                msg.additionalProperties[0].value.get_unrecognized_field_info(
+                    'field_one', value_default=None),
+                ('BAD_VALUE', messages.Variant.ENUM))
+
     def testBytesEncoding(self):
         b64_str = 'AAc+'
         b64_msg = '{"field": "%s"}' % b64_str
@@ -151,6 +263,71 @@ class EncodingTest(unittest2.TestCase):
             rep_msg, encoding.JsonToMessage(BytesMessage, enc_rep_msg))
         self.assertEqual(enc_rep_msg, encoding.MessageToJson(rep_msg))
 
+    def testBase64RoundtripForMapFields(self):
+        raw_data = b'\xFF\x0F\x80'
+        encoded_data = '/w+A'  # Has url-unsafe base64 characters
+        safe_encoded_data = base64.urlsafe_b64encode(raw_data).decode("utf-8")
+        self.assertEqual(raw_data, base64.b64decode(encoded_data))
+
+        # Use unsafe encoding, make sure we can load it.
+        json_data = '{"1st": "%s"}' % encoded_data
+        msg = encoding.JsonToMessage(MapToBytesValue, json_data)
+        self.assertEqual(raw_data, msg.additionalProperties[0].value)
+
+        # Now back to json and again to message
+        from_msg_json_data = encoding.MessageToJson(msg)
+        # Make sure now it is safe url encoded
+        self.assertEqual(safe_encoded_data,
+                         json.loads(from_msg_json_data)['1st'])
+        # Make sure we can also load url safe encoded bytes.
+        redone_msg = encoding.JsonToMessage(MapToBytesValue,
+                                            from_msg_json_data)
+        # Still matches
+        self.assertEqual(raw_data, redone_msg.additionalProperties[0].value)
+
+    def testBytesEncodingInAMap(self):
+        # Leading bit is 1 should not be interpreted as unicode.
+        data1 = b'\xF0\x11\x0F'
+        data2 = b'\xFF\xFF\xFF'
+
+        msg = MapToBytesValue(
+            additionalProperties=[
+                MapToBytesValue.AdditionalProperty(key='1st', value=data1),
+                MapToBytesValue.AdditionalProperty(key='2nd', value=data2)
+            ])
+
+        self.assertEqual(
+            '{"1st": "%s", "2nd": "%s"}' % (
+                base64.b64encode(data1, b'-_').decode("utf-8"),
+                base64.b64encode(data2, b'-_').decode("utf-8")),
+            encoding.MessageToJson(msg))
+
+    def testDateTimeEncodingInAMap(self):
+        msg = MapToDateTimeValue(
+            additionalProperties=[
+                MapToDateTimeValue.AdditionalProperty(
+                    key='1st',
+                    value=datetime.datetime(
+                        2014, 7, 2, 23, 33, 25, 541000,
+                        tzinfo=util.TimeZoneOffset(datetime.timedelta(0)))),
+                MapToDateTimeValue.AdditionalProperty(
+                    key='2nd',
+                    value=datetime.datetime(
+                        2015, 7, 2, 23, 33, 25, 541000,
+                        tzinfo=util.TimeZoneOffset(datetime.timedelta(0))))
+            ])
+
+        self.assertEqual(
+            '{"1st": "2014-07-02T23:33:25.541000+00:00",'
+            ' "2nd": "2015-07-02T23:33:25.541000+00:00"}',
+            encoding.MessageToJson(msg))
+
+    def testInvalidEnumEncodingInAMap(self):
+        json_msg = '{"key_one": {"field_one": "BAD_VALUE"}}'
+        msg = encoding.JsonToMessage(MapToMessageWithEnum, json_msg)
+        new_msg = encoding.MessageToJson(msg)
+        self.assertEqual('{"key_one": {"field_one": "BAD_VALUE"}}', new_msg)
+
     def testIncludeFields(self):
         msg = SimpleMessage()
         self.assertEqual('{}', encoding.MessageToJson(msg))
@@ -164,68 +341,86 @@ class EncodingTest(unittest2.TestCase):
     def testNestedIncludeFields(self):
         msg = HasNestedMessage(
             nested=AdditionalPropertiesMessage(
-                additional_properties=[]))
+                additionalProperties=[]))
         self.assertEqual(
             '{"nested": null}',
             encoding.MessageToJson(msg, include_fields=['nested']))
         self.assertEqual(
-            '{"nested": {"additional_properties": []}}',
+            '{"nested": {"additionalProperties": []}}',
             encoding.MessageToJson(
-                msg, include_fields=['nested.additional_properties']))
+                msg, include_fields=['nested.additionalProperties']))
         msg = ExtraNestedMessage(nested=msg)
         self.assertEqual(
             '{"nested": {"nested": null}}',
             encoding.MessageToJson(msg, include_fields=['nested.nested']))
+        # When clearing 'nested.nested_list', its sibling ('nested.nested')
+        # should remain unaffected.
+        self.assertIn(
+            encoding.MessageToJson(msg, include_fields=['nested.nested_list']),
+            ['{"nested": {"nested": {}, "nested_list": []}}',
+             '{"nested": {"nested_list": [], "nested": {}}}'])
         self.assertEqual(
-            '{"nested": {"nested_list": []}}',
-            encoding.MessageToJson(msg, include_fields=['nested.nested_list']))
-        self.assertEqual(
-            '{"nested": {"nested": {"additional_properties": []}}}',
+            '{"nested": {"nested": {"additionalProperties": []}}}',
             encoding.MessageToJson(
-                msg, include_fields=['nested.nested.additional_properties']))
+                msg, include_fields=['nested.nested.additionalProperties']))
 
     def testAdditionalPropertyMapping(self):
         msg = AdditionalPropertiesMessage()
-        msg.additional_properties = [
+        msg.additionalProperties = [
             AdditionalPropertiesMessage.AdditionalProperty(
                 key='key_one', value='value_one'),
             AdditionalPropertiesMessage.AdditionalProperty(
-                key='key_two', value='value_two'),
+                key=u'key_twð', value='value_two'),
         ]
 
         encoded_msg = encoding.MessageToJson(msg)
         self.assertEqual(
-            {'key_one': 'value_one', 'key_two': 'value_two'},
+            {'key_one': 'value_one', u'key_twð': 'value_two'},
             json.loads(encoded_msg))
 
         new_msg = encoding.JsonToMessage(type(msg), encoded_msg)
         self.assertEqual(
-            set(('key_one', 'key_two')),
-            set([x.key for x in new_msg.additional_properties]))
+            set(('key_one', u'key_twð')),
+            set([x.key for x in new_msg.additionalProperties]))
         self.assertIsNot(msg, new_msg)
 
-        new_msg.additional_properties.pop()
-        self.assertEqual(1, len(new_msg.additional_properties))
-        self.assertEqual(2, len(msg.additional_properties))
+        new_msg.additionalProperties.pop()
+        self.assertEqual(1, len(new_msg.additionalProperties))
+        self.assertEqual(2, len(msg.additionalProperties))
+
+    def testNumericPropertyName(self):
+        json_msg = '{"nested": {"123": "def"}}'
+        msg = encoding.JsonToMessage(HasNestedMessage, json_msg)
+        self.assertEqual(1, len(msg.nested.additionalProperties))
+
+    def testNumericPropertyValue(self):
+        json_msg = '{"key_one": "123"}'
+        msg = encoding.JsonToMessage(AdditionalIntPropertiesMessage, json_msg)
+        self.assertEqual(
+            AdditionalIntPropertiesMessage(
+                additionalProperties=[
+                    AdditionalIntPropertiesMessage.AdditionalProperty(
+                        key='key_one', value=123)]),
+            msg)
 
     def testAdditionalMessageProperties(self):
         json_msg = '{"input": {"index": 0, "name": "output"}}'
         result = encoding.JsonToMessage(
             AdditionalMessagePropertiesMessage, json_msg)
-        self.assertEqual(1, len(result.additional_properties))
-        self.assertEqual(0, result.additional_properties[0].value.index)
+        self.assertEqual(1, len(result.additionalProperties))
+        self.assertEqual(0, result.additionalProperties[0].value.index)
 
     def testUnrecognizedEnum(self):
         json_msg = '{"input": "VALUE_ONE"}'
         result = encoding.JsonToMessage(
             UnrecognizedEnumMessage, json_msg)
-        self.assertEqual(1, len(result.additional_properties))
+        self.assertEqual(1, len(result.additionalProperties))
         self.assertEqual(UnrecognizedEnumMessage.ThisEnum.VALUE_ONE,
-                         result.additional_properties[0].value)
+                         result.additionalProperties[0].value)
 
     def testNestedFieldMapping(self):
         nested_msg = AdditionalPropertiesMessage()
-        nested_msg.additional_properties = [
+        nested_msg.additionalProperties = [
             AdditionalPropertiesMessage.AdditionalProperty(
                 key='key_one', value='value_one'),
             AdditionalPropertiesMessage.AdditionalProperty(
@@ -241,11 +436,11 @@ class EncodingTest(unittest2.TestCase):
         new_msg = encoding.JsonToMessage(type(msg), encoded_msg)
         self.assertEqual(
             set(('key_one', 'key_two')),
-            set([x.key for x in new_msg.nested.additional_properties]))
+            set([x.key for x in new_msg.nested.additionalProperties]))
 
-        new_msg.nested.additional_properties.pop()
-        self.assertEqual(1, len(new_msg.nested.additional_properties))
-        self.assertEqual(2, len(msg.nested.additional_properties))
+        new_msg.nested.additionalProperties.pop()
+        self.assertEqual(1, len(new_msg.nested.additionalProperties))
+        self.assertEqual(2, len(msg.nested.additionalProperties))
 
     def testValidEnums(self):
         message_json = '{"field_one": "VALUE_ONE"}'
@@ -280,6 +475,14 @@ class EncodingTest(unittest2.TestCase):
         message = encoding.JsonToMessage(SimpleMessage, json_message)
         self.assertEqual(json.loads(json_message),
                          json.loads(encoding.MessageToJson(message)))
+
+    def testUnknownEnumNestedRoundtrip(self):
+        json_with_typo = ('{"outer_key": {"key_one": {"field_one": '
+                          '"VALUE_OEN", "field_two": "VALUE_OEN"}}}')
+        msg = encoding.JsonToMessage(NestedAdditionalPropertiesWithEnumMessage,
+                                     json_with_typo)
+        self.assertEqual(json.loads(json_with_typo),
+                         json.loads(encoding.MessageToJson(msg)))
 
     def testJsonDatetime(self):
         msg = TimeMessage(timefield=datetime.datetime(
@@ -316,6 +519,48 @@ class EncodingTest(unittest2.TestCase):
         self.assertEqual(
             msg, encoding.JsonToMessage(MessageWithRemappings, json_message))
 
+    def testFieldRemappingWithPackage(self):
+        this_module = sys.modules[__name__]
+        package_name = 'my_package'
+        try:
+            setattr(this_module, 'package', package_name)
+
+            encoding.AddCustomJsonFieldMapping(
+                MessageWithPackageAndRemappings,
+                'another_field', 'wire_field_name', package=package_name)
+
+            msg = MessageWithPackageAndRemappings(another_field='my value')
+            json_message = encoding.MessageToJson(msg)
+            self.assertEqual('{"wire_field_name": "my value"}', json_message)
+            self.assertEqual(
+                msg,
+                encoding.JsonToMessage(MessageWithPackageAndRemappings,
+                                       json_message))
+        finally:
+            delattr(this_module, 'package')
+
+    def testEnumRemappingWithPackage(self):
+        this_module = sys.modules[__name__]
+        package_name = 'my_package'
+        try:
+            setattr(this_module, 'package', package_name)
+
+            encoding.AddCustomJsonEnumMapping(
+                MessageWithPackageAndRemappings.SomeEnum,
+                'enum_value', 'other_wire_name', package=package_name)
+
+            msg = MessageWithPackageAndRemappings(
+                enum_field=MessageWithPackageAndRemappings.SomeEnum.enum_value)
+            json_message = encoding.MessageToJson(msg)
+            self.assertEqual('{"enum_field": "other_wire_name"}', json_message)
+            self.assertEqual(
+                msg,
+                encoding.JsonToMessage(MessageWithPackageAndRemappings,
+                                       json_message))
+
+        finally:
+            delattr(this_module, 'package')
+
     def testRepeatedFieldRemapping(self):
         msg = MessageWithRemappings(repeated_field=['abc', 'def'])
         json_message = encoding.MessageToJson(msg)
@@ -331,7 +576,18 @@ class EncodingTest(unittest2.TestCase):
         self.assertEqual(
             msg, encoding.JsonToMessage(MessageWithRemappings, json_message))
 
-    def testNoRepeatedRemapping(self):
+    def testRepeatedRemapping(self):
+        # Should allow remapping if the mapping remains the same.
+        encoding.AddCustomJsonEnumMapping(MessageWithRemappings.SomeEnum,
+                                          'enum_value', 'wire_name')
+        encoding.AddCustomJsonFieldMapping(MessageWithRemappings,
+                                           'double_encoding', 'doubleEncoding')
+        encoding.AddCustomJsonFieldMapping(MessageWithRemappings,
+                                           'another_field', 'anotherField')
+        encoding.AddCustomJsonFieldMapping(MessageWithRemappings,
+                                           'repeated_field', 'repeatedField')
+
+        # Should raise errors if the remapping changes the mapping.
         self.assertRaises(
             exceptions.InvalidDataError,
             encoding.AddCustomJsonFieldMapping,
@@ -371,7 +627,7 @@ class EncodingTest(unittest2.TestCase):
             encoding.MessageToRepr(msg, multiline=True),
             ('%s.TimeMessage(\n    '
              'timefield=datetime.datetime(2014, 7, 2, 23, 33, 25, 541000, '
-             'tzinfo=protorpc.util.TimeZoneOffset('
+             'tzinfo=apitools.base.protorpclite.util.TimeZoneOffset('
              'datetime.timedelta(0))),\n)') % __name__)
         self.assertEqual(
             encoding.MessageToRepr(msg, multiline=True, no_modules=True),
@@ -379,32 +635,45 @@ class EncodingTest(unittest2.TestCase):
             'timefield=datetime.datetime(2014, 7, 2, 23, 33, 25, 541000, '
             'tzinfo=TimeZoneOffset(datetime.timedelta(0))),\n)')
 
-    def testPackageMappingsNoPackage(self):
-        this_module_name = util.get_package_for_module(__name__)
-        full_type_name = 'MessageWithEnum.ThisEnum'
-        full_key = '%s.%s' % (this_module_name, full_type_name)
-        self.assertEqual(full_key,
-                         encoding._GetTypeKey(MessageWithEnum.ThisEnum, ''))
-
-    def testPackageMappingsWithPackage(self):
-        this_module_name = util.get_package_for_module(__name__)
-        full_type_name = 'MessageWithEnum.ThisEnum'
-        full_key = '%s.%s' % (this_module_name, full_type_name)
-        this_module = sys.modules[__name__]
-        new_package = 'new_package'
-        try:
-            setattr(this_module, 'package', new_package)
-            new_key = '%s.%s' % (new_package, full_type_name)
-            self.assertEqual(
-                new_key,
-                encoding._GetTypeKey(MessageWithEnum.ThisEnum, ''))
-            self.assertEqual(
-                full_key,
-                encoding._GetTypeKey(MessageWithEnum.ThisEnum, new_package))
-        finally:
-            delattr(this_module, 'package')
-
     def testRepeatedJsonValuesAsRepeatedProperty(self):
         encoded_msg = '{"a": [{"one": 1}]}'
         msg = encoding.JsonToMessage(RepeatedJsonValueMessage, encoded_msg)
         self.assertEqual(encoded_msg, encoding.MessageToJson(msg))
+
+    def testDictToAdditionalPropertyMessage(self):
+        dict_ = {'key': 'value'}
+
+        encoded_msg = encoding.DictToAdditionalPropertyMessage(
+            dict_, AdditionalPropertiesMessage)
+        expected_msg = AdditionalPropertiesMessage()
+        expected_msg.additionalProperties = [
+            AdditionalPropertiesMessage.AdditionalProperty(
+                key='key', value='value')
+        ]
+        self.assertEqual(encoded_msg, expected_msg)
+
+    def testDictToAdditionalPropertyMessageSorted(self):
+        tuples = [('key{0:02}'.format(i), 'value') for i in range(100)]
+        dict_ = dict(tuples)
+
+        encoded_msg = encoding.DictToAdditionalPropertyMessage(
+            dict_, AdditionalPropertiesMessage, sort_items=True)
+        expected_msg = AdditionalPropertiesMessage()
+        expected_msg.additionalProperties = [
+            AdditionalPropertiesMessage.AdditionalProperty(
+                key=key, value=value)
+            for key, value in tuples
+        ]
+        self.assertEqual(encoded_msg, expected_msg)
+
+    def testDictToAdditionalPropertyMessageNumeric(self):
+        dict_ = {'key': 1}
+
+        encoded_msg = encoding.DictToAdditionalPropertyMessage(
+            dict_, AdditionalIntPropertiesMessage)
+        expected_msg = AdditionalIntPropertiesMessage()
+        expected_msg.additionalProperties = [
+            AdditionalIntPropertiesMessage.AdditionalProperty(
+                key='key', value=1)
+        ]
+        self.assertEqual(encoded_msg, expected_msg)

@@ -16,6 +16,7 @@
 #include <memory>
 #include <set>
 #include <string>
+#include <vector>
 
 #include "base/callback.h"
 #include "base/compiler_specific.h"
@@ -24,15 +25,16 @@
 #include "base/memory/ref_counted.h"
 #include "base/observer_list.h"
 #include "base/sequence_checker.h"
+#include "base/time/time.h"
 #include "base/values.h"
 #include "components/prefs/persistent_pref_store.h"
+#include "components/prefs/pref_value_store.h"
 #include "components/prefs/prefs_export.h"
 
 class PrefNotifier;
 class PrefNotifierImpl;
 class PrefObserver;
 class PrefRegistry;
-class PrefValueStore;
 class PrefStore;
 
 namespace base {
@@ -105,8 +107,9 @@ class COMPONENTS_PREFS_EXPORT PrefService {
     // policy, this is the controlling pref if set.
     bool IsManagedByCustodian() const;
 
-    // Returns true if the Preference is recommended, i.e. set by an admin
-    // policy but the user is allowed to change it.
+    // Returns true if the Preference's current value is one recommended by
+    // admin policy. Note that this will be false if any other higher-priority
+    // source overrides the value (e.g., the user has set a value).
     bool IsRecommended() const;
 
     // Returns true if the Preference has a value set by an extension, even if
@@ -165,21 +168,24 @@ class COMPONENTS_PREFS_EXPORT PrefService {
   // for simplified construction.
   PrefService(std::unique_ptr<PrefNotifierImpl> pref_notifier,
               std::unique_ptr<PrefValueStore> pref_value_store,
-              PersistentPrefStore* user_prefs,
-              PrefRegistry* pref_registry,
-              base::Callback<void(PersistentPrefStore::PrefReadError)>
+              scoped_refptr<PersistentPrefStore> user_prefs,
+              scoped_refptr<PrefRegistry> pref_registry,
+              base::RepeatingCallback<void(PersistentPrefStore::PrefReadError)>
                   read_error_callback,
               bool async);
   virtual ~PrefService();
 
   // Lands pending writes to disk. This should only be used if we need to save
-  // immediately (basically, during shutdown).
-  void CommitPendingWrite();
-
-  // Lands pending writes to disk. This should only be used if we need to save
-  // immediately. |done_callback| will be invoked when changes have been
-  // written.
-  void CommitPendingWrite(base::OnceClosure done_callback);
+  // immediately (basically, during shutdown). |reply_callback| will be posted
+  // to the current sequence when changes have been written.
+  // |synchronous_done_callback| on the other hand will be invoked right away
+  // wherever the writes complete (could even be invoked synchronously if no
+  // writes need to occur); this is useful when the current thread cannot pump
+  // messages to observe the reply (e.g. nested loops banned on main thread
+  // during shutdown). |synchronous_done_callback| must be thread-safe.
+  void CommitPendingWrite(
+      base::OnceClosure reply_callback = base::OnceClosure(),
+      base::OnceClosure synchronous_done_callback = base::OnceClosure());
 
   // Schedule a write if there is any lossy data pending. Unlike
   // CommitPendingWrite() this does not immediately sync to disk, instead it
@@ -215,6 +221,7 @@ class COMPONENTS_PREFS_EXPORT PrefService {
   // Returns the branch if it exists, or the registered default value otherwise.
   // Note that |path| must point to a registered preference. In that case, these
   // functions will never return NULL.
+  const base::Value* Get(const std::string& path) const;
   const base::DictionaryValue* GetDictionary(const std::string& path) const;
   const base::ListValue* GetList(const std::string& path) const;
 
@@ -242,6 +249,16 @@ class COMPONENTS_PREFS_EXPORT PrefService {
   // As above, but for unsigned values.
   void SetUint64(const std::string& path, uint64_t value);
   uint64_t GetUint64(const std::string& path) const;
+
+  // Time helper methods that actually store the given value as a string, which
+  // represents the number of microseconds elapsed (absolute for TimeDelta and
+  // relative to Windows epoch for Time variants). Note that if obtaining the
+  // named value via GetDictionary or GetList, the Value type will be
+  // Type::STRING.
+  void SetTime(const std::string& path, base::Time value);
+  base::Time GetTime(const std::string& path) const;
+  void SetTimeDelta(const std::string& path, base::TimeDelta value);
+  base::TimeDelta GetTimeDelta(const std::string& path) const;
 
   // Returns the value of the given preference, from the user pref store. If
   // the preference is not set in the user pref store, returns NULL.
@@ -296,7 +313,7 @@ class COMPONENTS_PREFS_EXPORT PrefService {
   // We run the callback once, when initialization completes. The bool
   // parameter will be set to true for successful initialization,
   // false for unsuccessful.
-  void AddPrefInitObserver(base::Callback<void(bool)> callback);
+  void AddPrefInitObserver(base::OnceCallback<void(bool)> callback);
 
   // Returns the PrefRegistry object for this service. You should not
   // use this; the intent is for no registrations to take place after
@@ -320,6 +337,21 @@ class COMPONENTS_PREFS_EXPORT PrefService {
   // to tangentially cleanup data it may have saved outside the store.
   void OnStoreDeletionFromDisk();
 
+  // Add new pref stores to the existing PrefValueStore. Only adding new
+  // stores are allowed. If a corresponding store already exists, calling this
+  // will cause DCHECK failures. If the newly added stores already contain
+  // values, PrefNotifier associated with this object will be notified with
+  // these values. |delegate| can be passed to observe events of the new
+  // PrefValueStore.
+  // TODO(qinmin): packaging all the input params in a struct, and do the same
+  // for the constructor.
+  void ChangePrefValueStore(
+      PrefStore* managed_prefs,
+      PrefStore* supervised_user_prefs,
+      PrefStore* extension_prefs,
+      PrefStore* recommended_prefs,
+      std::unique_ptr<PrefValueStore::Delegate> delegate = nullptr);
+
   // A low level function for registering an observer for every single
   // preference changed notification. The caller must ensure that the observer
   // remains valid as long as it is registered. Pointer ownership is not
@@ -339,19 +371,19 @@ class COMPONENTS_PREFS_EXPORT PrefService {
   // The PrefNotifier handles registering and notifying preference observers.
   // It is created and owned by this PrefService. Subclasses may access it for
   // unit testing.
-  std::unique_ptr<PrefNotifierImpl> pref_notifier_;
+  const std::unique_ptr<PrefNotifierImpl> pref_notifier_;
 
   // The PrefValueStore provides prioritized preference values. It is owned by
   // this PrefService. Subclasses may access it for unit testing.
   std::unique_ptr<PrefValueStore> pref_value_store_;
 
-  scoped_refptr<PrefRegistry> pref_registry_;
-
   // Pref Stores and profile that we passed to the PrefValueStore.
-  scoped_refptr<PersistentPrefStore> user_pref_store_;
+  const scoped_refptr<PersistentPrefStore> user_pref_store_;
 
-  // Callback to call when a read error occurs.
-  base::Callback<void(PersistentPrefStore::PrefReadError)> read_error_callback_;
+  // Callback to call when a read error occurs. Always invoked on the sequence
+  // this PrefService was created own.
+  const base::RepeatingCallback<void(PersistentPrefStore::PrefReadError)>
+      read_error_callback_;
 
  private:
   // Hash map expected to be fastest here since it minimises expensive
@@ -419,6 +451,8 @@ class COMPONENTS_PREFS_EXPORT PrefService {
   // value (GetValue() calls back though the preference service to
   // actually get the value.).
   const base::Value* GetPreferenceValue(const std::string& path) const;
+
+  const scoped_refptr<PrefRegistry> pref_registry_;
 
   // Local cache of registered Preference objects. The pref_registry_
   // is authoritative with respect to what the types and default values

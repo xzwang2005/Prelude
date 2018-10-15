@@ -62,7 +62,7 @@ class GLImplFactory : angle::NonCopyable
     virtual TextureImpl *createTexture(const gl::TextureState &state) = 0;
 
     // Renderbuffer creation
-    virtual RenderbufferImpl *createRenderbuffer() = 0;
+    virtual RenderbufferImpl *createRenderbuffer(const gl::RenderbufferState &state) = 0;
 
     // Buffer creation
     virtual BufferImpl *createBuffer(const gl::BufferState &state) = 0;
@@ -71,7 +71,7 @@ class GLImplFactory : angle::NonCopyable
     virtual VertexArrayImpl *createVertexArray(const gl::VertexArrayState &data) = 0;
 
     // Query and Fence creation
-    virtual QueryImpl *createQuery(GLenum type) = 0;
+    virtual QueryImpl *createQuery(gl::QueryType type) = 0;
     virtual FenceNVImpl *createFenceNV() = 0;
     virtual SyncImpl *createSync()              = 0;
 

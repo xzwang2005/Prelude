@@ -96,7 +96,8 @@ X11EventSource::X11EventSource(X11EventSourceDelegate* delegate,
       display_(display),
       dispatching_event_(nullptr),
       dummy_initialized_(false),
-      continue_stream_(true) {
+      continue_stream_(true),
+      distribution_(0, 999) {
   DCHECK(!instance_);
   instance_ = this;
 
@@ -143,10 +144,6 @@ void X11EventSource::DispatchXEventNow(XEvent* event) {
   ExtractCookieDataDispatchEvent(event);
 }
 
-void X11EventSource::BlockUntilWindowMapped(XID window) {
-  BlockOnWindowStructureEvent(window, MapNotify);
-}
-
 Time X11EventSource::GetCurrentServerTime() {
   DCHECK(display_);
 
@@ -160,7 +157,13 @@ Time X11EventSource::GetCurrentServerTime() {
     dummy_initialized_ = true;
   }
 
-  base::TimeTicks start = base::TimeTicks::Now();
+  // No need to measure Linux.X11.ServerRTT on every call.
+  // base::TimeTicks::Now() itself has non-trivial overhead.
+  bool measure_rtt = distribution_(generator_) == 0;
+
+  base::TimeTicks start;
+  if (measure_rtt)
+    start = base::TimeTicks::Now();
 
   // Make a no-op property change on |dummy_window_|.
   XChangeProperty(display_, dummy_window_, dummy_atom_, XA_STRING, 8,
@@ -171,9 +174,12 @@ Time X11EventSource::GetCurrentServerTime() {
   XIfEvent(display_, &event, IsPropertyNotifyForTimestamp,
            reinterpret_cast<XPointer>(&dummy_window_));
 
-  UMA_HISTOGRAM_CUSTOM_COUNTS(
-      "Linux.X11.ServerRTT", (base::TimeTicks::Now() - start).InMicroseconds(),
-      1, base::TimeDelta::FromMilliseconds(50).InMicroseconds(), 50);
+  if (measure_rtt) {
+    UMA_HISTOGRAM_CUSTOM_COUNTS(
+        "Linux.X11.ServerRTT",
+        (base::TimeTicks::Now() - start).InMicroseconds(), 1,
+        base::TimeDelta::FromMilliseconds(50).InMicroseconds(), 50);
+  }
   return event.xproperty.time;
 }
 
@@ -187,6 +193,7 @@ Time X11EventSource::GetTimestamp() {
   return GetCurrentServerTime();
 }
 
+#if !defined(USE_OZONE)
 base::Optional<gfx::Point>
 X11EventSource::GetRootCursorLocationFromCurrentEvent() const {
   if (!dispatching_event_)
@@ -222,6 +229,7 @@ X11EventSource::GetRootCursorLocationFromCurrentEvent() const {
     return ui::EventSystemLocationFromNative(event);
   return base::nullopt;
 }
+#endif
 
 ////////////////////////////////////////////////////////////////////////////////
 // X11EventSource, protected
@@ -274,16 +282,6 @@ void X11EventSource::PostDispatchEvent(XEvent* xevent) {
     ui::DeviceDataManagerX11::GetInstance()->InvalidateScrollClasses(
         DeviceDataManagerX11::kAllDevices);
   }
-}
-
-void X11EventSource::BlockOnWindowStructureEvent(XID window, int type) {
-  XEvent event;
-  do {
-    // Block until there's a StructureNotify event of |type| on |window|. Then
-    // remove it from the queue and stuff it in |event|.
-    XWindowEvent(display_, window, StructureNotifyMask, &event);
-    ExtractCookieDataDispatchEvent(&event);
-  } while (event.type != type);
 }
 
 void X11EventSource::StopCurrentEventStream() {

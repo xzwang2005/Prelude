@@ -15,12 +15,13 @@
 #include "SkSurface.h"
 #include "Test.h"
 
-#if SK_SUPPORT_GPU
+#include "GrBackendSurface.h"
 #include "GrContext.h"
+#include "GrContextPriv.h"
+#include "GrProxyProvider.h"
 #include "GrSurfaceProxy.h"
 #include "GrTextureProxy.h"
 #include "SkGr.h"
-#endif
 
 
 // This test creates backing resources exactly sized to [kFullSize x kFullSize].
@@ -65,14 +66,12 @@ static void test_image(const sk_sp<SkSpecialImage>& img, skiatest::Reporter* rep
     // Test that isTextureBacked reports the correct backing type
     REPORTER_ASSERT(reporter, isGPUBacked == img->isTextureBacked());
 
-#if SK_SUPPORT_GPU
     //--------------
     // Test asTextureProxyRef - as long as there is a context this should succeed
     if (context) {
         sk_sp<GrTextureProxy> proxy(img->asTextureProxyRef(context));
         REPORTER_ASSERT(reporter, proxy);
     }
-#endif
 
     //--------------
     // Test getROPixels - this should always succeed regardless of backing store
@@ -88,7 +87,7 @@ static void test_image(const sk_sp<SkSpecialImage>& img, skiatest::Reporter* rep
 
     //--------------
     // Test that draw restricts itself to the subset
-    SkImageFilter::OutputProperties outProps(img->getColorSpace());
+    SkImageFilter::OutputProperties outProps(kN32_SkColorType, img->getColorSpace());
     sk_sp<SkSpecialSurface> surf(img->makeSurface(outProps, SkISize::Make(kFullSize, kFullSize),
                                                   kPremul_SkAlphaType));
 
@@ -125,13 +124,14 @@ static void test_image(const sk_sp<SkSpecialImage>& img, skiatest::Reporter* rep
         REPORTER_ASSERT(reporter, isGPUBacked != !!tightImg->peekPixels(&tmpPixmap));
     }
     {
-        SkImageFilter::OutputProperties outProps(img->getColorSpace());
+        SkImageFilter::OutputProperties outProps(kN32_SkColorType, img->getColorSpace());
         sk_sp<SkSurface> tightSurf(img->makeTightSurface(outProps, subset.size()));
 
         REPORTER_ASSERT(reporter, tightSurf->width() == subset.width());
         REPORTER_ASSERT(reporter, tightSurf->height() == subset.height());
-        REPORTER_ASSERT(reporter, isGPUBacked ==
-                     !!tightSurf->getTextureHandle(SkSurface::kDiscardWrite_BackendHandleAccess));
+        GrBackendTexture backendTex = tightSurf->getBackendTexture(
+                                                    SkSurface::kDiscardWrite_BackendHandleAccess);
+        REPORTER_ASSERT(reporter, isGPUBacked == backendTex.isValid());
         SkPixmap tmpPixmap;
         REPORTER_ASSERT(reporter, isGPUBacked != !!tightSurf->peekPixels(&tmpPixmap));
     }
@@ -190,8 +190,6 @@ DEF_TEST(SpecialImage_Image_ColorSpaceAware, reporter) {
     test_specialimage_image(reporter, srgbColorSpace.get());
 }
 
-#if SK_SUPPORT_GPU
-
 static void test_texture_backed(skiatest::Reporter* reporter,
                                 const sk_sp<SkSpecialImage>& orig,
                                 const sk_sp<SkSpecialImage>& gpuBacked) {
@@ -206,6 +204,7 @@ static void test_texture_backed(skiatest::Reporter* reporter,
 // Test out the SkSpecialImage::makeTextureImage entry point
 DEF_GPUTEST_FOR_RENDERING_CONTEXTS(SpecialImage_MakeTexture, reporter, ctxInfo) {
     GrContext* context = ctxInfo.grContext();
+    GrProxyProvider* proxyProvider = context->contextPriv().proxyProvider();
     SkBitmap bm = create_bm();
 
     const SkIRect& subset = SkIRect::MakeXYWH(kPad, kPad, kSmallerSize, kSmallerSize);
@@ -232,11 +231,10 @@ DEF_GPUTEST_FOR_RENDERING_CONTEXTS(SpecialImage_MakeTexture, reporter, ctxInfo) 
 
     {
         // gpu
-        const GrSurfaceDesc desc = GrImageInfoToSurfaceDesc(bm.info(), *context->caps());
-
-        sk_sp<GrTextureProxy> proxy(GrSurfaceProxy::MakeDeferred(context->resourceProvider(),
-                                                                 desc, SkBudgeted::kNo,
-                                                                 bm.getPixels(), bm.rowBytes()));
+        sk_sp<SkImage> rasterImage = SkImage::MakeFromBitmap(bm);
+        sk_sp<GrTextureProxy> proxy =
+                proxyProvider->createTextureProxy(rasterImage, kNone_GrSurfaceFlags, 1,
+                                                  SkBudgeted::kNo, SkBackingFit::kExact);
         if (!proxy) {
             return;
         }
@@ -263,13 +261,13 @@ DEF_GPUTEST_FOR_RENDERING_CONTEXTS(SpecialImage_MakeTexture, reporter, ctxInfo) 
 
 DEF_GPUTEST_FOR_RENDERING_CONTEXTS(SpecialImage_Gpu, reporter, ctxInfo) {
     GrContext* context = ctxInfo.grContext();
+    GrProxyProvider* proxyProvider = context->contextPriv().proxyProvider();
     SkBitmap bm = create_bm();
+    sk_sp<SkImage> rasterImage = SkImage::MakeFromBitmap(bm);
 
-    const GrSurfaceDesc desc = GrImageInfoToSurfaceDesc(bm.info(), *context->caps());
-
-    sk_sp<GrTextureProxy> proxy(GrSurfaceProxy::MakeDeferred(context->resourceProvider(),
-                                                             desc, SkBudgeted::kNo,
-                                                             bm.getPixels(), bm.rowBytes()));
+    sk_sp<GrTextureProxy> proxy =
+            proxyProvider->createTextureProxy(rasterImage, kNone_GrSurfaceFlags, 1,
+                                              SkBudgeted::kNo, SkBackingFit::kExact);
     if (!proxy) {
         return;
     }
@@ -298,18 +296,13 @@ DEF_GPUTEST_FOR_RENDERING_CONTEXTS(SpecialImage_Gpu, reporter, ctxInfo) {
 
 DEF_GPUTEST_FOR_RENDERING_CONTEXTS(SpecialImage_DeferredGpu, reporter, ctxInfo) {
     GrContext* context = ctxInfo.grContext();
+    GrProxyProvider* proxyProvider = context->contextPriv().proxyProvider();
     SkBitmap bm = create_bm();
+    sk_sp<SkImage> rasterImage = SkImage::MakeFromBitmap(bm);
 
-    GrSurfaceDesc desc;
-    desc.fFlags  = kNone_GrSurfaceFlags;
-    desc.fOrigin = kTopLeft_GrSurfaceOrigin;
-    desc.fWidth  = kFullSize;
-    desc.fHeight = kFullSize;
-    desc.fConfig = kSkia8888_GrPixelConfig;
-
-    sk_sp<GrTextureProxy> proxy(GrSurfaceProxy::MakeDeferred(context->resourceProvider(),
-                                                             desc, SkBudgeted::kNo,
-                                                             bm.getPixels(), 0));
+    sk_sp<GrTextureProxy> proxy =
+            proxyProvider->createTextureProxy(rasterImage, kNone_GrSurfaceFlags, 1,
+                                              SkBudgeted::kNo, SkBackingFit::kExact);
     if (!proxy) {
         return;
     }
@@ -335,5 +328,3 @@ DEF_GPUTEST_FOR_RENDERING_CONTEXTS(SpecialImage_DeferredGpu, reporter, ctxInfo) 
         test_image(subSImg2, reporter, context, true, kPad, kFullSize);
     }
 }
-
-#endif

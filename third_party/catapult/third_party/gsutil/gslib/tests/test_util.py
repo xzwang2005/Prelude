@@ -23,17 +23,22 @@
 
 from __future__ import absolute_import
 
-import httplib2
 from gslib import util
 import gslib.tests.testcase as testcase
 from gslib.tests.util import SetEnvironmentForTest
+from gslib.tests.util import TestParams
 from gslib.util import CompareVersions
+from gslib.util import DecimalShort
+from gslib.util import HumanReadableWithDecimalPlaces
+from gslib.util import PrettyTime
+import httplib2
+import mock
 
 
 class TestUtil(testcase.GsUtilUnitTestCase):
   """Tests for utility functions."""
 
-  def test_MakeHumanReadable(self):
+  def testMakeHumanReadable(self):
     """Tests converting byte counts to human-readable strings."""
     self.assertEqual(util.MakeHumanReadable(0), '0 B')
     self.assertEqual(util.MakeHumanReadable(1023), '1023 B')
@@ -45,7 +50,7 @@ class TestUtil(testcase.GsUtilUnitTestCase):
     self.assertEqual(util.MakeHumanReadable(1024 ** 5), '1 PiB')
     self.assertEqual(util.MakeHumanReadable(1024 ** 6), '1 EiB')
 
-  def test_MakeBitsHumanReadable(self):
+  def testMakeBitsHumanReadable(self):
     """Tests converting bit counts to human-readable strings."""
     self.assertEqual(util.MakeBitsHumanReadable(0), '0 bit')
     self.assertEqual(util.MakeBitsHumanReadable(1023), '1023 bit')
@@ -57,7 +62,7 @@ class TestUtil(testcase.GsUtilUnitTestCase):
     self.assertEqual(util.MakeBitsHumanReadable(1024 ** 5), '1 Pibit')
     self.assertEqual(util.MakeBitsHumanReadable(1024 ** 6), '1 Eibit')
 
-  def test_HumanReadableToBytes(self):
+  def testHumanReadableToBytes(self):
     """Tests converting human-readable strings to byte counts."""
     self.assertEqual(util.HumanReadableToBytes('1'), 1)
     self.assertEqual(util.HumanReadableToBytes('15'), 15)
@@ -91,7 +96,7 @@ class TestUtil(testcase.GsUtilUnitTestCase):
     self.assertEqual(util.HumanReadableToBytes('1EB'), 1024 ** 6)
     self.assertEqual(util.HumanReadableToBytes('1EiB'), 1024 ** 6)
 
-  def test_CompareVersions(self):
+  def testCompareVersions(self):
     """Tests CompareVersions for various use cases."""
     # CompareVersions(first, second) returns (g, m), where
     #   g is True if first known to be greater than second, else False.
@@ -156,7 +161,22 @@ class TestUtil(testcase.GsUtilUnitTestCase):
     self.assertEqual(pi1.proxy_user, pi2.proxy_user)
     self.assertEqual(pi1.proxy_pass, pi2.proxy_pass)
 
-  def test_ProxyInfoFromEnvironmentVar(self):
+  def testMakeMetadataLine(self):
+    test_params = (
+        TestParams(args=('AFairlyShortKey', 'Value'),
+                   expected='    AFairlyShortKey:        Value'),
+        TestParams(args=('', 'Value'),
+                   expected='    :                       Value'),
+        TestParams(args=('AnotherKey', 'Value'),
+                   kwargs={'indent': 2},
+                   expected='        AnotherKey:         Value'),
+        TestParams(args=('AKeyMuchLongerThanTheLast', 'Value'),
+                   expected=('    AKeyMuchLongerThanTheLast:Value')))
+    for params in test_params:
+      line = util.MakeMetadataLine(*(params.args), **(params.kwargs))
+      self.assertEqual(line, params.expected)
+
+  def testProxyInfoFromEnvironmentVar(self):
     """Tests ProxyInfoFromEnvironmentVar for various cases."""
     valid_variables = ['http_proxy', 'https_proxy']
     if not util.IS_WINDOWS:
@@ -209,3 +229,109 @@ class TestUtil(testcase.GsUtilUnitTestCase):
             self._AssertProxyInfosEqual(
                 util.ProxyInfoFromEnvironmentVar(env_var),
                 httplib2.ProxyInfo(httplib2.socks.PROXY_TYPE_HTTP, None, 0))
+
+  # We want to make sure the wrapped function is called without executing it.
+  @mock.patch.object(util.http_wrapper,
+                     'HandleExceptionsAndRebuildHttpConnections')
+  @mock.patch.object(util.logging, 'info')
+  def testWarnAfterManyRetriesHandler(self, mock_log_info_fn, mock_wrapped_fn):
+    # The only ExceptionRetryArgs attributes that the function cares about are
+    # num_retries and total_wait_sec; we can pass None for the other values.
+    retry_args_over_threshold = util.http_wrapper.ExceptionRetryArgs(
+        None, None, None, 3, None, util.LONG_RETRY_WARN_SEC + 1)
+    retry_args_under_threshold = util.http_wrapper.ExceptionRetryArgs(
+        None, None, None, 2, None, util.LONG_RETRY_WARN_SEC - 1)
+
+    util.LogAndHandleRetries()(retry_args_under_threshold)
+    self.assertTrue(mock_wrapped_fn.called)
+    # Check that we didn't emit a message.
+    self.assertFalse(mock_log_info_fn.called)
+
+    util.LogAndHandleRetries()(retry_args_over_threshold)
+    self.assertEqual(mock_wrapped_fn.call_count, 2)
+    # Check that we did emit a message.
+    self.assertTrue(mock_log_info_fn.called)
+
+  def testUIDecimalShort(self):
+    """Tests DecimalShort for UI."""
+    self.assertEqual('12.3b', DecimalShort(12345678910))
+    self.assertEqual('123.5m', DecimalShort(123456789))
+    self.assertEqual('1.2k', DecimalShort(1234))
+    self.assertEqual('1.0k', DecimalShort(1000))
+    self.assertEqual('432', DecimalShort(432))
+    self.assertEqual('43.2t', DecimalShort(43.25 * 10**12))
+    self.assertEqual('43.2q', DecimalShort(43.25 * 10**15))
+    self.assertEqual('43250.0q', DecimalShort(43.25 * 10**18))
+
+  def testUIPrettyTime(self):
+    """Tests PrettyTime for UI."""
+    self.assertEqual('25:02:10', PrettyTime(90130))
+    self.assertEqual('01:00:00', PrettyTime(3600))
+    self.assertEqual('00:59:59', PrettyTime(3599))
+    self.assertEqual('100+ hrs', PrettyTime(3600*100))
+    self.assertEqual('999+ hrs', PrettyTime(3600*10000))
+
+  def testUIHumanReadableWithDecimalPlaces(self):
+    """Tests HumanReadableWithDecimalPlaces for UI."""
+    self.assertEqual('1.0 GiB', HumanReadableWithDecimalPlaces(1024**3 +
+                                                               1024**2 * 10,
+                                                               1))
+    self.assertEqual('1.0 GiB', HumanReadableWithDecimalPlaces(1024**3), 1)
+    self.assertEqual('1.01 GiB', HumanReadableWithDecimalPlaces(1024**3 +
+                                                                1024**2 * 10,
+                                                                2))
+    self.assertEqual('1.000 GiB', HumanReadableWithDecimalPlaces(1024**3 +
+                                                                 1024**2*5, 3))
+    self.assertEqual('1.10 GiB', HumanReadableWithDecimalPlaces(1024**3 +
+                                                                1024**2 * 100,
+                                                                2))
+    self.assertEqual('1.100 GiB', HumanReadableWithDecimalPlaces(1024**3 +
+                                                                 1024**2 * 100,
+                                                                 3))
+    self.assertEqual('10.00 MiB', HumanReadableWithDecimalPlaces(1024**2 *10,
+                                                                 2))
+    # The test below is good for rounding.
+    self.assertEqual('2.01 GiB', HumanReadableWithDecimalPlaces(2157969408, 2))
+    self.assertEqual('2.0 GiB', HumanReadableWithDecimalPlaces(2157969408, 1))
+    self.assertEqual('0 B', HumanReadableWithDecimalPlaces(0, 0))
+    self.assertEqual('0.00 B', HumanReadableWithDecimalPlaces(0, 2))
+    self.assertEqual('0.00000 B', HumanReadableWithDecimalPlaces(0, 5))
+
+  def DoTestAddQueryParamToUrl(self, url, param_name, param_val, expected_url):
+    new_url = util.AddQueryParamToUrl(url, param_name, param_val)
+    self.assertEqual(new_url, expected_url)
+
+  def testAddQueryParamToUrlWorksForASCIIValues(self):
+    # Note that the params here contain empty values and duplicates.
+    old_url = 'http://foo.bar/path/endpoint?a=1&a=2&b=3&c='
+    param_name = 'newparam'
+    param_val = 'nevalue'
+    expected_url = '{}&{}={}'.format(old_url, param_name, param_val)
+
+    self.DoTestAddQueryParamToUrl(old_url, param_name, param_val, expected_url)
+
+  def testAddQueryParamToUrlWorksForUTF8Values(self):
+    old_url = u'http://foo.bar/path/êndpoint?Â=1&a=2&ß=3&c='.encode('utf-8')
+    param_name = u'nêwparam'.encode('utf-8')
+    param_val = u'nêwvalue'.encode('utf-8')
+    # Expected return value is a UTF-8 encoded `str`.
+    expected_url = '{}&{}={}'.format(old_url, param_name, param_val)
+
+    self.DoTestAddQueryParamToUrl(old_url, param_name, param_val, expected_url)
+
+  def testAddQueryParamToUrlWorksForRawUnicodeValues(self):
+    old_url = u'http://foo.bar/path/êndpoint?Â=1&a=2&ß=3&c='
+    param_name = u'nêwparam'
+    param_val = u'nêwvalue'
+    # Since the original URL was a `unicode`, the returned URL should also be.
+    expected_url = u'{}&{}={}'.format(old_url, param_name, param_val)
+
+    self.DoTestAddQueryParamToUrl(old_url, param_name, param_val, expected_url)
+
+  @mock.patch.object(util, 'GetMaxUploadCompressionBufferSize')
+  def testGetMaxConcurrentCompressedUploadsMinimum(self, mock_config):
+    """Test GetMaxConcurrentCompressedUploads returns at least 1."""
+    mock_config.return_value = 0
+    self.assertEqual(util.GetMaxConcurrentCompressedUploads(), 1)
+    mock_config.return_value = -1
+    self.assertEqual(util.GetMaxConcurrentCompressedUploads(), 1)

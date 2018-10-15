@@ -64,6 +64,10 @@ class CC_EXPORT ScrollbarLayerImplBase : public LayerImpl {
 
   virtual LayerTreeSettings::ScrollbarAnimator GetScrollbarAnimator() const;
 
+  // Only PaintedOverlayScrollbar(Aura Overlay Scrollbar) need to know
+  // tickmarks's state.
+  virtual bool HasFindInPageTickmarks() const;
+
  protected:
   ScrollbarLayerImplBase(LayerTreeImpl* tree_impl,
                          int id,
@@ -96,6 +100,9 @@ class CC_EXPORT ScrollbarLayerImplBase : public LayerImpl {
   // Difference between the clip layer's height and the visible viewport
   // height (which may differ in the presence of top-controls hiding).
   float vertical_adjust_;
+
+  FRIEND_TEST_ALL_PREFIXES(ScrollbarLayerTest,
+                           ScrollElementIdPushedAcrossCommit);
 
   DISALLOW_COPY_AND_ASSIGN(ScrollbarLayerImplBase);
 };

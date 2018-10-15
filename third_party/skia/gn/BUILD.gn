@@ -39,7 +39,6 @@ config("default") {
 
   if (is_win) {
     cflags += [
-      "/FS",  # Preserve previous PDB behavior.
       "/bigobj",  # Some of our files are bigger than the regular limits.
       "/WX",  # Treat warnings as errors.
       "/utf-8",  # Set Source and Executable character sets to UTF-8.
@@ -95,9 +94,8 @@ config("default") {
     cflags += [
       "-fstrict-aliasing",
       "-fPIC",
-      "-Werror",
     ]
-    cflags_cc += [ "-std=c++11" ]
+    cflags_cc += [ "-std=c++14" ]
 
     # The main idea is to slim the exported API, but these flags also improve link time on Mac.
     # These would make stack traces worse on Linux, so we don't just set them willy-nilly.
@@ -113,6 +111,17 @@ config("default") {
       "-mfpu=neon",
       "-mthumb",
     ]
+  } else if (current_cpu == "loongson3a") {
+    asmflags += [ "-march=loongson3a" ]
+    cflags += [
+      "-march=loongson3a",
+
+      # Causes an internal compiler error.
+      "-DSKCMS_PORTABLE",
+    ]
+  } else if (current_cpu == "mips64el") {
+    asmflags += [ "-march=mips64" ]
+    cflags += [ "-march=mips64" ]
   } else if (current_cpu == "x86" && !is_win) {
     asmflags += [ "-m32" ]
     cflags += [
@@ -142,9 +151,9 @@ config("default") {
       "--target=$ndk_target",
     ]
     cflags_cc += [
+      "-isystem$ndk/sources/cxx-stl/llvm-libc++/include",
+      "-isystem$ndk/sources/cxx-stl/llvm-libc++abi/include",
       "-isystem$ndk/sources/android/support/include",
-      "-isystem$ndk/sources/cxx-stl/gnu-libstdc++/4.9/include",
-      "-isystem$ndk/sources/cxx-stl/gnu-libstdc++/4.9/libs/$ndk_stdlib/include",
     ]
     ldflags += [
       "--sysroot=$ndk/platforms/$ndk_platform",
@@ -152,11 +161,17 @@ config("default") {
       "-B$ndk/toolchains/$ndk_gccdir-4.9/prebuilt/$ndk_host/$ndk_target/bin",
     ]
     lib_dirs = [
-      "$ndk/sources/cxx-stl/gnu-libstdc++/4.9/libs/$ndk_stdlib",
+      "$ndk/sources/cxx-stl/llvm-libc++/libs/$ndk_stdlib",
       "$ndk/toolchains/$ndk_gccdir-4.9/prebuilt/$ndk_host/lib/gcc/$ndk_target/4.9.x",
     ]
 
-    libs += [ "gnustl_static" ]
+    libs += [
+      "c++_static",
+      "c++abi",
+    ]
+    if (ndk_api < 21) {
+      libs += [ "android_support" ]
+    }
   }
 
   if (is_ios) {
@@ -193,6 +208,9 @@ config("default") {
 
   if (is_linux) {
     libs += [ "pthread" ]
+    if (is_debug && sanitize == "") {
+      defines += [ "_GLIBCXX_DEBUG" ]
+    }
   }
   if (is_mac) {
     # Disable linker warnings.  They're usually just annoyances like,
@@ -207,13 +225,24 @@ config("default") {
     # You can either pass the sanitizers directly, e.g. "address,undefined",
     # or pass one of the couple common aliases used by the bots.
     sanitizers = sanitize
-    if (sanitize == "ASAN") {
-      sanitizers = "address,bool,float-cast-overflow,integer-divide-by-zero,nonnull-attribute,null,return,returns-nonnull-attribute,shift,signed-integer-overflow,unreachable,vla-bound,vptr"
-      if (!is_mac) {
-        sanitizers += ",function"  # Not supported on Mac.
+
+    # fyi_sanitizers only print out stacktraces of their issues
+    fyi_sanitizers = fyi_sanitize
+    if (sanitize == "ASAN" || sanitize == "UBSAN") {
+      # ASAN implicitly runs all UBSAN checks also.
+      sanitizers = "undefined"
+      if (sanitize == "ASAN") {
+        sanitizers += ",address"
       }
-      if (!is_debug) {
-        sanitizers += ",object-size"  # No-op with somewhat annoying warning at -O0.
+
+      # A whitelist of checks we can't yet pass.
+      if (fyi_sanitize == "" && !is_android) {
+        fyi_sanitizers = "enum,float-divide-by-zero"
+      }
+
+      if (is_android) {
+        # TODO(mtklein): work out UBSAN link errors
+        sanitizers = "address"
       }
     } else if (sanitize == "TSAN") {
       sanitizers = "thread"
@@ -221,16 +250,32 @@ config("default") {
       sanitizers = "memory"
     }
 
+    _blacklist = rebase_path("../tools/xsan.blacklist")
+
     cflags += [
       "-fsanitize=$sanitizers",
       "-fno-sanitize-recover=$sanitizers",
-      "-fsanitize-blacklist=" + rebase_path("../tools/xsan.blacklist"),
+      "-fsanitize-recover=$fyi_sanitizers",
+      "-fsanitize-blacklist=$_blacklist",
     ]
     ldflags += [ "-fsanitize=$sanitizers" ]
-    if (sanitizers == "memory") {
-      cflags += [ "-fsanitize-memory-track-origins" ]
+
+    if (is_win) {
+      cflags += [ "/FI$_blacklist" ]
+    } else {
+      cflags += [
+        "-include$_blacklist",
+        "-fno-omit-frame-pointer",
+      ]
+    }
+
+    if (is_linux) {
       cflags_cc += [ "-stdlib=libc++" ]
       ldflags += [ "-stdlib=libc++" ]
+    }
+
+    if (sanitizers == "memory") {
+      cflags += [ "-fsanitize-memory-track-origins" ]
     }
   }
 }
@@ -262,6 +307,7 @@ config("warnings") {
     ]
   } else {
     cflags += [
+      "-Werror",
       "-Wall",
       "-Wextra",
       "-Winit-self",
@@ -272,7 +318,10 @@ config("warnings") {
       "-Wno-deprecated-declarations",
       "-Wno-maybe-uninitialized",
     ]
-    cflags_cc += [ "-Wnon-virtual-dtor" ]
+    cflags_cc += [
+      "-Wnon-virtual-dtor",
+      "-Wno-noexcept-type",
+    ]
   }
 
   if (is_clang) {
@@ -284,6 +333,11 @@ config("warnings") {
     if (target_cpu == "arm" && is_ios) {
       # Clang seems to think new/malloc will only be 4-byte aligned on 32-bit iOS.
       # We're pretty sure it's actually 8-byte alignment.
+      cflags += [ "-Wno-over-aligned" ]
+    }
+    if (target_cpu == "x86" && is_android) {
+      # Clang seems to think new/malloc will only be 4-byte aligned on 32-bit x86 Android builds.
+      # We're pretty sure it's actually 8-byte alignment.  See OverAlignedTest.cpp for more info.
       cflags += [ "-Wno-over-aligned" ]
     }
 
@@ -298,25 +352,21 @@ config("warnings") {
     cflags += [
       "-Wno-cast-align",
       "-Wno-cast-qual",
-      "-Wno-conditional-uninitialized",
       "-Wno-conversion",
       "-Wno-disabled-macro-expansion",
       "-Wno-documentation",
       "-Wno-documentation-unknown-command",
       "-Wno-double-promotion",
       "-Wno-exit-time-destructors",  # TODO: OK outside libskia
-      "-Wno-float-conversion",
       "-Wno-float-equal",
       "-Wno-format-nonliteral",
       "-Wno-global-constructors",  # TODO: OK outside libskia
-      "-Wno-gnu-zero-variadic-macro-arguments",
       "-Wno-missing-prototypes",
       "-Wno-missing-variable-declarations",
       "-Wno-pedantic",
       "-Wno-reserved-id-macro",
       "-Wno-shadow",
       "-Wno-shift-sign-overflow",
-      "-Wno-sign-conversion",
       "-Wno-signed-enum-bitfield",
       "-Wno-switch-enum",
       "-Wno-undef",
@@ -335,9 +385,9 @@ config("warnings") {
 
     # We are unlikely to want to fix these.
     cflags += [
+      "-Wno-bad-function-cast",
       "-Wno-covered-switch-default",
       "-Wno-deprecated",
-      "-Wno-implicit-fallthrough",
       "-Wno-missing-noreturn",
       "-Wno-old-style-cast",
       "-Wno-padded",
@@ -356,6 +406,9 @@ config("warnings") {
       "-Wno-direct-ivar-access",
       "-Wno-objcc-interface-ivars",
     ]
+  }
+  if (!is_win || is_clang) {
+    cflags += [ "-Wno-implicit-fallthrough" ]
   }
 }
 config("warnings_except_public_headers") {
@@ -381,8 +434,12 @@ config("debug_symbols") {
       "-funwind-tables",  # Helps make in-process backtraces fuller.
     ]
   } else if (is_win) {
-    cflags = [ "/Zi" ]
-    ldflags = [ "/DEBUG" ]
+    cflags = [ "/Z7" ]
+    ldflags = [ "/DEBUG:FASTLINK" ]
+    if (is_clang) {
+      # /DEBUG:FASTLINK requires every object file to have standalone debug information.
+      cflags += [ "-fstandalone-debug" ]
+    }
   } else {
     cflags = [ "-g" ]
   }
@@ -398,12 +455,11 @@ config("no_rtti") {
   }
 }
 
-config("release") {
+config("optimize") {
   if (is_win) {
     cflags = [
       "/O2",
       "/Zc:inline",
-      "/GS-",
     ]
     ldflags = [
       "/OPT:ICF",
@@ -428,6 +484,9 @@ config("release") {
       ldflags += [ "-O3" ]
     }
   }
+}
+
+config("NDEBUG") {
   defines = [ "NDEBUG" ]
 }
 

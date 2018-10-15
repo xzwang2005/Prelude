@@ -8,6 +8,7 @@
 #include "gm.h"
 
 #if SK_SUPPORT_ATLAS_TEXT
+#include "GrContext.h"
 
 #include "SkAtlasTextContext.h"
 #include "SkAtlasTextFont.h"
@@ -15,7 +16,7 @@
 #include "SkBitmap.h"
 #include "SkCanvas.h"
 #include "SkTypeface.h"
-#include "SkUtils.h"
+#include "SkUTF.h"
 #include "gpu/TestContext.h"
 #include "gpu/atlastext/GLTestAtlasTextRenderer.h"
 #include "gpu/atlastext/TestAtlasTextRenderer.h"
@@ -29,7 +30,7 @@ static SkScalar draw_string(SkAtlasTextTarget* target, const SkString& text, SkS
         return x;
     }
     auto font = SkAtlasTextFont::Make(typeface, size);
-    int cnt = SkUTF8_CountUnichars(text.c_str());
+    int cnt = SkUTF::CountUTF8(text.c_str(), text.size());
     std::unique_ptr<SkGlyphID[]> glyphs(new SkGlyphID[cnt]);
     typeface->charsToGlyphs(text.c_str(), SkTypeface::Encoding::kUTF8_Encoding, glyphs.get(), cnt);
 
@@ -49,7 +50,8 @@ static SkScalar draw_string(SkAtlasTextTarget* target, const SkString& text, SkS
 
     target->drawText(glyphs.get(), positions.get(), cnt, color, *font);
 
-    return positions[cnt - 1].fX + widths[cnt - 1];
+    // Return the width of the of draw.
+    return positions[cnt - 1].fX + widths[cnt - 1] - positions[0].fX;
 }
 
 class AtlasTextGM : public skiagm::GM {
@@ -68,6 +70,10 @@ protected:
         }
         fContext = SkAtlasTextContext::Make(fRenderer);
         auto targetHandle = fRenderer->makeTargetHandle(kSize, kSize);
+        if (!targetHandle) {
+            return;
+        }
+
         fTarget = SkAtlasTextTarget::Make(fContext, kSize, kSize, targetHandle);
 
         fTypefaces[0] = sk_tool_utils::create_portable_typeface("serif", SkFontStyle::Italic());
@@ -81,7 +87,7 @@ protected:
     }
 
     void onDraw(SkCanvas* canvas) override {
-        if (!fRenderer) {
+        if (!fRenderer || !fTarget || !fTarget->handle()) {
             canvas->clear(SK_ColorRED);
             return;
         }
@@ -109,12 +115,30 @@ private:
                 auto size = 2 * s;
                 for (const auto& typeface : fTypefaces) {
                     for (const auto& text : kTexts) {
-                        uint32_t color = random.nextU();
-                        x = size + draw_string(fTarget.get(), text, x, y, color, typeface, size);
+                        // Choose a random color but don't let alpha be too small to see.
+                        uint32_t color = random.nextU() | 0x40000000;
+                        fTarget->save();
+                        // Randomly add a little bit of perspective
+                        if (random.nextBool()) {
+                            SkMatrix persp;
+                            persp.reset();
+                            persp.setPerspY(0.0005f);
+                            persp.preTranslate(-x, -y + s);
+                            persp.postTranslate(x, y - s);
+                            fTarget->concat(persp);
+                        }
+                        // Randomly switch between positioning with a matrix vs x, y passed to draw.
+                        SkScalar drawX = x, drawY = y;
+                        if (random.nextBool()) {
+                            fTarget->translate(x, y);
+                            drawX = drawY = 0;
+                        }
+                        x += size +
+                             draw_string(fTarget.get(), text, drawX, drawY, color, typeface, size);
                         x = SkScalarCeilToScalar(x);
-                        // Flush periodically to test continued drawing after a flush. Using color
-                        // to avoid churning the RNG and having to rebaseline images.
-                        if (!(color & 0xf)) {
+                        fTarget->restore();
+                        // Flush periodically to test continued drawing after a flush.
+                        if ((random.nextU() % 8) == 0) {
                             fTarget->flush();
                         }
                         if (x + 100 > kSize) {

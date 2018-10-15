@@ -2,6 +2,7 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
+import("//build/config/jumbo.gni")
 import("//build/config/ui.gni")
 import("//testing/test.gni")
 
@@ -9,7 +10,7 @@ if (is_android) {
   import("//build/config/android/rules.gni")
 }
 
-component("touch_selection") {
+jumbo_component("touch_selection") {
   output_name = "ui_touch_selection"
 
   sources = [
@@ -38,7 +39,7 @@ component("touch_selection") {
 
   if (use_aura) {
     deps += [
-      "//services/ui/public/interfaces",
+      "//services/ws/public/mojom",
       "//skia:skia",
       "//ui/aura",
       "//ui/aura_extra",
@@ -90,7 +91,7 @@ test("ui_touch_selection_unittests") {
   ]
 
   data_deps = [
-    "//third_party/mesa:osmesa",
+    "//third_party/mesa_headers",
   ]
 }
 

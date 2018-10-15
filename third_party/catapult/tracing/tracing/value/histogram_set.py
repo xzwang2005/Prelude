@@ -8,6 +8,7 @@ from tracing.value import histogram as histogram_module
 from tracing.value.diagnostics import all_diagnostics
 from tracing.value.diagnostics import diagnostic
 from tracing.value.diagnostics import diagnostic_ref
+from tracing.value.diagnostics import generic_set
 
 class HistogramSet(object):
   def __init__(self, histograms=()):
@@ -19,6 +20,21 @@ class HistogramSet(object):
   @property
   def shared_diagnostics(self):
     return self._shared_diagnostics_by_guid.itervalues()
+
+  def RemoveOrphanedDiagnostics(self):
+    orphans = set(self._shared_diagnostics_by_guid.keys())
+    for h in self._histograms_by_guid.itervalues():
+      for d in h.diagnostics.itervalues():
+        if d.guid in orphans:
+          orphans.remove(d.guid)
+    for guid in orphans:
+      del self._shared_diagnostics_by_guid[guid]
+
+  def FilterHistograms(self, discard):
+    self._histograms_by_guid = dict(
+        (guid, hist)
+        for guid, hist in self._histograms_by_guid.iteritems()
+        if not discard(hist))
 
   def AddHistogram(self, hist, diagnostics=None):
     if hist.guid in self._histograms_by_guid:
@@ -76,7 +92,7 @@ class HistogramSet(object):
 
   def ImportDicts(self, dicts):
     for d in dicts:
-      if all_diagnostics.DIAGNOSTICS_BY_NAME.get(d.get('type')):
+      if d.get('type') in all_diagnostics.GetDiagnosticTypenames():
         diag = diagnostic.Diagnostic.FromDict(d)
         self._shared_diagnostics_by_guid[d['guid']] = diag
       else:
@@ -96,6 +112,20 @@ class HistogramSet(object):
     if not isinstance(new_diagnostic, diagnostic_ref.DiagnosticRef):
       self._shared_diagnostics_by_guid[new_diagnostic.guid] = new_diagnostic
 
+    old_diagnostic = self._shared_diagnostics_by_guid.get(old_guid)
+
+    # Fast path, if they're both generic_sets, we overwrite the contents of the
+    # old diagnostic.
+    if isinstance(new_diagnostic, generic_set.GenericSet) and (
+        isinstance(old_diagnostic, generic_set.GenericSet)):
+      old_diagnostic.SetValues(list(new_diagnostic))
+      old_diagnostic.ResetGuid(new_diagnostic.guid)
+
+      self._shared_diagnostics_by_guid[new_diagnostic.guid] = old_diagnostic
+      del self._shared_diagnostics_by_guid[old_guid]
+
+      return
+
     for hist in self:
       for name, diag in hist.diagnostics.iteritems():
         if diag.has_guid and diag.guid == old_guid:
@@ -107,11 +137,6 @@ class HistogramSet(object):
 
     for hist in self:
       for name, candidate in hist.diagnostics.iteritems():
-        # TODO(#3695): Remove this check once equality is smoke-tested.
-        if not hasattr(candidate, '__eq__'):
-          self._shared_diagnostics_by_guid[candidate.guid] = candidate
-          continue
-
         diagnostics_to_histograms[candidate].append(hist)
 
         if name not in names_to_candidates:

@@ -9,8 +9,9 @@
 #include "base/lazy_instance.h"
 #include "base/observer_list.h"
 #include "build/build_config.h"
-#include "ui/accessibility/ax_enums.h"
+#include "ui/accessibility/ax_enums.mojom.h"
 #include "ui/accessibility/ax_export.h"
+#include "ui/accessibility/ax_mode.h"
 #include "ui/accessibility/ax_mode_observer.h"
 #include "ui/gfx/native_widget_types.h"
 
@@ -49,9 +50,36 @@ class AX_EXPORT AXPlatformNode {
   static void AddAXModeObserver(AXModeObserver* observer);
   static void RemoveAXModeObserver(AXModeObserver* observer);
 
+  // Convenience method to get the current accessibility mode.
+  static AXMode GetAccessibilityMode() { return ax_mode_; }
+
   // Helper static function to notify all global observers about
   // the addition of an AXMode flag.
   static void NotifyAddAXModeFlags(AXMode mode_flags);
+
+  // Must be called by native suggestion code when there are suggestions which
+  // could be presented in a popup, even if the popup is not presently visible.
+  // The availability of the popup changes the interactions that will occur
+  // (down arrow will move the focus into the suggestion popup). An example of a
+  // suggestion popup is seen in the Autofill feature.
+  // TODO(crbug.com/865101) Remove this once the autofill state works.
+  static void OnInputSuggestionsAvailable();
+  // Must be called when the system goes from a state of having an available
+  // suggestion popup to none available. If the suggestion popup is still
+  // available but just hidden, this method should not be called.
+  // TODO(crbug.com/865101) Remove this once the autofill state works.
+  static void OnInputSuggestionsUnavailable();
+
+  // TODO(crbug.com/865101) Remove this once the autofill state works.
+  static bool HasInputSuggestions();
+
+  // Return the focused object in any UI popup overlaying content, or null.
+  static gfx::NativeViewAccessible GetPopupFocusOverride();
+
+  // Set the focused object withn any UI popup overlaying content, or null.
+  // The focus override is the perceived focus within the popup, and it changes
+  // each time a user navigates to a new item within the popup.
+  static void SetPopupFocusOverride(gfx::NativeViewAccessible focus_override);
 
   // Call Destroy rather than deleting this, because the subclass may
   // use reference counting.
@@ -64,10 +92,18 @@ class AX_EXPORT AXPlatformNode {
 
   // Fire a platform-specific notification that an event has occurred on
   // this object.
-  virtual void NotifyAccessibilityEvent(AXEvent event_type) = 0;
+  virtual void NotifyAccessibilityEvent(ax::mojom::Event event_type) = 0;
+
+#if defined(OS_MACOSX)
+  // Fire a platform-specific notification to announce |text|.
+  virtual void AnnounceText(base::string16& text) = 0;
+#endif
 
   // Return this object's delegate.
   virtual AXPlatformNodeDelegate* GetDelegate() const = 0;
+
+  // Return the unique ID
+  int32_t GetUniqueId() const;
 
  protected:
   AXPlatformNode();
@@ -75,11 +111,22 @@ class AX_EXPORT AXPlatformNode {
 
  private:
   // Global ObserverList for AXMode changes.
-  static base::LazyInstance<base::ObserverList<AXModeObserver>>::Leaky
-      ax_mode_observers_;
+  static base::LazyInstance<
+      base::ObserverList<AXModeObserver>::Unchecked>::Leaky ax_mode_observers_;
 
   static base::LazyInstance<NativeWindowHandlerCallback>::Leaky
       native_window_handler_;
+
+  static AXMode ax_mode_;
+
+  static bool has_input_suggestions_;
+
+  // This allows UI menu popups like to act as if they are focused in the
+  // exposed platform accessibility API, even though actual focus remains in
+  // underlying content.
+  static gfx::NativeViewAccessible popup_focus_override_;
+
+  DISALLOW_COPY_AND_ASSIGN(AXPlatformNode);
 };
 
 }  // namespace ui

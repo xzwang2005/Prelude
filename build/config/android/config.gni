@@ -4,9 +4,30 @@
 
 # This file contains common system config stuff for the Android build.
 
-if (is_android) {
+# NOTE: Because Chrome OS builds may depend on targets built with the Android
+# toolchain, this GNI file may be read and processed from within Chrome OS
+# toolchains. Checking |is_android| here would therefore be too restrictive.
+if (is_android || is_chromeos) {
+  import("//build/config/chromecast_build.gni")
   import("//build_overrides/build.gni")
   import("abi.gni")
+
+  if (build_with_chromium) {
+    # Some non-chromium projects (e.g. WebRTC) use our build configs
+    # heavily but don't write gclient args files.
+
+    import("//build/config/gclient_args.gni")
+    if (defined(checkout_android_native_support)) {
+      n = "$0x0A"  # Newline
+      assert(checkout_android_native_support,
+             "Missing native Android toolchain support. |target_os| in your " +
+                 ".gclient configuration file (in the parent directory of " +
+                 "src) must include \"android\" and/or \"chromeos\". For " +
+                 "example:${n}${n}solutions = [${n}...${n}]${n}" +
+                 "target_os=[\"chromeos\"]${n}${n}" +
+                 "After adding |target_os| please re-run \"gclient sync\".${n}")
+    }
+  }
 
   has_chrome_android_internal =
       exec_script("//build/dir_exists.py",
@@ -23,6 +44,12 @@ if (is_android) {
     # The main purpose of this argument is to avoid having to maintain 2
     # repositories to support both public only and internal builds.
     enable_chrome_android_internal = has_chrome_android_internal
+
+    # Android API level for 32 bits platforms
+    android32_ndk_api_level = 16
+
+    # Android API level for 64 bits platforms
+    android64_ndk_api_level = 21
   }
 
   if (enable_chrome_android_internal) {
@@ -43,9 +70,9 @@ if (is_android) {
   }
 
   if (!defined(default_android_ndk_root)) {
-    default_android_ndk_root = "//third_party/android_tools/ndk"
-    default_android_ndk_version = "r12b"
-    default_android_ndk_major_version = 12
+    default_android_ndk_root = "//third_party/android_ndk"
+    default_android_ndk_version = "r16"
+    default_android_ndk_major_version = 16
   } else {
     assert(defined(default_android_ndk_version))
     assert(defined(default_android_ndk_major_version))
@@ -53,8 +80,16 @@ if (is_android) {
 
   if (android_sdk_release == "o_mr1") {
     default_android_sdk_root = "//third_party/android_tools/sdk"
-    default_android_sdk_version = "27"
-    default_android_sdk_build_tools_version = "27.0.1"
+    default_android_sdk_version = 27
+    default_android_sdk_build_tools_version = "27.0.3"
+    default_android_sdk_tools_version_suffix = "-26.0.0-dev"
+    public_android_sdk = true
+  }
+
+  if (android_sdk_release == "p") {
+    default_android_sdk_root = "//third_party/android_tools/sdk"
+    default_android_sdk_version = 28
+    default_android_sdk_build_tools_version = "27.0.3"
     default_android_sdk_tools_version_suffix = "-26.0.0-dev"
     public_android_sdk = true
   }
@@ -63,7 +98,7 @@ if (is_android) {
     # Purposefully repeated so that downstream can change
     # default_android_sdk_root without changing lint version.
     default_lint_android_sdk_root = "//third_party/android_tools/sdk"
-    default_lint_android_sdk_version = "26"
+    default_lint_android_sdk_version = 26
   }
 
   if (!defined(default_extras_android_sdk_root)) {
@@ -82,21 +117,21 @@ if (is_android) {
   # google_play_services_package contains the path where individual client
   # targets (e.g. google_play_services_base_java) are located.
   if (!defined(google_play_services_package)) {
-    google_play_services_package = "//third_party/android_tools"
-  }
-
-  if (!defined(android_support_library_package)) {
-    android_support_library_package = "//third_party/android_tools/support"
+    if (is_chromecast && chromecast_branding != "public") {
+      google_play_services_package = "//chromecast/internal/android/prebuilt/google-play-services-first-party"
+    } else {
+      google_play_services_package = "//third_party/android_deps"
+    }
   }
 
   if (!defined(system_webview_apk_target)) {
     system_webview_apk_target = "//android_webview:system_webview_apk"
   }
 
-  webview_public_framework_jar =
-      "//third_party/android_system_sdk/android_system.jar"
-  if (!defined(webview_framework_jar)) {
-    webview_framework_jar = webview_public_framework_jar
+  webview_public_framework_dep =
+      "//third_party/android_system_sdk:public_framework_system_java"
+  if (!defined(webview_framework_dep)) {
+    webview_framework_dep = webview_public_framework_dep
   }
 
   assert(defined(default_android_sdk_root),
@@ -132,9 +167,6 @@ if (is_android) {
 
     # The password for the keystore to use for signing builds.
     android_keystore_password = default_android_keystore_password
-
-    # Enables verbose proguard output (summaries and unfiltered output).
-    proguard_verbose = false
 
     # Java debug on Android. Having this on enables multidexing, and turning it
     # off will enable proguard.
@@ -174,6 +206,17 @@ if (is_android) {
     # When true, updates all android_aar_prebuilt() .info files during gn gen.
     # Refer to android_aar_prebuilt() for more details.
     update_android_aar_prebuilts = false
+
+    # Turns off android lint. Useful for prototyping or for faster local builds.
+    disable_android_lint = false
+
+    # Location of aapt2 binary used for app bundles. For now, a more recent version
+    # than the one distributed with the Android SDK is required.
+    android_sdk_tools_bundle_aapt2 =
+        "//third_party/android_build_tools/aapt2/aapt2"
+
+    # Path to r8.jar. If specified, will be used instead of ProGuard for optimization.
+    experimental_r8_path = ""
   }
 
   # We need a second declare_args block to make sure we are using the overridden
@@ -228,10 +271,6 @@ if (is_android) {
 
   android_sdk =
       "${android_sdk_root}/platforms/android-${android_sdk_platform_version}"
-
-  # Path to the Android NDK and SDK.
-  android_ndk_include_dir = "$android_ndk_root/usr/include"
-
   android_sdk_tools = "${android_sdk_root}/tools"
   android_sdk_build_tools =
       "${android_sdk_root}/build-tools/$android_sdk_build_tools_version"
@@ -239,27 +278,20 @@ if (is_android) {
   # Path to the SDK's android.jar
   android_sdk_jar = "$android_sdk/android.jar"
 
-  zipalign_path = "$android_sdk_build_tools/zipalign"
-
   # Subdirectories inside android_ndk_root that contain the sysroot for the
   # associated platform.
-  # If you raise this, reevaluate the snprintf=snprintf in ./BUILD.gn.
-  _android_api_level = 16
   x86_android_sysroot_subdir =
-      "platforms/android-${_android_api_level}/arch-x86"
+      "platforms/android-${android32_ndk_api_level}/arch-x86"
   arm_android_sysroot_subdir =
-      "platforms/android-${_android_api_level}/arch-arm"
+      "platforms/android-${android32_ndk_api_level}/arch-arm"
   mips_android_sysroot_subdir =
-      "platforms/android-${_android_api_level}/arch-mips"
-
-  # If you raise this, reevaluate the snprintf=snprintf in ./BUILD.gn.
-  _android64_api_level = 21
+      "platforms/android-${android32_ndk_api_level}/arch-mips"
   x86_64_android_sysroot_subdir =
-      "platforms/android-${_android64_api_level}/arch-x86_64"
+      "platforms/android-${android64_ndk_api_level}/arch-x86_64"
   arm64_android_sysroot_subdir =
-      "platforms/android-${_android64_api_level}/arch-arm64"
+      "platforms/android-${android64_ndk_api_level}/arch-arm64"
   mips64_android_sysroot_subdir =
-      "platforms/android-${_android64_api_level}/arch-mips64"
+      "platforms/android-${android64_ndk_api_level}/arch-mips64"
 
   # Toolchain root directory for each build. The actual binaries are inside
   # a "bin" directory inside of these.
@@ -322,10 +354,4 @@ if (is_android) {
   if (android_libcpp_lib_dir == "") {
     android_libcpp_lib_dir = "${android_libcpp_root}/libs/${android_app_abi}"
   }
-}
-
-declare_args() {
-  # Enables used resource whitelist generation. Set for official builds only
-  # as a large amount of build output is generated.
-  enable_resource_whitelist_generation = is_android && is_official_build
 }

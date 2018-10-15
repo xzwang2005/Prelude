@@ -16,6 +16,7 @@
 #include "SkPDFTypes.h"
 #include "SkPDFUtils.h"
 #include "SkStream.h"
+#include "SkTo.h"
 #include "SkUnPreMultiply.h"
 
 bool image_compute_is_opaque(const SkImage* image) {
@@ -376,8 +377,8 @@ public:
     SkISize fSize;
     sk_sp<SkData> fData;
     bool fIsYUV;
-    PDFJpegBitmap(SkISize size, SkData* data, bool isYUV)
-        : fSize(size), fData(SkRef(data)), fIsYUV(isYUV) { SkASSERT(data); }
+    PDFJpegBitmap(SkISize size, sk_sp<SkData> data, bool isYUV)
+        : fSize(size), fData(std::move(data)), fIsYUV(isYUV) { SkASSERT(fData); }
     void emitObject(SkWStream*, const SkPDFObjNumMap&) const override;
     void drop() override { fData = nullptr; }
 };
@@ -406,44 +407,47 @@ void PDFJpegBitmap::emitObject(SkWStream* stream,
 }  // namespace
 
 ////////////////////////////////////////////////////////////////////////////////
-
-sk_sp<SkPDFObject> SkPDFCreateBitmapObject(sk_sp<SkImage> image,
-                                           SkPixelSerializer* pixelSerializer) {
-    SkASSERT(image);
-    sk_sp<SkData> data = image->refEncodedData();
-    SkJFIFInfo info;
-    if (data && SkIsJFIF(data.get(), &info) &&
-        (!pixelSerializer ||
-         pixelSerializer->useEncodedData(data->data(), data->size()))) {
-        // If there is a SkPixelSerializer, give it a chance to
-        // re-encode the JPEG with more compression by returning false
-        // from useEncodedData.
-        bool yuv = info.fType == SkJFIFInfo::kYCbCr;
-        if (info.fSize == image->dimensions()) {  // Sanity check.
+sk_sp<PDFJpegBitmap> make_jpeg_bitmap(sk_sp<SkData> data, SkISize size) {
+    SkISize jpegSize;
+    SkEncodedInfo::Color jpegColorType;
+    SkEncodedOrigin exifOrientation;
+    if (data && SkGetJpegInfo(data->data(), data->size(), &jpegSize,
+                              &jpegColorType, &exifOrientation)) {
+        bool yuv = jpegColorType == SkEncodedInfo::kYUV_Color;
+        bool goodColorType = yuv || jpegColorType == SkEncodedInfo::kGray_Color;
+        if (jpegSize == size  // Sanity check.
+                && goodColorType
+                && kTopLeft_SkEncodedOrigin == exifOrientation) {
             // hold on to data, not image.
             #ifdef SK_PDF_IMAGE_STATS
             gJpegImageObjects.fetch_add(1);
             #endif
-            return sk_make_sp<PDFJpegBitmap>(info.fSize, data.get(), yuv);
+            return sk_make_sp<PDFJpegBitmap>(jpegSize, std::move(data), yuv);
         }
     }
+    return nullptr;
+}
 
-    if (pixelSerializer) {
-        SkBitmap bm;
-        SkPixmap pmap;
-        if (SkPDFUtils::ToBitmap(image.get(), &bm) && bm.peekPixels(&pmap)) {
-            data = pixelSerializer->encodeToData(pmap);
-            if (data && SkIsJFIF(data.get(), &info)) {
-                bool yuv = info.fType == SkJFIFInfo::kYCbCr;
-                if (info.fSize == image->dimensions()) {  // Sanity check.
-                    return sk_make_sp<PDFJpegBitmap>(info.fSize, data.get(), yuv);
-                }
-            }
+sk_sp<SkPDFObject> SkPDFCreateBitmapObject(sk_sp<SkImage> image, int encodingQuality) {
+    SkASSERT(image);
+    SkASSERT(encodingQuality >= 0);
+    SkISize dimensions = image->dimensions();
+    sk_sp<SkData> data = image->refEncodedData();
+    if (auto jpeg = make_jpeg_bitmap(std::move(data), dimensions)) {
+        return std::move(jpeg);
+    }
+
+    const bool isOpaque = image_compute_is_opaque(image.get());
+
+    if (encodingQuality <= 100 && isOpaque) {
+        data = image->encodeToData(SkEncodedImageFormat::kJPEG, encodingQuality);
+        if (auto jpeg = make_jpeg_bitmap(std::move(data), dimensions)) {
+            return std::move(jpeg);
         }
     }
 
     sk_sp<SkPDFObject> smask;
-    if (!image_compute_is_opaque(image.get())) {
+    if (!isOpaque) {
         smask = sk_make_sp<PDFAlphaBitmap>(image);
     }
     #ifdef SK_PDF_IMAGE_STATS

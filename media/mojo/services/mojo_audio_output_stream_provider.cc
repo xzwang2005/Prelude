@@ -6,6 +6,9 @@
 
 #include <utility>
 
+#include "build/build_config.h"
+#include "mojo/public/cpp/bindings/message.h"
+
 namespace media {
 
 MojoAudioOutputStreamProvider::MojoAudioOutputStreamProvider(
@@ -20,8 +23,9 @@ MojoAudioOutputStreamProvider::MojoAudioOutputStreamProvider(
       observer_binding_(observer_.get()) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   // Unretained is safe since |this| owns |binding_|.
-  binding_.set_connection_error_handler(base::Bind(
-      &MojoAudioOutputStreamProvider::OnError, base::Unretained(this)));
+  binding_.set_connection_error_handler(
+      base::BindOnce(&MojoAudioOutputStreamProvider::CleanUp,
+                     base::Unretained(this), /*had_error*/ false));
   DCHECK(create_delegate_callback_);
   DCHECK(deleter_callback_);
 }
@@ -31,34 +35,54 @@ MojoAudioOutputStreamProvider::~MojoAudioOutputStreamProvider() {
 }
 
 void MojoAudioOutputStreamProvider::Acquire(
-    mojom::AudioOutputStreamRequest stream_request,
-    mojom::AudioOutputStreamClientPtr client,
     const AudioParameters& params,
-    AcquireCallback callback) {
+    mojom::AudioOutputStreamProviderClientPtr provider_client,
+    const base::Optional<base::UnguessableToken>& processing_id) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  if (audio_output_) {
-    LOG(ERROR) << "Output acquired twice.";
-    binding_.Unbind();
-    observer_binding_.Unbind();
-    std::move(deleter_callback_).Run(this);  // deletes |this|.
+// |processing_id| gets dropped here. It's not supported outside of the audio
+// service. As this class is slated for removal, it will not be updated to
+// support audio processing.
+#if !defined(OS_ANDROID)
+  if (params.IsBitstreamFormat()) {
+    // Bitstream streams are only supported on Android.
+    BadMessage(
+        "Attempted to acquire a bitstream audio stream on a platform where "
+        "it's not supported");
     return;
   }
+#endif
+  if (audio_output_) {
+    BadMessage("Output acquired twice.");
+    return;
+  }
+
+  provider_client_ = std::move(provider_client);
 
   mojom::AudioOutputStreamObserverPtr observer_ptr;
   observer_binding_.Bind(mojo::MakeRequest(&observer_ptr));
   // Unretained is safe since |this| owns |audio_output_|.
-  audio_output_.emplace(std::move(stream_request), std::move(client),
-                        base::BindOnce(std::move(create_delegate_callback_),
-                                       params, std::move(observer_ptr)),
-                        std::move(callback),
-                        base::BindOnce(&MojoAudioOutputStreamProvider::OnError,
-                                       base::Unretained(this)));
+  audio_output_.emplace(
+      base::BindOnce(std::move(create_delegate_callback_), params,
+                     std::move(observer_ptr)),
+      base::BindOnce(&mojom::AudioOutputStreamProviderClient::Created,
+                     base::Unretained(provider_client_.get())),
+      base::BindOnce(&MojoAudioOutputStreamProvider::CleanUp,
+                     base::Unretained(this)));
 }
 
-void MojoAudioOutputStreamProvider::OnError() {
-  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  // Deletes |this|:
+void MojoAudioOutputStreamProvider::CleanUp(bool had_error) {
+  if (had_error) {
+    provider_client_.ResetWithReason(
+        static_cast<uint32_t>(media::mojom::AudioOutputStreamObserver::
+                                  DisconnectReason::kPlatformError),
+        std::string());
+  }
   std::move(deleter_callback_).Run(this);
+}
+
+void MojoAudioOutputStreamProvider::BadMessage(const std::string& error) {
+  mojo::ReportBadMessage(error);
+  std::move(deleter_callback_).Run(this);  // deletes |this|.
 }
 
 }  // namespace media

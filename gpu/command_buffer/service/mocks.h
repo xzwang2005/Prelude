@@ -32,7 +32,7 @@ class AsyncAPIMock : public AsyncAPIInterface {
  public:
   explicit AsyncAPIMock(bool default_do_commands,
                         CommandBufferServiceBase* command_buffer_service);
-  virtual ~AsyncAPIMock();
+  ~AsyncAPIMock() override;
 
   error::Error FakeDoCommands(unsigned int num_commands,
                               const volatile void* buffer,
@@ -119,7 +119,7 @@ class MockShaderTranslator : public ShaderTranslatorInterface {
 class MockProgramCache : public ProgramCache {
  public:
   MockProgramCache();
-  virtual ~MockProgramCache();
+  ~MockProgramCache() override;
 
   MOCK_METHOD7(LoadLinkedProgram,
                ProgramLoadResult(
@@ -129,7 +129,7 @@ class MockProgramCache : public ProgramCache {
                    const LocationMap* bind_attrib_location_map,
                    const std::vector<std::string>& transform_feedback_varyings,
                    GLenum transform_feedback_buffer_mode,
-                   GLES2DecoderClient* client));
+                   DecoderClient* client));
 
   MOCK_METHOD7(SaveLinkedProgram,
                void(GLuint program,
@@ -138,7 +138,7 @@ class MockProgramCache : public ProgramCache {
                     const LocationMap* bind_attrib_location_map,
                     const std::vector<std::string>& transform_feedback_varyings,
                     GLenum transform_feedback_buffer_mode,
-                    GLES2DecoderClient* client));
+                    DecoderClient* client));
   MOCK_METHOD2(LoadProgram, void(const std::string&, const std::string&));
   MOCK_METHOD1(Trim, size_t(size_t));
 
@@ -149,18 +149,13 @@ class MockProgramCache : public ProgramCache {
 class MockMemoryTracker : public MemoryTracker {
  public:
   MockMemoryTracker();
+  ~MockMemoryTracker() override;
 
-  MOCK_METHOD2(TrackMemoryAllocatedChange, void(
-      size_t old_size, size_t new_size));
-  MOCK_METHOD1(EnsureGPUMemoryAvailable, bool(size_t size_needed));
+  MOCK_METHOD1(TrackMemoryAllocatedChange, void(uint64_t delta));
+  uint64_t GetSize() const override { return 0; }
   MOCK_CONST_METHOD0(ClientTracingId, uint64_t());
   MOCK_CONST_METHOD0(ClientId, int());
-  MOCK_CONST_METHOD0(ShareGroupTracingGUID, uint64_t());
-
- private:
-  friend class ::testing::StrictMock<MockMemoryTracker>;
-  friend class base::RefCounted< ::testing::StrictMock<MockMemoryTracker> >;
-  virtual ~MockMemoryTracker();
+  MOCK_CONST_METHOD0(ContextGroupTracingId, uint64_t());
 };
 
 }  // namespace gles2

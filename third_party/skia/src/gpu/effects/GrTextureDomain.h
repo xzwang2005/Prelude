@@ -89,7 +89,6 @@ public:
             for (int i = 0; i < kPrevDomainCount; i++) {
                 fPrevDomain[i] = SK_FloatNaN;
             }
-            SkDEBUGCODE(fMode = (Mode) -1;)
         }
 
         /**
@@ -134,6 +133,7 @@ public:
     private:
         static const int kPrevDomainCount = 4;
         SkDEBUGCODE(Mode                        fMode;)
+        SkDEBUGCODE(bool                        fHasMode = false;)
         GrGLSLProgramDataManager::UniformHandle fDomainUni;
         SkString                                fDomainName;
         float                                   fPrevDomain[kPrevDomainCount];
@@ -192,6 +192,8 @@ private:
 
     bool onIsEqual(const GrFragmentProcessor&) const override;
 
+    const TextureSampler& onTextureSampler(int) const override { return fTextureSampler; }
+
     GR_DECLARE_FRAGMENT_PROCESSOR_TEST
 
     typedef GrFragmentProcessor INHERITED;
@@ -232,6 +234,8 @@ private:
     void onGetGLSLProcessorKey(const GrShaderCaps&, GrProcessorKeyBuilder*) const override {}
 
     bool onIsEqual(const GrFragmentProcessor& fp) const override;
+
+    const TextureSampler& onTextureSampler(int) const override { return fTextureSampler; }
 
     GR_DECLARE_FRAGMENT_PROCESSOR_TEST
 

@@ -59,7 +59,8 @@ class SoftwareImageDecodeCachePerfTest : public testing::Test {
           images.emplace_back(
               PaintImageBuilder::WithDefault()
                   .set_id(PaintImage::GetNextId())
-                  .set_image(CreateImage(rect.width(), rect.height()))
+                  .set_image(CreateImage(rect.width(), rect.height()),
+                             PaintImage::GetNextContentId())
                   .TakePaintImage(),
               subrect, quality,
               CreateMatrix(SkSize::Make(scale.first, scale.second)), 0u,
@@ -70,8 +71,10 @@ class SoftwareImageDecodeCachePerfTest : public testing::Test {
 
     timer_.Reset();
     do {
-      for (auto& image : images)
-        ImageDecodeCacheKey::FromDrawImage(image, kN32_SkColorType);
+      for (auto& image : images) {
+        SoftwareImageDecodeCache::CacheKey::FromDrawImage(image,
+                                                          kN32_SkColorType);
+      }
       timer_.NextLap();
     } while (!timer_.HasTimeLimitExpired());
 

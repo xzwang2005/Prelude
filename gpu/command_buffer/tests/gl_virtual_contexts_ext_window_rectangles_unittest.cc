@@ -18,16 +18,22 @@ class GLVirtualContextsEXTWindowRectanglesTest : public testing::Test {
  protected:
   void SetUp() override {
     GLManager::Options options;
-    options.context_type = gles2::CONTEXT_TYPE_OPENGLES3;
+    options.context_type = CONTEXT_TYPE_OPENGLES3;
     gl_real_shared_.Initialize(options);
+
+    if (!IsApplicable())
+      return;
+
     options.virtual_manager = &gl_real_shared_;
     gl1_.Initialize(options);
     gl2_.Initialize(options);
   }
 
   void TearDown() override {
-    gl1_.Destroy();
-    gl2_.Destroy();
+    if (IsApplicable()) {
+      gl1_.Destroy();
+      gl2_.Destroy();
+    }
     gl_real_shared_.Destroy();
   }
 

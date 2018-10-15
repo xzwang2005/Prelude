@@ -8,9 +8,9 @@
 #ifndef SkFixed_DEFINED
 #define SkFixed_DEFINED
 
-#include "SkScalar.h"
 #include "SkSafe_math.h"
-
+#include "SkScalar.h"
+#include "SkTo.h"
 #include "SkTypes.h"
 
 /** \file SkFixed.h
@@ -23,6 +23,7 @@
 typedef int32_t             SkFixed;
 #define SK_Fixed1           (1 << 16)
 #define SK_FixedHalf        (1 << 15)
+#define SK_FixedQuarter     (1 << 14)
 #define SK_FixedMax         (0x7FFFFFFF)
 #define SK_FixedMin         (-SK_FixedMax)
 #define SK_FixedPI          (0x3243F)
@@ -30,6 +31,11 @@ typedef int32_t             SkFixed;
 #define SK_FixedTanPIOver8  (0x6A0A)
 #define SK_FixedRoot2Over2  (0xB505)
 
+// NOTE: SkFixedToFloat is exact. SkFloatToFixed seems to lack a rounding step. For all fixed-point
+// values, this version is as accurate as possible for (fixed -> float -> fixed). Rounding reduces
+// accuracy if the intermediate floats are in the range that only holds integers (adding 0.5f to an
+// odd integer then snaps to nearest even). Using double for the rounding math gives maximum
+// accuracy for (float -> fixed -> float), but that's usually overkill.
 #define SkFixedToFloat(x)   ((x) * 1.52587890625e-5f)
 #define SkFloatToFixed(x)   sk_float_saturate2int((x) * SK_Fixed1)
 
@@ -119,14 +125,14 @@ static inline SkFixed SkFixedMul(SkFixed a, SkFixed b) {
 
 typedef int64_t SkFixed3232;   // 32.32
 
-#define SkFixed3232Max            (0x7FFFFFFFFFFFFFFFLL)
+#define SkFixed3232Max            SK_MaxS64
 #define SkFixed3232Min            (-SkFixed3232Max)
 
 #define SkIntToFixed3232(x)       (SkLeftShift((SkFixed3232)(x), 32))
 #define SkFixed3232ToInt(x)       ((int)((x) >> 32))
 #define SkFixedToFixed3232(x)     (SkLeftShift((SkFixed3232)(x), 16))
 #define SkFixed3232ToFixed(x)     ((SkFixed)((x) >> 16))
-#define SkFloatToFixed3232(x)     ((SkFixed3232)((x) * (65536.0f * 65536.0f)))
+#define SkFloatToFixed3232(x)     sk_float_saturate2int64((x) * (65536.0f * 65536.0f))
 #define SkFixed3232ToFloat(x)     (x * (1 / (65536.0f * 65536.0f)))
 
 #define SkScalarToFixed3232(x)    SkFloatToFixed3232(x)

@@ -5,12 +5,17 @@
 #include "media/gpu/vaapi/vaapi_picture_factory.h"
 
 #include "media/gpu/vaapi/vaapi_wrapper.h"
+#include "media/video/picture.h"
 #include "ui/gl/gl_bindings.h"
 
-#include "media/gpu/vaapi/vaapi_drm_picture.h"
-
 #if defined(USE_X11)
-#include "media/gpu/vaapi/vaapi_tfp_picture.h"
+#include "media/gpu/vaapi/vaapi_picture_tfp.h"
+#endif
+#if defined(USE_OZONE)
+#include "media/gpu/vaapi/vaapi_picture_native_pixmap_ozone.h"
+#endif
+#if defined(USE_EGL)
+#include "media/gpu/vaapi/vaapi_picture_native_pixmap_egl.h"
 #endif
 
 namespace media {
@@ -39,26 +44,50 @@ std::unique_ptr<VaapiPicture> VaapiPictureFactory::Create(
     const scoped_refptr<VaapiWrapper>& vaapi_wrapper,
     const MakeGLContextCurrentCallback& make_context_current_cb,
     const BindGLImageCallback& bind_image_cb,
-    int32_t picture_buffer_id,
-    const gfx::Size& size,
-    uint32_t texture_id,
-    uint32_t client_texture_id) {
+    const PictureBuffer& picture_buffer) {
+  // ARC++ sends |picture_buffer| with no texture_target().
+  DCHECK(picture_buffer.texture_target() == GetGLTextureTarget() ||
+         picture_buffer.texture_target() == 0u);
+
+  // |client_texture_ids| and |service_texture_ids| are empty from ARC++.
+  const uint32_t client_texture_id =
+      !picture_buffer.client_texture_ids().empty()
+          ? picture_buffer.client_texture_ids()[0]
+          : 0;
+  const uint32_t service_texture_id =
+      !picture_buffer.service_texture_ids().empty()
+          ? picture_buffer.service_texture_ids()[0]
+          : 0;
+
   std::unique_ptr<VaapiPicture> picture;
 
   // Select DRM(egl) / TFP(glx) at runtime with --use-gl=egl / --use-gl=desktop
   switch (GetVaapiImplementation(gl::GetGLImplementation())) {
+#if defined(USE_OZONE)
+    // We can be called without GL initialized, which is valid if we use Ozone.
+    case kVaapiImplementationNone:
+      FALLTHROUGH;
     case kVaapiImplementationDrm:
-      picture.reset(new VaapiDrmPicture(vaapi_wrapper, make_context_current_cb,
-                                        bind_image_cb, picture_buffer_id, size,
-                                        texture_id, client_texture_id));
+      picture.reset(new VaapiPictureNativePixmapOzone(
+          vaapi_wrapper, make_context_current_cb, bind_image_cb,
+          picture_buffer.id(), picture_buffer.size(), service_texture_id,
+          client_texture_id, picture_buffer.texture_target()));
       break;
+#elif defined(USE_EGL)
+    case kVaapiImplementationDrm:
+      picture.reset(new VaapiPictureNativePixmapEgl(
+          vaapi_wrapper, make_context_current_cb, bind_image_cb,
+          picture_buffer.id(), picture_buffer.size(), service_texture_id,
+          client_texture_id, picture_buffer.texture_target()));
+      break;
+#endif
 
 #if defined(USE_X11)
     case kVaapiImplementationX11:
-      picture.reset(new VaapiTFPPicture(vaapi_wrapper, make_context_current_cb,
-                                        bind_image_cb, picture_buffer_id, size,
-                                        texture_id, client_texture_id));
-
+      picture.reset(new VaapiTFPPicture(
+          vaapi_wrapper, make_context_current_cb, bind_image_cb,
+          picture_buffer.id(), picture_buffer.size(), service_texture_id,
+          client_texture_id, picture_buffer.texture_target()));
       break;
 #endif  // USE_X11
 
@@ -88,16 +117,12 @@ uint32_t VaapiPictureFactory::GetGLTextureTarget() {
 #endif
 }
 
-gfx::BufferFormat VaapiPictureFactory::GetBufferFormatForAllocateMode() {
+gfx::BufferFormat VaapiPictureFactory::GetBufferFormat() {
 #if defined(USE_OZONE)
-  return gfx::BufferFormat::BGRX_8888;
+  return gfx::BufferFormat::YUV_420_BIPLANAR;
 #else
   return gfx::BufferFormat::RGBX_8888;
 #endif
-}
-
-gfx::BufferFormat VaapiPictureFactory::GetBufferFormatForImportMode() {
-  return gfx::BufferFormat::YVU_420;
 }
 
 }  // namespace media

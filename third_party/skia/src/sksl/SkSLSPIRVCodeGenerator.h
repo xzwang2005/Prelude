@@ -69,7 +69,7 @@ public:
     : INHERITED(program, errors, out)
     , fContext(*context)
     , fDefaultLayout(MemoryLayout::k140_Standard)
-    , fCapabilities(1 << SpvCapabilityShader)
+    , fCapabilities(0)
     , fIdCount(1)
     , fBoolTrue(0)
     , fBoolFalse(0)
@@ -90,9 +90,13 @@ private:
 
     enum SpecialIntrinsic {
         kAtan_SpecialIntrinsic,
+        kClamp_SpecialIntrinsic,
+        kMax_SpecialIntrinsic,
+        kMin_SpecialIntrinsic,
+        kMix_SpecialIntrinsic,
         kMod_SpecialIntrinsic,
+        kSaturate_SpecialIntrinsic,
         kSubpassLoad_SpecialIntrinsic,
-        kTexelFetch_SpecialIntrinsic,
         kTexture_SpecialIntrinsic,
     };
 
@@ -149,6 +153,20 @@ private:
 
     SpvId writeFunctionCall(const FunctionCall& c, OutputStream& out);
 
+
+    void writeGLSLExtendedInstruction(const Type& type, SpvId id, SpvId floatInst,
+                                      SpvId signedInst, SpvId unsignedInst,
+                                      const std::vector<SpvId>& args, OutputStream& out);
+
+    /**
+     * Given a list of potentially mixed scalars and vectors, promotes the scalars to match the
+     * size of the vectors and returns the ids of the written expressions. e.g. given (float, vec2),
+     * returns (vec2(float), vec2). It is an error to use mismatched vector sizes, e.g. (float,
+     * vec2, vec3).
+     */
+    std::vector<SpvId> vectorize(const std::vector<std::unique_ptr<Expression>>& args,
+                                 OutputStream& out);
+
     SpvId writeSpecialIntrinsic(const FunctionCall& c, SpecialIntrinsic kind, OutputStream& out);
 
     SpvId writeConstantVector(const Constructor& c);
@@ -191,10 +209,15 @@ private:
      * same dimensions, and applys all() to it to fold it down to a single bool value. Otherwise,
      * returns the original id value.
      */
-    SpvId foldToBool(SpvId id, const Type& operandType, OutputStream& out);
+    SpvId foldToBool(SpvId id, const Type& operandType, SpvOp op, OutputStream& out);
 
     SpvId writeMatrixComparison(const Type& operandType, SpvId lhs, SpvId rhs, SpvOp_ floatOperator,
-                                SpvOp_ intOperator, OutputStream& out);
+                                SpvOp_ intOperator, SpvOp_ vectorMergeOperator,
+                                SpvOp_ mergeOperator, OutputStream& out);
+
+    SpvId writeComponentwiseMatrixBinary(const Type& operandType, SpvId lhs, SpvId rhs,
+                                         SpvOp_ floatOperator, SpvOp_ intOperator,
+                                         OutputStream& out);
 
     SpvId writeBinaryOperation(const Type& resultType, const Type& operandType, SpvId lhs,
                                SpvId rhs, SpvOp_ ifFloat, SpvOp_ ifInt, SpvOp_ ifUInt,
@@ -322,6 +345,7 @@ private:
     SpvId fRTHeightFieldIndex = (SpvId) -1;
     // holds variables synthesized during output, for lifetime purposes
     SymbolTable fSynthetics;
+    int fSkInCount = 1;
 
     friend class PointerLValue;
     friend class SwizzleLValue;

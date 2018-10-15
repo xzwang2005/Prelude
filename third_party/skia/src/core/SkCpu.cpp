@@ -8,12 +8,8 @@
 #include "SkCpu.h"
 #include "SkOnce.h"
 
-#if !defined(__has_include)
-    #define __has_include(x) 0
-#endif
-
 #if defined(SK_CPU_X86)
-    #if defined(SK_BUILD_FOR_WIN32)
+    #if defined(SK_BUILD_FOR_WIN)
         #include <intrin.h>
         static void cpuid (uint32_t abcd[4]) { __cpuid  ((int*)abcd, 1);    }
         static void cpuid7(uint32_t abcd[4]) { __cpuidex((int*)abcd, 7, 0); }
@@ -78,11 +74,13 @@
     #include <sys/auxv.h>
 
     static uint32_t read_cpu_features() {
-        const uint32_t kHWCAP_CRC32 = (1<<7);
+        const uint32_t kHWCAP_CRC32   = (1<< 7),
+                       kHWCAP_ASIMDHP = (1<<10);
 
         uint32_t features = 0;
         uint32_t hwcaps = getauxval(AT_HWCAP);
-        if (hwcaps & kHWCAP_CRC32) { features |= SkCpu::CRC32; }
+        if (hwcaps & kHWCAP_CRC32  ) { features |= SkCpu::CRC32; }
+        if (hwcaps & kHWCAP_ASIMDHP) { features |= SkCpu::ASIMDHP; }
         return features;
     }
 

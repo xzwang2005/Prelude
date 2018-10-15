@@ -1119,6 +1119,48 @@ class BaseConfigDataManipulationUnittests(fake_filesystem_unittest.TestCase):
     self.fs.CreateFile(self.file_path,
                        contents='\n'.join(self.expected_file_lines))
 
+  def testContaining(self):
+    config = dependency_manager.BaseConfig(self.file_path)
+    self.assertTrue('dep1' in config)
+    self.assertTrue('dep2' in config)
+    self.assertFalse('dep3' in config)
+
+  def testAddNewDependencyNotWriteable(self):
+    config = dependency_manager.BaseConfig(self.file_path)
+    with self.assertRaises(dependency_manager.ReadWriteError):
+      config.AddNewDependency('dep4', 'foo', 'bar')
+
+  def testAddNewDependencyWriteableButDependencyAlreadyExists(self):
+    config = dependency_manager.BaseConfig(self.file_path, writable=True)
+    with self.assertRaises(ValueError):
+      config.AddNewDependency('dep2', 'foo', 'bar')
+
+  def testAddNewDependencySuccessfully(self):
+    config = dependency_manager.BaseConfig(self.file_path, writable=True)
+    config.AddNewDependency('dep3', 'foo', 'bar')
+    self.assertTrue('dep3' in config)
+
+  def testSetDownloadPathNotWritable(self):
+    config = dependency_manager.BaseConfig(self.file_path)
+    with self.assertRaises(dependency_manager.ReadWriteError):
+      config.SetDownloadPath('dep2', 'plat1', '../../relative/dep1/path1')
+
+  def testSetDownloadPathOnExistingPlatformSuccesfully(self):
+    config = dependency_manager.BaseConfig(self.file_path, writable=True)
+    download_path = '../../relative/dep1/foo.bar'
+    config.SetDownloadPath('dep2', 'plat1', download_path)
+    self.assertEqual(
+        download_path,
+        config._GetPlatformData('dep2', 'plat1', 'download_path'))
+
+  def testSetDownloadPathOnNewPlatformSuccesfully(self):
+    config = dependency_manager.BaseConfig(self.file_path, writable=True)
+    download_path = '../../relative/dep1/foo.bar'
+    config.SetDownloadPath('dep2', 'newplat', download_path)
+    self.assertEqual(
+        download_path,
+        config._GetPlatformData('dep2', 'newplat', 'download_path'))
+
 
   def testSetPlatformDataFailureNotWritable(self):
     config = dependency_manager.BaseConfig(self.file_path)
@@ -1410,7 +1452,6 @@ class BaseConfigTest(unittest.TestCase):
       self.assertEqual(self.GetConfigDataFromDict(self.empty_dict),
                        config._config_data)
 
-
   @mock.patch('dependency_manager.dependency_info.DependencyInfo')
   @mock.patch('os.path')
   @mock.patch('__builtin__.open')
@@ -1468,24 +1509,23 @@ class BaseConfigTest(unittest.TestCase):
     expected_dep_info = ['dep_info0', 'dep_info1', 'dep_info2']
     dep_info_mock.side_effect = expected_dep_info
     expected_calls = [
-        mock.call('dep', 'plat1_arch1', 'file_path', cs_bucket='bucket1',
-                  cs_hash='hash111', download_path='download_path111',
-                  cs_remote_path='cs_path111',
-                  local_paths=['local_path1110', 'local_path1111']),
-        mock.call('dep', 'plat1_arch1', 'file_path', cs_bucket='bucket1',
-                  cs_hash='hash112', download_path='download_path112',
-                  cs_remote_path='cs_path112',
-                  local_paths=['local_path1120', 'local_path1121']),
-        mock.call('dep', 'win_arch1', 'file_path', cs_bucket='bucket1',
-                  cs_hash='hash1w1',
-                  download_path=os.path.join('download', 'path', '1w1'),
-                  cs_remote_path='cs_path1w1',
-                  local_paths=[os.path.join('download', 'path', '1w10'),
-                               os.path.join('download', 'path', '1w11')])]
+        mock.call('dep', 'plat1_arch1', 'file_path',
+                  cloud_storage_info=mock.ANY,
+                  local_path_info=mock.ANY),
+        mock.call('dep', 'plat1_arch2', 'file_path',
+                  cloud_storage_info=mock.ANY,
+                  local_path_info=mock.ANY),
+        mock.call('dep', 'win_arch1', 'file_path',
+                  cloud_storage_info=mock.ANY,
+                  local_path_info=mock.ANY),
+        mock.call('dep', 'all_the_variables', 'file_path',
+                  cloud_storage_info=mock.ANY,
+                  local_path_info=mock.ANY),
+    ]
     deps_seen = []
     for dep_info in config.IterDependencyInfo():
       deps_seen.append(dep_info)
-    dep_info_mock.assert_call_args(expected_calls)
+    dep_info_mock.assert_has_calls(expected_calls, any_order=True)
     self.assertItemsEqual(expected_dep_info, deps_seen)
 
   @mock.patch('dependency_manager.base_config.json')

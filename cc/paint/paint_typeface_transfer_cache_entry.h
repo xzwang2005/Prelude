@@ -13,11 +13,12 @@
 namespace cc {
 
 class CC_PAINT_EXPORT ClientPaintTypefaceTransferCacheEntry
-    : public ClientTransferCacheEntry {
+    : public ClientTransferCacheEntryBase<
+          TransferCacheEntryType::kPaintTypeface> {
  public:
   explicit ClientPaintTypefaceTransferCacheEntry(const PaintTypeface& typeface);
   ~ClientPaintTypefaceTransferCacheEntry() final;
-  TransferCacheEntryType Type() const final;
+  uint32_t Id() const final;
   size_t SerializedSize() const final;
   bool Serialize(base::span<uint8_t> data) const final;
 
@@ -30,26 +31,29 @@ class CC_PAINT_EXPORT ClientPaintTypefaceTransferCacheEntry
 };
 
 class CC_PAINT_EXPORT ServicePaintTypefaceTransferCacheEntry
-    : public ServiceTransferCacheEntry {
+    : public ServiceTransferCacheEntryBase<
+          TransferCacheEntryType::kPaintTypeface> {
  public:
   ServicePaintTypefaceTransferCacheEntry();
   ~ServicePaintTypefaceTransferCacheEntry() final;
-  TransferCacheEntryType Type() const final;
   size_t CachedSize() const final;
-  bool Deserialize(GrContext* context, base::span<uint8_t> data) final;
+  bool Deserialize(GrContext* context, base::span<const uint8_t> data) final;
 
   const PaintTypeface& typeface() const { return typeface_; }
 
  private:
   template <typename T>
   void ReadSimple(T* val);
+  void ReadSize(size_t* size);
 
   void ReadData(size_t bytes, void* data);
 
   PaintTypeface typeface_;
   size_t size_ = 0;
   bool valid_ = true;
-  base::span<uint8_t> data_;
+  // TODO(enne): this transient value shouldn't be a member and should just be
+  // passed around internally to functions that need it.
+  base::span<const uint8_t> data_;
 };
 
 }  // namespace cc

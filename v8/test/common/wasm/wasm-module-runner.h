@@ -19,11 +19,14 @@ namespace internal {
 template <typename T>
 class Handle;
 
+template <typename T>
+class MaybeHandle;
+
 namespace wasm {
 namespace testing {
 
 // Decodes the given encoded module.
-std::unique_ptr<WasmModule> DecodeWasmModuleForTesting(
+std::shared_ptr<WasmModule> DecodeWasmModuleForTesting(
     Isolate* isolate, ErrorThrower* thrower, const byte* module_start,
     const byte* module_end, ModuleOrigin origin, bool verify_functions = false);
 
@@ -53,6 +56,10 @@ bool InterpretWasmModuleForTesting(Isolate* isolate,
 // given encoded module. The module should have no imports.
 int32_t CompileAndRunWasmModule(Isolate* isolate, const byte* module_start,
                                 const byte* module_end);
+
+// Decode, compile, and instantiate the given module with no imports.
+MaybeHandle<WasmInstanceObject> CompileAndInstantiateForTesting(
+    Isolate* isolate, ErrorThrower* thrower, const ModuleWireBytes& bytes);
 
 // Interprets the given module, starting at the function specified by
 // {function_index}. The return type of the function has to be int32. The module

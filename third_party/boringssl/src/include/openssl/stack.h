@@ -163,12 +163,17 @@ OPENSSL_EXPORT void *sk_delete(_STACK *sk, size_t where);
 OPENSSL_EXPORT void *sk_delete_ptr(_STACK *sk, void *p);
 
 // sk_find returns the first value in the stack equal to |p|. If a comparison
-// function has been set on the stack, then equality is defined by it and the
-// stack will be sorted if need be so that a binary search can be used.
-// Otherwise pointer equality is used. If a matching element is found, its
-// index is written to |*out_index| (if |out_index| is not NULL) and one is
-// returned. Otherwise zero is returned.
-OPENSSL_EXPORT int sk_find(_STACK *sk, size_t *out_index, void *p);
+// function has been set on the stack, equality is defined by it, otherwise
+// pointer equality is used. If the stack is sorted, then a binary search is
+// used, otherwise a linear search is performed. If a matching element is found,
+// its index is written to
+// |*out_index| (if |out_index| is not NULL) and one is returned. Otherwise zero
+// is returned.
+//
+// Note this differs from OpenSSL. The type signature is slightly different, and
+// OpenSSL's sk_find will implicitly sort |sk| if it has a comparison function
+// defined.
+OPENSSL_EXPORT int sk_find(const _STACK *sk, size_t *out_index, void *p);
 
 // sk_shift removes and returns the first element in the stack, or returns NULL
 // if the stack is empty.
@@ -302,8 +307,8 @@ struct StackTraits {};
   }                                                                            \
                                                                                \
   static inline OPENSSL_UNUSED int sk_##name##_find(                           \
-      STACK_OF(name) *sk, size_t *out_index, ptrtype p) {                      \
-    return sk_find((_STACK *)sk, out_index, (void *)p);                        \
+      const STACK_OF(name) *sk, size_t *out_index, ptrtype p) {                \
+    return sk_find((const _STACK *)sk, out_index, (void *)p);                  \
   }                                                                            \
                                                                                \
   static inline OPENSSL_UNUSED ptrtype sk_##name##_shift(STACK_OF(name) *sk) { \
@@ -344,16 +349,20 @@ struct StackTraits {};
       sk_##name##_deep_copy(const STACK_OF(name) *sk,                          \
                             ptrtype(*copy_func)(ptrtype),                      \
                             void (*free_func)(ptrtype)) {                      \
-    return (STACK_OF(name) *)sk_deep_copy((_STACK *)sk,                        \
+    return (STACK_OF(name) *)sk_deep_copy((const _STACK *)sk,                  \
                                           (void *(*)(void *))copy_func,        \
                                           (void (*)(void *))free_func);        \
   }
 
+// DEFINE_NAMED_STACK_OF defines |STACK_OF(name)| to be a stack whose elements
+// are |type| *.
+#define DEFINE_NAMED_STACK_OF(name, type)                    \
+  BORINGSSL_DEFINE_STACK_OF_IMPL(name, type *, const type *) \
+  BORINGSSL_DEFINE_STACK_TRAITS(name, type, false)
+
 // DEFINE_STACK_OF defines |STACK_OF(type)| to be a stack whose elements are
 // |type| *.
-#define DEFINE_STACK_OF(type)                                \
-  BORINGSSL_DEFINE_STACK_OF_IMPL(type, type *, const type *) \
-  BORINGSSL_DEFINE_STACK_TRAITS(type, type, false)
+#define DEFINE_STACK_OF(type) DEFINE_NAMED_STACK_OF(type, type)
 
 // DEFINE_CONST_STACK_OF defines |STACK_OF(type)| to be a stack whose elements
 // are const |type| *.

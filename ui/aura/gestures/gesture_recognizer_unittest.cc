@@ -9,7 +9,6 @@
 #include "base/command_line.h"
 #include "base/location.h"
 #include "base/macros.h"
-#include "base/memory/ptr_util.h"
 #include "base/run_loop.h"
 #include "base/single_thread_task_runner.h"
 #include "base/strings/string_number_conversions.h"
@@ -29,7 +28,7 @@
 #include "ui/events/event_switches.h"
 #include "ui/events/event_utils.h"
 #include "ui/events/gesture_detection/gesture_configuration.h"
-#include "ui/events/gestures/gesture_recognizer_impl.h"
+#include "ui/events/gesture_detection/gesture_provider.h"
 #include "ui/events/gestures/gesture_types.h"
 #include "ui/events/test/event_generator.h"
 #include "ui/events/test/events_test_utils.h"
@@ -347,7 +346,7 @@ class QueueTouchEventDelegate : public GestureEventConsumeDelegate {
   void OnTouchEvent(ui::TouchEvent* event) override {
     event->DisableSynchronousHandling();
     if (synchronous_ack_for_next_event_ != AckState::PENDING) {
-      ui::GestureRecognizer::Get()->AckTouchEvent(
+      aura::Env::GetInstance()->gesture_recognizer()->AckTouchEvent(
           event->unique_event_id(),
           synchronous_ack_for_next_event_ == AckState::CONSUMED
               ? ui::ER_CONSUMED
@@ -463,26 +462,6 @@ class GestureEventSynthDelegate : public TestWindowDelegate {
   bool double_click_;
 
   DISALLOW_COPY_AND_ASSIGN(GestureEventSynthDelegate);
-};
-
-class ScopedGestureRecognizerSetter {
- public:
-  // Takes ownership of |new_gr|.
-  explicit ScopedGestureRecognizerSetter(ui::GestureRecognizer* new_gr)
-      : new_gr_(new_gr) {
-    original_gr_ = ui::GestureRecognizer::Get();
-    ui::SetGestureRecognizerForTesting(new_gr_.get());
-  }
-
-  virtual ~ScopedGestureRecognizerSetter() {
-    ui::SetGestureRecognizerForTesting(original_gr_);
-  }
-
- private:
-  ui::GestureRecognizer* original_gr_;
-  std::unique_ptr<ui::GestureRecognizer> new_gr_;
-
-  DISALLOW_COPY_AND_ASSIGN(ScopedGestureRecognizerSetter);
 };
 
 class TimedEvents {
@@ -712,7 +691,8 @@ TEST_F(GestureRecognizerTest, TouchCancelCanDestroyWindow) {
   DispatchEventUsingWindowDispatcher(&press);
 
   // Cancel event, verify there is no crash.
-  ui::GestureRecognizer::Get()->CancelActiveTouchesExcept(nullptr);
+  aura::Env::GetInstance()->gesture_recognizer()->CancelActiveTouchesExcept(
+      nullptr);
 
   EXPECT_EQ(1, handler->touch_cancelled_count());
   EXPECT_EQ(nullptr, window->parent());
@@ -1906,7 +1886,7 @@ TEST_F(GestureRecognizerTest, AsynchronousGestureRecognition) {
   EXPECT_FALSE(queued_delegate->scroll_end());
 
   // Move the second touch-point enough so that it is considered a pinch. This
-  // should generate both SCROLL_BEGIN and PINCH_BEGIN gestures.
+  // should generate SCROLL_BEGIN, PINCH_BEGIN, and PINCH_UPDATE gestures.
   queued_delegate->Reset();
   delegate->Reset();
   ui::TouchEvent move(
@@ -1969,7 +1949,7 @@ TEST_F(GestureRecognizerTest, AsynchronousGestureRecognition) {
   EXPECT_TRUE(queued_delegate->scroll_update());
   EXPECT_FALSE(queued_delegate->scroll_end());
   EXPECT_TRUE(queued_delegate->pinch_begin());
-  EXPECT_FALSE(queued_delegate->pinch_update());
+  EXPECT_TRUE(queued_delegate->pinch_update());
   EXPECT_FALSE(queued_delegate->pinch_end());
 }
 
@@ -2024,9 +2004,8 @@ TEST_F(GestureRecognizerTest, GestureEventPinchFromScroll) {
       ui::ET_TOUCH_MOVED, gfx::Point(95, 201), tes.Now(),
       ui::PointerDetails(ui::EventPointerType::POINTER_TYPE_TOUCH, kTouchId1));
   DispatchEventUsingWindowDispatcher(&move3);
-  EXPECT_2_EVENTS(delegate->events(),
-                  ui::ET_GESTURE_SCROLL_UPDATE,
-                  ui::ET_GESTURE_PINCH_BEGIN);
+  EXPECT_3_EVENTS(delegate->events(), ui::ET_GESTURE_SCROLL_UPDATE,
+                  ui::ET_GESTURE_PINCH_BEGIN, ui::ET_GESTURE_PINCH_UPDATE);
   EXPECT_EQ(gfx::Rect(10, 10, 85, 191).ToString(),
             delegate->bounding_box().ToString());
 
@@ -2087,10 +2066,10 @@ TEST_F(GestureRecognizerTest, GestureEventPinchFromScrollFromPinch) {
   DispatchEventUsingWindowDispatcher(&press2);
   EXPECT_FALSE(delegate->pinch_begin());
 
-  // Touch move triggers pinch begin.
+  // Touch move triggers pinch begin and update.
   tes.SendScrollEvent(event_sink(), 130, 230, kTouchId1, delegate.get());
   EXPECT_TRUE(delegate->pinch_begin());
-  EXPECT_FALSE(delegate->pinch_update());
+  EXPECT_TRUE(delegate->pinch_update());
 
   // Touch move triggers pinch update.
   tes.SendScrollEvent(event_sink(), 160, 200, kTouchId1, delegate.get());
@@ -2166,10 +2145,9 @@ TEST_F(GestureRecognizerTest, GestureEventPinchFromTap) {
       ui::ET_TOUCH_MOVED, gfx::Point(65, 201), tes.Now(),
       ui::PointerDetails(ui::EventPointerType::POINTER_TYPE_TOUCH, kTouchId1));
   DispatchEventUsingWindowDispatcher(&move3);
-  EXPECT_3_EVENTS(delegate->events(),
-                  ui::ET_GESTURE_SCROLL_BEGIN,
-                  ui::ET_GESTURE_SCROLL_UPDATE,
-                  ui::ET_GESTURE_PINCH_BEGIN);
+  EXPECT_4_EVENTS(delegate->events(), ui::ET_GESTURE_SCROLL_BEGIN,
+                  ui::ET_GESTURE_SCROLL_UPDATE, ui::ET_GESTURE_PINCH_BEGIN,
+                  ui::ET_GESTURE_PINCH_UPDATE);
   EXPECT_EQ(gfx::Rect(10, 10, 55, 191).ToString(),
             delegate->bounding_box().ToString());
 
@@ -2223,9 +2201,9 @@ TEST_F(GestureRecognizerTest, GestureEventIgnoresDisconnectedEvents) {
 // Check that a touch is locked to the window of the closest current touch
 // within max_separation_for_gesture_touches_in_pixels
 TEST_F(GestureRecognizerTest, GestureEventTouchLockSelectsCorrectWindow) {
-  ui::GestureRecognizer* gesture_recognizer = new ui::GestureRecognizerImpl();
+  ui::GestureRecognizer* gesture_recognizer =
+      aura::Env::GetInstance()->gesture_recognizer();
   TimedEvents tes;
-  ScopedGestureRecognizerSetter gr_setter(gesture_recognizer);
 
   ui::GestureConsumer* target;
   const int kNumWindows = 4;
@@ -2352,8 +2330,10 @@ TEST_F(GestureRecognizerTest, GestureEventTouchLockIgnoresOtherScreens) {
   // The second press should not have been locked to the same target as the
   // first, as they occured on different displays.
   EXPECT_NE(
-      ui::GestureRecognizer::Get()->GetTouchLockedTarget(press1),
-      ui::GestureRecognizer::Get()->GetTouchLockedTarget(press2));
+      aura::Env::GetInstance()->gesture_recognizer()->GetTouchLockedTarget(
+          press1),
+      aura::Env::GetInstance()->gesture_recognizer()->GetTouchLockedTarget(
+          press2));
 }
 
 // Check that touch events outside the root window are still handled
@@ -2377,12 +2357,16 @@ TEST_F(GestureRecognizerTest, GestureEventOutsideRootWindowTap) {
 
   // As these presses were outside the root window, they should be
   // associated with the root window.
-  EXPECT_EQ(root_window(),
-            static_cast<aura::Window*>(
-                ui::GestureRecognizer::Get()->GetTouchLockedTarget(press1)));
-  EXPECT_EQ(root_window(),
-            static_cast<aura::Window*>(
-                ui::GestureRecognizer::Get()->GetTouchLockedTarget(press2)));
+  EXPECT_EQ(
+      root_window(),
+      static_cast<aura::Window*>(
+          aura::Env::GetInstance()->gesture_recognizer()->GetTouchLockedTarget(
+              press1)));
+  EXPECT_EQ(
+      root_window(),
+      static_cast<aura::Window*>(
+          aura::Env::GetInstance()->gesture_recognizer()->GetTouchLockedTarget(
+              press2)));
 }
 
 TEST_F(GestureRecognizerTest, NoTapWithPreventDefaultedRelease) {
@@ -2511,9 +2495,8 @@ TEST_F(GestureRecognizerTest, PinchScrollWithPreventDefaultedRelease) {
 
   delegate->Reset();
   delegate->ReceivedAck();
-  EXPECT_2_EVENTS(delegate->events(),
-                  ui::ET_GESTURE_SCROLL_UPDATE,
-                  ui::ET_GESTURE_PINCH_BEGIN);
+  EXPECT_3_EVENTS(delegate->events(), ui::ET_GESTURE_SCROLL_UPDATE,
+                  ui::ET_GESTURE_PINCH_BEGIN, ui::ET_GESTURE_PINCH_UPDATE);
 
   // Ack the first release. Although the release is processed, it should still
   // generate a pinch-end event.
@@ -3120,10 +3103,14 @@ TEST_F(GestureRecognizerTest, FlushAllOnHide) {
       ui::PointerDetails(ui::EventPointerType::POINTER_TYPE_TOUCH, kTouchId2));
   DispatchEventUsingWindowDispatcher(&press2);
   window->Hide();
-  EXPECT_EQ(NULL,
-      ui::GestureRecognizer::Get()->GetTouchLockedTarget(press1));
-  EXPECT_EQ(NULL,
-      ui::GestureRecognizer::Get()->GetTouchLockedTarget(press2));
+  EXPECT_EQ(
+      NULL,
+      aura::Env::GetInstance()->gesture_recognizer()->GetTouchLockedTarget(
+          press1));
+  EXPECT_EQ(
+      NULL,
+      aura::Env::GetInstance()->gesture_recognizer()->GetTouchLockedTarget(
+          press2));
 }
 
 TEST_F(GestureRecognizerTest, LongPressTimerStopsOnPreventDefaultedTouchMoves) {
@@ -3802,19 +3789,20 @@ TEST_F(GestureRecognizerTest, CancelAllActiveTouches) {
       ui::ET_TOUCH_MOVED, gfx::Point(350, 300), tes.Now(),
       ui::PointerDetails(ui::EventPointerType::POINTER_TYPE_TOUCH, kTouchId2));
   DispatchEventUsingWindowDispatcher(&move);
-  EXPECT_3_EVENTS(delegate->events(),
-                  ui::ET_GESTURE_SCROLL_BEGIN,
-                  ui::ET_GESTURE_SCROLL_UPDATE,
-                  ui::ET_GESTURE_PINCH_BEGIN);
+  EXPECT_4_EVENTS(delegate->events(), ui::ET_GESTURE_SCROLL_BEGIN,
+                  ui::ET_GESTURE_SCROLL_UPDATE, ui::ET_GESTURE_PINCH_BEGIN,
+                  ui::ET_GESTURE_PINCH_UPDATE);
   EXPECT_EQ(2, handler->touch_pressed_count());
   delegate->Reset();
   handler->Reset();
 
-  ui::GestureRecognizer* gesture_recognizer = ui::GestureRecognizer::Get();
+  ui::GestureRecognizer* gesture_recognizer =
+      aura::Env::GetInstance()->gesture_recognizer();
   EXPECT_EQ(window.get(),
             gesture_recognizer->GetTouchLockedTarget(press));
 
-  ui::GestureRecognizer::Get()->CancelActiveTouchesExcept(nullptr);
+  aura::Env::GetInstance()->gesture_recognizer()->CancelActiveTouchesExcept(
+      nullptr);
 
   EXPECT_EQ(NULL, gesture_recognizer->GetTouchLockedTarget(press));
   EXPECT_4_EVENTS(delegate->events(),
@@ -4223,7 +4211,7 @@ TEST_F(GestureRecognizerTest, PinchAlternatelyConsumedTest) {
   EXPECT_TRUE(delegate->scroll_begin());
   EXPECT_TRUE(delegate->scroll_update());
   EXPECT_TRUE(delegate->pinch_begin());
-  EXPECT_FALSE(delegate->pinch_update());
+  EXPECT_TRUE(delegate->pinch_update());
   delegate->Reset();
 
   const float expected_scales[] = {1.5f, 1.2f, 1.125f};
@@ -4309,7 +4297,6 @@ class GestureEventDeleteWindowOnLongPress : public GestureEventConsumeDelegate {
     GestureEventConsumeDelegate::OnGestureEvent(gesture);
     if (gesture->type() != ui::ET_GESTURE_LONG_PRESS)
       return;
-    ui::GestureRecognizer::Get()->CleanupStateForConsumer(*window_);
     delete *window_;
     *window_ = NULL;
   }
@@ -4370,10 +4357,9 @@ TEST_F(GestureRecognizerWithSwitchTest, GestureEventSmallPinchDisabled) {
       ui::PointerDetails(ui::EventPointerType::POINTER_TYPE_TOUCH, kTouchId1));
   DispatchEventUsingWindowDispatcher(&move1);
 
-  EXPECT_3_EVENTS(delegate->events(),
-                  ui::ET_GESTURE_SCROLL_BEGIN,
-                  ui::ET_GESTURE_SCROLL_UPDATE,
-                  ui::ET_GESTURE_PINCH_BEGIN);
+  EXPECT_4_EVENTS(delegate->events(), ui::ET_GESTURE_SCROLL_BEGIN,
+                  ui::ET_GESTURE_SCROLL_UPDATE, ui::ET_GESTURE_PINCH_BEGIN,
+                  ui::ET_GESTURE_PINCH_UPDATE);
 
   // No pinch update occurs, as kCompensateForUnstablePinchZoom is on and
   // |min_pinch_update_span_delta| was nonzero, and this is a very small pinch.
@@ -4413,10 +4399,9 @@ TEST_F(GestureRecognizerTest, GestureEventSmallPinchEnabled) {
       ui::PointerDetails(ui::EventPointerType::POINTER_TYPE_TOUCH, kTouchId1));
   DispatchEventUsingWindowDispatcher(&move1);
 
-  EXPECT_3_EVENTS(delegate->events(),
-                  ui::ET_GESTURE_SCROLL_BEGIN,
-                  ui::ET_GESTURE_SCROLL_UPDATE,
-                  ui::ET_GESTURE_PINCH_BEGIN);
+  EXPECT_4_EVENTS(delegate->events(), ui::ET_GESTURE_SCROLL_BEGIN,
+                  ui::ET_GESTURE_SCROLL_UPDATE, ui::ET_GESTURE_PINCH_BEGIN,
+                  ui::ET_GESTURE_PINCH_UPDATE);
 
   delegate->Reset();
   ui::TouchEvent move2(
@@ -4719,7 +4704,7 @@ TEST_F(GestureRecognizerTest, TransferEventsToRoutesAckCorrectly) {
   delegate_2->set_window(window_2.get());
 
   // Transfer event sequence from previous window to the new window.
-  ui::GestureRecognizer::Get()->TransferEventsTo(
+  aura::Env::GetInstance()->gesture_recognizer()->TransferEventsTo(
       window_1.get(), window_2.get(),
       ui::GestureRecognizer::ShouldCancelTouches::DontCancel);
 

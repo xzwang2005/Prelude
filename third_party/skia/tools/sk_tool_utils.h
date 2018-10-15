@@ -9,27 +9,37 @@
 #define sk_tool_utils_DEFINED
 
 #include "SkColor.h"
+#include "SkData.h"
+#include "SkEncodedImageFormat.h"
+#include "SkFontStyle.h"
 #include "SkImageEncoder.h"
 #include "SkImageInfo.h"
-#include "SkPixelSerializer.h"
 #include "SkRandom.h"
+#include "SkRect.h"
+#include "SkRefCnt.h"
+#include "SkScalar.h"
 #include "SkStream.h"
+#include "SkTArray.h"
 #include "SkTDArray.h"
-#include "SkTypeface.h"
+#include "SkTypes.h"
 
 class SkBitmap;
 class SkCanvas;
-class SkColorFilter;
+class SkFontStyle;
 class SkImage;
 class SkPaint;
 class SkPath;
+class SkPixmap;
 class SkRRect;
 class SkShader;
-class SkTestFont;
+class SkSurface;
+class SkSurfaceProps;
 class SkTextBlobBuilder;
+class SkTypeface;
 
 namespace sk_tool_utils {
 
+    const char* alphatype_name(SkAlphaType);
     const char* colortype_name(SkColorType);
 
     /**
@@ -63,32 +73,21 @@ namespace sk_tool_utils {
      */
     sk_sp<SkTypeface> create_portable_typeface(const char* name, SkFontStyle style);
 
-    /** Call to clean up portable font references. */
-    void release_portable_typefaces();
-
     /**
-     *  Call canvas->writePixels() by using the pixels from bitmap, but with an info that claims
+     *  Call writePixels() by using the pixels from bitmap, but with an info that claims
      *  the pixels are colorType + alphaType
      */
     void write_pixels(SkCanvas*, const SkBitmap&, int x, int y, SkColorType, SkAlphaType);
+    void write_pixels(SkSurface*, const SkBitmap&, int x, int y, SkColorType, SkAlphaType);
 
     /**
-     *  Returns true iff all of the pixels between the two images differ by <= the maxDiff value
-     *  per component.
+     *  Returns true iff all of the pixels between the two images are identical.
      *
      *  If the configs differ, return false.
-     *
-     *  If the colorType is half-float, then maxDiff is interpreted as 0..255 --> 0..1
      */
-    bool equal_pixels(const SkPixmap&, const SkPixmap&, unsigned maxDiff = 0,
-                      bool respectColorSpaces = false);
-    bool equal_pixels(const SkBitmap&, const SkBitmap&, unsigned maxDiff = 0,
-                      bool respectColorSpaces = false);
-    bool equal_pixels(const SkImage* a, const SkImage* b, unsigned maxDiff = 0,
-                      bool respectColorSpaces = false);
-
-    // private to sk_tool_utils
-    sk_sp<SkTypeface> create_font(const char* name, SkFontStyle);
+    bool equal_pixels(const SkPixmap&, const SkPixmap&);
+    bool equal_pixels(const SkBitmap&, const SkBitmap&);
+    bool equal_pixels(const SkImage* a, const SkImage* b);
 
     /** Returns a newly created CheckerboardShader. */
     sk_sp<SkShader> create_checkerboard_shader(SkColor c1, SkColor c2, int size);
@@ -113,6 +112,9 @@ namespace sk_tool_utils {
     SkBitmap create_string_bitmap(int w, int h, SkColor c, int x, int y,
                                   int textSize, const char* str);
 
+    // If the canvas does't make a surface (e.g. recording), make a raster surface
+    sk_sp<SkSurface> makeSurface(SkCanvas*, const SkImageInfo&, const SkSurfaceProps* = nullptr);
+
     // A helper for inserting a drawtext call into a SkTextBlobBuilder
     void add_to_text_blob_w_len(SkTextBlobBuilder* builder, const char* text, size_t len,
                                 const SkPaint& origPaint, SkScalar x, SkScalar y);
@@ -132,6 +134,12 @@ namespace sk_tool_utils {
     // numPts and step must be co-prime.
     SkPath make_star(const SkRect& bounds, int numPts = 5, int step = 2);
 
+    void create_hemi_normal_map(SkBitmap* bm, const SkIRect& dst);
+
+    void create_frustum_normal_map(SkBitmap* bm, const SkIRect& dst);
+
+    void create_tetra_normal_map(SkBitmap* bm, const SkIRect& dst);
+
     void make_big_path(SkPath& path);
 
     // Return a blurred version of 'src'. This doesn't use a separable filter
@@ -143,7 +151,7 @@ namespace sk_tool_utils {
     SkRect compute_tallest_occluder(const SkRRect& rr);
 
     // A helper object to test the topological sorting code (TopoSortBench.cpp & TopoSortTest.cpp)
-    class TopoTestNode {
+    class TopoTestNode : public SkRefCnt {
     public:
         TopoTestNode(int id) : fID(id), fOutputPos(-1), fTempMark(false) { }
 
@@ -190,37 +198,29 @@ namespace sk_tool_utils {
         }
 
         // Helper functions for TopoSortBench & TopoSortTest
-        static void AllocNodes(SkTDArray<TopoTestNode*>* graph, int num) {
-            graph->setReserve(num);
+        static void AllocNodes(SkTArray<sk_sp<sk_tool_utils::TopoTestNode>>* graph, int num) {
+            graph->reserve(num);
 
             for (int i = 0; i < num; ++i) {
-                *graph->append() = new TopoTestNode(i);
+                graph->push_back(sk_sp<TopoTestNode>(new TopoTestNode(i)));
             }
         }
 
-        static void DeallocNodes(SkTDArray<TopoTestNode*>* graph) {
-            for (int i = 0; i < graph->count(); ++i) {
-                delete (*graph)[i];
-            }
-        }
-
-        #ifdef SK_DEBUG
-        static void Print(const SkTDArray<TopoTestNode*>& graph) {
+#ifdef SK_DEBUG
+        static void Print(const SkTArray<TopoTestNode*>& graph) {
             for (int i = 0; i < graph.count(); ++i) {
                 SkDebugf("%d, ", graph[i]->id());
             }
             SkDebugf("\n");
         }
-        #endif
+#endif
 
         // randomize the array
-        static void Shuffle(SkTDArray<TopoTestNode*>* graph, SkRandom* rand) {
+        static void Shuffle(SkTArray<sk_sp<TopoTestNode>>* graph, SkRandom* rand) {
             for (int i = graph->count()-1; i > 0; --i) {
                 int swap = rand->nextU() % (i+1);
 
-                TopoTestNode* tmp = (*graph)[i];
-                (*graph)[i] = (*graph)[swap];
-                (*graph)[swap] = tmp;
+                (*graph)[i].swap((*graph)[swap]);
             }
         }
 
@@ -244,23 +244,8 @@ namespace sk_tool_utils {
         return SkEncodeImage(&buf, src , f, q) ? buf.detachAsData() : nullptr;
     }
 
-    /**
-     * Uses SkEncodeImage to serialize images that are not already
-     * encoded as SkEncodedImageFormat::kPNG images.
-     */
-    inline sk_sp<SkPixelSerializer> MakePixelSerializer() {
-        struct EncodeImagePixelSerializer final : SkPixelSerializer {
-            bool onUseEncodedData(const void*, size_t) override { return true; }
-            SkData* onEncode(const SkPixmap& pmap) override {
-                return EncodeImageToData(pmap, SkEncodedImageFormat::kPNG, 100).release();
-            }
-        };
-        return sk_make_sp<EncodeImagePixelSerializer>();
-    }
-
     bool copy_to(SkBitmap* dst, SkColorType dstCT, const SkBitmap& src);
     void copy_to_g8(SkBitmap* dst, const SkBitmap& src);
-
 }  // namespace sk_tool_utils
 
 #endif  // sk_tool_utils_DEFINED

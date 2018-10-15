@@ -9,11 +9,11 @@
 #include "GrColorSpaceInfo.h"
 #include "GrProcessorUnitTest.h"
 #include "GrStyle.h"
-#include "SkColorSpace_Base.h"
 #include "SkDashPathPriv.h"
 #include "SkMakeUnique.h"
 #include "SkMatrix.h"
 #include "SkPath.h"
+#include "SkRectPriv.h"
 #include "SkRRect.h"
 
 #if GR_TEST_UTILS
@@ -125,7 +125,7 @@ const SkRect& TestRect(SkRandom* random) {
         gRects[0] = SkRect::MakeWH(1.f, 1.f);
         gRects[1] = SkRect::MakeWH(1.0f, 256.0f);
         gRects[2] = SkRect::MakeWH(256.0f, 1.0f);
-        gRects[3] = SkRect::MakeLargest();
+        gRects[3] = SkRectPriv::MakeLargest();
         gRects[4] = SkRect::MakeLTRB(-65535.0f, -65535.0f, 65535.0f, 65535.0f);
         gRects[5] = SkRect::MakeLTRB(-10.0f, -10.0f, 10.0f, 10.0f);
     }
@@ -285,13 +285,13 @@ TestDashPathEffect::TestDashPathEffect(const SkScalar* intervals, int count, SkS
                                    &fInitialDashIndex, &fIntervalLength, &fPhase);
 }
 
-    bool TestDashPathEffect::filterPath(SkPath* dst, const SkPath& src, SkStrokeRec* rec,
-                                     const SkRect* cullRect) const {
+    bool TestDashPathEffect::onFilterPath(SkPath* dst, const SkPath& src, SkStrokeRec* rec,
+                                          const SkRect* cullRect) const {
     return SkDashPath::InternalFilter(dst, src, rec, cullRect, fIntervals.get(), fCount,
                                       fInitialDashLength, fInitialDashIndex, fIntervalLength);
 }
 
-SkPathEffect::DashType TestDashPathEffect::asADash(DashInfo* info) const {
+SkPathEffect::DashType TestDashPathEffect::onAsADash(DashInfo* info) const {
     if (info) {
         if (info->fCount >= fCount && info->fIntervals) {
             memcpy(info->fIntervals, fIntervals.get(), fCount * sizeof(SkScalar));
@@ -309,41 +309,37 @@ sk_sp<SkColorSpace> TestColorSpace(SkRandom* random) {
         gOnce = true;
         // No color space (legacy mode)
         gColorSpaces[0] = nullptr;
-        // sRGB or Adobe
+        // sRGB or color-spin sRGB
         gColorSpaces[1] = SkColorSpace::MakeSRGB();
-        gColorSpaces[2] = SkColorSpace_Base::MakeNamed(SkColorSpace_Base::kAdobeRGB_Named);
+        gColorSpaces[2] = SkColorSpace::MakeSRGB()->makeColorSpin();
     }
     return gColorSpaces[random->nextULessThan(static_cast<uint32_t>(SK_ARRAY_COUNT(gColorSpaces)))];
 }
 
 sk_sp<GrColorSpaceXform> TestColorXform(SkRandom* random) {
+    // TODO: Add many more kinds of xforms here
     static sk_sp<GrColorSpaceXform> gXforms[3];
     static bool gOnce;
     if (!gOnce) {
         gOnce = true;
         sk_sp<SkColorSpace> srgb = SkColorSpace::MakeSRGB();
-        sk_sp<SkColorSpace> adobe = SkColorSpace_Base::MakeNamed(SkColorSpace_Base::kAdobeRGB_Named);
+        sk_sp<SkColorSpace> spin = SkColorSpace::MakeSRGB()->makeColorSpin();
         // No gamut change
         gXforms[0] = nullptr;
-        // To larger gamut (with automatic transfer function)
-        gXforms[1] = GrColorSpaceXform::Make(srgb.get(), kSRGBA_8888_GrPixelConfig, adobe.get());
-        // To smaller gamut (with manual transfer function)
-        gXforms[2] = GrColorSpaceXform::Make(adobe.get(), kRGBA_8888_GrPixelConfig, srgb.get());
+        gXforms[1] = GrColorSpaceXform::Make(srgb.get(), kPremul_SkAlphaType,
+                                             spin.get(), kPremul_SkAlphaType);
+        gXforms[2] = GrColorSpaceXform::Make(spin.get(), kPremul_SkAlphaType,
+                                             srgb.get(), kPremul_SkAlphaType);
     }
     return gXforms[random->nextULessThan(static_cast<uint32_t>(SK_ARRAY_COUNT(gXforms)))];
 }
 
-TestAsFPArgs::TestAsFPArgs(GrProcessorTestData* d) {
-    fViewMatrixStorage = TestMatrix(d->fRandom);
-    fColorSpaceInfoStorage = skstd::make_unique<GrColorSpaceInfo>(TestColorSpace(d->fRandom),
-                                                                  kRGBA_8888_GrPixelConfig);
-
-    fArgs.fContext = d->context();
-    fArgs.fViewMatrix = &fViewMatrixStorage;
-    fArgs.fLocalMatrix = nullptr;
-    fArgs.fFilterQuality = kNone_SkFilterQuality;
-    fArgs.fDstColorSpaceInfo = fColorSpaceInfoStorage.get();
-}
+TestAsFPArgs::TestAsFPArgs(GrProcessorTestData* d)
+    : fViewMatrixStorage(TestMatrix(d->fRandom))
+    , fColorSpaceInfoStorage(skstd::make_unique<GrColorSpaceInfo>(TestColorSpace(d->fRandom),
+                                                                  kRGBA_8888_GrPixelConfig))
+    , fArgs(d->context(), &fViewMatrixStorage, kNone_SkFilterQuality, fColorSpaceInfoStorage.get())
+{}
 
 TestAsFPArgs::~TestAsFPArgs() {}
 

@@ -27,8 +27,7 @@ def PostUploadHook(cl, change, output_api):
   return output_api.EnsureCQIncludeTrybotsAreAdded(
       cl,
       [
-        'master.tryserver.chromium.android:android_arm64_dbg_recipe',
-        'master.tryserver.chromium.android:android_compile_mips_dbg',
+        'luci.chromium.try:android_arm64_dbg_recipe',
         'master.tryserver.chromium.android:android_compile_x64_dbg',
         'master.tryserver.chromium.android:android_compile_x86_dbg',
       ],

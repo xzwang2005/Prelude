@@ -12,7 +12,6 @@
 #include "cc/paint/frame_metadata.h"
 #include "cc/paint/image_animation_count.h"
 #include "cc/paint/paint_export.h"
-#include "cc/paint/skia_paint_image_generator.h"
 #include "third_party/skia/include/core/SkImage.h"
 #include "ui/gfx/geometry/rect.h"
 
@@ -37,16 +36,25 @@ class CC_PAINT_EXPORT PaintImage {
   // images which can be progressively updated as more encoded data is received.
   using ContentId = int;
 
-  // An id that can be used for all non-lazy images. Note that if an image is
-  // not lazy, it does not mean that this id must be used; one can still use
-  // GetNextId to generate a stable id for such images.
-  static const Id kNonLazyStableId;
+  // A GeneratorClientId can be used to namespace different clients that are
+  // using the output of a PaintImageGenerator.
+  //
+  // This is used to allow multiple compositors to simultaneously decode the
+  // same image. Each compositor is assigned a unique GeneratorClientId which is
+  // passed through to the decoder from PaintImage::Decode. Internally the
+  // decoder ensures that requestes from different clients are executed in
+  // parallel. This is particularly important for animated images, where
+  // compositors displaying the same image can request decodes for different
+  // frames from this image.
+  using GeneratorClientId = int;
+  static const GeneratorClientId kDefaultGeneratorClientId;
 
   // The default frame index to use if no index is provided. For multi-frame
   // images, this would imply the first frame of the animation.
   static const size_t kDefaultFrameIndex;
 
   static const Id kInvalidId;
+  static const ContentId kInvalidContentId;
 
   class CC_PAINT_EXPORT FrameKey {
    public:
@@ -57,6 +65,7 @@ class CC_PAINT_EXPORT PaintImage {
     uint64_t hash() const { return hash_; }
     std::string ToString() const;
     size_t frame_index() const { return frame_index_; }
+    ContentId content_id() const { return content_id_; }
 
    private:
     ContentId content_id_;
@@ -96,6 +105,11 @@ class CC_PAINT_EXPORT PaintImage {
 
   static Id GetNextId();
   static ContentId GetNextContentId();
+  static GeneratorClientId GetNextGeneratorClientId();
+
+  // Creates a PaintImage wrapping |bitmap|. Note that the pixels will be copied
+  // unless the bitmap is marked immutable.
+  static PaintImage CreateFromBitmap(SkBitmap bitmap);
 
   PaintImage();
   PaintImage(const PaintImage& other);
@@ -116,11 +130,6 @@ class CC_PAINT_EXPORT PaintImage {
   // GetSupportedDecodeSize(size).
   SkISize GetSupportedDecodeSize(const SkISize& requested_size) const;
 
-  // Returns SkImageInfo that should be used to decode this image to the given
-  // size and color type. The size must be supported.
-  SkImageInfo CreateDecodeImageInfo(const SkISize& size,
-                                    SkColorType color_type) const;
-
   // Decode the image into the given memory for the given SkImageInfo.
   // - Size in |info| must be supported.
   // - The amount of memory allocated must be at least
@@ -132,7 +141,8 @@ class CC_PAINT_EXPORT PaintImage {
   bool Decode(void* memory,
               SkImageInfo* info,
               sk_sp<SkColorSpace> color_space,
-              size_t frame_index) const;
+              size_t frame_index,
+              GeneratorClientId client_id) const;
 
   Id stable_id() const { return id_; }
   const sk_sp<SkImage>& GetSkImage() const;
@@ -141,11 +151,11 @@ class CC_PAINT_EXPORT PaintImage {
   bool is_multipart() const { return is_multipart_; }
   int repetition_count() const { return repetition_count_; }
   bool ShouldAnimate() const;
-  size_t frame_index() const { return frame_index_; }
   AnimationSequenceId reset_animation_sequence_id() const {
     return reset_animation_sequence_id_;
   }
   DecodingMode decoding_mode() const { return decoding_mode_; }
+  PaintImage::ContentId content_id() const { return content_id_; }
 
   // TODO(vmpstr): Don't get the SkImage here if you don't need to.
   uint32_t unique_id() const { return GetSkImage()->uniqueID(); }
@@ -155,8 +165,7 @@ class CC_PAINT_EXPORT PaintImage {
   int height() const { return GetSkImage()->height(); }
   SkColorSpace* color_space() const { return GetSkImage()->colorSpace(); }
 
-  // Returns a unique id for the pixel data for the frame at |frame_index|. Used
-  // only for lazy-generated images.
+  // Returns a unique id for the pixel data for the frame at |frame_index|.
   FrameKey GetKeyForFrame(size_t frame_index) const;
 
   // Returns the metadata for each frame of a multi-frame image. Should only be
@@ -166,32 +175,39 @@ class CC_PAINT_EXPORT PaintImage {
   // Returns the total number of frames known to exist in this image.
   size_t FrameCount() const;
 
+  // Returns an SkImage for the frame at |index|.
+  sk_sp<SkImage> GetSkImageForFrame(size_t index,
+                                    GeneratorClientId client_id) const;
+
   std::string ToString() const;
 
  private:
-  static const ContentId kInvalidContentId = -1;
   friend class PaintImageBuilder;
   FRIEND_TEST_ALL_PREFIXES(PaintImageTest, Subsetting);
+
+  // Used internally for PaintImages created at raster.
+  static const Id kNonLazyStableId;
+  friend class ScopedRasterFlags;
+  friend class PaintOpReader;
 
   bool DecodeFromGenerator(void* memory,
                            SkImageInfo* info,
                            sk_sp<SkColorSpace> color_space,
-                           size_t frame_index) const;
+                           size_t frame_index,
+                           GeneratorClientId client_id) const;
   bool DecodeFromSkImage(void* memory,
                          SkImageInfo* info,
                          sk_sp<SkColorSpace> color_space,
-                         size_t frame_index) const;
+                         size_t frame_index,
+                         GeneratorClientId client_id) const;
   void CreateSkImage();
   PaintImage MakeSubset(const gfx::Rect& subset) const;
 
-  // Returns an SkImage for the frame at |index|.
-  sk_sp<SkImage> GetSkImageForFrame(size_t index) const;
-
   sk_sp<SkImage> sk_image_;
-
   sk_sp<PaintRecord> paint_record_;
   gfx::Rect paint_record_rect_;
-  ContentId paint_record_content_id_ = kInvalidContentId;
+
+  ContentId content_id_ = kInvalidContentId;
 
   sk_sp<PaintImageGenerator> paint_image_generator_;
 
@@ -203,9 +219,6 @@ class CC_PAINT_EXPORT PaintImage {
   // If non-empty, holds the subset of this image relative to the original image
   // at the origin.
   gfx::Rect subset_rect_;
-
-  // The frame index to use when rasterizing this image.
-  size_t frame_index_ = kDefaultFrameIndex;
 
   // Whether the data fetched for this image is a part of a multpart response.
   bool is_multipart_ = false;

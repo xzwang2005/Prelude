@@ -93,6 +93,8 @@ class DNSFailureException(LoginException):
 
 class CrOSInterface(object):
 
+  _DEFAULT_SSH_CONNECTION_TIMEOUT = 5
+
   def __init__(self, hostname=None, ssh_port=None, ssh_identity=None):
     self._hostname = hostname
     self._ssh_port = ssh_port
@@ -104,7 +106,7 @@ class CrOSInterface(object):
       return
 
     self._ssh_identity = None
-    self._ssh_args = ['-o ConnectTimeout=5', '-o StrictHostKeyChecking=no',
+    self._ssh_args = ['-o StrictHostKeyChecking=no',
                       '-o KbdInteractiveAuthentication=no',
                       '-o PreferredAuthentications=publickey',
                       '-o UserKnownHostsFile=/dev/null', '-o ControlMaster=no']
@@ -142,7 +144,8 @@ class CrOSInterface(object):
   def ssh_port(self):
     return self._ssh_port
 
-  def FormSSHCommandLine(self, args, extra_ssh_args=None, port_forward=False):
+  def FormSSHCommandLine(self, args, extra_ssh_args=None, port_forward=False,
+                         connect_timeout=None):
     """Constructs a subprocess-suitable command line for `ssh'.
     """
     if self.local:
@@ -153,6 +156,11 @@ class CrOSInterface(object):
       return ['sh', '-c', " ".join(args)]
 
     full_args = ['ssh', '-o ForwardX11=no', '-o ForwardX11Trusted=no', '-n']
+    if connect_timeout:
+      full_args += ['-o ConnectTimeout=%d' % connect_timeout]
+    else:
+      full_args += [
+          '-o ConnectTimeout=%d' % self._DEFAULT_SSH_CONNECTION_TIMEOUT]
     # As remote port forwarding might conflict with the control socket
     # sharing, skip the control socket args if it is for remote port forwarding.
     if not port_forward:
@@ -218,9 +226,9 @@ class CrOSInterface(object):
         r'Warning: Permanently added [^\n]* to the list of known hosts.\s\n',
         '', to_clean)
 
-  def RunCmdOnDevice(self, args, cwd=None, quiet=False):
+  def RunCmdOnDevice(self, args, cwd=None, quiet=False, connect_timeout=None):
     stdout, stderr = GetAllCmdOutput(
-        self.FormSSHCommandLine(args),
+        self.FormSSHCommandLine(args, connect_timeout=connect_timeout),
         cwd,
         quiet=quiet)
     # The initial login will add the host to the hosts file but will also print
@@ -231,7 +239,10 @@ class CrOSInterface(object):
   def TryLogin(self):
     logging.debug('TryLogin()')
     assert not self.local
-    stdout, stderr = self.RunCmdOnDevice(['echo', '$USER'], quiet=True)
+    # Initial connection may take a bit to establish (especially if the
+    # VM/device just booted up). So bump the default timeout.
+    stdout, stderr = self.RunCmdOnDevice(
+        ['echo', '$USER'], quiet=True, connect_timeout=60)
     if stderr != '':
       if 'Host key verification failed' in stderr:
         raise LoginException(('%s host key verification failed. ' +
@@ -275,7 +286,7 @@ class CrOSInterface(object):
   def PushFile(self, filename, remote_filename):
     if self.local:
       args = ['cp', '-r', filename, remote_filename]
-      stdout, stderr = GetAllCmdOutput(args, quiet=True)
+      _, stderr = GetAllCmdOutput(args, quiet=True)
       if stderr != '':
         raise OSError('No such file or directory %s' % stderr)
       return
@@ -285,7 +296,7 @@ class CrOSInterface(object):
         remote_filename,
         extra_scp_args=['-r'])
 
-    stdout, stderr = GetAllCmdOutput(args, quiet=True)
+    _, stderr = GetAllCmdOutput(args, quiet=True)
     stderr = self._RemoveSSHWarnings(stderr)
     if stderr != '':
       raise OSError('No such file or directory %s' % stderr)
@@ -318,7 +329,7 @@ class CrOSInterface(object):
       destfile = os.path.basename(filename)
     args = self._FormSCPFromRemote(filename, os.path.abspath(destfile))
 
-    stdout, stderr = GetAllCmdOutput(args, quiet=True)
+    _, stderr = GetAllCmdOutput(args, quiet=True)
     stderr = self._RemoveSSHWarnings(stderr)
     if stderr != '':
       raise OSError('No such file or directory %s' % stderr)
@@ -485,6 +496,13 @@ class CrOSInterface(object):
     mount_info = self._GetMountSourceAndTarget(path)
     return mount_info[0] if mount_info else None
 
+  def EphemeralCryptohomePath(self, user):
+    """Returns the ephemeral cryptohome mount poing for |user|."""
+    profile_path = self.CryptohomePath(user)
+    # Get user hash as last element of cryptohome path last.
+    return os.path.join('/run/cryptohome/ephemeral_mount/',
+                        os.path.basename(profile_path))
+
   def CryptohomePath(self, user):
     """Returns the cryptohome mount point for |user|."""
     stdout, stderr = self.RunCmdOnDevice(['cryptohome-path', 'user', "'%s'" %
@@ -495,13 +513,19 @@ class CrOSInterface(object):
 
   def IsCryptohomeMounted(self, username, is_guest):
     """Returns True iff |user|'s cryptohome is mounted."""
+    # Check whether it's ephemeral mount from a loop device.
+    profile_ephemeral_path = self.EphemeralCryptohomePath(username)
+    ephemeral_mount_info = self._GetMountSourceAndTarget(profile_ephemeral_path)
+    if ephemeral_mount_info:
+      return (ephemeral_mount_info[0].startswith('/dev/loop') and
+              ephemeral_mount_info[1] == profile_ephemeral_path)
+
     profile_path = self.CryptohomePath(username)
     mount_info = self._GetMountSourceAndTarget(profile_path)
     if mount_info:
       # Checks if the filesytem at |profile_path| is mounted on |profile_path|
       # itself. Before mounting cryptohome, it shows an upper directory (/home).
-      is_guestfs = ((mount_info[0] == 'guestfs') or
-                    mount_info[0].startswith('/dev/loop'))
+      is_guestfs = (mount_info[0] == 'guestfs')
       return is_guestfs == is_guest and mount_info[1] == profile_path
     return False
 

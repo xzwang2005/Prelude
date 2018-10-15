@@ -6,11 +6,12 @@
  * found in the LICENSE file.
  */
 
-#include <OpenGL/gl.h>
 #include "../GLWindowContext.h"
-#include "SDL.h"
 #include "WindowContextFactory_mac.h"
 #include "gl/GrGLInterface.h"
+
+#include <OpenGL/gl.h>
+#include "SDL.h"
 
 using sk_app::DisplayParams;
 using sk_app::window_context_factory::MacWindowInfo;
@@ -27,7 +28,7 @@ public:
     void onSwapBuffers() override;
 
     sk_sp<const GrGLInterface> onInitializeContext() override;
-    void onDestroyContext() override;
+    void onDestroyContext() override {}
 
 private:
     SDL_Window*   fWindow;
@@ -39,7 +40,7 @@ private:
 GLWindowContext_mac::GLWindowContext_mac(const MacWindowInfo& info, const DisplayParams& params)
     : INHERITED(params)
     , fWindow(info.fWindow)
-    , fGLContext(nullptr) {
+    , fGLContext(info.fGLContext) {
 
     // any config code here (particularly for msaa)?
 
@@ -52,12 +53,7 @@ GLWindowContext_mac::~GLWindowContext_mac() {
 
 sk_sp<const GrGLInterface> GLWindowContext_mac::onInitializeContext() {
     SkASSERT(fWindow);
-
-    fGLContext = SDL_GL_CreateContext(fWindow);
-    if (!fGLContext) {
-        SkDebugf("%s\n", SDL_GetError());
-        return nullptr;
-    }
+    SkASSERT(fGLContext);
 
     if (0 == SDL_GL_MakeCurrent(fWindow, fGLContext)) {
         glClearStencil(0);
@@ -67,23 +63,15 @@ sk_sp<const GrGLInterface> GLWindowContext_mac::onInitializeContext() {
 
         SDL_GL_GetAttribute(SDL_GL_STENCIL_SIZE, &fStencilBits);
         SDL_GL_GetAttribute(SDL_GL_MULTISAMPLESAMPLES, &fSampleCount);
+        fSampleCount = SkTMax(fSampleCount, 1);
 
         SDL_GetWindowSize(fWindow, &fWidth, &fHeight);
         glViewport(0, 0, fWidth, fHeight);
     } else {
         SkDebugf("MakeCurrent failed: %s\n", SDL_GetError());
     }
-    return sk_sp<const GrGLInterface>(GrGLCreateNativeInterface());
+    return GrGLMakeNativeInterface();
 }
-
-void GLWindowContext_mac::onDestroyContext() {
-    if (!fWindow || !fGLContext) {
-        return;
-    }
-    SDL_GL_DeleteContext(fGLContext);
-    fGLContext = nullptr;
-}
-
 
 void GLWindowContext_mac::onSwapBuffers() {
     if (fWindow && fGLContext) {

@@ -18,6 +18,7 @@
 #include "net/socket/client_socket_pool.h"
 #include "net/socket/client_socket_pool_base.h"
 #include "net/socket/connection_attempts.h"
+#include "net/socket/socket_tag.h"
 
 namespace net {
 
@@ -102,6 +103,7 @@ class NET_EXPORT_PRIVATE TransportConnectJob : public ConnectJob {
   TransportConnectJob(
       const std::string& group_name,
       RequestPriority priority,
+      const SocketTag& socket_tag,
       ClientSocketPool::RespectLimits respect_limits,
       const scoped_refptr<TransportSocketParams>& params,
       base::TimeDelta timeout_duration,
@@ -201,15 +203,15 @@ class NET_EXPORT_PRIVATE TransportClientSocketPool : public ClientSocketPool {
   int RequestSocket(const std::string& group_name,
                     const void* resolve_info,
                     RequestPriority priority,
+                    const SocketTag& socket_tag,
                     RespectLimits respect_limits,
                     ClientSocketHandle* handle,
-                    const CompletionCallback& callback,
+                    CompletionOnceCallback callback,
                     const NetLogWithSource& net_log) override;
   void RequestSockets(const std::string& group_name,
                       const void* params,
                       int num_sockets,
-                      const NetLogWithSource& net_log,
-                      HttpRequestInfo::RequestMotivation motivation) override;
+                      const NetLogWithSource& net_log) override;
   void SetPriority(const std::string& group_name,
                    ClientSocketHandle* handle,
                    RequestPriority priority) override;
@@ -236,6 +238,10 @@ class NET_EXPORT_PRIVATE TransportClientSocketPool : public ClientSocketPool {
   bool IsStalled() const override;
   void AddHigherLayeredPool(HigherLayeredPool* higher_pool) override;
   void RemoveHigherLayeredPool(HigherLayeredPool* higher_pool) override;
+
+  ClientSocketFactory* client_socket_factory() {
+    return client_socket_factory_;
+  }
 
  protected:
   // Methods shared with WebSocketTransportClientSocketPool
@@ -281,6 +287,7 @@ class NET_EXPORT_PRIVATE TransportClientSocketPool : public ClientSocketPool {
   };
 
   PoolBase base_;
+  ClientSocketFactory* const client_socket_factory_;
 
   DISALLOW_COPY_AND_ASSIGN(TransportClientSocketPool);
 };

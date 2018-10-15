@@ -3,6 +3,7 @@
 # found in the LICENSE file.
 
 import collections
+import re
 
 from dashboard.pinpoint.models.change import repository as repository_module
 from dashboard.services import gitiles_service
@@ -10,6 +11,9 @@ from dashboard.services import gitiles_service
 
 class NonLinearError(Exception):
   """Raised when trying to find the midpoint of Changes that are not linear."""
+
+
+Dep = collections.namedtuple('Dep', ('repository_url', 'git_hash'))
 
 
 class Commit(collections.namedtuple('Commit', ('repository', 'git_hash'))):
@@ -29,18 +33,16 @@ class Commit(collections.namedtuple('Commit', ('repository', 'git_hash'))):
     """The HTTPS URL of the repository as passed to `git clone`."""
     return repository_module.RepositoryUrl(self.repository)
 
-  def Details(self):
-    """The details of this Commit, including author and message, as a dict.
+  def Deps(self):
+    """Return the DEPS of this Commit.
+
+    Returns Dep namedtuples with repository URLs instead of Commit objects,
+    because Commit objects must have their repositories verified in the
+    datastore, and we'd like to do that more lazily.
 
     Returns:
-      A dictionary containing the author, message, time, file changes, and other
-      information. See services/gitiles_service_test.py for an example.
+      A frozenset of Dep (repository_url, git_hash) namedtuples.
     """
-    # TODO: Store the commit info in the datastore and make this a property.
-    return gitiles_service.CommitInfo(self.repository_url, self.git_hash)
-
-  def Deps(self):
-    """Return the DEPS of this Commit as a frozenset of Commits."""
     # Download and execute DEPS file.
     try:
       deps_file_contents = gitiles_service.FileContents(
@@ -56,33 +58,74 @@ class Commit(collections.namedtuple('Commit', ('repository', 'git_hash'))):
     for deps_os in deps_data.get('deps_os', {}).itervalues():
       deps_dict.update(deps_os)
 
-    # Convert deps strings to Commit objects.
+    # Pull out vars dict to format brace variables.
+    vars_dict = deps_data.get('vars', {})
+
+    # Convert deps strings to repository and git hash.
     commits = []
     for dep_value in deps_dict.itervalues():
       if isinstance(dep_value, basestring):
         dep_string = dep_value
       else:
+        if 'url' not in dep_value:
+          # We don't support DEPS that are CIPD packages.
+          continue
         dep_string = dep_value['url']
+        if 'revision' in dep_value:
+          dep_string += '@' + dep_value['revision']
 
-      dep_string_parts = dep_string.split('@')
+      dep_string_parts = dep_string.format(**vars_dict).split('@')
       if len(dep_string_parts) < 2:
         continue  # Dep is not pinned to any particular revision.
       if len(dep_string_parts) > 2:
         raise NotImplementedError('Unknown DEP format: ' + dep_string)
 
       repository_url, git_hash = dep_string_parts
-      repository = repository_module.Repository(repository_url,
-                                                add_if_missing=True)
-      commits.append(Commit(repository, git_hash))
+      if repository_url.endswith('.git'):
+        repository_url = repository_url[:-4]
+      commits.append(Dep(repository_url, git_hash))
 
     return frozenset(commits)
 
   def AsDict(self):
-    return {
+    # CommitInfo is cached in gitiles_service.
+    commit_info = gitiles_service.CommitInfo(self.repository_url, self.git_hash)
+    details = {
         'repository': self.repository,
-        'git_hash': self.git_hash,
-        'url': self.repository_url + '/+/' + self.git_hash,
+        'git_hash': commit_info['commit'],
+        'url': self.repository_url + '/+/' + commit_info['commit'],
+        'subject': commit_info['message'].split('\n', 1)[0],
+        'author': commit_info['author']['email'],
+        'time': commit_info['committer']['time'],
     }
+    commit_position = _ParseCommitPosition(commit_info['message'])
+    if commit_position:
+      details['commit_position'] = commit_position
+    author = details['author']
+    if (author == 'v8-autoroll@chromium.org' or
+        author.endswith('skia-buildbots.google.com.iam.gserviceaccount.com')):
+      message = commit_info['message']
+      if message:
+        m = re.search(r'TBR=([^,^\s]*)', message)
+        if m:
+          details['tbr'] = m.group(1)
+    return details
+
+  @classmethod
+  def FromDep(cls, dep):
+    """Create a Commit from a Dep namedtuple as returned by Deps().
+
+    If the repository url is unknown, it will be added to the local datastore.
+
+    Arguments:
+      dep: A Dep namedtuple.
+
+    Returns:
+      A Commit.
+    """
+    repository = repository_module.RepositoryName(
+        dep.repository_url, add_if_missing=True)
+    return cls(repository, dep.git_hash)
 
   @classmethod
   def FromDict(cls, data):
@@ -99,7 +142,7 @@ class Commit(collections.namedtuple('Commit', ('repository', 'git_hash'))):
 
     # Translate repository if it's a URL.
     if repository.startswith('https://'):
-      repository = repository_module.Repository(repository)
+      repository = repository_module.RepositoryName(repository)
 
     git_hash = data['git_hash']
 
@@ -153,3 +196,18 @@ class Commit(collections.namedtuple('Commit', ('repository', 'git_hash'))):
     commits.pop(0)  # Remove commit_b from the range.
 
     return cls(commit_a.repository, commits[len(commits) / 2]['commit'])
+
+
+def _ParseCommitPosition(commit_message):
+  """Parses a commit message for the commit position.
+
+  Args:
+    commit_message: The commit message as a string.
+
+  Returns:
+    An int if there is a commit position, or None otherwise."""
+  match = re.search('^Cr-Commit-Position: [a-z/]+@{#([0-9]+)}$',
+                    commit_message, re.MULTILINE)
+  if match:
+    return int(match.group(1))
+  return None

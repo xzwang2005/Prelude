@@ -5,10 +5,10 @@
 #include "ui/views/controls/menu/menu_scroll_view_container.h"
 
 #include "base/macros.h"
-#include "base/memory/ptr_util.h"
 #include "cc/paint/paint_flags.h"
 #include "third_party/skia/include/core/SkPath.h"
 #include "ui/accessibility/ax_node_data.h"
+#include "ui/base/material_design/material_design_controller.h"
 #include "ui/gfx/canvas.h"
 #include "ui/gfx/color_palette.h"
 #include "ui/views/border.h"
@@ -20,12 +20,13 @@
 #include "ui/views/round_rect_painter.h"
 
 using ui::NativeTheme;
+using MD = ui::MaterialDesignController;
 
 namespace views {
 
 namespace {
 
-static const int kBorderPaddingDueToRoundedCorners = 1;
+static constexpr int kBorderPaddingDueToRoundedCorners = 1;
 
 // MenuScrollButton ------------------------------------------------------------
 
@@ -187,14 +188,11 @@ MenuScrollViewContainer::MenuScrollViewContainer(SubmenuView* content_view)
   arrow_ = BubbleBorderTypeFromAnchor(
       content_view_->GetMenuItem()->GetMenuController()->GetAnchorPosition());
 
-  if (arrow_ != BubbleBorder::NONE)
-    CreateBubbleBorder();
-  else
-    CreateDefaultBorder();
+  CreateBorder();
 }
 
 bool MenuScrollViewContainer::HasBubbleBorder() {
-  return arrow_ != BubbleBorder::NONE;
+  return (arrow_ != BubbleBorder::NONE) || MD::IsRefreshUi();
 }
 
 void MenuScrollViewContainer::SetBubbleArrowOffset(int offset) {
@@ -238,8 +236,7 @@ void MenuScrollViewContainer::Layout() {
 
 void MenuScrollViewContainer::OnNativeThemeChanged(
     const ui::NativeTheme* theme) {
-  if (arrow_ == BubbleBorder::NONE)
-    CreateDefaultBorder();
+  CreateBorder();
 }
 
 void MenuScrollViewContainer::OnPaintBackground(gfx::Canvas* canvas) {
@@ -251,7 +248,8 @@ void MenuScrollViewContainer::OnPaintBackground(gfx::Canvas* canvas) {
   gfx::Rect bounds(0, 0, width(), height());
   NativeTheme::ExtraParams extra;
   const MenuConfig& menu_config = MenuConfig::instance();
-  extra.menu_background.corner_radius = menu_config.corner_radius;
+  extra.menu_background.corner_radius = menu_config.CornerRadiusForMenu(
+      content_view_->GetMenuItem()->GetMenuController());
   GetNativeTheme()->Paint(canvas->sk_canvas(),
       NativeTheme::kMenuPopupBackground, NativeTheme::kNormal, bounds, extra);
 }
@@ -259,7 +257,7 @@ void MenuScrollViewContainer::OnPaintBackground(gfx::Canvas* canvas) {
 void MenuScrollViewContainer::GetAccessibleNodeData(ui::AXNodeData* node_data) {
   // Get the name from the submenu view.
   content_view_->GetAccessibleNodeData(node_data);
-  node_data->role = ui::AX_ROLE_MENU_BAR;
+  node_data->role = ax::mojom::Role::kMenuBar;
 }
 
 void MenuScrollViewContainer::OnBoundsChanged(
@@ -270,28 +268,42 @@ void MenuScrollViewContainer::OnBoundsChanged(
   Layout();
 }
 
+void MenuScrollViewContainer::CreateBorder() {
+  if (HasBubbleBorder())
+    CreateBubbleBorder();
+  else
+    CreateDefaultBorder();
+}
+
 void MenuScrollViewContainer::CreateDefaultBorder() {
   DCHECK_EQ(arrow_, BubbleBorder::NONE);
   bubble_border_ = nullptr;
 
   const MenuConfig& menu_config = MenuConfig::instance();
-
-  int padding = menu_config.use_outer_border && menu_config.corner_radius > 0
+  const ui::NativeTheme* native_theme = GetNativeTheme();
+  MenuController* controller =
+      content_view_->GetMenuItem()->GetMenuController();
+  bool use_outer_border =
+      menu_config.use_outer_border ||
+      (native_theme && native_theme->UsesHighContrastColors());
+  int corner_radius = menu_config.CornerRadiusForMenu(controller);
+  int padding = use_outer_border && corner_radius > 0
                     ? kBorderPaddingDueToRoundedCorners
                     : 0;
 
-  const int vertical_inset = menu_config.menu_vertical_border_size + padding;
+  const int vertical_inset =
+      (corner_radius ? corner_radius : menu_config.menu_vertical_border_size) +
+      padding;
   const int horizontal_inset =
       menu_config.menu_horizontal_border_size + padding;
 
-  if (menu_config.use_outer_border) {
+  if (use_outer_border) {
     SkColor color = GetNativeTheme()
                         ? GetNativeTheme()->GetSystemColor(
                               ui::NativeTheme::kColorId_MenuBorderColor)
                         : gfx::kPlaceholderColor;
     SetBorder(views::CreateBorderPainter(
-        std::make_unique<views::RoundRectPainter>(color,
-                                                  menu_config.corner_radius),
+        std::make_unique<views::RoundRectPainter>(color, corner_radius),
         gfx::Insets(vertical_inset, horizontal_inset)));
   } else {
     SetBorder(CreateEmptyBorder(vertical_inset, horizontal_inset,
@@ -300,9 +312,22 @@ void MenuScrollViewContainer::CreateDefaultBorder() {
 }
 
 void MenuScrollViewContainer::CreateBubbleBorder() {
-  bubble_border_ = new BubbleBorder(arrow_,
-                                    BubbleBorder::SMALL_SHADOW,
-                                    SK_ColorWHITE);
+  bubble_border_ =
+      new BubbleBorder(arrow_, BubbleBorder::SMALL_SHADOW,
+                       GetNativeTheme()->GetSystemColor(
+                           ui::NativeTheme::kColorId_MenuBackgroundColor));
+  MenuController* controller =
+      content_view_->GetMenuItem()->GetMenuController();
+  if (MD::IsRefreshUi() || controller->use_touchable_layout()) {
+    const MenuConfig& menu_config = MenuConfig::instance();
+    bubble_border_->SetCornerRadius(
+        menu_config.CornerRadiusForMenu(controller));
+    bubble_border_->set_md_shadow_elevation(
+        menu_config.ShadowElevationForMenu(controller));
+    scroll_view_->GetContents()->SetBorder(CreateEmptyBorder(
+        gfx::Insets(menu_config.vertical_touchable_menu_item_padding, 0)));
+  }
+
   SetBorder(std::unique_ptr<Border>(bubble_border_));
   SetBackground(std::make_unique<BubbleBackground>(bubble_border_));
 }
@@ -318,6 +343,10 @@ BubbleBorder::Arrow MenuScrollViewContainer::BubbleBorderTypeFromAnchor(
       return BubbleBorder::BOTTOM_CENTER;
     case MENU_ANCHOR_BUBBLE_BELOW:
       return BubbleBorder::TOP_CENTER;
+    case MENU_ANCHOR_BUBBLE_TOUCHABLE_ABOVE:
+    case MENU_ANCHOR_BUBBLE_TOUCHABLE_LEFT:
+    case MENU_ANCHOR_BUBBLE_TOUCHABLE_RIGHT:
+      return BubbleBorder::FLOAT;
     default:
       return BubbleBorder::NONE;
   }

@@ -32,9 +32,7 @@ class SmoothnessMetric(timeline_based_metric.TimelineBasedMetric):
   results object with several representative metrics:
 
     frame_times: A list of raw frame times
-    mean_frame_time: The arithmetic mean of frame times
     percentage_smooth: Percentage of frames that were hitting 60 FPS.
-    frame_time_discrepancy: The absolute discrepancy of frame timestamps
     mean_pixels_approximated: The mean percentage of pixels that we didn't have
     time to rasterize so we used an "approximation" (background color or
     checkerboarding)
@@ -55,31 +53,36 @@ class SmoothnessMetric(timeline_based_metric.TimelineBasedMetric):
     renderer_process = renderer_thread.parent
     stats = rendering_stats.RenderingStats(
         renderer_process, model.browser_process, model.surface_flinger_process,
-        model.gpu_process, [r.GetBounds() for r in interaction_records])
+        model.gpu_process, interaction_records, model.metadata)
+    has_ui_interactions = any(
+        [r.label.startswith("ui_") for r in interaction_records])
     has_surface_flinger_stats = model.surface_flinger_process is not None
-    self._PopulateResultsFromStats(results, stats, has_surface_flinger_stats)
+    self._PopulateResultsFromStats(
+        results, stats, has_ui_interactions, has_surface_flinger_stats)
 
-  def _PopulateResultsFromStats(self, results, stats,
-                                has_surface_flinger_stats):
+  def _PopulateResultsFromStats(
+      self, results, stats, has_ui_interactions, has_surface_flinger_stats):
     page = results.current_page
     values = [
         self._ComputeQueueingDuration(page, stats),
-        self._ComputeFrameTimeDiscrepancy(page, stats),
         self._ComputeMeanPixelsApproximated(page, stats),
-        self._ComputeMeanPixelsCheckerboarded(page, stats)
+        self._ComputeMeanPixelsCheckerboarded(page, stats),
+        self._ComputeLatencyMetric(page, stats, 'input_event_latency',
+                                   stats.input_event_latency),
+        self._ComputeLatencyMetric(page, stats,
+                                   'main_thread_scroll_latency',
+                                   stats.main_thread_scroll_latency),
+        self._ComputeFirstGestureScrollUpdateLatencies(page, stats)
     ]
-    values += self._ComputeLatencyMetric(page, stats, 'input_event_latency',
-                                         stats.input_event_latency)
-    values += self._ComputeLatencyMetric(page, stats,
-                                         'main_thread_scroll_latency',
-                                         stats.main_thread_scroll_latency)
-    values.append(self._ComputeFirstGestureScrollUpdateLatencies(page, stats))
-    values += self._ComputeFrameTimeMetric(page, stats)
+    values += self._ComputeDisplayFrameTimeMetric(page, stats)
+    if has_ui_interactions:
+      values += self._ComputeUIFrameTimeMetric(page, stats)
     if has_surface_flinger_stats:
       values += self._ComputeSurfaceFlingerMetric(page, stats)
 
     for v in values:
-      results.AddValue(v)
+      if v:
+        results.AddValue(v)
 
   def _HasEnoughFrames(self, list_of_frame_timestamp_lists):
     """Whether we have collected at least two frames in every timestamp list."""
@@ -168,37 +171,20 @@ class SmoothnessMetric(timeline_based_metric.TimelineBasedMetric):
     )
 
   def _ComputeLatencyMetric(self, page, stats, name, list_of_latency_lists):
-    """Returns Values for the mean and discrepancy for given latency stats."""
-    mean_latency = None
-    latency_discrepancy = None
+    """Returns Values for given latency stats."""
     none_value_reason = None
     latency_list = None
     if self._HasEnoughFrames(stats.frame_timestamps):
       latency_list = perf_tests_helper.FlattenList(list_of_latency_lists)
       if len(latency_list) == 0:
-        return ()
-      mean_latency = round(statistics.ArithmeticMean(latency_list), 3)
-      latency_discrepancy = (
-          round(statistics.DurationsDiscrepancy(latency_list), 4))
+        return None
     else:
       none_value_reason = NOT_ENOUGH_FRAMES_MESSAGE
-    return (
-        list_of_scalar_values.ListOfScalarValues(
-            page, name, 'ms', latency_list,
-            description='Raw %s values' % name,
-            none_value_reason=none_value_reason,
-            improvement_direction=improvement_direction.DOWN),
-        scalar.ScalarValue(
-            page, 'mean_%s' % name, 'ms', mean_latency,
-            description='Arithmetic mean of the raw %s values' % name,
-            none_value_reason=none_value_reason,
-            improvement_direction=improvement_direction.DOWN),
-        scalar.ScalarValue(
-            page, '%s_discrepancy' % name, 'ms', latency_discrepancy,
-            description='Discrepancy of the raw %s values' % name,
-            none_value_reason=none_value_reason,
-            improvement_direction=improvement_direction.DOWN)
-    )
+    return list_of_scalar_values.ListOfScalarValues(
+        page, name, 'ms', latency_list,
+        description='Raw %s values' % name,
+        none_value_reason=none_value_reason,
+        improvement_direction=improvement_direction.DOWN)
 
   def _ComputeFirstGestureScrollUpdateLatencies(self, page, stats):
     """Returns a ListOfScalarValuesValues of gesture scroll update latencies.
@@ -250,66 +236,45 @@ class SmoothnessMetric(timeline_based_metric.TimelineBasedMetric):
         none_value_reason=none_value_reason,
         improvement_direction=improvement_direction.DOWN)
 
-  def _ComputeFrameTimeMetric(self, page, stats):
+  def _ComputeFrameTimeMetric(
+      self, prefix, page, frame_timestamps, frame_times):
     """Returns Values for the frame time metrics.
 
     This includes the raw and mean frame times, as well as the percentage of
     frames that were hitting 60 fps.
     """
-    frame_times = None
-    mean_frame_time = None
+    flatten_frame_times = None
     percentage_smooth = None
     none_value_reason = None
-    if self._HasEnoughFrames(stats.frame_timestamps):
-      frame_times = perf_tests_helper.FlattenList(stats.frame_times)
-      mean_frame_time = round(statistics.ArithmeticMean(frame_times), 3)
+    if self._HasEnoughFrames(frame_timestamps):
+      flatten_frame_times = perf_tests_helper.FlattenList(frame_times)
       # We use 17ms as a somewhat looser threshold, instead of 1000.0/60.0.
       smooth_threshold = 17.0
-      smooth_count = sum(1 for t in frame_times if t < smooth_threshold)
-      percentage_smooth = float(smooth_count) / len(frame_times) * 100.0
+      smooth_count = sum(1 for t in flatten_frame_times if t < smooth_threshold)
+      percentage_smooth = float(smooth_count) / len(flatten_frame_times) * 100.0
     else:
       none_value_reason = NOT_ENOUGH_FRAMES_MESSAGE
     return (
         list_of_scalar_values.ListOfScalarValues(
-            page, 'frame_times', 'ms', frame_times,
+            page, '%sframe_times' % prefix, 'ms', flatten_frame_times,
             description='List of raw frame times, helpful to understand the '
                         'other metrics.',
             none_value_reason=none_value_reason,
             improvement_direction=improvement_direction.DOWN),
         scalar.ScalarValue(
-            page, 'mean_frame_time', 'ms', mean_frame_time,
-            description='Arithmetic mean of frame times.',
-            none_value_reason=none_value_reason,
-            improvement_direction=improvement_direction.DOWN),
-        scalar.ScalarValue(
-            page, 'percentage_smooth', 'score', percentage_smooth,
+            page, '%spercentage_smooth' % prefix, 'score', percentage_smooth,
             description='Percentage of frames that were hitting 60 fps.',
             none_value_reason=none_value_reason,
             improvement_direction=improvement_direction.UP)
     )
 
-  def _ComputeFrameTimeDiscrepancy(self, page, stats):
-    """Returns a Value for the absolute discrepancy of frame time stamps."""
+  def _ComputeDisplayFrameTimeMetric(self, page, stats):
+    return self._ComputeFrameTimeMetric(
+        '', page, stats.frame_timestamps, stats.frame_times)
 
-    frame_discrepancy = None
-    none_value_reason = None
-    if self._HasEnoughFrames(stats.frame_timestamps):
-      frame_discrepancy = round(statistics.TimestampsDiscrepancy(
-          stats.frame_timestamps), 4)
-    else:
-      none_value_reason = NOT_ENOUGH_FRAMES_MESSAGE
-    return scalar.ScalarValue(
-        page, 'frame_time_discrepancy', 'ms', frame_discrepancy,
-        description='Absolute discrepancy of frame time stamps, where '
-                    'discrepancy is a measure of irregularity. It quantifies '
-                    'the worst jank. For a single pause, discrepancy '
-                    'corresponds to the length of this pause in milliseconds. '
-                    'Consecutive pauses increase the discrepancy. This metric '
-                    'is important because even if the mean and 95th '
-                    'percentile are good, one long pause in the middle of an '
-                    'interaction is still bad.',
-        none_value_reason=none_value_reason,
-        improvement_direction=improvement_direction.DOWN)
+  def _ComputeUIFrameTimeMetric(self, page, stats):
+    return self._ComputeFrameTimeMetric(
+        'ui_', page, stats.ui_frame_timestamps, stats.ui_frame_times)
 
   def _ComputeMeanPixelsApproximated(self, page, stats):
     """Add the mean percentage of pixels approximated.

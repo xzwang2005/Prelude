@@ -24,8 +24,8 @@ namespace sw
 	{
 	public:
 		PixelProgram(const PixelProcessor::State &state, const PixelShader *shader) :
-			PixelRoutine(state, shader), r(shader && shader->dynamicallyIndexedTemporaries),
-			loopDepth(-1), ifDepth(0), loopRepDepth(0), breakDepth(0), currentLabel(-1), whileTest(false)
+			PixelRoutine(state, shader), r(shader->indirectAddressableTemporaries),
+			loopDepth(-1), ifDepth(0), loopRepDepth(0), currentLabel(-1), whileTest(false)
 		{
 			for(int i = 0; i < 2048; ++i)
 			{
@@ -34,12 +34,12 @@ namespace sw
 
 			enableStack[0] = Int4(0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF);
 
-			if(shader && shader->containsBreakInstruction())
+			if(shader->containsBreakInstruction())
 			{
 				enableBreak = Int4(0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF);
 			}
 
-			if(shader && shader->containsContinueInstruction())
+			if(shader->containsContinueInstruction())
 			{
 				enableContinue = Int4(0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF);
 			}
@@ -55,7 +55,7 @@ namespace sw
 
 	private:
 		// Temporary registers
-		RegisterArray<4096> r;
+		RegisterArray<NUM_TEMPORARY_REGISTERS> r;
 
 		// Color outputs
 		Vector4f c[RENDERTARGETS];
@@ -94,7 +94,8 @@ namespace sw
 		Vector4f readConstant(const Src &src, unsigned int offset = 0);
 		RValue<Pointer<Byte>> uniformAddress(int bufferIndex, unsigned int index);
 		RValue<Pointer<Byte>> uniformAddress(int bufferIndex, unsigned int index, Int& offset);
-		Int relativeAddress(const Shader::Parameter &var, int bufferIndex = -1);
+		Int relativeAddress(const Shader::Relative &rel, int bufferIndex = -1);
+		Int4 dynamicAddress(const Shader::Relative &rel);
 
 		Float4 linearToSRGB(const Float4 &x);
 
@@ -153,7 +154,6 @@ namespace sw
 
 		int ifDepth;
 		int loopRepDepth;
-		int breakDepth;
 		int currentLabel;
 		bool whileTest;
 

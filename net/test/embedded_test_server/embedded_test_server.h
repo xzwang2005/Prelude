@@ -103,12 +103,19 @@ class EmbeddedTestServer {
     // Causes the testserver to use a hostname that is a domain
     // instead of an IP.
     CERT_COMMON_NAME_IS_DOMAIN,
+
+    // A certificate that only contains a commonName, rather than also
+    // including a subjectAltName extension.
+    CERT_COMMON_NAME_ONLY,
+
+    // A certificate that is a leaf certificate signed with SHA-1.
+    CERT_SHA1_LEAF,
   };
 
-  typedef base::Callback<std::unique_ptr<HttpResponse>(
+  typedef base::RepeatingCallback<std::unique_ptr<HttpResponse>(
       const HttpRequest& request)>
       HandleRequestCallback;
-  typedef base::Callback<void(const HttpRequest& request)>
+  typedef base::RepeatingCallback<void(const HttpRequest& request)>
       MonitorRequestCallback;
 
   // Creates a http test server. Start() must be called to start the server.
@@ -138,11 +145,11 @@ class EmbeddedTestServer {
   // This is the equivalent of calling InitializeAndListen() followed by
   // StartAcceptingConnections().
   // Returns whether a listening socket has been successfully created.
-  bool Start() WARN_UNUSED_RESULT;
+  bool Start(int port = 0) WARN_UNUSED_RESULT;
 
   // Starts listening for incoming connections but will not yet accept them.
   // Returns whether a listening socket has been succesfully created.
-  bool InitializeAndListen() WARN_UNUSED_RESULT;
+  bool InitializeAndListen(int port = 0) WARN_UNUSED_RESULT;
 
   // Starts the Accept IO Thread and begins accepting connections.
   void StartAcceptingConnections();
@@ -185,6 +192,9 @@ class EmbeddedTestServer {
 
   void SetSSLConfig(ServerCertificate cert, const SSLServerConfig& ssl_config);
   void SetSSLConfig(ServerCertificate cert);
+
+  bool ResetSSLConfig(ServerCertificate cert,
+                      const SSLServerConfig& ssl_config);
 
   // Returns the file name of the certificate the server is using. The test
   // certificates can be found in net/data/ssl/certificates/.
@@ -234,6 +244,10 @@ class EmbeddedTestServer {
  private:
   // Shuts down the server.
   void ShutdownOnIOThread();
+
+  // Resets the SSLServerConfig on the IO thread.
+  void ResetSSLConfigOnIOThread(ServerCertificate cert,
+                                const SSLServerConfig& ssl_config);
 
   // Upgrade the TCP connection to one over SSL.
   std::unique_ptr<StreamSocket> DoSSLUpgrade(

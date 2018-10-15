@@ -2,8 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifndef V8_LITERAL_OBJECTS_INL_H_
-#define V8_LITERAL_OBJECTS_INL_H_
+#ifndef V8_OBJECTS_LITERAL_OBJECTS_INL_H_
+#define V8_OBJECTS_LITERAL_OBJECTS_INL_H_
 
 #include "src/objects-inl.h"
 #include "src/objects/literal-objects.h"
@@ -13,6 +13,9 @@
 
 namespace v8 {
 namespace internal {
+
+SMI_ACCESSORS(ObjectBoilerplateDescription, flags,
+              FixedArray::OffsetOfElementAt(kLiteralTypeOffset));
 
 CAST_ACCESSOR(ClassBoilerplate)
 
@@ -43,9 +46,26 @@ ACCESSORS(ClassBoilerplate, instance_elements_template, Object,
 ACCESSORS(ClassBoilerplate, instance_computed_properties, FixedArray,
           FixedArray::OffsetOfElementAt(kPrototypeComputedPropertiesIndex));
 
+SMI_ACCESSORS(ArrayBoilerplateDescription, flags, kFlagsOffset);
+
+ACCESSORS(ArrayBoilerplateDescription, constant_elements, FixedArrayBase,
+          kConstantElementsOffset);
+
+ElementsKind ArrayBoilerplateDescription::elements_kind() const {
+  return static_cast<ElementsKind>(flags());
+}
+
+void ArrayBoilerplateDescription::set_elements_kind(ElementsKind kind) {
+  set_flags(kind);
+}
+
+bool ArrayBoilerplateDescription::is_empty() const {
+  return constant_elements()->length() == 0;
+}
+
 }  // namespace internal
 }  // namespace v8
 
 #include "src/objects/object-macros-undef.h"
 
-#endif  // V8_LITERAL_OBJECTS_INL_H_
+#endif  // V8_OBJECTS_LITERAL_OBJECTS_INL_H_

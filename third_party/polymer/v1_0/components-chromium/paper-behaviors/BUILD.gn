@@ -1,4 +1,4 @@
-# Copyright 2017 The Chromium Authors. All rights reserved.
+# Copyright 2018 The Chromium Authors. All rights reserved.
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 #
@@ -29,6 +29,7 @@ js_library("paper-inky-focus-behavior-extracted") {
 
 js_library("paper-ripple-behavior-extracted") {
   deps = [
+    "../iron-behaviors:iron-button-state-extracted",
     "../paper-ripple:paper-ripple-extracted",
   ]
 }

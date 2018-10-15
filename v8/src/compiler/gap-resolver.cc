@@ -5,7 +5,6 @@
 #include "src/compiler/gap-resolver.h"
 
 #include <algorithm>
-#include <functional>
 #include <set>
 
 namespace v8 {
@@ -13,15 +12,6 @@ namespace internal {
 namespace compiler {
 
 namespace {
-
-#define REP_BIT(rep) (1 << static_cast<int>(rep))
-
-const int kFloat32Bit = REP_BIT(MachineRepresentation::kFloat32);
-const int kFloat64Bit = REP_BIT(MachineRepresentation::kFloat64);
-
-inline bool Blocks(MoveOperands* move, InstructionOperand destination) {
-  return !move->IsEliminated() && move->source().InterferesWith(destination);
-}
 
 // Splits a FP move between two location operands into the equivalent series of
 // moves between smaller sub-operands, e.g. a double move to two single moves.
@@ -53,7 +43,7 @@ MoveOperands* Split(MoveOperands* move, MachineRepresentation smaller_rep,
     src_index = src_loc.register_code() * aliases;
   } else {
     src_index = src_loc.index();
-    // For operands that occuply multiple slots, the index refers to the last
+    // For operands that occupy multiple slots, the index refers to the last
     // slot. On little-endian architectures, we start at the high slot and use a
     // negative step so that register-to-slot moves are in the correct order.
     src_step = -slot_size;
@@ -96,8 +86,8 @@ void GapResolver::Resolve(ParallelMove* moves) {
     }
     i++;
     if (!kSimpleFPAliasing && move->destination().IsFPRegister()) {
-      reps |=
-          REP_BIT(LocationOperand::cast(move->destination()).representation());
+      reps |= RepresentationBit(
+          LocationOperand::cast(move->destination()).representation());
     }
   }
 
@@ -105,7 +95,7 @@ void GapResolver::Resolve(ParallelMove* moves) {
     if (reps && !base::bits::IsPowerOfTwo(reps)) {
       // Start with the smallest FP moves, so we never encounter smaller moves
       // in the middle of a cycle of larger moves.
-      if ((reps & kFloat32Bit) != 0) {
+      if ((reps & RepresentationBit(MachineRepresentation::kFloat32)) != 0) {
         split_rep_ = MachineRepresentation::kFloat32;
         for (size_t i = 0; i < moves->size(); ++i) {
           auto move = (*moves)[i];
@@ -113,7 +103,7 @@ void GapResolver::Resolve(ParallelMove* moves) {
             PerformMove(moves, move);
         }
       }
-      if ((reps & kFloat64Bit) != 0) {
+      if ((reps & RepresentationBit(MachineRepresentation::kFloat64)) != 0) {
         split_rep_ = MachineRepresentation::kFloat64;
         for (size_t i = 0; i < moves->size(); ++i) {
           auto move = (*moves)[i];
@@ -197,8 +187,11 @@ void GapResolver::PerformMove(ParallelMove* moves, MoveOperands* move) {
   // The move may be blocked on a (at most one) pending move, in which case we
   // have a cycle.  Search for such a blocking move and perform a swap to
   // resolve it.
-  auto blocker = std::find_if(moves->begin(), moves->end(),
-                              std::bind2nd(std::ptr_fun(&Blocks), destination));
+  auto blocker =
+      std::find_if(moves->begin(), moves->end(), [&](MoveOperands* move) {
+        return !move->IsEliminated() &&
+               move->source().InterferesWith(destination);
+      });
   if (blocker == moves->end()) {
     // The easy case: This move is not blocked.
     assembler_->AssembleMove(&source, &destination);

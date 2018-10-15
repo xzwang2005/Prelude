@@ -8,7 +8,6 @@
 #ifndef SkPixelRef_DEFINED
 #define SkPixelRef_DEFINED
 
-#include "../private/SkAtomics.h"
 #include "../private/SkMutex.h"
 #include "../private/SkTDArray.h"
 #include "SkBitmap.h"
@@ -18,6 +17,8 @@
 #include "SkRefCnt.h"
 #include "SkSize.h"
 #include "SkString.h"
+
+#include <atomic>
 
 struct SkIRect;
 
@@ -88,7 +89,7 @@ public:
         virtual void onChange() = 0;
     };
 
-    // Takes ownership of listener.
+    // Takes ownership of listener.  Threadsafe.
     void addGenIDChangeListener(GenIDChangeListener* listener);
 
     // Call when this pixelref is part of the key to a resourcecache entry. This allows the cache
@@ -100,9 +101,6 @@ public:
     virtual SkDiscardableMemory* diagnostic_only_getDiscardable() const { return nullptr; }
 
 protected:
-    // default impl does nothing.
-    virtual void onNotifyPixelsChanged();
-
     void android_only_reset(int width, int height, size_t rowBytes);
 
 private:
@@ -113,18 +111,19 @@ private:
 
     // Bottom bit indicates the Gen ID is unique.
     bool genIDIsUnique() const { return SkToBool(fTaggedGenID.load() & 1); }
-    mutable SkAtomic<uint32_t> fTaggedGenID;
+    mutable std::atomic<uint32_t> fTaggedGenID;
 
 #ifdef SK_BUILD_FOR_ANDROID_FRAMEWORK
     const uint32_t fStableID;
 #endif
 
+    SkMutex                         fGenIDChangeListenersMutex;
     SkTDArray<GenIDChangeListener*> fGenIDChangeListeners;  // pointers are owned
 
     // Set true by caches when they cache content that's derived from the current pixels.
-    SkAtomic<bool> fAddedToCache;
+    std::atomic<bool> fAddedToCache;
 
-    enum {
+    enum Mutability {
         kMutable,               // PixelRefs begin mutable.
         kTemporarilyImmutable,  // Considered immutable, but can revert to mutable.
         kImmutable,             // Once set to this state, it never leaves.

@@ -305,6 +305,7 @@ class GritNode(base.Node):
     self.defines = {}
     self.substituter = None
     self.target_platform = sys.platform
+    self.whitelist_support = False
     self._predetermined_ids_file = None
     self._id_map = None  # Dict of textual_id -> numeric_id.
 
@@ -317,7 +318,7 @@ class GritNode(base.Node):
     if name not in ['base_dir', 'first_ids_file', 'source_lang_id',
                     'latest_public_release', 'current_release',
                     'enc_check', 'tc_project', 'grit_version',
-                    'output_all_resource_defines', 'rc_header_format']:
+                    'output_all_resource_defines']:
       return False
     if name in ['latest_public_release', 'current_release'] and value.strip(
       '0123456789') != '':
@@ -335,8 +336,6 @@ class GritNode(base.Node):
       'source_lang_id' : 'en',
       'enc_check' : constants.ENCODING_CHECK,
       'tc_project' : 'NEED_TO_SET_tc_project_ATTRIBUTE',
-      'output_all_resource_defines': 'true',
-      'rc_header_format': None
     }
 
   def EndParsing(self):
@@ -427,23 +426,11 @@ class GritNode(base.Node):
     """
     return self.attrs['base_dir']
 
-  def SetShouldOutputAllResourceDefines(self, value):
-    """Overrides the value of output_all_resource_defines found in the grd file.
-    """
-    self.attrs['output_all_resource_defines'] = 'true' if value else 'false'
+  def IsWhitelistSupportEnabled(self):
+    return self.whitelist_support
 
-  def ShouldOutputAllResourceDefines(self):
-    """Returns true if all resource defines should be output, false if
-    defines for resources not emitted to resource files should be
-    skipped.
-    """
-    return self.attrs['output_all_resource_defines'] == 'true'
-
-  def GetRcHeaderFormat(self):
-    return self.attrs['rc_header_format']
-
-  def AssignRcHeaderFormat(self, rc_header_format):
-    self.attrs['rc_header_format'] = rc_header_format
+  def SetWhitelistSupportEnabled(self, whitelist_support):
+    self.whitelist_support = whitelist_support
 
   def GetInputFiles(self):
     """Returns the list of files that are read to produce the output."""
@@ -457,6 +444,11 @@ class GritNode(base.Node):
 
     # Check if the input is required for any output configuration.
     input_files = set()
+    # Collect even inactive PartNodes since they affect ID assignments.
+    for node in self:
+      if isinstance(node, misc.PartNode):
+        input_files.add(self.ToRealPath(node.GetInputPath()))
+
     old_output_language = self.output_language
     for lang, ctx, fallback in self.GetConfigurations():
       self.SetOutputLanguage(lang or self.GetSourceLanguage())
@@ -464,7 +456,7 @@ class GritNode(base.Node):
       self.SetFallbackToDefaultLayout(fallback)
 
       for node in self.ActiveDescendants():
-        if isinstance(node, (io.FileNode, include.IncludeNode, misc.PartNode,
+        if isinstance(node, (io.FileNode, include.IncludeNode,
                              structure.StructureNode, variant.SkeletonNode)):
           input_path = node.GetInputPath()
           if input_path is not None:

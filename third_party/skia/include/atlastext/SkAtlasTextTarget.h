@@ -8,12 +8,15 @@
 #ifndef SkAtlasTextTarget_DEFINED
 #define SkAtlasTextTarget_DEFINED
 
-#include <memory>
+#include "SkDeque.h"
 #include "SkRefCnt.h"
 #include "SkScalar.h"
 
+#include <memory>
+
 class SkAtlasTextContext;
 class SkAtlasTextFont;
+class SkMatrix;
 struct SkPoint;
 
 /** Represents a client-created renderable surface and is used to draw text into the surface. */
@@ -25,7 +28,9 @@ public:
      * Creates a text drawing target. ‘handle’ is used to identify this rendering surface when
      * draws are flushed to the SkAtlasTextContext's SkAtlasTextRenderer.
      */
-    static std::unique_ptr<SkAtlasTextTarget> Make(sk_sp<SkAtlasTextContext>, int width, int height,
+    static std::unique_ptr<SkAtlasTextTarget> Make(sk_sp<SkAtlasTextContext>,
+                                                   int width,
+                                                   int height,
                                                    void* handle);
 
     /**
@@ -46,8 +51,33 @@ public:
 
     SkAtlasTextContext* context() const { return fContext.get(); }
 
+    /** Saves the current matrix in a stack. Returns the prior depth of the saved matrix stack. */
+    int save();
+    /** Pops the top matrix on the stack if the stack is not empty. */
+    void restore();
+    /**
+     * Pops the matrix stack until the stack depth is count. Does nothing if the depth is already
+     * less than count.
+     */
+    void restoreToCount(int count);
+
+    /** Pre-translates the current CTM. */
+    void translate(SkScalar dx, SkScalar dy);
+    /** Pre-scales the current CTM. */
+    void scale(SkScalar sx, SkScalar sy);
+    /** Pre-rotates the current CTM about the origin. */
+    void rotate(SkScalar degrees);
+    /** Pre-rotates the current CTM about the (px, py). */
+    void rotate(SkScalar degrees, SkScalar px, SkScalar py);
+    /** Pre-skews the current CTM. */
+    void skew(SkScalar sx, SkScalar sy);
+    /** Pre-concats the current CTM. */
+    void concat(const SkMatrix& matrix);
+
 protected:
     SkAtlasTextTarget(sk_sp<SkAtlasTextContext>, int width, int height, void* handle);
+
+    const SkMatrix& ctm() const { return *static_cast<const SkMatrix*>(fMatrixStack.back()); }
 
     void* const fHandle;
     const sk_sp<SkAtlasTextContext> fContext;
@@ -55,6 +85,13 @@ protected:
     const int fHeight;
 
 private:
+    SkDeque fMatrixStack;
+    int fSaveCnt;
+
+    SkMatrix* accessCTM() const {
+        return static_cast<SkMatrix*>(const_cast<void*>(fMatrixStack.back()));
+    }
+
     SkAtlasTextTarget() = delete;
     SkAtlasTextTarget(const SkAtlasTextContext&) = delete;
     SkAtlasTextTarget& operator=(const SkAtlasTextContext&) = delete;

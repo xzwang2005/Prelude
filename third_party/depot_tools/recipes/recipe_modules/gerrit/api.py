@@ -7,6 +7,10 @@ from recipe_engine import recipe_api
 class GerritApi(recipe_api.RecipeApi):
   """Module for interact with gerrit endpoints"""
 
+  def __init__(self, *args, **kwargs):
+    super(GerritApi, self).__init__(*args, **kwargs)
+    self._changes_target_branch_cache = {}
+
   def __call__(self, name, cmd, infra_step=True, **kwargs):
     """Wrapper for easy calling of gerrit_utils steps."""
     assert isinstance(cmd, (list, tuple))
@@ -65,34 +69,58 @@ class GerritApi(recipe_api.RecipeApi):
     revision = step_result.json.output.get('revision')
     return revision
 
-  def get_change_destination_branch(self, host, change, **kwargs):
+  def get_change_destination_branch(
+      self, host, change, name=None, step_test_data=None):
     """
     Get the upstream branch for a given CL.
 
+    Result is cached.
+
     Args:
-      host: Gerrit host to query.
+      host: URL of Gerrit host to query.
       change: The change number.
 
     Returns:
       the name of the branch
     """
-    assert int(change)
-    kwargs.setdefault('name', 'get_change_destination_branch')
+    assert int(change), change
+    change = int(change)
+    branch = self._changes_target_branch_cache.get((host, change))
+    if branch is not None:
+      return branch
     changes = self.get_changes(
         host,
         [('change', change)],
         limit=1,
-        **kwargs
+        name=name or 'get_change_destination_branch',
+        step_test_data=step_test_data,
     )
     if not changes or 'branch' not in changes[0]:
       self.m.step.active_result.presentation.status = self.m.step.EXCEPTION
       raise self.m.step.InfraFailure(
           'Error quering for branch of CL %s' % change)
-    return changes[0]['branch']
+    branch = changes[0]['branch']
+    self._changes_target_branch_cache[(host, change)] = branch
+    return branch
 
   def get_change_description(self, host, change, patchset):
     """
     Get the description for a given CL and patchset.
+
+    Args:
+      host: URL of Gerrit host to query.
+      change: The change number.
+      patchset: The patchset number.
+
+    Returns:
+      The description corresponding to given CL and patchset.
+    """
+    ri = self.get_revision_info(host, change, patchset)
+    return ri['commit']['message']
+
+  def get_revision_info(self, host, change, patchset):
+    """
+    Returns the info for a given patchset of a given change.
 
     Args:
       host: Gerrit host to query.
@@ -100,7 +128,8 @@ class GerritApi(recipe_api.RecipeApi):
       patchset: The patchset number.
 
     Returns:
-      The description corresponding to given CL and patchset.
+      A dict for the target revision as documented here:
+          https://gerrit-review.googlesource.com/Documentation/rest-api-changes.html#list-changes
     """
     assert int(change), change
     assert int(patchset), patchset
@@ -113,19 +142,19 @@ class GerritApi(recipe_api.RecipeApi):
     for ri in cl['revisions'].itervalues():
       # TODO(tandrii): add support for patchset=='current'.
       if str(ri['_number']) == str(patchset):
-        return ri['commit']['message']
+        return ri
 
     raise self.m.step.InfraFailure(
         'Error querying for CL description: host:%r change:%r; patchset:%r' % (
             host, change, patchset))
 
   def get_changes(self, host, query_params, start=None, limit=None,
-                  o_params=None, **kwargs):
+                  o_params=None, step_test_data=None, **kwargs):
     """
     Query changes for the given host.
 
     Args:
-      host: Gerrit host to query.
+      host: URL of Gerrit host to query.
       query_params: Query parameters as list of (key, value) tuples to form a
           query as documented here:
           https://gerrit-review.googlesource.com/Documentation/user-search.html#search-operators
@@ -133,6 +162,7 @@ class GerritApi(recipe_api.RecipeApi):
       limit: Maximum number of results to return.
       o_params: A list of additional output specifiers, as documented here:
           https://gerrit-review.googlesource.com/Documentation/rest-api-changes.html#list-changes
+      step_test_data: Optional mock test data for the underlying gerrit client.
     Returns:
       A list of change dicts as documented here:
           https://gerrit-review.googlesource.com/Documentation/rest-api-changes.html#list-changes
@@ -150,10 +180,12 @@ class GerritApi(recipe_api.RecipeApi):
       args += ['-p', '%s=%s' % (k, v)]
     for v in (o_params or []):
       args += ['-o', v]
+    if not step_test_data:
+      step_test_data = lambda: self.test_api.get_one_change_response_data()
 
     return self(
         kwargs.pop('name', 'changes'),
         args,
-        step_test_data=lambda: self.test_api.get_one_change_response_data(),
+        step_test_data=step_test_data,
         **kwargs
     ).json.output

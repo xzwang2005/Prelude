@@ -121,9 +121,25 @@ class WasmFunctionBuilder {
     return this;
   }
 
+  getNumLocals() {
+    let total_locals = 0;
+    for (let l of this.locals || []) {
+      for (let type of ["i32", "i64", "f32", "f64", "s128"]) {
+        total_locals += l[type + "_count"] || 0;
+      }
+    }
+    return total_locals;
+  }
+
   addLocals(locals, names) {
-    this.locals = locals;
-    this.local_names = names;
+    const old_num_locals = this.getNumLocals();
+    if (!this.locals) this.locals = []
+    this.locals.push(locals);
+    if (names) {
+      if (!this.local_names) this.local_names = [];
+      const missing_names = old_num_locals - this.local_names.length;
+      this.local_names.push(...new Array(missing_names), ...names);
+    }
     return this;
   }
 
@@ -163,6 +179,7 @@ class WasmModuleBuilder {
     this.explicit = [];
     this.num_imported_funcs = 0;
     this.num_imported_globals = 0;
+    this.num_imported_exceptions = 0;
     return this;
   }
 
@@ -212,10 +229,12 @@ class WasmModuleBuilder {
   }
 
   addException(type) {
-    if (type.results.length != 0)
-      throw new Error('Invalid exception signature: ' + type);
+    if (type.results.length != 0) {
+      throw new Error('Exception signature must have void result: ' + type);
+    }
+    let except_index = this.exceptions.length + this.num_imported_exceptions;
     this.exceptions.push(type);
-    return this.exceptions.length - 1;
+    return except_index;
   }
 
   addFunction(name, type) {
@@ -227,15 +246,21 @@ class WasmModuleBuilder {
   }
 
   addImport(module = "", name, type) {
+    if (this.functions.length != 0) {
+      throw new Error('Imported functions must be declared before local ones');
+    }
     let type_index = (typeof type) == "number" ? type : this.addType(type);
     this.imports.push({module: module, name: name, kind: kExternalFunction,
                        type: type_index});
     return this.num_imported_funcs++;
   }
 
-  addImportedGlobal(module = "", name, type) {
+  addImportedGlobal(module = "", name, type, mutable = false) {
+    if (this.globals.length != 0) {
+      throw new Error('Imported globals must be declared before local ones');
+    }
     let o = {module: module, name: name, kind: kExternalGlobal, type: type,
-             mutable: false}
+             mutable: mutable};
     this.imports.push(o);
     return this.num_imported_globals++;
   }
@@ -251,6 +276,18 @@ class WasmModuleBuilder {
     let o = {module: module, name: name, kind: kExternalTable, initial: initial,
              maximum: maximum};
     this.imports.push(o);
+  }
+
+  addImportedException(module = "", name, type) {
+    if (type.results.length != 0) {
+      throw new Error('Exception signature must have void result: ' + type);
+    }
+    if (this.exceptions.length != 0) {
+      throw new Error('Imported exceptions must be declared before local ones');
+    }
+    let o = {module: module, name: name, kind: kExternalException, type: type};
+    this.imports.push(o);
+    return this.num_imported_exceptions++;
   }
 
   addExport(name, index) {
@@ -362,6 +399,11 @@ class WasmModuleBuilder {
             section.emit_u8(has_max ? 1 : 0); // flags
             section.emit_u32v(imp.initial); // initial
             if (has_max) section.emit_u32v(imp.maximum); // maximum
+          } else if (imp.kind == kExternalException) {
+            section.emit_u32v(imp.type.params.length);
+            for (let param of imp.type.params) {
+              section.emit_u8(param);
+            }
           } else {
             throw new Error("unknown/unsupported import kind " + imp.kind);
           }
@@ -409,7 +451,6 @@ class WasmModuleBuilder {
         }
         section.emit_u32v(wasm.memory.min);
         if (has_max) section.emit_u32v(wasm.memory.max);
-        if (wasm.memory.shared) section.emit_u8(1);
       });
     }
 
@@ -459,6 +500,20 @@ class WasmModuleBuilder {
             section.emit_u32v(global.init_index);
           }
           section.emit_u8(kExprEnd);  // end of init expression
+        }
+      });
+    }
+
+    // Add exceptions.
+    if (wasm.exceptions.length > 0) {
+      if (debug) print("emitting exceptions @ " + binary.length);
+      binary.emit_section(kExceptionSectionCode, section => {
+        section.emit_u32v(wasm.exceptions.length);
+        for (let type of wasm.exceptions) {
+          section.emit_u32v(type.params.length);
+          for (let param of type.params) {
+            section.emit_u8(param);
+          }
         }
       });
     }
@@ -515,20 +570,6 @@ class WasmModuleBuilder {
       });
     }
 
-    // Add exceptions.
-    if (wasm.exceptions.length > 0) {
-      if (debug) print("emitting exceptions @ " + binary.length);
-      binary.emit_section(kExceptionSectionCode, section => {
-        section.emit_u32v(wasm.exceptions.length);
-        for (let type of wasm.exceptions) {
-          section.emit_u32v(type.params.length);
-          for (let param of type.params) {
-            section.emit_u8(param);
-          }
-        }
-      });
-    }
-
     // Add function bodies.
     if (wasm.functions.length > 0) {
       // emit function bodies
@@ -538,9 +579,7 @@ class WasmModuleBuilder {
         for (let func of wasm.functions) {
           // Function body length will be patched later.
           let local_decls = [];
-          let l = func.locals;
-          if (l !== undefined) {
-            let local_decls_count = 0;
+          for (let l of func.locals || []) {
             if (l.i32_count > 0) {
               local_decls.push({count: l.i32_count, type: kWasmI32});
             }
@@ -555,6 +594,12 @@ class WasmModuleBuilder {
             }
             if (l.s128_count > 0) {
               local_decls.push({count: l.s128_count, type: kWasmS128});
+            }
+            if (l.anyref_count > 0) {
+              local_decls.push({count: l.anyref_count, type: kWasmAnyRef});
+            }
+            if (l.except_count > 0) {
+              local_decls.push({count: l.except_count, type: kWasmExceptRef});
             }
           }
 
@@ -668,6 +713,11 @@ class WasmModuleBuilder {
     let module = new WebAssembly.Module(this.toBuffer());
     let instance = new WebAssembly.Instance(module, ffi);
     return instance;
+  }
+
+  asyncInstantiate(ffi) {
+    return WebAssembly.instantiate(this.toBuffer(), ffi)
+        .then(({module, instance}) => instance);
   }
 
   toModule(debug = false) {
