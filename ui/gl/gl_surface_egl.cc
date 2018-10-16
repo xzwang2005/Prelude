@@ -853,7 +853,8 @@ bool GLSurfaceEGL::IsEGLContextPrioritySupported() {
 
 // static
 bool GLSurfaceEGL::IsDirectCompositionSupported() {
-  return g_use_direct_composition;
+  //return g_use_direct_composition;
+  return false;
 }
 
 bool GLSurfaceEGL::IsRobustResourceInitSupported() {

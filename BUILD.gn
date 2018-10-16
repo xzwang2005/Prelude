@@ -28,9 +28,10 @@ group("gn_all") {
   testonly = true
 
   deps = [
-    "//device/vr/buildflags",   # TODO: remove this to sub-targets?
+    "//device/vr/buildflags",
     "//skia",
-    "//ui/views",  # builds //ui/aura
+    "//ui/views",
+    "//ui/views/examples:views_examples_exe",
     "//third_party/angle/samples:all",
   ]
 }

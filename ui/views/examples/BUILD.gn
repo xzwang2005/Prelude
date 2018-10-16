@@ -135,64 +135,64 @@ executable("views_examples_exe") {
   }
 }
 
-jumbo_component("views_examples_with_content_lib") {
-  testonly = true
-  sources = [
-    "examples_window_with_content.cc",
-    "examples_window_with_content.h",
-    "views_examples_with_content_export.h",
-    "webview_example.cc",
-    "webview_example.h",
-  ]
+# jumbo_component("views_examples_with_content_lib") {
+  # testonly = true
+  # sources = [
+    # "examples_window_with_content.cc",
+    # "examples_window_with_content.h",
+    # "views_examples_with_content_export.h",
+    # "webview_example.cc",
+    # "webview_example.h",
+  # ]
 
-  defines = [ "VIEWS_EXAMPLES_WITH_CONTENT_IMPLEMENTATION" ]
+  # defines = [ "VIEWS_EXAMPLES_WITH_CONTENT_IMPLEMENTATION" ]
 
-  deps = [
-    ":views_examples_lib",
-    "//base",
-    "//content",
-    "//skia",
-    "//ui/events",
-    "//ui/views",
-    "//ui/views/controls/webview",
-    "//url",
-  ]
-}
+  # deps = [
+    # ":views_examples_lib",
+    # "//base",
+    # "//content",
+    # "//skia",
+    # "//ui/events",
+    # "//ui/views",
+    # "//ui/views/controls/webview",
+    # "//url",
+  # ]
+# }
 
-executable("views_examples_with_content_exe") {
-  testonly = true
+# executable("views_examples_with_content_exe") {
+  # testonly = true
 
-  sources = [
-    "examples_with_content_main_exe.cc",
-  ]
+  # sources = [
+    # "examples_with_content_main_exe.cc",
+  # ]
 
-  defines = [ "VIEWS_EXAMPLES_WITH_CONTENT_IMPLEMENTATION" ]
+  # defines = [ "VIEWS_EXAMPLES_WITH_CONTENT_IMPLEMENTATION" ]
 
-  deps = [
-    ":copy_content_resources",
-    ":views_examples_with_content_lib",
-    "//base",
-    "//build/win:default_exe_manifest",
-    "//content",
-    "//content:sandbox_helper_win",
-    "//sandbox",
-    "//ui/views_content_client",
-  ]
+  # deps = [
+    # ":copy_content_resources",
+    # ":views_examples_with_content_lib",
+    # "//base",
+    # "//build/win:default_exe_manifest",
+    # "//content",
+    # "//content:sandbox_helper_win",
+    # "//sandbox",
+    # "//ui/views_content_client",
+  # ]
 
-  if (is_win) {
-    configs += [ "//build/config/win:windowed" ]
-    configs -= [ "//build/config/win:console" ]
-  }
-}
+  # if (is_win) {
+    # configs += [ "//build/config/win:windowed" ]
+    # configs -= [ "//build/config/win:console" ]
+  # }
+# }
 
-copy("copy_content_resources") {
-  deps = [
-    "//content:resources",
-  ]
-  sources = [
-    "$root_gen_dir/content/content_resources.pak",
-  ]
-  outputs = [
-    "$root_out_dir/content_resources.pak",
-  ]
-}
+# copy("copy_content_resources") {
+  # deps = [
+    # "//content:resources",
+  # ]
+  # sources = [
+    # "$root_gen_dir/content/content_resources.pak",
+  # ]
+  # outputs = [
+    # "$root_out_dir/content_resources.pak",
+  # ]
+# }
