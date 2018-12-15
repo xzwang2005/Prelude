@@ -4,7 +4,7 @@ title: Build prelude from scratch
 ---
 ## [](#header-2) Build from scratch
 
-Prelude requires about 26G disk space for compilation, comparing to ~160G for the whole Chromium project. Follow the steps below to build Prelude from scratch.
+Prelude requires about 20G disk space for compilation, comparing to ~160G for the whole Chromium project. It's recommended to have 16G or more memory and SSD disk to work with. Here's the steps to build Prelude from scratch.
 
 
 ### [](#header-3) 1.  Checkout the code
@@ -17,7 +17,7 @@ git clone https://github.com/xzwang2005/Prelude.git
 ```
 Resolving deltas: 100% (21062/21062), done.
 ```
-but it's actually working. Give it a minute to finish.
+but it's actually working. Give it a minute to finish. We will call the directory that has Prelude source code the root directory.
 
 ### [](#header-3) 2.  Generate build targets with *gn*
 
@@ -26,7 +26,7 @@ Chromium is built with [Ninja](https://ninja-build.org/), a cross-platform build
 To get started with *gn*, open a console window and go to Prelude directory you just cloned in last step, type:
 
 ```
-gn gen out/debug --args="is_clang=false use_jumbo_build=true"
+gn gen out/debug --args="enable_precompiled_headers=false use_jumbo_build=true"
 ```
 
 This command creates a folder *out/debug* under the root directory, with files containing all the build information:
@@ -35,15 +35,11 @@ This command creates a folder *out/debug* under the root directory, with files c
 *   environment setup files - environment.x64 etc.
 *   dll files (Windows only)
 
->`is_clang=true` means to use Visual C++ compiler instead of Clang. Chromium uses Clang by default, which is downloaded to the folder *third_party/llvm-build* by a hook. However, this version of Clang has some issues under Windows. First, it does not play well with Visual Studio v15.5.x headers. Build fails unless `enable_precompiled_headers=false` is specified. This is a [known issue](https://bugs.chromium.org/p/chromium/issues/detail?id=780124) with no fix planned.
-
->Second, there is no guarantee that this particular version of Clang remains compatible with Windows update. It appears that the latest Windows update causes system crash when compiling with Clang. So it is recommended to build with Visual C++ compiler on Windows for Prelude.
-
->Another argument `use_jumbo_build=true` helps speed up the compile process. 
+>Chromium uses Clang by default, which is downloaded to the folder *third_party/llvm-build* by a hook. However, this version of Clang has some issues under Windows. First, it does not play well with Visual Studio headers. Build fails unless `enable_precompiled_headers=false` is specified. This is a [known issue](https://bugs.chromium.org/p/chromium/issues/detail?id=780124) with no fix planned.
+>Another argument `use_jumbo_build=true` helps speed up the compile process.
 
 ### [](#header-3) 3.  Build the targets using *ninja*
 
 ```
 ninja -C out/debug
 ```
-It's expected to see some clang-specific warnings from a WTL sample project. Details will be provided in later sections.

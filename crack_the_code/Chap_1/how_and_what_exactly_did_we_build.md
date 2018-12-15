@@ -4,13 +4,13 @@ title: How exactly does the build work?
 ---
 ## [](#header-2) How exactly does the build work?
 
-Now, let's take a look at Prelude repository. It's based on Chromium release [65.0.3289.2](https://chromium.googlesource.com/chromium/src.git/+/65.0.3289.2) with some modifications, plus the folder *prelude* which contains all the examples.
+Now, let's take a look at Prelude repository. It's based on Chromium release [71.0.3559.3](https://chromium.googlesource.com/chromium/src.git/+/71.0.3559.3) with some modifications, plus the folder *prelude* which contains all the examples.
 
-Chromium source repository alone does not include everything. It pulls in hundreds of open source projects, such as skia, as its dependencies. All these information can be found in files named *DEPS* like [this one](https://chromium.googlesource.com/chromium/src.git/+/65.0.3289.2/DEPS) at the root directory.
+Chromium source repository alone does not include everything. It pulls in hundreds of other projects, e.g., skia, as dependencies. You may wonder how to know what projects, at which revision are imported for a particular Chromium release? The answer can be found in the file named *DEPS* like [this one](https://chromium.googlesource.com/chromium/src.git/+/71.0.3559.3/DEPS) at the root directory.
 
-If you open that DEPS file, you will see at beginning, it defines a list of arguments stored in variable *vars*, for example, *chromium_git* is defined to be *https://chromium.googlesource.com*, which points to the server hosting many projects needed by Chromium.
+Open that file, you will see a list of arguments stored in variable *vars*, for example, *chromium_git* is defined to be *https://chromium.googlesource.com*, which points to the server hosting many projects needed by Chromium.
 
-Then it defines the variable *deps*, which specifies where to find the code, which revision to use and where to put it locally. For example:
+Then it defines the variable *deps*, which specifies where to find the code, which revision to use and the destination folder relative to the root directory. For example:
 
 ```
   'src/third_party/breakpad/breakpad':
@@ -19,7 +19,7 @@ Then it defines the variable *deps*, which specifies where to find the code, whi
 
 This line of code means grab *breakpad* from: *https://chromium.googlesource.com/breakpad/breakpad.git* and sync to revision *a61afe7a3e865f1da7ff7185184fe23977c2adca*. The code should be downloaded to *src/third_party/breakpad/breakpad*.
 
-DEPS also defines a list of *hooks*. For example, the following hook gets the *gn* executable we used in the last post:
+DEPS also defines a list of *hooks* for extra works. For example, the following hook gets the *gn* executable we used in the last post:
 
 ```
   {
@@ -42,7 +42,7 @@ DEPS also defines a list of *hooks*. For example, the following hook gets the *g
   },
 ```
 
- *action* specifies the command to run; *condition* dictates that this hook should only run on windows machines. You can find similar hooks to get gn for mac and linux too.
+ *action* specifies the command to run; *condition* dictates that this hook should only run on windows machines. You can find similar hooks to get gn for mac and linux.
 
 These tools and external source code must be in place before build start. For Chromium, it is done when you run *fetch chromium*. In Prelude, all these nuts and bolts are already stored in repository, so that you can start using gn and fire up building process immediately.
 

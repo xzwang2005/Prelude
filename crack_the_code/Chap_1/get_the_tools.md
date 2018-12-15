@@ -27,7 +27,7 @@ For simplicity, assume it's unzipped to *c:\depot_tools*
 
 ![Add to PATH ]({{ site.baseurl }}/crack_the_code/images/add_depot_tools_to_path.png){:class="img-responsive"}
 
-### [](#header-3) 3.  Setup environment variable
+### [](#header-3) 3.  Setup other environment variables
 On *Environment Variables* dialog window, click *New...* to create a new environment variable - *DEPOT_TOOLS_WIN_TOOLCHAIN*, and set its value to 0
 
 ![Create Env var]({{ site.baseurl }}/crack_the_code/images/new_env.png){:class="img-responsive"}
@@ -49,16 +49,17 @@ As seen in figure below, *Python v2.7.14* has been installed and *where* command
 
 ![depot_tool_batch_files]({{ site.baseurl }}/crack_the_code/images/python_local.png){:class="img-responsive"}
 
-### [](#header-3) 5.  Install Visual Studio 2017
+### [](#header-3) 5.  Install Visual Studio 2017 (15.7.2 or higher)
 Community version works fine. Make sure following components are installed:
 * VC++ 2017 v141 toolset
-* Windows 10 SDK (10.0.16299)
+* Windows 10 SDK (10.0.17134 or higher)
 * Visual C++ ATL support
 * MFC and ATL support
 
 ![Install VS2017]({{ site.baseurl }}/crack_the_code/images/vs2017_install.png){:class="img-responsive"}
 
-As of Febuary 2018, Visual Studio 2017 available from the official site is v15.5.6. For Prelude, Visual Studio v15.5.x with SDK v10.0.16299 alone is sufficient. To build the whole Chromium, install SDK v10.0.15063.0 as well. Different versions of Visual Studio and Windows SDK can cause some issues, which will be elaborated in a later post.
+As of Dec 2018, latest Visual Studio 2017 available is v15.9. Have multiple versions of Visual Studio and Windows SDK can cause issues. So it's recommended to install only one version (15.7.2 or higher) on your develop machine.
+
 ### [](#header-3) 6.  Add **Debugging Tools** for Windows SDK
 
 Open *Control Panel* and go to *Programs and Festures*, selet *Windows Software Development Kit* then click *Change*. It will run the SDK setup again that allow you to add debugging tools.
