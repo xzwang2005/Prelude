@@ -33,6 +33,7 @@ group("gn_all") {
     "//ui/views",
     "//ui/views/examples:views_examples_exe",
     "//third_party/angle/samples:all",
+    "//prelude",
   ]
 }
 

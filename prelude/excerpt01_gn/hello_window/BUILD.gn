@@ -1,0 +1,11 @@
+# Copyright (c) 2018 The Prelude Authors.
+# Use of this source code is governed by MIT license that can be
+# found in MIT-LICENSE file.
+
+executable("hello_window") {
+  sources = [
+    "hello_window.cpp",
+  ]
+  configs -= [ "//build/config/win:console" ]
+  configs += [ "//build/config/win:windowed" ]
+}
