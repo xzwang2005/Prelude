@@ -1,0 +1,63 @@
+# Copyright (c) 2018 The Prelude Authors.
+# Use of this source code is governed by MIT license that can be
+# found in MIT-LICENSE file.
+
+group("mojo_101") {
+  testonly = true
+  deps = [
+    ":cookie_app_a",
+  ]
+}
+
+source_set("lib") {
+  sources = [
+    "fortune_cookie_impl.h",
+    "fortune_cookie_impl.cc",
+    "radiation_listener_impl.h",
+    "radiation_listener_impl.cc",
+    "radiation_monitor_impl.h",
+    "radiation_monitor_impl.cc",
+  ]
+
+  public_deps = [
+    "//base",
+    "//prelude/excerpt02_mojo/public/mojom"
+  ]
+}
+
+executable("cookie_app_a") {
+  sources = [
+    "cookie_app_a.cc"
+  ]
+
+  deps = [
+    ":lib",
+    "//mojo/core/embedder",
+    "//mojo/public/cpp/bindings",
+  ]
+}
+
+
+executable("cookie_app_b") {
+  sources = [
+    "cookie_app_b.cc"
+  ]
+
+  deps = [
+    ":lib",
+    "//mojo/core/embedder",
+    "//mojo/public/cpp/bindings",
+  ]
+}
+
+executable("radiation_app_a") {
+  sources = [
+    "radiation_app_a.cc"
+  ]
+
+  deps = [
+    ":lib",
+    "//mojo/core/embedder",
+    "//mojo/public/cpp/bindings",
+  ]
+}

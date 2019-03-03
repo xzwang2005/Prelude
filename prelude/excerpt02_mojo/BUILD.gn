@@ -2,10 +2,10 @@
 # Use of this source code is governed by MIT license that can be
 # found in MIT-LICENSE file.
 
-group("prelude") {
+group("excerpt02_mojo") {
   testonly = true
   deps = [
-    "excerpt01_gn",
-    "excerpt02_mojo",
+    "public/mojom",
+    "mojo_101",
   ]
 }

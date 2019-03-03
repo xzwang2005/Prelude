@@ -1,0 +1,13 @@
+// Copyright (c) 2019 The Prelude Authors.
+// Use of this source code is governed by MIT license that can be
+// found in MIT-LICENSE file.
+
+module prelude.mojom;
+
+interface RadiationListener {
+  OnRadiationLeak(string msg);
+};
+
+interface RadiationMonitor {
+  RegisterListener(RadiationListener listener);
+};
