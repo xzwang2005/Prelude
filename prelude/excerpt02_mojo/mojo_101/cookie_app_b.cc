@@ -12,18 +12,26 @@
 #include "base/command_line.h"
 #include "base/message_loop/message_loop.h"
 #include "base/run_loop.h"
+#include "base/sequenced_task_runner.h"
 #include "mojo/core/embedder/embedder.h"
 
 namespace {
+
+std::string copy_msg;
+base::Closure cb;
+
+void PrintAndQuit() {
+  std::cout << "check the copied message asynchronously: " << copy_msg << std::endl;
+  std::move(cb).Run();
+}
+
 void CopyMessage(std::string* out_msg, const std::string& in_msg) {
   std::cout << "Copy message: " << in_msg << std::endl;
   *out_msg = in_msg;
+  base::SequencedTaskRunnerHandle::Get()->PostTask(
+      FROM_HERE, base::BindOnce(&PrintAndQuit));
 }
 
-void PrintAndQuit(base::Closure callback, const std::string& msg) {
-  std::cout << "cookie wisdom: " << msg << std::endl;
-  std::move(callback).Run();
-}
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -40,13 +48,11 @@ int main(int argc, char** argv) {
   real_cookie->BindRequest(mojo::MakeRequest(&cookie_ptr));
 
   base::RunLoop loop;
+  cb = loop.QuitClosure();
 
-  std::string note;
-  cookie_ptr->Crack(base::BindOnce(&CopyMessage, &note));
-  // since Crack() is called asynchronously, |note| is empty
-  std::cout << "check the copied message: " << note << std::endl;
-
-  cookie_ptr->Crack(base::BindOnce(&PrintAndQuit, loop.QuitClosure()));
+  cookie_ptr->Crack(base::BindOnce(&CopyMessage, &copy_msg));
+  // since Crack() is called asynchronously, |copy_msg| is empty here
+  std::cout << "check the copied message synchronously: " << (copy_msg.empty() ? "Empty" : copy_msg) << std::endl;
 
   real_cookie->EatMe();
 

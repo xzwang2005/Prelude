@@ -35,7 +35,7 @@ int main(int argc, char** argv) {
   // this call is executed BEFORE Crack() above
   real_cookie->EatMe();
 
-  base::RunLoop().RunUntilIdle();
+  //base::RunLoop().RunUntilIdle();
 
   return 0;
 }
