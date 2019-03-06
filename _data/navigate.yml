@@ -1,5 +1,5 @@
 toc:
-  - title: How to build Prelude
+  - title: Build Prelude
     subfolderitems:
       - page: Get the tools
         url: /crack_the_code/Chap_1/get_the_tools.html
@@ -12,7 +12,11 @@ toc:
       - page: GN build system
         url: /crack_the_code/Chap_2/gn_basic.html
       #- page: Frequent asked questions, what to do if I want to..., include some VS tricks
-      #- page: 
+      #- page:
+  - title: Mojo and Services
+    subfolderitems:
+      - page: Mojo 101
+        url: /crack_the_code/Chap_3/mojo_101.html
   # - title: base framework
     # subfolderitems:
       # - page: Piece 1
