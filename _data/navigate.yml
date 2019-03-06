@@ -1,15 +1,15 @@
 toc:
-  - title: Build Prelude
+  - title: Build the thing
     subfolderitems:
       - page: Get the tools
         url: /crack_the_code/Chap_1/get_the_tools.html
       - page: Build from scratch
         url: /crack_the_code/Chap_1/build_from_scratch.html
-      - page: How exactly does the build work?
+      - page: How the build process works?
         url: /crack_the_code/Chap_1/how_and_what_exactly_did_we_build.html
-  - title: GN build system
+  - title: GN is for *Generate Ninja*
     subfolderitems:
-      - page: GN build system
+      - page: GN 101
         url: /crack_the_code/Chap_2/gn_basic.html
       #- page: Frequent asked questions, what to do if I want to..., include some VS tricks
       #- page:

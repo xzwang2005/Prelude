@@ -3,9 +3,24 @@ layout: default
 title: Mojo 101
 ---
 ## [](#header-2) Mojo 101
-Mojo is the cornerstone of Chromium's new inter-process communication (IPC) system. It provides language bindings so that the interface can be defined in a language-neutral way. It also takes care of routing Mojo interface calls from clients to the actual implementation.
+Chrome is built on a multi-process architecture. When you start Chrome, without opening any web page, a dozen more processes are already fired up behind the scene:
+
+![chrome process]({{ site.baseurl }}/crack_the_code/Chap_3/images/chrome_processes.png)
+
+The commandline argument *type* shows that these processes fall into four categories:
+
+|Process Type|Count|Note|
+|:--------- |:--------- |:----------------------------- |
+|Main|1         |Chrome executable run by user  |
+|Renderer|multiple|1 per web page|
+|Gpu| 1         |Execute Gpu commands for all renderer processes|
+|Utility|mutliple|Breakpad handler, watcher etc.|
+
+Launching and managing processes is done by Chrome's inter-process communication (IPC) system, which consists of two components: Mojo and Service (see those two arguments common to many processes: *service-request-channel-token* and *mojo-platform-channel-handle*). In this section, we first take a look on Mojo.
 
 ### [](#header-3) Mojo interface
+Mojo provides language bindings so that the interface can be defined in a language-neutral way. It also takes care of routing Mojo interface calls (intra or inter process) from clients to the actual implementation.
+
 Working with Mojo means two things:
 * Define and implement interfaces to provide some functionality
 * Setup the environment to use the interface as an intra-process or inter-process client

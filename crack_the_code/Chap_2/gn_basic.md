@@ -2,14 +2,14 @@
 layout: default
 title: GN build system
 ---
-## [](#header-2) GN build system
+## [](#header-2) GN 101
 
 Previously, we demonstrated how to build Prelude with just a few commands. However, to truly be able to reuse Chromium code, you need to learn a bit more about the build system - GN. GN is a command line tool similar to *git*. It supports several sub-commands, such as `gen`, `args` used before. GN works with build files named BUILD.gn whose syntax is similar to Python, in which defines targets to be built with GN jargon, e.g., `bundle_data`, `config`.
 
 ### [](#header-3) Basic
 Using GN is to write a number of BUILD.gn files organized in a tree-like structure. Here's a [quick starter](https://chromium.googlesource.com/chromium/src/tools/gn/+/48062805e19b4697c5fbd926dc649c78b6aaa138/docs/quick_start.md) from Chromium.
 
-To get our hands dirty, let's play with *hello_bogart* executable, which spit out the following when executed:
+To get our hands dirty, let's play with *hello_bogart* executable, which spits out the following when executed:
 ```
 Hello, Bogart.
 Woof Woof
@@ -72,9 +72,9 @@ This BUILD.gn file contains all the instructions required to build the executabl
 
 ![build tree]({{ site.baseurl }}/crack_the_code/Chap_2/images/build_tree.png)
 
-Take a look at the figure above, there is a BUILD.gn file at each level from root directory all the way to the folder that contains the source files. When we run `gn gen`, GN goes through all BUILD.gn files starting from the top level, pick up all the targets defined in there, then move to the next level recursively. For simplicity, all non-leaf BUILD.gn files in this example only defines one built-in target - `group`.
+Take a look at the figure above, there is a BUILD.gn file at each level from root directory all the way to the folder that contains the source files. When we run `gn gen`, GN goes through all BUILD.gn files starting from the top level, pick up all the targets defined in there, then move to the next level recursively. For simplicity, all non-leaf BUILD.gn files in this example only define one built-in target - `group`.
 
-`group` conceptually is equivalent to the shortcut or symbolic link in OS. It contains nothing but a point to a set of dependencies, causing those targets to be picked up for build. In the figure above, the chain of targets is highlighted in red. The root build file (//BUILD.gn) depends on `"//prelude"`. This means gn expects there will be a `//prelude/BUILD.gn` file, which defines a target named `"prelude"`. ```//``` always point to the root directory in GN.
+`group` conceptually is equivalent to the shortcut or symbolic link in OS. It contains nothing but a point to a set of dependencies, causing those targets to be picked up for the build. In the figure above, the chain of targets is highlighted in red. The root build file (//BUILD.gn) depends on `"//prelude"`. This means gn expects there will be a `//prelude/BUILD.gn` file, which defines a target named `"prelude"`. ```//``` always point to the root directory in GN.
 
 In //prelude/BUILD.gn, it depends on a target `"excerpt01_gn"`. This tells gn there is a subdirectory named `"excerpt01_gn"` under `//prelude`. `excerpt01_gn` subdirectory also has a BUILD.gn file which defines a target named "excerpt01_gn".
 
@@ -90,4 +90,4 @@ GN is a huge topic on its own. Frequently you may run into unknowns when browsin
 gn help template
 ```
 
-Another useful resource highly recommended is [this presentation](https://docs.google.com/presentation/d/15Zwb53JcncHfEwHpnG_PoIbbzQ3GQi_cpujYwbpcbZo/edit?usp=sharing) by Brett Wilson. It covers advanced topics such as toolchain, as well as many useful tricks for daily tasks, such as how to find out where is an argument set in the build tree. Hopefully, these material will get you started with GN and keep getting more comfortable with GN by using it.
+Another useful resource highly recommended is [this presentation](https://docs.google.com/presentation/d/15Zwb53JcncHfEwHpnG_PoIbbzQ3GQi_cpujYwbpcbZo/edit?usp=sharing) by Brett Wilson. It covers advanced topics such as toolchain, as well as many useful tricks for daily tasks, such as how to find out where is an argument set in the build tree. Hopefully, these materials will get you started with GN and keep getting more comfortable with GN by using it.
