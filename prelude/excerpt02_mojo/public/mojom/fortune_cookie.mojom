@@ -7,3 +7,5 @@ module prelude.mojom;
 interface FortuneCookie {
   Crack() => (string message);
 };
+
+const string kCookieDeliveryApp = "cookie_delivery_app";

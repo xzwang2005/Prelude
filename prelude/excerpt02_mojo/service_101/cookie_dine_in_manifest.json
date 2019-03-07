@@ -1,0 +1,16 @@
+{
+  "name": "cookie_dine_in_service",
+  "display_name" : "Dine in",
+  "interface_provider_specs" : {
+    "service_manager:connector" : {
+      "provides": {
+        "vanilla_cookie_dine_in": [
+          "prelude.mojom.FortuneCookie"
+        ]
+      },
+      "requires": {
+          "cookie_dine_in_service" : ["vanilla_cookie_dine_in"]
+      }
+    }
+  }
+}

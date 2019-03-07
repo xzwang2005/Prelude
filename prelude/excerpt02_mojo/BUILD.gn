@@ -7,5 +7,6 @@ group("excerpt02_mojo") {
   deps = [
     "public/mojom",
     "mojo_101",
+    "service_101",
   ]
 }

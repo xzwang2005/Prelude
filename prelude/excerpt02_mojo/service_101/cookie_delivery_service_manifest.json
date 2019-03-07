@@ -1,0 +1,13 @@
+{
+  "name": "cookie_delivery_service",
+  "display_name" : "Cookie delivery",
+  "interface_provider_specs" : {
+    "service_manager:connector" : {
+      "provides": {
+        "vanilla_cookie_delivery": [
+          "prelude.mojom.FortuneCookie"
+        ]
+      }
+    }
+  }
+}

@@ -6,7 +6,6 @@
 #define _PRELUDE_MOJO_101_FORTUNE_COOKIE_IMPL_H__
 
 #include "base/macros.h"
-#include "base/sequenced_task_runner.h"
 #include "mojo/public/cpp/bindings/binding.h"
 #include "prelude/excerpt02_mojo/public/mojom/fortune_cookie.mojom.h"
 

@@ -1,0 +1,11 @@
+{
+  "name": "cookie_delivery_app",
+  "display_name" : "Cookie delivery app",
+  "interface_provider_specs" : {
+    "service_manager:connector" : {
+      "requires": {
+        "cookie_delivery_service": ["vanilla_cookie_delivery"]
+      }
+    }
+  }
+}

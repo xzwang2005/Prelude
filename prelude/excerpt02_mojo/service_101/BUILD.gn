@@ -1,0 +1,110 @@
+# Copyright (c) 2019 The Prelude Authors.
+# Use of this source code is governed by MIT license that can be
+# found in MIT-LICENSE file.
+
+import("//services/service_manager/public/service_manifest.gni")
+import("//services/catalog/public/tools/catalog.gni")
+import("//services/service_manager/public/cpp/service.gni")
+
+group("service_101") {
+  testonly = true
+  deps = [
+    ":cookie_dine_in_app",
+  ]
+}
+
+source_set("lib") {
+  sources = [
+    "vanilla_fortune_cookie.h",
+    "vanilla_fortune_cookie.cc",
+    "vanilla_cookie_service.h",
+    "vanilla_cookie_service.cc",
+  ]
+
+  deps = [
+    "//base",
+    "//prelude/excerpt02_mojo/public/mojom"
+  ]
+}
+
+
+executable("cookie_dine_in_app") {
+  sources = [
+    "cookie_dine_in_app.cc"
+  ]
+
+  deps = [
+    ":lib",
+    "//mojo/core/embedder",
+    "//mojo/public/cpp/bindings",
+    "//services/service_manager/background:lib"
+  ]
+}
+
+service_manifest("dine_in_manifest") {
+  name = "cookie_dine_in_service"
+  source = "cookie_dine_in_manifest.json"
+}
+
+catalog("dine_in_catalog") {
+  embedded_services = [":dine_in_manifest"]
+}
+
+copy("copy_dine_in_catalog") {
+  sources = get_target_outputs(":dine_in_catalog")
+  outputs = ["$root_out_dir/dine_in_catalog.json"]
+  deps = [":dine_in_catalog"]
+}
+
+
+#### stand alone service ###
+service("cookie_delivery_service") {
+  sources = [
+    "cookie_delivery_service_main.cc"
+  ]
+
+  deps = [
+    ":lib",
+    "//services/service_manager/public/cpp",
+  ]
+}
+
+service_manifest("cookie_delivery_manifest") {
+  name = "cookie_delivery_service"
+  source = "cookie_delivery_service_manifest.json"
+}
+
+### app
+executable("cookie_delivery_app") {
+  sources = [
+    "cookie_delivery_app.cc"
+  ]
+  deps = [
+    "//prelude/excerpt02_mojo/public/mojom",
+    "//base",
+    "//mojo/core/embedder",
+    "//mojo/public/cpp/bindings",
+    "//mojo/public/cpp/system",
+    "//services/service_manager/background:lib",
+    "//services/service_manager:service_manager"
+  ]
+  data_deps = [
+    ":cookie_delivery_service"
+  ]
+}
+
+service_manifest("cookie_delivery_app_manifest") {
+  name = "cookie_delivery_app"
+  source = "cookie_delivery_app_manifest.json"
+}
+
+catalog("cookie_delivery_app_catalog") {
+  embedded_services = [":cookie_delivery_app_manifest"]
+  standalone_services = [":cookie_delivery_manifest"]
+}
+
+copy("copy_cookie_delivery_app_catalog") {
+  sources = get_target_outputs(":cookie_delivery_app_catalog")
+  outputs = [ "$root_out_dir/cookie_delivery_app_catalog.json" ]
+  deps = [":cookie_delivery_app_catalog"]
+}
