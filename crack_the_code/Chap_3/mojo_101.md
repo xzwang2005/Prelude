@@ -9,7 +9,7 @@ Chrome is built on a multi-process architecture. When you start Chrome, without 
 
 The commandline argument *type* shows that these processes fall into four categories:
 
-|Process Type|Count|Note|
+|Type|Count|Note|
 |:--------- |:--------- |:----------------------------- |
 |Main|1         |Chrome executable run by user  |
 |Renderer|multiple|1 per web page|
