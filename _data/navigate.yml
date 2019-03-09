@@ -5,9 +5,9 @@ toc:
         url: /crack_the_code/Chap_1/get_the_tools.html
       - page: Build from scratch
         url: /crack_the_code/Chap_1/build_from_scratch.html
-      - page: How the build process works?
+      - page: How the build process works
         url: /crack_the_code/Chap_1/how_and_what_exactly_did_we_build.html
-  - title: GN is for *Generate Ninja*
+  - title: GN is for Generate Ninja
     subfolderitems:
       - page: GN 101
         url: /crack_the_code/Chap_2/gn_basic.html
@@ -17,6 +17,8 @@ toc:
     subfolderitems:
       - page: Mojo 101
         url: /crack_the_code/Chap_3/mojo_101.html
+      - page: Service 101
+        url: /crack_the_code/Chap_3/service_101.html
   # - title: base framework
     # subfolderitems:
       # - page: Piece 1

@@ -2,7 +2,7 @@
 layout: default
 title: How build process work?
 ---
-## [](#header-2) How the build process works?
+## [](#header-2) How the build process works
 
 Let's take a closer look at Prelude repository. It's based on Chromium codebase version [71.0.3559.3](https://chromium.googlesource.com/chromium/src.git/+/71.0.3559.3) with some modifications, plus the folder *prelude* which contains all the examples.
 
