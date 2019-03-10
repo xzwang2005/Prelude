@@ -7,7 +7,6 @@ import("//services/catalog/public/tools/catalog.gni")
 import("//services/service_manager/public/cpp/service.gni")
 
 group("service_101") {
-  testonly = true
   deps = [
     ":cookie_dine_in_app",
   ]

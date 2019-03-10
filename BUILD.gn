@@ -31,9 +31,10 @@ group("gn_all") {
     "//device/vr/buildflags",
     "//skia",
     "//ui/views",
+    "//prelude",
+    # following targets requires testonly = true
     "//ui/views/examples:views_examples_exe",
     "//third_party/angle/samples:all",
-    "//prelude",
   ]
 }
 

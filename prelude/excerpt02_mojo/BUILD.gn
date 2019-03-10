@@ -3,7 +3,6 @@
 # found in MIT-LICENSE file.
 
 group("excerpt02_mojo") {
-  testonly = true
   deps = [
     "public/mojom",
     "mojo_101",

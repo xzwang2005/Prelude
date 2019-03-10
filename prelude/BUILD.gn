@@ -3,7 +3,6 @@
 # found in MIT-LICENSE file.
 
 group("prelude") {
-  testonly = true
   deps = [
     "excerpt01_gn",
     "excerpt02_mojo",

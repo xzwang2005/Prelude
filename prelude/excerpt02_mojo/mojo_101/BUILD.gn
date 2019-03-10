@@ -3,7 +3,6 @@
 # found in MIT-LICENSE file.
 
 group("mojo_101") {
-  testonly = true
   deps = [
     ":cookie_app_a",
   ]
